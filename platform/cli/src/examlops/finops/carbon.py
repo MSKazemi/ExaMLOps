@@ -189,7 +189,7 @@ def estimate_carbon_via_provider(
     never hard-fails on a bad plugin/config.
     """
     from ..providers import get_provider
-    from ..providers.loader import load_domain_config, resolve_provider
+    from ..providers.loader import degraded_to_default, load_domain_config, resolve_provider
     from . import carbon_providers  # noqa: F401 - importing registers the built-ins
 
     if project:
@@ -199,7 +199,8 @@ def estimate_carbon_via_provider(
             load_project_providers(project)
             if provider is None:
                 provider = get_active_provider(project, "carbon")
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - a broken provider must not stop the calculation
+            degraded_to_default("carbon", exc)
             pass  # authored providers are additive — never block the built-in path
 
     block = dict(config) if config is not None else load_domain_config("carbon")
@@ -207,7 +208,8 @@ def estimate_carbon_via_provider(
     inputs = {**coeffs, **overrides, "gpu_hours": gpu_hours, "cpu_hours": cpu_hours}
     try:
         prov = resolve_provider("carbon", override=provider, config=block)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - a broken provider must not stop the calculation
+        degraded_to_default("carbon", exc)
         prov = get_provider("carbon", "green-ai-default")
     meta = prov.metadata()
     # Refuse rather than drop. A provider that has no `cpu_hours` term would silently return the

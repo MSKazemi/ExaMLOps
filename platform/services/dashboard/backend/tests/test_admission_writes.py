@@ -116,3 +116,72 @@ async def test_stats_readable_by_viewer(client, platform_db):
     r = await client.get("/api/v1/admission", headers=h)
     assert r.status_code == 200
     assert r.json()["stats"]["queued"] == 0
+
+
+# ── the total counts items, and nothing else ─────────────────────────────────
+
+
+async def test_an_empty_queue_does_not_500(client, platform_db):
+    """The regression this pins: `stats()` gained `oldest_queued_age_s`, which is `None` when the
+    queue is empty, and the router summed **every** value — so the commonest state of the page
+    raised `TypeError` outside the fail-open `try`. The endpoint promises never to 500.
+    """
+    token = await _login(client, VIEWER_PW)
+    r = await client.get("/api/v1/admission", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 0
+    assert body["oldestQueuedAgeSeconds"] is None
+
+
+async def test_the_total_counts_items_not_seconds(client, platform_db, monkeypatch):
+    """A waiting queue must not add its wait to the item count.
+
+    With a real wait the old sum reported `items + seconds`; a queue of one item waiting five
+    minutes read as 301. The age is reported in its own field instead.
+    """
+    import routers.admission as mod
+
+    class _Stub:
+        @staticmethod
+        def stats():
+            return {
+                "queued": 2,
+                "running": 1,
+                "done": 0,
+                "rejected": 0,
+                "failed": 0,
+                "oldest_queued_age_s": 300,
+            }
+
+    monkeypatch.setattr(mod, "_examlops_admission", lambda: _Stub)
+    token = await _login(client, VIEWER_PW)
+    r = await client.get("/api/v1/admission", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 3, f"the wait leaked into the item count: {body}"
+    assert body["oldestQueuedAgeSeconds"] == 300
+    assert "oldest_queued_age_s" not in body["stats"], "the state map holds states only"
+
+
+async def test_a_field_added_to_stats_later_cannot_join_the_total(client, platform_db, monkeypatch):
+    """The total is summed by name, so a future field is inert here rather than silently counted."""
+    import routers.admission as mod
+
+    class _Stub:
+        @staticmethod
+        def stats():
+            return {
+                "queued": 1,
+                "running": 0,
+                "done": 0,
+                "rejected": 0,
+                "failed": 0,
+                "oldest_queued_age_s": 10,
+                "some_future_gauge": 9999,
+            }
+
+    monkeypatch.setattr(mod, "_examlops_admission", lambda: _Stub)
+    token = await _login(client, VIEWER_PW)
+    r = await client.get("/api/v1/admission", headers={"Authorization": f"Bearer {token}"})
+    assert r.json()["total"] == 1

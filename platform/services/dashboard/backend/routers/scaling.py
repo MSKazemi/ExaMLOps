@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import audit_write
 from auth import require_role
-from capabilities import SCALING_MANAGE, can, deny_reason
+from capabilities import SCALING_MANAGE, can, deny_reason, require_capability
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
@@ -91,6 +91,11 @@ async def get_autoscale(
 async def set_autoscale(
     payload: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(SCALING_MANAGE)),
 ) -> dict:
     """Declare/patch a model's autoscale policy (admin; audited `source=dashboard`).
 
@@ -184,6 +189,11 @@ async def get_routing(
 async def set_routing(
     payload: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(SCALING_MANAGE)),
 ) -> dict:
     """Configure a model's inference routing (admin; audited `source=dashboard`).
 

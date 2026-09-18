@@ -124,6 +124,30 @@ Answer predictions.
 
 **Guide:** [llm serving engines](../guides/llm-serving-engines.md)
 
+### Serving-gateway authorization service (gateway-authz)
+
+**Port:** 8090 (internal; the gateway calls it, callers never do)  
+**Built on:** `examlops.serving_gateway:create_app` in the control-plane image; Compose profile `gateway`
+
+**What it does**
+
+- Answers the Envoy gateway's `ext_authz` check for every inference request: is this virtual key
+  allowed to call this model?
+- **Fails closed.** A key it cannot verify is refused with 503, never waved through — the datastore
+  outage drill measures exactly this
+- Serves a key it has already verified from cache while the datastore is away
+  ([static stability](../guides/serving-gateway.md#when-a-dependency-is-down)), so an outage does not
+  revoke access that was already granted
+- Publishes the counter the `ServingGatewayAuthzDown` alert reads
+
+**Talks to:** Shared platform datastore (platform.db) (virtual keys), Envoy gateway (gRPC ext_authz)
+
+**Keeps:** nothing of its own — the keys live in the platform datastore
+
+**Operate:** `docker compose --profile gateway up -d gateway-authz`
+
+**Guide:** [serving gateway](../guides/serving-gateway.md)
+
 ## Control and training
 
 Decide when to retrain and run the training flow.
@@ -295,6 +319,30 @@ Hold models, artifacts, datasets and platform state.
 
 **Guide:** [architecture](../guides/architecture.md)
 
+### Postgres role provisioning (one-shot)
+
+**Port:** none — it exits when it is done  
+**Built on:** `provision.sh` in the `examlops-postgres` image, run as the superuser after Postgres is healthy
+
+**What it does**
+
+- Gives each service **its own role and its own database**, so MLflow cannot connect to Prefect's
+  data and neither can reach the dashboard's (plan P3.4)
+- Hands existing tables to the new owner on an upgrade, because MLflow's and Prefect's own migrations
+  must own what they alter
+- Is **idempotent**: re-running converges roles, passwords (rotation = change the variable and
+  re-run), ownership and connect rights, on a new volume or an existing one
+- Leaves a service alone when its `*_DB_USER` is still the superuser, so adopting per-service roles
+  is opt-in and reversible
+
+**Talks to:** PostgreSQL (as superuser, once)
+
+**Keeps:** the roles and grants themselves
+
+**Operate:** runs automatically with the stack; `docker compose up postgres-init` to re-converge
+
+**Guide:** [Postgres datastore backend](../guides/postgres-backend.md)
+
 ### Shared platform datastore (platform.db)
 
 **Port:** internal only  
@@ -302,7 +350,7 @@ Hold models, artifacts, datasets and platform state.
 
 **What it does**
 
-- Holds about 130 tables of platform state: audit_events (hash-chained), drift_snapshots/baselines, input_snapshots, traffic_rules, shadow_config/results, hpc_jobs/nodes/clusters, projects, event_outbox, autopilot_runs, virtual_keys, prompt_versions and more
+- Holds about 140 tables of platform state: audit_events (hash-chained), drift_snapshots/baselines, input_snapshots, traffic_rules, shadow_config/results, hpc_jobs/nodes/clusters, projects, event_outbox, autopilot_runs, virtual_keys, prompt_versions and more
 - Shared by CLI, control plane, agent, bridge, dashboard and Ray Serve through a /state bind mount
 - Bootstraps its schema once per process
 - Coordinates processes: leases/locks, rate windows and idempotency (coord_* tables)
@@ -410,6 +458,33 @@ Connect external systems and deliver events.
 
 **Guide:** [dataplane](../guides/dataplane.md)
 
+### NATS JetStream (event broker)
+
+**Port:** 14222 (client, loopback-published), 8222 (monitoring)  
+**Built on:** `nats:2.14.6-alpine` with JetStream on a persistent volume (`-js -sd /data`); Compose profile `events`
+
+**What it does**
+
+- Carries the platform's events (ADR 0124): drift, promotion, retrain and snapshot topics that the
+  outbox relay publishes into and followers subscribe to
+- Persists them — JetStream, not fire-and-forget — so a subscriber that was down does not miss what
+  happened while it was
+- Deduplicates by `Nats-Msg-Id`, which is what makes the relay's at-least-once delivery safe to retry
+- Is **off the write path by design**. When the broker is gone nothing is refused: events queue in
+  the `event_outbox` table and drain when it returns. The
+  [backbone outage drill](../guides/game-days.md#the-event-backbone-dies) measures exactly that —
+  retrains still answered 202, health reported `degraded`, and 14 of 14 events arrived afterwards
+- Reports JetStream readiness on `:8222/healthz?js-enabled-only=true`, which is what the Compose
+  health check and `depends_on` wait for
+
+**Talks to:** Event outbox relay (publish), autopilot follower and other subscribers (consume)
+
+**Keeps:** the streams themselves, on the `nats_data` volume
+
+**Operate:** `docker compose --profile events up -d nats ; exa events stats`
+
+**Guide:** [event backbone](../guides/event-backbone.md)
+
 ### Event outbox relay (NovaFabric backbone)
 
 **Port:** internal only  
@@ -429,6 +504,29 @@ Connect external systems and deliver events.
 **Operate:** `exa events relay [--loop] ; exa events stats ; in-process in control plane (CONTROL_PLANE_EVENT_RELAY_SECONDS=1)`
 
 **Guide:** [control plane](../guides/control-plane.md)
+
+### Autopilot follower (autopilot-follower)
+
+**Port:** internal only  
+**Built on:** `exa autopilot follow` in the control-plane image; Compose profile `events`
+
+**What it does**
+
+- Subscribes to the event backbone and reacts to drift and promotion events without polling
+- Runs beside the control plane rather than inside it, so the autopilot loop and the API do not
+  share a failure
+- Waits for both NATS and the control plane to be healthy before starting (`depends_on`), because a
+  follower that starts first would miss the events it exists to see
+- Respects the same kill switch as every other autopilot entry point
+  (`EXAMLOPS_AUTOPILOT_ENABLED`, disabled by default)
+
+**Talks to:** NATS JetStream (subscribe), control plane (retrain / promote)
+
+**Keeps:** `autopilot_runs` rows, as the CLI does
+
+**Operate:** `docker compose --profile events up -d autopilot-follower ; exa autopilot status`
+
+**Guide:** [event backbone](../guides/event-backbone.md)
 
 ## People and agents
 

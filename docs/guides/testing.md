@@ -1,8 +1,21 @@
 # Testing strategy
 
-The unit suite is **2781 tests**. Run in one process that is about **nine minutes** — long enough
-that the gate gets skipped, and a gate that gets skipped is not a gate. Run across this machine's
-cores it is **66 seconds**, so the whole suite is affordable on every change.
+The unit suite is **6411 tests**. In one process that is **20 minutes**; across this machine's
+cores it is **3 minutes 37 seconds** — a 5.5× difference, and the reason every gate below runs in
+parallel. Twenty minutes is long enough that the gate gets skipped, and a gate that gets skipped
+is not a gate.
+
+|  | wall clock |
+|---|---|
+| one process (`make test-serial`, `JOBS=0`) | 1205 s — 20 min 4 s |
+| across this host's cores (`make test-fast`) | 217 s — 3 min 37 s |
+
+Both are measurements taken on 2026-09-13 on a busy dev host, not estimates, and both move with
+the suite. This page previously said "2781 tests in 66 seconds" — the suite had grown 2.3×
+underneath it and nobody noticed, because a stale number reads exactly like a fresh one.
+`tests/unit/test_documented_counts_are_current.py` now compares the documented figure with the
+real one. **Re-measure rather than scale the old number**; a serial run is twenty minutes of
+patience and the number is what this page's whole argument rests on.
 
 That single fact shapes everything below: ExaMLOps does **not** use test-impact selection. Picking
 "just the affected tests" would save perhaps another minute and would silently miss the large
@@ -22,8 +35,8 @@ Running everything, quickly, is both simpler and safer.
 | 4 | CI | *(automatic)* | — | every tier-3 job, plus live-service jobs |
 
 Tier 0 is a Claude Code `PostToolUse` hook in `.claude/settings.json`; it runs ruff on any `.py`
-file written inside the repo. Formatting breaks are the single most common cause of a red
-pipeline here, and this closes the usual route to one.
+file written inside the repo. Formatting breaks are the single most common cause of a red pipeline
+here, and this closes the usual route to one.
 
 **It does not catch everything.** The hook fires on the editor's write, so a file created another
 way — a shell heredoc, `sed -i`, a generator — is not formatted by it. That is why tier 2 still
@@ -44,11 +57,11 @@ make test-serial               # single-process; use to confirm a parallel-only 
 pytest tests/unit/test_x.py    # one file — no `-n`, so there is no worker start-up cost
 ```
 
-`make watch` is deliberately serial and scoped: the whole tree on every save is what
-`test-fast` is for, and xdist worker start-up would cost more than a scoped serial run.
-`make typecheck-fast` is the same idea for types — a `dmypy` daemon over the same four
-roots as `make typecheck`, so after a slow first run every re-check is seconds. Both are
-conveniences; `make gate` before pushing is still the guarantee.
+`make watch` is deliberately serial and scoped: the whole tree on every save is what `test-fast`
+is for, and xdist worker start-up would cost more than a scoped serial run. `make typecheck-fast`
+is the same idea for types — a `dmypy` daemon over the same four roots as `make typecheck`, so
+after a slow first run every re-check is seconds. Both are conveniences; `make gate` before
+pushing is still the guarantee.
 
 `-n auto` is deliberately **not** in `pyproject.toml`'s `addopts`. Putting it there would make a
 single-file run pay worker start-up for nothing; it belongs on the targets that run the whole
@@ -64,27 +77,27 @@ of those tests passes on its own: a `--json` command whose output would not pars
 `warning: platform datastore unavailable` had been printed ahead of the JSON.
 
 The warning itself was correct and went to stderr; `CliRunner` merges the streams, which is why it
-reached the parsed output. An autouse fixture in `tests/conftest.py` now gives every test a private
-`PLATFORM_DB` before its body runs. Because it uses `monkeypatch.setenv`, it also undoes any direct
-`os.environ` write made during the test — the leak is closed for the sloppy modules without editing
-forty files.
+reached the parsed output. An autouse fixture in `tests/conftest.py` now gives every test a
+private `PLATFORM_DB` before its body runs. Because it uses `monkeypatch.setenv`, it also undoes
+any direct `os.environ` write made during the test — the leak is closed for the sloppy modules
+without editing forty files.
 
-**The rule this establishes: a test must not depend on state left by another test.** If a test only
-passes serially, that is a bug in the test, not a reason to stop running in parallel.
+**The rule this establishes: a test must not depend on state left by another test.** If a test
+only passes serially, that is a bug in the test, not a reason to stop running in parallel.
 
-**No test touches the checkout's own stores either.** The platform's other SQLite stores default to
-paths in the working directory: `AGENT_MEMORY_DB`, `AGENT_DB`, `AGENT_MEMORY_REVIEW_DB` and
+**No test touches the checkout's own stores either.** The platform's other SQLite stores default
+to paths in the working directory: `AGENT_MEMORY_DB`, `AGENT_DB`, `AGENT_MEMORY_REVIEW_DB` and
 `MLFLOW_SQLITE_DB`, and MLflow 3 itself, which falls back to `sqlite:///mlflow.db` when
 `MLFLOW_TRACKING_URI` is unset. The working directory is the repository root when the suite runs,
 and on a dev host that's where the live stack keeps them. A backup test was found copying the
-developer's real agent-memory and MLflow databases mid-write. That's a flake when they change under
-it, and a unit test reading private state regardless.
+developer's real agent-memory and MLflow databases mid-write. That's a flake when they change
+under it, and a unit test reading private state regardless.
 
-Two things in `tests/conftest.py` close it:
-- `_isolate_sqlite_stores` points those variables at paths under each test's `tmp_path`.
-- An **audit hook on `sqlite3.connect`** refuses any connection to the checkout's `platform.db`,
-  `mlflow.db` or agent stores, whoever makes it (product code, MLflow through SQLAlchemy, a
-  library), and records it, so the test fails even if the code under test swallows the error.
+Two things in `tests/conftest.py` close it: - `_isolate_sqlite_stores` points those variables at
+paths under each test's `tmp_path`. - An **audit hook on `sqlite3.connect`** refuses any
+connection to the checkout's `platform.db`, `mlflow.db` or agent stores, whoever makes it (product
+code, MLflow through SQLAlchemy, a library), and records it, so the test fails even if the code
+under test swallows the error.
 
 If a test trips it, state what the test needs at the seam (as `test_rollback_registry` does with
 `_alias_version`) or point the store at `tmp_path`.
@@ -102,11 +115,39 @@ that way. SQLite sidecars (`-wal`, `-shm`, `-journal`) of a file that was *alrea
 ignored: on a dev host the live stack writes to the checkout's own `platform.db` while the suite
 runs, and blaming whichever test happened to be running would make the guard fail at random.
 
-### What is deliberately *not* parallel
+### Running the suite on Postgres
 
-`test:postgres` in CI runs single-process on purpose. Its workers would share one schema that the
-isolation fixture truncates between tests, so parallelising it would be genuinely, badly flaky.
-`EXAMLOPS_POSTGRES_SCHEMA` isolates one *instance*, not one worker.
+`make test-postgres` starts a throwaway Postgres 16 and runs the unit suite, the dashboard suite
+and the live-backend suite against it. It is parallel like the SQLite one, and the mechanism is
+the engine's answer to "a private `PLATFORM_DB` per test":
+
+| Scope | SQLite | Postgres |
+|---|---|---|
+| One test | its own `PLATFORM_DB` file | the shared schema, emptied before each test (`postgres_isolation`) |
+| One xdist worker | nothing needed | **its own schema** — `exa_test` → `exa_test_gw3` (`scope_schema_to_this_worker`, called from `tests/conftest.py` at import, before anything connects) |
+| One instance on a shared server | a different file | `EXAMLOPS_POSTGRES_SCHEMA` |
+
+Until the worker scope existed this suite could only run single-process: eight workers sharing one
+schema truncate each other's rows mid-test, which is badly flaky rather than slow. That cost ~9
+minutes per measurement and the parity number was therefore checked by hand and rarely — the same
+argument this guide makes for the SQLite suite. `JOBS=0` still forces serial when a failure is
+suspected of being an isolation bug.
+
+Two helpers exist for tests whose *precondition* is not portable, and reaching for the right one
+is what keeps a parity failure meaningful:
+
+- `empty_datastore()` — a datastore that exists and holds **no tables**, for the surfaces that
+  must degrade honestly when their table is absent. On Postgres, a sibling schema that is
+  deliberately never bootstrapped.
+- `datastore_before_a_migration(tmp_path, monkeypatch, *tables)` — a datastore where just those
+  tables are absent, so a test can build one in the shape an older release left it and let
+  `init_db(force=True)` migrate it. A *different* sibling schema, because bootstrapping the one
+  above would quietly turn every "the table is absent" test into a vacuous pass.
+
+When a precondition genuinely cannot exist on an engine, **skip with the reason** (as the
+`PLATFORM_DB`-seam half of `test_suite_stores_are_isolated` does: Postgres opens no such file, so
+the accident it describes cannot happen there). A test that passes without asking its question is
+the one failure mode a green suite cannot show you.
 
 ## Flaky tests
 
@@ -114,19 +155,91 @@ A flaky test is worse than a missing one: it teaches everyone to re-run the suit
 green, which is the same as having no suite. Fix them; do not add automatic reruns.
 
 The one flake found when parallelism was introduced is a useful pattern. `coord_rate_allow` is a
-fixed-window limiter comparing `window_start <= CURRENT_TIMESTAMP - <window> seconds`, and SQLite's
-`CURRENT_TIMESTAMP` has whole-second resolution. With a **1-second** window, two calls milliseconds
-apart that straddle a second tick are both read as starting a new window — so the test failed about
-one run in five, in isolation. The fix asserts the denial over a 60-second window, where a
-one-second tick cannot reach the boundary, and keeps the 1-second window only for the *reset*
-assertion, which is the safe direction (a coarse clock can make a window look more elapsed, never
-less).
+fixed-window limiter comparing `window_start <= CURRENT_TIMESTAMP - <window> seconds`, and
+SQLite's `CURRENT_TIMESTAMP` has whole-second resolution. With a **1-second** window, two calls
+milliseconds apart that straddle a second tick are both read as starting a new window — so the
+test failed about one run in five, in isolation. The fix asserts the denial over a 60-second
+window, where a one-second tick cannot reach the boundary, and keeps the 1-second window only for
+the *reset* assertion, which is the safe direction (a coarse clock can make a window look more
+elapsed, never less).
+
+## Guards that read the repository
+
+A large family of tests here answers questions about the repository rather than about a function:
+what the public tree leaks, whether every environment variable is documented, whether every ADR's
+named artifacts exist, whether the Makefile tells the truth. They are the reason this project does
+not use test-impact selection (they have no import edge to follow), and they have their own
+failure mode: **a guard that scans nothing passes.**
+
+Two rules follow, and both are enforced rather than remembered.
+
+**Enumerate the tree through `tests/unit/_guard_deps.tracked_and_new_files()`.** It returns
+tracked files plus untracked-but-eligible ones — so a guard fails on the change that introduces a
+problem, not on some later one — and it drops paths that no longer exist on disk. `git ls-files
+--cached` lists the *index*, which still holds a file deleted in the working tree whose deletion
+is not staged (`D` in `git status`, and an ordinary state in a tree several people work in).
+Guards that went on to read each path died with `FileNotFoundError` from inside `pathlib`, which
+reads as a broken test rather than as "someone is removing a file". One unstaged deletion failed
+five tests across three guards, and while those failures stood they **masked two genuinely
+undocumented environment variables** — the cost of a guard that fails for the wrong reason is not
+the noise, it is the findings nobody can see behind it.
+`tests/unit/test_guard_file_enumeration.py` holds the contract.
+
+**Scan a directory through `scan_files(root, pattern)` from the same module.** Most of these
+guards assert a *negative* — no module imports the monolith, no SQL inlines a `LIKE` pattern, no
+caller bypasses `/v1`, no alert threshold is unreachable — and a negative claim over an empty scan
+is the strongest possible pass: zero offenders, green, indistinguishable from total compliance.
+`test_platform_db_coupling_ratchet.py` was found in exactly that state, with its root pointed at a
+directory that did not exist. `scan_files` asserts it matched something, so every caller inherits
+the check instead of remembering it, and the failure names the root and the pattern.
+
+Two guards stand behind it, covering different halves. `test_guard_paths_are_not_stale.py`
+evaluates every module-level repo path in this directory and fails if one no longer resolves — the
+*root*. `scan_files` catches the other half, the **pattern**: a root that still exists while
+`*.py`, `*.md` or `docker-compose*.yml` quietly stops matching after a rename. Neither tries to
+detect *whether* a module asserts its own non-emptiness; a detector of assertion style is itself
+the kind of check that stops matching without telling anyone, which is why the assertion lives in
+the shared scan instead.
+
+**Never let the corpus contain the subject.** A guard checking that every metric an alert names is
+one the code emits scanned `platform/` — which contains `alert_rules.yml` itself, so every name in
+the rules matched *itself*, and the check passed for any string at all. It was vacuous from the
+day it was written, and only a mutant with one letter changed exposed it. Scan the **emitters**
+and never the declaration under test; then prove the narrowing was the fix by widening it again
+and watching the mutant survive.
+
+**And when a guard carries exemptions**, give it a companion test that each one still describes
+something real: an exemption outlives its subject, and then it is just an open door. Several
+guards here fail with exactly that message.
+
+## Degradations must be distinguishable
+
+The platform degrades rather than failing in many places, and that is right: a broken plugin must
+not block a promotion, a serving replica must keep serving when the datastore is away. Three
+defects in one week showed the cost of doing it *silently* — a governance digest that verified
+nothing, a signer whose failure looked like a deliberate policy, and a provider fallback that
+replaced a site's own promotion gate without a word. None of them was a crash, and none was
+visible from the outside.
+
+So a blanket `except Exception` inside a function whose docstring promises a degradation must
+either **say something** — log it, or return the cause to the caller — or **carry its reason** on
+the `except` line as `# noqa: BLE001 - <why>`. Being quiet is allowed when it is argued: two sites
+on the serving request path stay silent precisely because a log line per inference would drown the
+outage that caused it, and they say so.
+
+The principle, its instances and how to find the next one: [Honest
+degradation](honest-degradation.md).
+
+`tests/unit/test_degradations_are_visible.py` is a **ratchet**: the count of silent sites may only
+go down. It started at 8 and is at 4, each remaining one low-consequence and needing a judgement
+rather than a sweep. A ratchet was chosen over a hard zero deliberately — a guard that demanded
+all of them at once is a guard someone switches off.
 
 ## Markers
 
 There is exactly one, and it is applied:
 
-```python
+```bash
 pytestmark = pytest.mark.live   # tests/integration/test_postgres_backend_live.py, …_redis_…
 ```
 
@@ -187,13 +300,89 @@ parallel, each verified green before the flag was applied:
 | Skipper agent (337) | `make skipper-test` | 36s | **17s** |
 | Control plane (130) | `make ci-control-plane` | 21s | **13s** |
 
-Roughly **10 minutes of testing becomes under 2**. The dashboard, agent and control-plane suites are
-I/O-bound rather than CPU-bound, so they gain 2–3× where the root suite gains 7.9× — worth having,
-and none of them needed an isolation fix to get there.
+Roughly **10 minutes of testing becomes under 2**. The dashboard, agent and control-plane suites
+are I/O-bound rather than CPU-bound, so they gain 2–3× where the root suite gains 7.9× — worth
+having, and none of them needed an isolation fix to get there.
 
-`make ci-examlops` runs the root suite parallel too. That is not a performance choice: the target's
-whole job is to *mirror* the GitHub `examlops` job, and a mirror that runs the suite differently
-from CI is the failure it exists to prevent.
+`make ci-examlops` runs the root suite parallel too. That is not a performance choice: the
+target's whole job is to *mirror* the GitHub `examlops` job, and a mirror that runs the suite
+differently from CI is the failure it exists to prevent.
+
+## Live verification
+
+Some claims the unit suite cannot reach: what Prometheus does with a DNS-discovered target whose
+container stops, what Ray actually exports, whether the per-service Postgres roles really refuse a
+write. The `tests/integration/*_live.py` files prove those against the real thing, and each is
+gated on an environment variable so it skips in the ordinary run.
+
+**Every gated test file has a `make` target**, and `tests/unit/test_live_tests_are_runnable.py`
+keeps it that way. The reason is worth stating: on 2026-09-15, **11 of 17 gates had no runner at
+all** — no target, no CI job, nothing but a command in the test's own docstring. A test nobody can
+run is documentation, not verification: it never executes, so the claim it makes is unchecked and
+its rot is undetectable. That was found while *relying* on one of them to settle a question about
+Prometheus's DNS discovery.
+
+The guard keys on the **property** — a test file that reads an environment variable with no default
+— rather than on a naming convention. Its first version looked for `tests/integration/*_live.py`
+and gates spelled `*LIVE*`, passed at zero, and missed three more: the pgvector parity suite lives
+in `tests/unit/`, and `EXAMLOPS_NATS_TEST_URL` and `EXAMLOPS_REDIS_TEST_URL` are not spelled
+`LIVE`. Every one of those targets passed the first time it was run, so nothing had rotted — but
+nothing had been checking.
+
+| Target | Gate | What it proves against the real thing |
+|---|---|---|
+| `make pgvector-live` | `EXAMLOPS_PGVECTOR_TEST_DSN` | pgvector returns the **same ranking** as the SQLite fallback for every metric, filtered and unfiltered, dense/sparse/hybrid — a backend that answered differently would make the fallback a lie about production. Starts its own Postgres |
+| `make nats-live` | `EXAMLOPS_NATS_TEST_URL` | The event backbone against a real JetStream. Starts its own broker |
+| `make redis-live` | `EXAMLOPS_REDIS_TEST_URL` | Cross-replica coordination against a real Redis. Starts its own server |
+| `make prometheus-live` | `EXAMLOPS_PROMETHEUS_LIVE` | An opt-in service is scraped once it runs, raises no alert when it was never deployed, and — the part the alerts depend on — **stays a target with `up == 0` after its container stops**, through several DNS refreshes |
+| `make ray-live` | `EXAMLOPS_RAY_LIVE` | Ray's real metric export (a gauge set once disappears from the scrape, which is why the replica republishes) and router behaviour when a replica is lost |
+| `make postgres-roles-live` | `EXAMLOPS_POSTGRES_ROLES_LIVE` | The per-service roles refuse the writes they are supposed to refuse |
+| `make spire-live` | `EXAMLOPS_SPIRE_LIVE` | SPIFFE attestation under Compose, workload identity, and model-server mTLS. **Allow ~4 minutes**: the attestation test builds and brings up the whole identity overlay before it can assert anything |
+| `make iam-live` | `EXAMLOPS_IAM_LIVE_KEYCLOAK_URL` &c. | Federated login against a real Keycloak and a real OPA (`platform/infra/iam/` brings up a reference pair) |
+| `make lineage-live` | `EXAMLOPS_LINEAGE_LIVE_MARQUEZ_URL` | OpenLineage events reach a real Marquez and come back conformant |
+| `make helm-kind-live` | `EXAMLOPS_KIND_GATEWAY_LIVE`, `EXAMLOPS_KIND_SPIRE_LIVE` | The chart's gateway and workload identity on a kind cluster (~3 min). **Builds the control-plane image first** — the fixture skips only when the image is *absent*, so without that step a stale one is silently tested |
+| `make chaos-drills`, `make chaos-drills-kind` | `EXAMLOPS_CHAOS_LIVE`, `EXAMLOPS_KIND_*` | The drills below |
+
+None of these run in CI — they need Docker, a cluster, or a broker. The target is what makes them
+runnable and discoverable; the guard is what stops the next one from being added without one.
+
+**A target is only proven by running it.** `iam-live` and `lineage-live` were written to print a
+sentence naming the variables to set; both instead died with bash's `unbound variable`, because this
+Makefile runs recipes under `-u` and a bare `$$VAR` aborts the presence test before it can decide.
+Expanding the recipe with `make -n` would never have shown it —
+`tests/unit/test_makefile_presence_tests_survive_nounset.py` now catches that shape statically.
+
+## Chaos drills
+
+Opt-in drills that break a real dependency and hold the platform to what the docs promise. Each
+needs Docker (some need kind), each is skipped unless its variable is set, and none is part of
+`make test-fast`.
+
+| Drill | Turn it on | What it breaks, and what must hold |
+|---|---|---|
+| [Datastore outage](postgres-backend.md#when-the-datastore-goes-away) `tests/integration/test_datastore_outage_drill_live.py` | `EXAMLOPS_CHAOS_LIVE=1` | Kills Postgres under the control plane and the gateway's authorization service. Readiness turns 503 in about 2 s and never hangs, writes are refused cleanly, a verified virtual key keeps working from cache while an unseen one is refused, and everything recovers with no restart |
+| Event backbone `tests/integration/test_backbone_outage_drill_live.py` | `EXAMLOPS_CHAOS_LIVE=1` | Kills NATS under the control plane, then the datastore as well, and brings them back one at a time. Retrains are still accepted while only the bus is gone, the replica stays in rotation, the failure shows in `/health` within about ten seconds without turning the backlog into poison, and the outbox drains exactly once when the broker returns |
+| Control-plane failover `tests/integration/test_control_plane_failover_kind_live.py` | `EXAMLOPS_KIND_FAILOVER_LIVE=1` | Kills replicas mid-dispatch under load in kind. Nothing accepted is lost, no retrain runs twice, and a crashed replica's claim is taken over |
+| Serving overload `tests/integration/test_serving_overload_drill_live.py` | `EXAMLOPS_CHAOS_LIVE=1` | Loads one replica ten times past its capacity, with the queue bounded and unbounded. Every answer is a prediction or a shed 503, latency stays bounded only with the bound, a spent budget is refused without running the model, and the server recovers |
+| [Restore a Postgres backup](backup-restore.md#can-you-actually-restore-it) `tests/integration/test_postgres_dr_roundtrip_live.py` | `EXAMLOPS_CHAOS_LIVE=1` | Seeds a chained audit log and a traffic split on a real Postgres, takes a bundle, **drops the schema**, and restores. Every row must come back and the chain's head hash must be the one from before — a restore that rewrote the log would otherwise pass. Needs `pg_dump`/`pg_restore`; skips without them |
+| [Restore the artifacts](backup-restore.md#can-you-actually-restore-it) `tests/integration/test_objects_dr_roundtrip_live.py` | `EXAMLOPS_CHAOS_LIVE=1` | Puts model artifacts in a real MinIO, backs them up, **destroys the bucket**, restores, and compares **digests** — counting objects would pass over a restore of the right number of wrong files. Also lists past a 1000-key page, which the in-memory double never truncates |
+| [The backup sidecar](backup-restore.md#does-the-container-behind-the-rpo-run) `tests/integration/test_backup_sidecar_live.py` | `EXAMLOPS_CHAOS_LIVE=1` | Builds the shipped sidecar image, runs **one real cycle**, and reads what the container wrote: the manifest must show the platform datastore captured, the bundle must verify with the host's own checksums, and the database inside it must still carry its audit chain |
+| Serving on Kubernetes `tests/integration/test_serving_kind_drill_live.py` | `EXAMLOPS_KIND_SERVING_LIVE=1` | Deletes, upgrades, kills and adds model-server pods in kind, under load, with and without the recommended pod settings. Churn costs only the connections pinned to a dying pod and one retry erases it; a pod with no readiness probe is sent inference before its model is loaded (2069 requests in a 45 s run) |
+| Control-plane partition `tests/integration/test_control_plane_partition_kind_live.py` | `EXAMLOPS_KIND_PARTITION_LIVE=1` | Holds one replica's dispatch to Prefect so it is alive but cut off. The command must reach a terminal state, and however many dispatches are in flight (10 here) Prefect must start exactly one run. Found that the cut-off replica keeps the command until its attempts are spent, and that the late dispatch leaves a run the platform records as dead |
+| Serving node loss `tests/integration/test_serving_node_loss_kind_live.py` | `EXAMLOPS_KIND_NODE_LOSS_LIVE=1` | Drains and then hard-stops a worker in a three-node kind cluster under load. A drain costs an eviction; a lost node black-holes its share of inference until Kubernetes evicts the pod (minutes, by default), with each request hanging for the caller's timeout. A shorter `unreachable` toleration does **not** shorten it (132–139 s with it, 133–136 s without): what ends the black hole is EndpointSlice removal, not the pod's deletion. The gateway is what turns the same loss into a blip |
+| Serving replica loss `tests/integration/test_serving_replica_failover_live.py` | `EXAMLOPS_RAY_LIVE=1` | Kills a model-server replica mid-inference. The caller sees the documented failure cause, and the retry budget bounds the retries |
+| Gateway ejection `tests/integration/test_serving_gateway_ejection_live.py` | `EXAMLOPS_GATEWAY_LIVE=1` | Wedges one of two model-server endpoints so it accepts connections and never answers. The gateway must stop choosing it within about ten seconds (10–13 of 20 requests timed out without its health checks, none with them; ejected after 8.4 s, back in use 11.5 s after it recovered), put it back when it recovers, and never eject a lone endpoint |
+| Authorization outage `tests/integration/test_serving_gateway_live.py` (last test) | `EXAMLOPS_GATEWAY_LIVE=1` | Stops the gateway's authorization service. Requests fail closed with 503 and the alert's counter moves |
+
+Run one with `-s` to see its measured timings, which is what the guides quote, or all of them with
+`make chaos-drills`. [Game days](game-days.md) covers what each drill proves, what its numbers
+should look like, and how to run the same failures against your own installation.
+
+The Docker set also runs **weekly** in `.github/workflows/chaos-drills.yml`, keeping each run's
+log as a 90-day artifact; the cluster set is opt-in from the Actions tab. It is a report rather
+than a required check, for the reason given in [game
+days](game-days.md#they-also-run-every-week-on-their-own): these measure timing on a shared
+runner, and a gate that reddens for a slow neighbour trains people to re-run it.
 
 ## Documentation diagrams are checked by the renderer, not by a pattern
 
@@ -236,7 +425,7 @@ anyway would 404 the asset, leave `mermaid` undefined and quietly restore the CD
 published site.
 
 Measured rather than assumed, in a headless browser against real builds — which is what
-`tests/integration/test_docs_site_has_no_cdn_mermaid.py` keeps (opt-in; it needs a browser):
+`tests/integration/test_docs_site_is_self_contained.py` keeps (opt-in; it needs a browser):
 
 | build | requests to unpkg.com | diagrams |
 |---|---|---|
@@ -302,8 +491,8 @@ worth reporting.
 
 ## CI
 
-The GitHub `examlops` job and the GitLab `test:examlops` job both run the unit suite with
-`-n auto`. The remaining jobs (agent, control-plane, dashboard, Helm, docs, Postgres) are unchanged.
+The GitHub `examlops` job and the GitLab `test:examlops` job both run the unit suite with `-n
+auto`. The remaining jobs (agent, control-plane, dashboard, Helm, docs, Postgres) are unchanged.
 See `docs/reference/cli-generated.md` for the command surface and `.gitlab-ci.yml` for the gate
 wiring — the `needs:` list on `deploy:lxp` **is** the gate, so a new blocking job must be added
 there too.

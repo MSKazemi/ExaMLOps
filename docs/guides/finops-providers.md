@@ -201,9 +201,35 @@ Highest priority first:
 3. `provider:` in `~/.config/examlops/finops.yaml`
 4. the registered **default** (`green-ai-default`)
 
-Coefficients merge as: **built-in defaults → config `coefficients` → per-call flags** (later wins). If a
-requested provider can't be resolved (typo, broken plugin), the calculation **falls back to the default**
-rather than failing.
+Coefficients merge as: **built-in defaults → config `coefficients` → per-call flags** (later wins).
+
+### When a provider you configured fails
+
+*A specific case of [honest degradation](honest-degradation.md) — the platform-wide rule.*
+
+If a requested provider cannot be resolved (a typo, a missing plugin, bad YAML) or raises while
+computing, the calculation **falls back to the built-in default rather than failing** — a broken
+plugin must not stop a cost report or block a promotion.
+
+**It now says so.** Until 2026-09-13 that fallback was silent and indistinguishable from the ordinary
+case of having configured no provider at all: a site that had deliberately installed a stricter
+promotion gate, its own placement score or a different carbon coefficient simply received the
+platform's answer, with nothing anywhere to say which one it was. You get a warning naming the
+provider and the cause, and stating plainly that this is *not* the same as configuring none.
+
+Promotion goes further, because it is a **gate** rather than a calculation: the cause is appended to
+the verdict's own reason, so the promotion record reads
+
+```
+0.0420 < 0.05 [built-in threshold used: configured provider failed — ValueError: coefficient table is empty]
+```
+
+and whoever reviews that decision can see the gate they configured was not the one that ran, without
+going to the logs. The same applies across `drift`, `placement`, `carbon` and `cost`, which log it.
+
+If you would rather a broken provider stopped the work than fell back, that is a policy this layer
+deliberately does not take: the calculation continuing is the invariant. Pin the provider you want
+with `--provider` and watch for the warning.
 
 ## Security & trust
 

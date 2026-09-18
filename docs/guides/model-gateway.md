@@ -4,9 +4,10 @@ One OpenAI-compatible gateway sits in front of every LLM backend — Anthropic, 
 self-hosted vLLM/SGLang (E2) — with **weighted routing + failover**, per-tenant/project
 **virtual keys** (allow-list + budget), per-call **C1 span + FinOps cost**, and a B3
 semantic-cache hook. `exa gateway chat`, RAG (`exa rag query`) and the challenger judge
-(`exa challenger`) go through the gateway client. **Skipper does not yet:** it builds its model
-client directly from its own configuration, so gateway keys, budgets, guardrails and per-call cost
-do not apply to its calls. `exa serve llm chat` also talks to an endpoint directly, by design.
+(`exa serve challenger judge`) go through the gateway client. **Skipper does not yet:** it builds
+its model client directly from its own configuration, so gateway keys, budgets, guardrails and
+per-call cost do not apply to its calls. `exa serve llm chat` also talks to an endpoint directly,
+by design.
 
 Design: ADR 0010 · spec `design/vision/specs/B2-model-gateway.md`. `examlops.gateway` is an
 in-process client + policy layer; no standalone gateway service ships with the stack. It works
@@ -71,6 +72,48 @@ Key issuance and revocation are audited (D4).
 Each successful call emits a C1 GenAI span (`gen_ai.*` + `examlops.cost.usd`), records the
 per-call cost to `platform_db.gateway_calls`, and increments the key's `spent_usd` so the
 budget is enforced on the next call.
+
+### When the datastore is away, the request still completes
+
+The datastore is where a request is *accounted for*, not what it is *answered* by — but the
+accounting write ran unguarded on the request path until 2026-09-13. An unreachable datastore
+therefore raised **after the backend had answered and the tokens had been paid for**, and the caller
+got `could not connect to the datastore` instead of the completion they had just bought. On the
+failure path it was worse: the datastore error replaced `AllBackendsFailed`, so the reason every
+backend had failed was lost and the operator debugged the wrong component.
+
+Accounting now fails open. The reasoning is narrow and worth stating, because failing open is
+usually the wrong instinct for anything touching budgets: **failing the request does not un-spend
+the money**, and the spend is missing from the ledger either way — so refusing to answer costs the
+caller their reply and buys the books nothing.
+
+What it must not be is silent, and it is not:
+
+- the loss is logged at `WARNING` with its cause and a running count;
+- `examlops.gateway.accounting_failures()` reports how many writes this process has lost.
+
+**Treat a non-zero count as a billing incident, not a warning.** Those requests happened, cost
+money, and are missing from `gateway_calls` — so usage and cost reporting for that window
+under-reports, and the counter is the only place the gap is visible.
+
+### Which half fails closed
+
+The two datastore touches on a request are deliberately opposite, and it is worth seeing why:
+
+| Step | When the datastore is away | Because |
+|---|---|---|
+| `authorize()` — key, allow-list, budget | **fails closed**: the request is refused before any backend call | nothing has been spent yet, and serving a request you cannot authorize is the worse outcome |
+| accounting — `gateway_calls`, `spent_usd` | **fails open**: the completion is returned | the money is already spent; refusing to answer cannot un-spend it |
+
+So a **keyed** request is never served-but-unaccounted by an outage: it is refused at the door.
+The gap is narrower than it first looks, and worth stating precisely rather than alarmingly —
+it opens only for requests with **no virtual key** (no `authorize()` read, so usage telemetry is
+what is lost), or when the datastore fails **mid-request**, after authorization succeeded and
+before the accounting write. That second case is the one where a key's `spent_usd` is genuinely
+short, and the budget is then enforced from a slightly stale total on the next call.
+
+Note that even in perfect health a budget is a **post-paid** limit: a call's cost is not known
+until it completes, so a key can end a call over its budget and is refused on the *next* one.
 
 ## Versioned prompts (ADR 0009)
 

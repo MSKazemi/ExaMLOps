@@ -91,7 +91,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "sum(rate(ray_examlops_predict_requests_total{status=\"error\"}[5m])) / sum(rate(ray_examlops_predict_requests_total[5m])) * 100",
+          "expr": "sum(rate(ray_examlops_predict_requests_total{status=~\"error|timeout|deadline_exceeded\"}[5m])) / sum(rate(ray_examlops_predict_requests_total{status=~\"success|error|timeout|deadline_exceeded\"}[5m])) * 100",
           "legendFormat": "",
           "refId": "A"
         }
@@ -198,7 +198,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "rate(ray_examlops_predict_requests_total{status=\"error\"}[5m]) / rate(ray_examlops_predict_requests_total[5m]) * 100",
+          "expr": "rate(ray_examlops_predict_requests_total{status=~\"error|timeout|deadline_exceeded\"}[5m]) / rate(ray_examlops_predict_requests_total{status=~\"success|error|timeout|deadline_exceeded\"}[5m]) * 100",
           "legendFormat": "error% {{model_name}}",
           "refId": "A"
         },

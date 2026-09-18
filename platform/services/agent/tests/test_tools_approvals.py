@@ -6,7 +6,7 @@ from skipper.tools import approvals
 
 @respx.mock
 def test_list_pending():
-    respx.get("http://localhost:18002/approvals").mock(
+    respx.get("http://localhost:18002/v1/approvals").mock(
         return_value=httpx.Response(200, json=[{"model_id": "jpcp", "status": "pending"}])
     )
     out = approvals.list_pending_approvals.invoke({})
@@ -16,7 +16,7 @@ def test_list_pending():
 @respx.mock
 def test_approve_confirmed(monkeypatch):
     monkeypatch.setattr(confirm, "interrupt", lambda payload: "yes")
-    respx.post("http://localhost:18002/approve/jpcp").mock(
+    respx.post("http://localhost:18002/v1/approvals/jpcp/approve").mock(
         return_value=httpx.Response(200, json={"approved": "jpcp"})
     )
     out = approvals.approve_model.invoke({"model_id": "jpcp"})

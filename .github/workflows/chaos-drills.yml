@@ -1,0 +1,170 @@
+name: Chaos drills
+
+# The failure behaviour the platform documents, measured weekly against real containers.
+#
+# Every drill breaks a real dependency — kills Postgres under a live control plane, takes the event
+# broker away, loads a model server past its capacity, ejects an unhealthy endpoint at the gateway —
+# and asserts what callers see. They are the evidence behind
+# `docs/guides/game-days.md`, and the reason they belong in CI is that a reliability property is
+# the kind that rots silently: nothing in the unit suite notices when a retry budget, a queue bound
+# or a health check stops doing its job, because everything still passes on a healthy stack.
+#
+# A REPORT, not a gate (deliberately outside `ci-ok`):
+#   • they take tens of minutes and build two large images, so they cannot sit on a pull request;
+#   • they measure timing on shared runners, and a slow runner is not a regression.
+# The weekly run exists to catch the drift a green PR cannot show. Read the artifact, not the
+# green tick: every drill prints what it measured (`-s`), and the numbers are the point.
+#
+# `make chaos-drills` runs the same set locally; `tests/unit/test_chaos_drills_are_documented.py`
+# holds the Makefile, this workflow and the two guides to the same drill list, so a drill added to
+# one and not the others fails the unit suite.
+#
+# The cluster drills (`make chaos-drills-kind`) are **opt-in**, not scheduled: each builds a 1.9 GB
+# serving image, loads it into every node of a throwaway multi-node kind cluster and waits out
+# Kubernetes' own eviction timers — about half an hour in total. All four were run locally on
+# 2026-09-13 and pass (27 tests), so the drills themselves are known good; what remains untested is
+# whether a hosted runner has the memory and time for them. A failure here is therefore a finding
+# about the runner until someone reproduces it on a laptop.
+
+on:
+  schedule:
+    # Saturday 04:17 UTC — away from chart-e2e (Tuesday 03:41) so the two never share a runner pool.
+    - cron: "17 4 * * 6"
+  workflow_dispatch:
+    inputs:
+      cluster_drills:
+        description: "Also run the kind cluster drills (slow, memory-hungry, untested on a hosted runner)"
+        type: boolean
+        default: false
+
+permissions: {}
+
+# One run at a time: the drills bind published ports and name their containers, so two runs on one
+# runner would fight over both. A queued weekly run is never worth cancelling a running one.
+concurrency:
+  group: chaos-drills
+  cancel-in-progress: false
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  docker-drills:
+    name: chaos drills (Docker, report)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      # From the lock, for the same reason CI does: a drill that fails because a dependency moved
+      # under it is a finding about the dependency, and it belongs on that Dependabot PR. The
+      # targets below depend on `install-dev`, which runs the same `uv sync --frozen`, so the two
+      # cannot disagree — doing it here as its own step is what separates "the environment would
+      # not build" from "a drill measured something wrong".
+      - name: Install dependencies (from uv.lock)
+        run: uv sync --frozen --extra dev --python 3.12
+
+      # `make chaos-drills` builds the control-plane and serving images from this commit, then runs
+      # each drill with its own opt-in variable, keeping each status so one failure cannot hide the
+      # others. The log is the deliverable: every drill prints its measurements.
+      - name: Run the drills
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/drills"
+          make chaos-drills 2>&1 | tee "$RUNNER_TEMP/drills/docker-drills.log"
+
+      - name: What the containers said, if a drill failed
+        if: failure()
+        run: |
+          docker ps -a > "$RUNNER_TEMP/drills/docker-ps.txt" 2>&1 || true
+          for c in $(docker ps -aq); do
+            docker logs "$c" --tail 300 > "$RUNNER_TEMP/drills/container-$c.log" 2>&1 || true
+          done
+
+      # Always: a passing run's numbers are what makes the next run's numbers readable.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: chaos-drills-docker
+          path: ${{ runner.temp }}/drills/
+          if-no-files-found: warn
+          retention-days: 90
+
+  cluster-drills:
+    name: chaos drills (kind, opt-in report)
+    # Never on the schedule: see the header. `inputs` is null on a scheduled run, so this is false.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.cluster_drills }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (from uv.lock)
+        run: uv sync --frozen --extra dev --python 3.12
+
+      # The drills create and delete their own clusters (each needs its own topology — one of them
+      # needs a second worker node to lose). This installs the `kind` binary the Makefile checks
+      # for, without creating a cluster of its own.
+      - uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          install_only: true
+
+      - name: Free what the images will need
+        # A hosted runner ships ~14 GB of tooling this job never uses, and the drills load a 1.9 GB
+        # image into every node of a multi-node cluster. Reclaiming the space first is cheaper than
+        # discovering it as a mid-drill failure that reads like a platform fault.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          df -h /
+
+      - name: Run the cluster drills
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/drills"
+          make chaos-drills-kind 2>&1 | tee "$RUNNER_TEMP/drills/kind-drills.log"
+
+      - name: What the cluster said, if a drill failed
+        if: failure()
+        run: |
+          for cluster in $(kind get clusters 2>/dev/null || true); do
+            kind export logs "$RUNNER_TEMP/drills/kind-$cluster" --name "$cluster" || true
+          done
+          df -h / > "$RUNNER_TEMP/drills/disk.txt" 2>&1 || true
+          free -m > "$RUNNER_TEMP/drills/memory.txt" 2>&1 || true
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: chaos-drills-kind
+          path: ${{ runner.temp }}/drills/
+          if-no-files-found: warn
+          retention-days: 90

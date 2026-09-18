@@ -208,8 +208,17 @@ def test_connection(name: str, *, project: str | None = None) -> dict[str, Any]:
                 return {"ok": False, "detail": "boto3 not installed (config looks valid)"}
             try:
                 secret = resolve_connection(name, project=project).get("secret")
-            except Exception:
-                secret = None
+            except Exception as exc:  # noqa: BLE001 - report the cause; the probe still runs
+                # A probe whose whole job is diagnosis must not misdiagnose: without this the
+                # operator sees S3 refusing the request and concludes their credentials are
+                # wrong, when what failed was resolving the secret in the first place.
+                return {
+                    "ok": False,
+                    "detail": (
+                        f"could not resolve this connection's secret ({type(exc).__name__}: "
+                        f"{exc}) — the endpoint was not contacted"
+                    ),
+                }
             s3 = boto3.client(
                 "s3",
                 endpoint_url=endpoint,

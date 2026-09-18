@@ -129,16 +129,26 @@ helm install examlops platform/infra/helm/examlops -f my-values.yaml \
   --set global.imageRegistry=<your-registry>/          # REQUIRED — note the trailing slash
 ```
 
-!!! warning "Known issue in the published charts (v0.54.0 through v0.56.0)"
+!!! warning "First-install race — fixed in the working tree, still present in v0.54.0–v0.56.0"
     On a first install against an empty Postgres, every tier creates the platform schema at the
-    same moment, and the control plane can lose that race. Its log then shows
+    same moment, and the control plane can lose that race. Its log shows
     `Startup check FAILED — coordinator: duplicate key value violates unique constraint
-    "pg_type_typname_nsp_index"`. It never runs the check again, so it stays `0/1` and
-    `helm install --wait` times out. Restart it once; by then the schema exists:
-    `kubectl -n <namespace> rollout restart deployment/<release>-examlops-control-plane`.
+    "pg_type_typname_nsp_index"`.
 
-    On v0.55.0 on kind, three fresh installs with the images already on the node all failed
-    this way, and one restart fixed each. The fix is not yet in a release.
+    Losing the race was never the problem — the table exists a second later. What made it fatal was
+    that the startup checks ran **once at boot and never again**, so one unlucky moment pinned the
+    replica NotReady for its whole life and `helm install --wait` timed out.
+
+    **Current behaviour:** a failing check is re-evaluated by the probes, rate-limited to one
+    battery every `CONTROL_PLANE_STARTUP_RECHECK_SECONDS` (default 10). The pod becomes `1/1` on its
+    own, within about ten seconds, with **no restart**. The collision is still logged, deliberately:
+    an install that recovers by itself should still leave evidence that the tiers raced.
+
+    **Running a published chart in the v0.54.0–v0.56.0 range?** The fix is not in those releases,
+    so restart it once — by then the schema exists:
+    `kubectl -n <namespace> rollout restart deployment/<release>-examlops-control-plane`.
+    (Measured on v0.55.0 on kind: three fresh installs with the images already on the node all hung
+    this way, and one restart fixed each.)
 
 `CONTROL_PLANE_TOKEN` is the legacy `legacy/default` operator credential. For tenant isolation,
 store a `CONTROL_PLANE_CREDENTIALS_JSON` token map in the control-plane Secret and give the

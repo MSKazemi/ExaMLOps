@@ -29,6 +29,11 @@ HOOK_URI = "docs/overrides/docs_assets_hook.py"
 MERMAID = "assets/js/mermaid.min.js"
 
 yaml = pytest.importorskip("yaml")
+# The hook imports mkdocs, which the documentation extra installs and the unit environment does
+# not. Skipping is the honest answer: this file asserts how the *site* is configured, and without
+# the toolchain there is no site. Importing it anyway made collection ERROR, which aborts the whole
+# run — two of these files turned every unit gate red for every session until this was fixed.
+pytest.importorskip("mkdocs", reason="pip install -r platform/ci/requirements-docs.txt")
 sys.path.insert(0, str(REPO_ROOT / "docs" / "overrides"))
 
 import docs_assets_hook  # noqa: E402

@@ -303,7 +303,9 @@ def _ev_record_keeping(model: str, tenant: str) -> tuple[bool, str]:
     if covered:
         return True, (
             f"Art. 12 audit coverage: {len(covered)}/{len(cov['coverage'])} event types present. "
-            f"Uncovered: {', '.join(cov['uncovered']) or 'none'}."
+            f"Uncovered: {', '.join(cov['uncovered']) or 'none'}. "
+            "Event types present, not actions verified: the chain proves the recorded events are "
+            "untampered, not that they are all of them."
         )
     return False, "No Art. 12 audit-trail coverage found (D4)."
 
@@ -612,7 +614,21 @@ def _audit_head() -> str | None:
 
 
 def check_art12_logging(model: str) -> dict[str, Any]:
-    """Verify Art. 12 record-keeping coverage in the immutable audit trail (R7)."""
+    """Which Art. 12 event *types* appear in the audit trail at all (R7).
+
+    **Read the word "coverage" narrowly.** This asks, per required type, whether *at least one*
+    such event exists — not whether every regulated action produced one. Two gaps follow, and both
+    are properties of what can be measured from the log rather than defects here:
+
+    * a type with one recorded event reports as covered even if a later action of the same type was
+      never recorded (audit writes fail open — see :func:`examlops.data.audit.audit_best_effort`,
+      whose counter is the only in-process evidence that this happened);
+    * the hash chain proves the recorded events are **untampered**, never that they are **all** of
+      them. Completeness cannot be established from inside the log.
+
+    So a full score here is evidence that logging is wired up, not proof of a complete record. The
+    Annex-IV section built from it says so.
+    """
     coverage: dict[str, bool] = {}
     with platform_db.get_db() as conn:
         for event in ART12_REQUIRED_EVENTS:

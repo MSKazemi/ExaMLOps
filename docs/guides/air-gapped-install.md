@@ -20,7 +20,7 @@ See [How this guide was tested](#how-this-guide-was-tested).
 | What | Where it comes from | Needed by |
 |---|---|---|
 | Release assets: wheel, sdist, chart `.tgz`, `examlops-compose-X.Y.Z.tar.gz`, `images-X.Y.Z.txt`, `SHA256SUMS`, `SHA256SUMS.sigstore.json` | the [GitHub Release](https://github.com/MSKazemi/ExaMLOps/releases) | everyone |
-| The seven ExaMLOps images, with signatures and provenance | `ghcr.io/mskazemi/examlops-*`, listed with their digests in `images-X.Y.Z.txt` | Compose (all seven), Helm (control plane, dashboard, agent) |
+| The eight ExaMLOps images, with signatures and provenance | `ghcr.io/mskazemi/examlops-*`, listed with their digests in `images-X.Y.Z.txt` | Compose (seven, plus `spire-init` with the workload-identity overlay), Helm (control plane, dashboard, agent) |
 | The Helm chart, with its signature | `oci://ghcr.io/mskazemi/charts/examlops` | Helm |
 | Upstream images (Postgres tooling, MinIO, Prefect, the monitoring stack…) | Docker Hub, pinned by digest in the bundle's `docker-compose.yml` | Compose |
 | Python dependencies | PyPI, collected with `pip download` | the `exa` CLI |
@@ -143,7 +143,7 @@ cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json --offline \
 sha256sum -c SHA256SUMS --ignore-missing
 
 # Every image and the chart, as stored in the mirror
-for image in agent backup control-plane dashboard mlflow postgres ray-serving; do
+for image in agent backup control-plane dashboard mlflow postgres ray-serving spire-init; do
   cosign verify --offline --trusted-root trusted_root.json \
     "$MIRROR/examlops/examlops-$image:X.Y.Z" \
     --certificate-oidc-issuer "$ISSUER" --certificate-identity-regexp "$ID" > /dev/null

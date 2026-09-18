@@ -193,6 +193,27 @@ def _append_only_trigger(sql: str) -> str | None:
     )
 
 
+GLOBAL_WRITE_LOCK = "examlops-platform-write"
+_LOCK_SCOPE = r"[a-z0-9][a-z0-9_.-]{0,62}"
+_LOCKING_BEGIN = re.compile(
+    rf"\s*BEGIN\s+(?:IMMEDIATE|EXCLUSIVE)\b(?:\s*/\*\s*lock:({_LOCK_SCOPE})\s*\*/)?\s*;?\s*$",
+    re.IGNORECASE,
+)
+
+
+def lock_key(scope: str | None) -> str:
+    """The advisory-lock key a ``BEGIN IMMEDIATE`` takes on Postgres.
+
+    Unscoped, it is the one platform-wide write lock — every transaction in the cluster took it,
+    so a command claim, an audit append and an outbox claim waited for each other although they
+    touch disjoint rows (plan P1.3 / finding P1). A scope names a domain whose read-modify-write
+    sequences must be serialised against each other and nothing else: ``audit`` (the hash-chain
+    head), ``outbox``, ``admission``, ``coordination``, ``approvals``, ``modelzoo``. Every writer of
+    one invariant must use the same scope — every audit-chain append takes ``audit``.
+    """
+    return f"{GLOBAL_WRITE_LOCK}:{scope.lower()}" if scope else GLOBAL_WRITE_LOCK
+
+
 def translate(
     sql: str,
     *,
@@ -214,10 +235,13 @@ def translate(
         return pragma
     if re.match(r"\s*PRAGMA\b", stripped, re.IGNORECASE):
         return "SELECT 1"  # journal_mode / synchronous / busy_timeout are SQLite-only knobs
-    if re.match(r"\s*BEGIN\s+IMMEDIATE\b", stripped, re.IGNORECASE):
+    m_lock = _LOCKING_BEGIN.match(stripped)
+    if m_lock:
         # SQLite's RESERVED lock ≙ a transaction-scoped advisory lock: the same "one writer at a
-        # time, released on commit/rollback" guarantee the audit hash-chain depends on.
-        return "SELECT pg_advisory_xact_lock(hashtext('examlops-platform-write'))"
+        # time, released on commit/rollback" guarantee the audit hash-chain depends on. A scoped
+        # form (`BEGIN IMMEDIATE /* lock:audit */`) serialises only its own domain; see
+        # `lock_key`. SQLite ignores the comment — it has one writer regardless.
+        return f"SELECT pg_advisory_xact_lock(hashtext('{lock_key(m_lock.group(1))}'))"
 
     # A statement often arrives with its leading comment attached (the schema DDL is commented
     # per table), so classify on the code, not on the raw text.
@@ -237,7 +261,19 @@ def translate(
         # No such trigger. With IF EXISTS that is a no-op; without it, let Postgres object.
         return "SELECT 1" if m_drop.group(1) else stripped
 
-    is_ddl = bool(re.match(r"\s*CREATE\s+TABLE\b", code_only.strip(), re.IGNORECASE))
+    # `ALTER TABLE … ADD COLUMN` carries a column type just as `CREATE TABLE` does, and the type
+    # map has to reach it. It did not, and the consequence was not subtle: a column migration
+    # declaring `DATETIME` (a SQLite type Postgres does not have) made every process that opens the
+    # datastore fail at startup — `psycopg.errors.UndefinedObject: type "datetime" does not exist`,
+    # from the control plane's first `init_db()`. The quieter half is that `INTEGER` and `REAL`
+    # columns added this way became int4 and float4 rather than the bigint/double the schema means.
+    is_ddl = bool(
+        re.match(
+            r"\s*(CREATE\s+TABLE|ALTER\s+TABLE\b.*\bADD\s+COLUMN)\b",
+            code_only.strip(),
+            re.IGNORECASE | re.DOTALL,
+        )
+    )
     conflict = ""
     rowid_column = _rowid_column(code_only, has_id)
 
@@ -421,11 +457,18 @@ def _rejoin_triggers(stmts: list[str]) -> list[str]:
 
 
 class PgRow(dict):
-    """A row addressable by name *and* by position, like :class:`sqlite3.Row`."""
+    """A row addressable by name, by position *and by slice*, like :class:`sqlite3.Row`.
+
+    Slicing was missing, so ``row[3:]`` raised ``KeyError(slice(3, None))`` on Postgres and
+    worked on SQLite: the control plane's ``POST /v1/retrain`` answered 500 on every Postgres
+    deployment while every SQLite test passed (plan P5.1).
+    """
 
     def __getitem__(self, key: Any) -> Any:
         if isinstance(key, int):
             return list(self.values())[key]
+        if isinstance(key, slice):
+            return tuple(self.values())[key]  # sqlite3.Row slices to a tuple too
         return super().__getitem__(key)
 
     def __eq__(self, other: Any) -> bool:
@@ -497,10 +540,13 @@ def _row_factory(cursor: Any) -> Callable[[Sequence[Any]], PgRow]:
 class PgCursor:
     """The slice of :class:`sqlite3.Cursor` the platform helpers use."""
 
-    def __init__(self, cur: Any, returned: PgRow | None = None) -> None:
+    def __init__(
+        self, cur: Any, returned: PgRow | None = None, rowid_column: str | None = None
+    ) -> None:
         self._cur = cur
         self._returned = returned
         self._returned_pending = returned is not None
+        self._rowid_column = rowid_column
 
     def fetchone(self) -> PgRow | None:
         if self._returned_pending:  # an INSERT … RETURNING row captured for lastrowid
@@ -523,10 +569,18 @@ class PgCursor:
 
     @property
     def lastrowid(self) -> int | None:
-        """The new row's ``id``, taken from ``RETURNING`` (Postgres has no rowid)."""
-        if self._returned and "id" in self._returned:
-            return int(self._returned["id"])
-        return None
+        """The new row's rowid, taken from ``RETURNING`` (Postgres has no rowid).
+
+        SQLite's ``lastrowid`` is the table's ``INTEGER PRIMARY KEY`` whatever it is called, so it is
+        the surrogate ``id`` where there is one and otherwise the single integer primary key
+        (``serving_snapshots.generation``). Only ``id`` was read, so a table keyed on any other name
+        got ``None`` on Postgres and a number on SQLite.
+        """
+        if not self._returned:
+            return None
+        column = "id" if "id" in self._returned else self._rowid_column
+        value = self._returned.get(column) if column else None
+        return int(value) if isinstance(value, int) else None
 
     @property
     def description(self) -> Any:
@@ -547,6 +601,7 @@ class PgConnection:
         self._closed = False
         self._pk_cache: dict[str, list[str]] = {}
         self._has_id_cache: dict[str, bool] = {}
+        self._rowid_cache: dict[str, str | None] = {}
         self.row_factory: Any = (
             None  # accepted and ignored: rows are already name+index addressable
         )
@@ -582,7 +637,11 @@ class PgConnection:
         cur = self._conn.cursor(row_factory=_row_factory)
         cur.execute(translated, _adapt(params))
         captured = cur.fetchone() if (returning and cur.rowcount) else None
-        return PgCursor(cur, captured)
+        rowid = None
+        if captured is not None and "id" not in captured:
+            m = _INSERT_TABLE.match(translated)
+            rowid = self._rowid_column(m.group(1)) if m else None
+        return PgCursor(cur, captured, rowid)
 
     def executemany(self, sql: str, seq: Sequence[Sequence[Any]]) -> PgCursor:
         cur = self._conn.cursor(row_factory=_row_factory)
@@ -666,6 +725,27 @@ class PgConnection:
         return PgCursor(cur)
 
     # -- internals -----------------------------------------------------------------------
+    def _rowid_column(self, table: str) -> str | None:
+        """The table's single integer primary-key column (SQLite's rowid alias), if it has one."""
+        if table in self._rowid_cache:
+            return self._rowid_cache[table]
+        cur = self._conn.cursor()
+        cur.execute(
+            """SELECT a.attname, format_type(a.atttypid, a.atttypmod)
+                 FROM pg_index i
+                 JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                WHERE i.indrelid = to_regclass(%s) AND i.indisprimary""",
+            (table,),
+        )
+        rows = cur.fetchall()
+        column = (
+            rows[0][0]
+            if len(rows) == 1 and rows[0][1] in ("integer", "bigint", "smallint")
+            else None
+        )
+        self._rowid_cache[table] = column
+        return column
+
     def _primary_key(self, table: str) -> list[str]:
         """Conflict target for ``INSERT OR REPLACE``: the table's PK, else its first unique index."""
         if table in self._pk_cache:
@@ -688,6 +768,7 @@ class PgConnection:
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_INSERT_TABLE = re.compile(r'\s*INSERT\s+(?:OR\s+\w+\s+)?INTO\s+"?([A-Za-z_][A-Za-z0-9_]*)"?', re.I)
 
 # One pool per (dsn, schema) per process. Opening a Postgres connection costs a TCP round trip, a
 # TLS handshake and a backend fork — free on SQLite, and paid on *every* `get_db()` call, of which
@@ -745,6 +826,105 @@ def _unreachable_ttl() -> float:
     except ValueError:
         ttl = 5.0
     return max(0.0, ttl)
+
+
+def _pool_timeout() -> float:
+    """Seconds ``getconn()`` waits for a usable connection before failing.
+
+    psycopg_pool's own default is 30 s, which is a lifetime for a readiness probe: with the server
+    gone, every request that touches the store held a worker for the full budget, so the control
+    plane stopped answering at all (the datastore chaos drill measured `/readyz` past 40 s). Five
+    Two seconds is longer than any healthy checkout of a pool this size and short enough to fit
+    inside a readiness probe's timeout. The first failure also marks the datastore unreachable for
+    ``EXAMLOPS_POSTGRES_UNREACHABLE_TTL``, so the probes that follow answer in microseconds.
+    """
+    try:
+        return max(0.5, float(os.getenv("EXAMLOPS_POSTGRES_POOL_TIMEOUT", "").strip() or 2.0))
+    except ValueError:
+        return 2.0
+
+
+def _tcp_user_timeout_ms() -> int:
+    """How long a query may wait for an unacknowledged packet before the kernel gives up.
+
+    ``connect_timeout`` bounds *opening* a connection. It says nothing about a connection that was
+    already open when its server vanished — a killed container, a severed route — where there is no
+    RST and the kernel retransmits for minutes. Linux's ``TCP_USER_TIMEOUT`` (libpq's
+    ``tcp_user_timeout``) is what bounds that; keepalives alone only help an idle connection.
+    """
+    try:
+        return max(
+            1000, int(float(os.getenv("EXAMLOPS_POSTGRES_TCP_TIMEOUT_MS", "").strip() or 10000))
+        )
+    except ValueError:
+        return 10000
+
+
+def _connection_kwargs(dsn: str) -> dict[str, Any]:
+    """libpq parameters every connection of this process gets, unless the DSN sets them itself.
+
+    All of them bound failure: without them the platform waits on kernel TCP timeouts when the
+    datastore disappears. A DSN that names one of these wins, so a site can tune or disable any.
+    """
+    import psycopg  # noqa: PLC0415 - optional enterprise dependency
+
+    try:
+        named = set(psycopg.conninfo.conninfo_to_dict(dsn))
+    except Exception:  # noqa: BLE001 - psycopg will raise on the DSN itself
+        named = set()
+    wanted: dict[str, Any] = {
+        "connect_timeout": max(1, int(round(_connect_timeout()))),
+        "keepalives": 1,
+        "keepalives_idle": 5,
+        "keepalives_interval": 2,
+        "keepalives_count": 3,
+        "tcp_user_timeout": _tcp_user_timeout_ms(),
+    }
+    return {key: value for key, value in wanted.items() if key not in named}
+
+
+def _dsn_endpoint(dsn: str) -> tuple[str, int] | None:
+    """The (host, port) of a single-host TCP DSN, or ``None`` (unix socket, multi-host, unparseable)."""
+    import psycopg  # noqa: PLC0415 - optional enterprise dependency
+
+    try:
+        info = psycopg.conninfo.conninfo_to_dict(dsn)
+    except Exception:  # noqa: BLE001
+        return None
+    host, port = str(info.get("host") or ""), str(info.get("port") or "5432")
+    if not host or host.startswith("/") or "," in host or "," in port:
+        return None
+    try:
+        return host, int(port)
+    except ValueError:
+        return None
+
+
+def _unreachable_now(dsn: str) -> str | None:
+    """The cached "unreachable" message for this DSN while it is still fresh."""
+    key = _dsn_endpoint(dsn)
+    if key is None:
+        return None
+    with _UNREACHABLE_LOCK:
+        cached = _UNREACHABLE.get(key)
+        if cached and time.monotonic() < cached[0]:
+            return cached[1]
+        if cached:
+            del _UNREACHABLE[key]
+    return None
+
+
+def _mark_unreachable(dsn: str, message: str) -> None:
+    """Remember that this DSN just failed, so the next caller fails in microseconds.
+
+    Expires after ``EXAMLOPS_POSTGRES_UNREACHABLE_TTL``, so recovery needs no restart and no
+    signal: the first call after the TTL tries the server again.
+    """
+    key = _dsn_endpoint(dsn)
+    if key is None:
+        return
+    with _UNREACHABLE_LOCK:
+        _UNREACHABLE[key] = (time.monotonic() + _unreachable_ttl(), message)
 
 
 def _require_reachable(dsn: str) -> None:
@@ -828,6 +1008,10 @@ def _get_pool(dsn: str, schema: str | None) -> Any:
             dsn,
             min_size=min_size,
             max_size=max_size,
+            # Every connection is bounded at the TCP level (see `_connection_kwargs`), and a
+            # checkout waits `_pool_timeout()` rather than psycopg_pool's 30 s.
+            kwargs=_connection_kwargs(dsn),
+            timeout=_pool_timeout(),
             # Runs once per *physical* connection, not once per checkout, so the search_path is
             # set exactly where it belongs: on the connection, for its whole life.
             configure=_configure_schema(schema),
@@ -890,6 +1074,56 @@ def close_pools() -> None:
             pass
 
 
+# What "the datastore is not there" looks like, as opposed to "it answered, and said no". Only the
+# former may be remembered: marking an endpoint unreachable because a password was wrong would fail
+# every other caller of the same server for the life of the verdict.
+_UNREACHABLE_SIGNS = (
+    "connection refused",
+    "could not connect",
+    "could not translate host name",
+    "no route to host",
+    "timeout expired",
+    "connection timed out",
+    "server closed the connection unexpectedly",
+    "terminating connection due to administrator command",
+    "couldn't get a connection",  # psycopg_pool's own timeout text
+    "pool is closed",
+    "network is unreachable",
+    "host is unreachable",
+    "unreachable at ",  # our own probe's message
+)
+
+
+def _is_unreachable_error(exc: BaseException) -> bool:
+    """True when this failure means the server is not reachable, not that it refused the request."""
+    if isinstance(exc, TimeoutError | ConnectionError | OSError):
+        return True
+    text = str(exc).lower()
+    return any(sign in text for sign in _UNREACHABLE_SIGNS)
+
+
+def _drop_pool(dsn: str, schema: str | None) -> None:
+    """Discard the pool for this (dsn, schema) after a failure, and close it in the background.
+
+    psycopg_pool backs its reconnect attempts off exponentially, so a pool that failed during an
+    outage can sit out most of a minute after the server is back (the chaos drill measured 16 s
+    where the fast-fail verdict expires in 5). The next call builds a fresh pool, which tries at
+    once. Closing takes a moment and is not the caller's business, so it happens on its own thread.
+    """
+    with _POOL_LOCK:
+        pool = _POOLS.pop((dsn, schema), None)
+    if pool is None:
+        return
+
+    def _close() -> None:
+        try:
+            pool.close(timeout=1.0)
+        except Exception:  # noqa: BLE001 - a pool we have already abandoned
+            pass
+
+    threading.Thread(target=_close, name="pg-pool-close", daemon=True).start()
+
+
 def connect(dsn: str, *, schema: str | None = None) -> PgConnection:
     """Open a translating Postgres connection (the SQLite-shaped API above).
 
@@ -901,14 +1135,34 @@ def connect(dsn: str, *, schema: str | None = None) -> PgConnection:
     (``EXAMLOPS_POSTGRES_POOL=0`` opts out; ``…_POOL_MIN``/``…_POOL_MAX`` size it). Closing the
     returned object hands the connection back rather than dropping it.
     """
-    pool = _get_pool(dsn, schema)
-    if pool is not None:
-        return PgConnection(pool.getconn(), pool=pool)
-
     import psycopg  # noqa: PLC0415 - optional enterprise dependency, imported on use
 
+    # A datastore that just failed is refused at once, for as long as the verdict is fresh. Without
+    # this every caller pays the full budget again while the outage lasts, and a service whose
+    # workers are all waiting on the store answers nothing — not even a readiness probe.
+    cached = _unreachable_now(dsn)
+    if cached:
+        raise psycopg.OperationalError(cached)
+
+    pool = _get_pool(dsn, schema)
+    if pool is not None:
+        try:
+            return PgConnection(pool.getconn(), pool=pool)
+        except Exception as exc:
+            # A server that answered and refused (a wrong password, a missing database) is the
+            # caller's error to see, unchanged. Only unreachability is remembered and only then is
+            # the pool discarded.
+            if not _is_unreachable_error(exc):
+                raise
+            endpoint = _dsn_endpoint(dsn)
+            where = f"{endpoint[0]}:{endpoint[1]}" if endpoint else "the configured DSN"
+            message = f"datastore unavailable at {where} after {_pool_timeout():g}s ({exc})"
+            _mark_unreachable(dsn, message)
+            _drop_pool(dsn, schema)  # the next attempt reconnects at once, not after a backoff
+            raise psycopg.OperationalError(message) from exc
+
     _require_reachable(dsn)  # the unpooled path pays libpq's own connect budget otherwise
-    conn = psycopg.connect(dsn)
+    conn = psycopg.connect(dsn, **_connection_kwargs(dsn))
     if schema:
         if not _SCHEMA_RE.match(schema):
             raise ValueError(f"invalid schema name {schema!r}")  # never interpolate raw input

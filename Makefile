@@ -70,7 +70,9 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: images helm-package
+.PHONY: images helm-package \
+	prometheus-live pgvector-live nats-live redis-live ray-live postgres-roles-live spire-live iam-live lineage-live helm-kind-live
+
 .PHONY: help \
         full-up stop-all rebuild rebuild-all lxp-rebuild \
         stack-up stack-down stack-wipe stack-restart stack-logs stack-ps stack-shell \
@@ -87,7 +89,7 @@ endif
         skipper skipper-chat skipper-server skipper-test skipper-memory \
         finops-providers finops-plugin-example \
         remote-rebuild selfheal smoke-check \
-        test-postgres \
+        test-postgres chaos-drills chaos-drills-kind \
         venv install install-dev install-hooks clean \
         lint lint-fix lint-workflows typecheck typecheck-cli typecheck-fast openapi-export test test-unit test-integration test-cov check \
         test-fast test-failed test-serial test-slowest watch gate \
@@ -639,9 +641,10 @@ typecheck-cli: ## mypy over platform/cli/src/, ratcheted at CLI_MYPY_BASELINE (o
 # (platform/services/control_plane/tests/test_openapi_contract.py) fails on any drift, so an
 # interface change is always a reviewed diff, never a runtime surprise. The reduction in
 # api_contract.py is what keeps the guard portable across fastapi versions.
-openapi-export: install-dev ## Regenerate the control plane's committed API contract (api-contract.json)
+openapi-export: install-dev ## Regenerate the control plane's API contract and its generated /v1 client
 	@$(VENV_BIN)/python platform/services/control_plane/api_contract.py
-	@printf "$(GREEN)platform/services/control_plane/api-contract.json regenerated — review the diff.$(RESET)\n"
+	@$(VENV_BIN)/python platform/ci/gen_cp_client.py
+	@printf "$(GREEN)api-contract.json and examlops/control_plane_api.py regenerated — review the diff.$(RESET)\n"
 
 # The daemon's first run builds its cache (minutes, same as cold mypy); every run after an
 # edit is seconds. Same four roots and the same flag as `typecheck`, so a clean fast run
@@ -709,19 +712,28 @@ PGTEST_DSN       ?= postgresql://examlops:examlops@localhost:$(PGTEST_PORT)/exam
 test-postgres: install-dev ## Run the unit + dashboard suites against a throwaway Postgres (item 0.1 parity)
 	@printf "$(BOLD)Starting $(PGTEST_CONTAINER) on port $(PGTEST_PORT)...$(RESET)\n"
 	@docker rm -f $(PGTEST_CONTAINER) >/dev/null 2>&1 || true
+	@# max_connections: the suite runs one pool per worker (plus the sibling schemas its helpers
+	@# open, plus a pool in every subprocess a CLI test spawns). The stock 100 is a limit the
+	@# *test harness* hits on a wide machine — `-n auto` is 24 workers here — and it fails as
+	@# `FATAL: sorry, too many clients already`, which looks like a platform fault and is not one.
 	@docker run -d --name $(PGTEST_CONTAINER) \
 	  -e POSTGRES_PASSWORD=examlops -e POSTGRES_USER=examlops -e POSTGRES_DB=examlops \
-	  -p $(PGTEST_PORT):5432 postgres:16-alpine >/dev/null
+	  -p $(PGTEST_PORT):5432 postgres:16-alpine -c max_connections=300 >/dev/null
 	@until docker exec $(PGTEST_CONTAINER) pg_isready -U examlops >/dev/null 2>&1; do sleep 1; done
 	@# SHELL carries -e, so the original `pytest …; status=$$?` aborted on the FIRST failing
 	@# suite: the dashboard suite and the live integration test never ran, the summed exit
 	@# code was never computed, and `docker rm -f` — the last line — never fired, leaving the
 	@# throwaway Postgres up indefinitely. `|| status=$$?` keeps each failure local, and the
 	@# trap removes the container however the recipe ends, including on Ctrl-C.
+	@# The unit suite runs in parallel here too: each xdist worker gets its own schema
+	@# (`examlops.storage.testing.scope_schema_to_this_worker`, called from tests/conftest.py),
+	@# because the per-test isolation empties *the* schema and workers sharing one truncate each
+	@# other's rows mid-test. That is what kept this engine's parity expensive to measure — it took
+	@# ~9 serial minutes, so it was checked by hand and rarely. `JOBS=0` forces serial.
 	@trap 'docker rm -f $(PGTEST_CONTAINER) >/dev/null 2>&1 || true' EXIT INT TERM; \
 	 status=0; dash=0; live=0; \
 	 EXAMLOPS_DB_BACKEND=postgres EXAMLOPS_POSTGRES_DSN='$(PGTEST_DSN)' \
-	 EXAMLOPS_POSTGRES_SCHEMA=exa_test $(VENV)/bin/pytest tests/unit/ -q || status=$$?; \
+	 EXAMLOPS_POSTGRES_SCHEMA=exa_test $(VENV)/bin/pytest tests/unit/ $(PYTEST_PARALLEL) -q || status=$$?; \
 	 (cd platform/services/dashboard/backend && \
 	  EXAMLOPS_DB_BACKEND=postgres EXAMLOPS_POSTGRES_DSN='$(PGTEST_DSN)' \
 	  EXAMLOPS_POSTGRES_SCHEMA=exa_test_dash \
@@ -729,6 +741,153 @@ test-postgres: install-dev ## Run the unit + dashboard suites against a throwawa
 	  $(CURDIR)/$(VENV)/bin/pytest tests/ -q) || dash=$$?; \
 	 EXAMLOPS_POSTGRES_TEST_DSN='$(PGTEST_DSN)' $(VENV)/bin/pytest tests/integration/test_postgres_backend_live.py -q || live=$$?; \
 	 exit $$((status + dash + live))
+
+CHAOS_CP_IMAGE      ?= exa-chaos/examlops-control-plane:tree
+CHAOS_SERVING_IMAGE ?= exa-chaos/ray-serving:tree
+
+chaos-drills: install-dev ## Run the chaos drills (Docker): datastore outage, event backbone, serving overload, DR restore (Postgres/objects/sidecar), gateway ejection
+	@printf "$(BOLD)Building the images the drills run (from this tree)...$(RESET)\n"
+	@docker build -q -f platform/services/control_plane/Dockerfile -t $(CHAOS_CP_IMAGE) . >/dev/null
+	@docker build -q -f serving/ray_serving/Dockerfile -t $(CHAOS_SERVING_IMAGE) . >/dev/null
+	@# Each drill breaks a real dependency and prints what it measured (-s). They are independent,
+	@# so one failure must not hide the others: each keeps its own status and the sum is the exit
+	@# code, as `test-postgres` does.
+	@status=0; \
+	 for drill in test_datastore_outage_drill_live test_backbone_outage_drill_live \
+	              test_serving_overload_drill_live test_postgres_dr_roundtrip_live \
+	              test_objects_dr_roundtrip_live test_backup_sidecar_live; do \
+	   printf "$(BOLD)--- $$drill$(RESET)\n"; \
+	   EXAMLOPS_CHAOS_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	     tests/integration/$$drill.py || status=$$((status + 1)); \
+	 done; \
+	 printf "$(BOLD)--- test_serving_gateway_ejection_live$(RESET)\n"; \
+	 EXAMLOPS_GATEWAY_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	   tests/integration/test_serving_gateway_ejection_live.py || status=$$((status + 1)); \
+	 exit $$status
+
+KIND_CP_IMAGE ?= exa-kind-spire/examlops-control-plane:test
+
+chaos-drills-kind: install-dev ## Run the cluster chaos drills (kind): CP failover, CP partition, serving pod churn, serving node loss
+	@command -v kind >/dev/null || { printf "$(RED)kind is not installed$(RESET)\n"; exit 1; }
+	@printf "$(BOLD)Building the images the cluster drills run (from this tree)...$(RESET)\n"
+	@docker build -q -f platform/services/control_plane/Dockerfile -t $(KIND_CP_IMAGE) . >/dev/null
+	@docker build -q -f serving/ray_serving/Dockerfile -t $(CHAOS_SERVING_IMAGE) . >/dev/null
+	@# Each one creates and deletes its own throwaway cluster, so they run in sequence and keep
+	@# their own status (same shape as `chaos-drills`). Budget about half an hour in total: most of
+	@# it is loading a 1.9 GB image into every node and waiting out Kubernetes' own eviction timers.
+	@status=0; \
+	 printf "$(BOLD)--- test_control_plane_failover_kind_live$(RESET)\n"; \
+	 EXAMLOPS_KIND_FAILOVER_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	   tests/integration/test_control_plane_failover_kind_live.py || status=$$((status + 1)); \
+	 printf "$(BOLD)--- test_serving_kind_drill_live$(RESET)\n"; \
+	 EXAMLOPS_KIND_SERVING_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	   tests/integration/test_serving_kind_drill_live.py || status=$$((status + 1)); \
+	 printf "$(BOLD)--- test_serving_node_loss_kind_live$(RESET)\n"; \
+	 EXAMLOPS_KIND_NODE_LOSS_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	   tests/integration/test_serving_node_loss_kind_live.py || status=$$((status + 1)); \
+	 printf "$(BOLD)--- test_control_plane_partition_kind_live$(RESET)\n"; \
+	 EXAMLOPS_KIND_PARTITION_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	   tests/integration/test_control_plane_partition_kind_live.py || status=$$((status + 1)); \
+	 exit $$status
+
+# ── Live verification (opt-in; each needs something real running) ───────────────────────────────
+# These prove claims the unit suite cannot: what Prometheus does with a DNS-discovered target that
+# stops, what Ray actually exports, whether the Postgres roles really refuse a write. They skip
+# without their gate, which is why each one needs a target — a gate nobody can run is documentation,
+# not verification (tests/unit/test_live_tests_are_runnable.py holds that).
+
+pgvector-live: install-dev ## pgvector ranks identically to the SQLite fallback (starts its own Postgres)
+	@# The parity claim is the point: a backend that ranked differently would make the fallback a
+	@# lie about production. Its own container on a loopback port, removed afterwards.
+	@docker rm -f examlops-pgvectortest >/dev/null 2>&1 || true
+	@# An EPHEMERAL host port, read back with `docker port`: a fixed one collides with whatever
+	@# else on this machine already has a pgvector up, which is how this first failed.
+	@docker run -d --name examlops-pgvectortest -e POSTGRES_PASSWORD=vt -e POSTGRES_USER=vt \
+	   -e POSTGRES_DB=vt -p 127.0.0.1::5432 pgvector/pgvector:pg17 >/dev/null
+	@printf "$(BOLD)Waiting for pgvector...$(RESET)\n"
+	@for i in $$(seq 1 60); do \
+	   docker exec examlops-pgvectortest pg_isready -U vt -d vt >/dev/null 2>&1 && break; sleep 1; \
+	 done
+	@status=0; \
+	 port=$$(docker port examlops-pgvectortest 5432/tcp | head -n1 | sed 's/.*://'); \
+	 EXAMLOPS_PGVECTOR_TEST_DSN=postgresql://vt:vt@127.0.0.1:$$port/vt \
+	   $(VENV)/bin/pytest -q tests/unit/test_pgvector_store.py -m live || status=$$?; \
+	 docker rm -f examlops-pgvectortest >/dev/null 2>&1 || true; \
+	 exit $$status
+
+nats-live: install-dev ## The event backbone against a real NATS JetStream (starts its own broker)
+	@docker rm -f examlops-natstest >/dev/null 2>&1 || true
+	@docker run -d --name examlops-natstest -p 127.0.0.1::4222 nats:2.14.6-alpine -js >/dev/null
+	@status=0; \
+	 port=$$(docker port examlops-natstest 4222/tcp | head -n1 | sed 's/.*://'); \
+	 EXAMLOPS_NATS_TEST_URL=nats://localhost:$$port \
+	   $(VENV)/bin/pytest -q -s -p no:randomly tests/integration/test_nats_backbone_live.py \
+	   || status=$$?; \
+	 docker rm -f examlops-natstest >/dev/null 2>&1 || true; \
+	 exit $$status
+
+redis-live: install-dev ## Cross-replica coordination against a real Redis (starts its own server)
+	@docker rm -f examlops-redistest >/dev/null 2>&1 || true
+	@docker run -d --name examlops-redistest -p 127.0.0.1::6379 redis:7-alpine >/dev/null
+	@status=0; \
+	 port=$$(docker port examlops-redistest 6379/tcp | head -n1 | sed 's/.*://'); \
+	 EXAMLOPS_REDIS_TEST_URL=redis://localhost:$$port/0 \
+	 EXAMLOPS_REDIS_EVENT_STREAM=examlops-test-events \
+	   $(VENV)/bin/pytest -q -s -p no:randomly tests/integration/test_redis_coordination_live.py \
+	   || status=$$?; \
+	 docker rm -f examlops-redistest >/dev/null 2>&1 || true; \
+	 exit $$status
+
+prometheus-live: install-dev ## Prometheus keeps a stopped DNS-discovered target (needs the monitoring stack)
+	EXAMLOPS_PROMETHEUS_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	  tests/integration/test_prometheus_optional_targets_live.py
+
+ray-live: install-dev ## Ray Serve's real metric export and replica failover (needs the serving stack)
+	EXAMLOPS_RAY_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	  tests/integration/test_serving_metrics_live.py \
+	  tests/integration/test_serving_replica_failover_live.py
+
+postgres-roles-live: install-dev ## The per-service Postgres roles refuse what they should (needs Postgres)
+	EXAMLOPS_POSTGRES_ROLES_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	  tests/integration/test_postgres_service_roles_live.py
+
+spire-live: install-dev ## SPIFFE/SPIRE attestation and model-server mTLS (needs the SPIRE compose profile)
+	EXAMLOPS_SPIRE_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	  tests/integration/test_spire_compose_attestation_live.py \
+	  tests/integration/test_workload_identity_spire_live.py \
+	  tests/integration/test_serving_gateway_mtls_live.py
+
+iam-live: install-dev ## Federated identity against a real Keycloak + OPA (set EXAMLOPS_IAM_LIVE_KEYCLOAK_URL etc.)
+	@# `${VAR:-}`, not `$$VAR`: this Makefile runs bash with `-u`, so an unset variable would
+	@# abort the recipe before the message that says which variables to set.
+	@[ -n "$${EXAMLOPS_IAM_LIVE_KEYCLOAK_URL:-}" ] || { \
+	   printf "$(RED)Set EXAMLOPS_IAM_LIVE_KEYCLOAK_URL, EXAMLOPS_IAM_LIVE_OPA_URL, "; \
+	   printf "EXAMLOPS_IAM_LIVE_KEYCLOAK_ADMIN and EXAMLOPS_IAM_LIVE_KEYCLOAK_ADMIN_PASSWORD. "; \
+	   printf "platform/infra/iam/ brings up a reference Keycloak + OPA.$(RESET)\n"; exit 1; }
+	$(VENV)/bin/pytest -q -s -p no:randomly tests/integration/test_iam_keycloak_live.py
+
+lineage-live: install-dev ## OpenLineage events reach a real Marquez (set EXAMLOPS_LINEAGE_LIVE_MARQUEZ_URL)
+	@[ -n "$${EXAMLOPS_LINEAGE_LIVE_MARQUEZ_URL:-}" ] || { \
+	   printf "$(RED)Set EXAMLOPS_LINEAGE_LIVE_MARQUEZ_URL to a running Marquez.$(RESET)\n"; exit 1; }
+	$(VENV)/bin/pytest -q -s -p no:randomly tests/integration/test_lineage_marquez_live.py
+
+helm-kind-live: install-dev ## The chart's gateway and workload identity on a kind cluster
+	@command -v kind >/dev/null || { printf "$(RED)kind is not installed$(RESET)\n"; exit 1; }
+	@# Build the image the tests load, as `chaos-drills-kind` does. Without this the fixture uses
+	@# whatever `$(KIND_CP_IMAGE)` happens to be on the machine and skips only if it is ABSENT — so
+	@# a stale one silently gets tested. On 2026-09-15 that image was two days old and had no
+	@# `/readyz`: the chart's gateway readiness probe 404'd, the authz pods never became ready, and
+	@# `helm --wait` died with a bare `context deadline exceeded`.
+	@printf "$(BOLD)Building $(KIND_CP_IMAGE) from this tree...$(RESET)\n"
+	@docker build -q -f platform/services/control_plane/Dockerfile -t $(KIND_CP_IMAGE) . >/dev/null
+	@status=0; \
+	 printf "$(BOLD)--- test_helm_gateway_kind_live$(RESET)\n"; \
+	 EXAMLOPS_KIND_GATEWAY_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	   tests/integration/test_helm_gateway_kind_live.py || status=$$((status + 1)); \
+	 printf "$(BOLD)--- test_helm_workload_identity_kind_live$(RESET)\n"; \
+	 EXAMLOPS_KIND_SPIRE_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	   tests/integration/test_helm_workload_identity_kind_live.py || status=$$((status + 1)); \
+	 exit $$status
 
 test-cov: install-dev ## Run tests with HTML coverage report → htmlcov/index.html
 	@$(VENV)/bin/pytest tests/ \
@@ -777,10 +936,16 @@ ci-modelzoo: ## Mirror GitHub 'modelzoo' job — poetry install + lint + unit + 
 	  $$P run pytest tests/unit/ tests/smoke/ -v --tb=short
 	@printf "$(GREEN)CI · modelzoo passed.$(RESET)\n"
 
-alerts-check: ## Validate Prometheus alert rules + Alertmanager config
+# The Prometheus the platform deploys, so the rules are checked by the version that runs them.
+PROMETHEUS_IMAGE := $(shell sed -n 's/^FROM //p' $(COMPOSE_DIR)/Dockerfile.prometheus)
+
+alerts-check: ## Validate Prometheus alert rules, their unit tests + Alertmanager config
 	@printf "$(BOLD)Validating alert rules...$(RESET)\n"
-	@docker run --rm --entrypoint promtool -v "$(CURDIR)/$(COMPOSE_DIR):/cfg" \
-	  prom/prometheus:v2.54.1 check rules /cfg/alert_rules.yml
+	@docker run --rm --entrypoint promtool -v "$(CURDIR)/$(COMPOSE_DIR):/cfg:ro" -w /cfg \
+	  $(PROMETHEUS_IMAGE) check rules alert_rules.yml
+	@printf "$(BOLD)Replaying the alert rule tests...$(RESET)\n"
+	@docker run --rm --entrypoint promtool -v "$(CURDIR)/$(COMPOSE_DIR):/cfg:ro" -w /cfg \
+	  $(PROMETHEUS_IMAGE) test rules alert_rules_test.yml
 	@printf "$(BOLD)Validating Alertmanager config...$(RESET)\n"
 	@docker run --rm --entrypoint amtool -v "$(CURDIR)/$(COMPOSE_DIR)/alertmanager.yml:/tmp/am.yml:ro" \
 	  prom/alertmanager:v0.27.0 check-config /tmp/am.yml
@@ -994,7 +1159,6 @@ docs-mermaid: ## Parse every ```mermaid diagram in docs/ with the renderer the s
 	if [ $$status -eq 2 ]; then \
 	  printf "$(RED)The mermaid diagrams were NOT checked — install node, then: npm ci --prefix platform/ci/mermaid$(RESET)\n"; \
 	elif [ $$status -ne 0 ]; then exit $$status; fi
-
 
 docs-assets-deps: ## Install the pinned front-end assets the documentation serves
 	@# mermaid (also what the diagram check parses with) and KaTeX. Silent when they are already

@@ -547,6 +547,7 @@ def test_readyz_is_200_only_when_dependencies_are_healthy(cp):
     assert client.get("/readyz").status_code == 200
 
     cp._startup_checks["db"] = "fail: unavailable"
+    cp._startup_checked_at = time.monotonic()  # just failed: not yet due for a recheck
     response = client.get("/readyz")
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
@@ -576,17 +577,16 @@ def test_expire_old_approvals_marks_stale_entries(cp, monkeypatch):
     monkeypatch.setattr(cp, "APPROVAL_EXPIRY_HOURS", 1)
 
     old_ts = "2020-01-01T00:00:00"  # far in the past
-    with cp._DB_LOCK:
-        conn = cp._get_db()
-        try:
-            conn.execute(
-                "INSERT INTO pending_approvals (id, model_id, status, requested_at) "
-                "VALUES ('exp-1', 'JPCP', 'pending', ?)",
-                (old_ts,),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+    conn = cp._get_db()
+    try:
+        conn.execute(
+            "INSERT INTO pending_approvals (id, model_id, status, requested_at) "
+            "VALUES ('exp-1', 'JPCP', 'pending', ?)",
+            (old_ts,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     expired_count = cp._expire_old_approvals()
     assert expired_count >= 1
@@ -604,17 +604,16 @@ def test_expire_old_approvals_skips_recent_entries(cp, monkeypatch):
 
     recent_ts = datetime.utcnow().isoformat()
 
-    with cp._DB_LOCK:
-        conn = cp._get_db()
-        try:
-            conn.execute(
-                "INSERT INTO pending_approvals (id, model_id, status, requested_at) "
-                "VALUES ('rec-1', 'JPCP', 'pending', ?)",
-                (recent_ts,),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+    conn = cp._get_db()
+    try:
+        conn.execute(
+            "INSERT INTO pending_approvals (id, model_id, status, requested_at) "
+            "VALUES ('rec-1', 'JPCP', 'pending', ?)",
+            (recent_ts,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     cp._expire_old_approvals()
 
@@ -627,23 +626,6 @@ def test_expire_old_approvals_skips_recent_entries(cp, monkeypatch):
 # ─── Round 2: Improvement 17 — Idempotency keys ──────────────────────────────
 
 
-def test_idempotency_cache_stores_and_retrieves(cp):
-    """_store_idempotency should be retrievable by _check_idempotency within TTL."""
-    cp._store_idempotency("key-abc", {"flow_run_id": "run-123"})
-    cached = cp._check_idempotency("key-abc")
-    assert cached is not None
-    assert cached["flow_run_id"] == "run-123"
-
-
-def test_idempotency_cache_expires_after_ttl(cp, monkeypatch):
-    """Entries should expire after IDEMPOTENCY_TTL_SECONDS."""
-    monkeypatch.setattr(cp, "IDEMPOTENCY_TTL_SECONDS", 0.05)
-    cp._store_idempotency("key-expire", {"flow_run_id": "run-99"})
-    time.sleep(0.1)
-    result = cp._check_idempotency("key-expire")
-    assert result is None
-
-
 def test_idempotency_header_returns_cached_response(cp, monkeypatch):
     """POST /retrain with a completed durable key should return the same response."""
     parameters = {
@@ -654,7 +636,7 @@ def test_idempotency_header_returns_cached_response(cp, monkeypatch):
     }
     cached_payload = {
         "flow_run_id": "cached-run-id",
-        "deployment": "examlops_scheduled_training/nightly",
+        "deployment": "training_flow/examlops-dispatch",
         "status_url": "/retrain/cached-run-id",
         "parameters": parameters,
     }
@@ -730,6 +712,9 @@ def test_db_retry_on_operational_error(cp, monkeypatch):
     """_get_db should retry up to 3 times on sqlite3.OperationalError."""
     import sqlite3
 
+    # The shared platform schema is bootstrapped once per process on first use (plan P0.8); do it
+    # before counting, so the counter measures only _get_db's own connection attempts.
+    cp._ensure_platform_schema()
     call_count = {"n": 0}
     real_connect = __import__("sqlite3").connect
 
@@ -763,17 +748,16 @@ def test_db_retry_raises_after_all_attempts_exhausted(cp, monkeypatch):
 def _insert_pending(cp, row_id: str, model_id: str = "JPCP", status: str = "pending"):
     from datetime import datetime
 
-    with cp._DB_LOCK:
-        conn = cp._get_db()
-        try:
-            conn.execute(
-                "INSERT INTO pending_approvals (id, model_id, status, requested_at) "
-                "VALUES (?, ?, ?, ?)",
-                (row_id, model_id, status, datetime.utcnow().isoformat()),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+    conn = cp._get_db()
+    try:
+        conn.execute(
+            "INSERT INTO pending_approvals (id, model_id, status, requested_at) "
+            "VALUES (?, ?, ?, ?)",
+            (row_id, model_id, status, datetime.utcnow().isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _status_of(cp, row_id: str) -> str:
@@ -861,6 +845,7 @@ def test_health_says_starting_not_ok_before_any_check_runs(cp):
     cp._startup_checks = {"db": "ok", "registry": "ok", "token": "ok"}
     assert client.get("/health").json()["status"] == "ok"
     cp._startup_checks = {"db": "ok", "token": "missing"}
+    cp._startup_checked_at = time.monotonic()  # just evaluated: not yet due for a recheck
     assert client.get("/health").json()["status"] == "degraded"
 
 

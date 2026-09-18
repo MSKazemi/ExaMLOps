@@ -13,11 +13,32 @@ app.kubernetes.io/component: {{ .component }}
 {{- $root := . }}
 {{- $np := .Values.networkPolicy }}
 {{- $ports := dict "control-plane" .Values.controlPlane.port "dashboard" .Values.dashboard.port "agent" .Values.agent.port }}
-{{- $egress := dict "control-plane" $np.egressPorts.controlPlane "dashboard" $np.egressPorts.dashboard "agent" $np.egressPorts.agent }}
+{{- $egress := dict "control-plane" $np.egressPorts.controlPlane "dashboard" $np.egressPorts.dashboard "agent" $np.egressPorts.agent "autopilot-follower" ($np.egressPorts.autopilotFollower | default (list 4222 5432 5000 9000)) "skipper-watch" ($np.egressPorts.skipperWatch | default (list 4222 5432)) }}
 {{- /* agent.enabled absent (older values) means the agent tier is deployed, as it always was. */ -}}
 {{- $agentOn := or (not (hasKey .Values.agent "enabled")) .Values.agent.enabled }}
 {{- $tiers := list "control-plane" "dashboard" }}
 {{- if $agentOn }}{{- $tiers = append $tiers "agent" }}{{- end }}
+{{- /* Event backbone (ADR 0124): NATS for the relay and the dashboard's live stream, and a tier per
+     follower. Both followers only read NATS and the datastore; the autopilot also calls the
+     control plane. Nothing calls a follower, so it gets no ingress at all. */ -}}
+{{- $events := .Values.events | default dict }}
+{{- $followers := $events.followers | default dict }}
+{{- $autopilotOn := ($followers.autopilot | default dict).enabled }}
+{{- $watchOn := ($followers.skipperWatch | default dict).enabled }}
+{{- if eq ($events.publisher | default "log") "nats" }}
+{{- $_ := set $egress "control-plane" (append (get $egress "control-plane") 4222 | uniq) }}
+{{- $_ := set $egress "dashboard" (append (get $egress "dashboard") 4222 | uniq) }}
+{{- end }}
+{{- if $autopilotOn }}{{- $tiers = append $tiers "autopilot-follower" }}{{- end }}
+{{- if $watchOn }}{{- $tiers = append $tiers "skipper-watch" }}{{- end }}
+{{- /* The serving gateway (ADR 0126): clients reach Envoy through the ingress controller, Prometheus
+     scrapes its metrics listener, and only Envoy may call the authorization service. */ -}}
+{{- $gatewayOn := ($root.Values.gateway | default dict).enabled }}
+{{- if $gatewayOn }}
+{{- $tiers = concat $tiers (list "gateway" "gateway-authz") }}
+{{- $_ := set $egress "gateway" ($np.egressPorts.gateway | default (list (int $root.Values.gateway.upstream.port))) }}
+{{- $_ := set $egress "gateway-authz" ($np.egressPorts.gatewayAuthz | default (list 5432 6379 443)) }}
+{{- end }}
 {{- range $tier := $tiers }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -50,12 +71,36 @@ spec:
             matchLabels:
               {{- include "examlops.componentSelector" (dict "root" $root "component" "agent") | nindent 14 }}
         {{- end }}
+        {{- if $autopilotOn }}
+        - podSelector:
+            matchLabels:
+              {{- include "examlops.componentSelector" (dict "root" $root "component" "autopilot-follower") | nindent 14 }}
+        {{- end }}
       ports: [{protocol: TCP, port: {{ get $ports $tier }}}]
     # Prometheus scrapes /metrics (only this tier serves it).
     - from:
         - namespaceSelector:
             {{- toYaml $np.monitoring.namespaceSelector | nindent 12 }}
       ports: [{protocol: TCP, port: {{ get $ports $tier }}}]
+    {{- end }}
+    {{- if eq $tier "gateway" }}
+    # Inference clients through the ingress controller, and Prometheus on the metrics listener.
+    - from:
+        - namespaceSelector:
+            {{- toYaml $np.ingressController.namespaceSelector | nindent 12 }}
+      ports: [{protocol: TCP, port: 8080}]
+    - from:
+        - namespaceSelector:
+            {{- toYaml $np.monitoring.namespaceSelector | nindent 12 }}
+      ports: [{protocol: TCP, port: 9902}]
+    {{- end }}
+    {{- if eq $tier "gateway-authz" }}
+    # Only the gateway asks it; nothing else may probe credentials.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "examlops.componentSelector" (dict "root" $root "component" "gateway") | nindent 14 }}
+      ports: [{protocol: TCP, port: 8090}]
     {{- end }}
     {{- if eq $tier "agent" }}
     # The dashboard's embedded copilot is the agent's only in-cluster client.
@@ -84,7 +129,14 @@ spec:
       ports: [{protocol: TCP, port: {{ $root.Values.agent.port }}}]
     {{- end }}
     {{- end }}
-    {{- if eq $tier "agent" }}
+    {{- if eq $tier "gateway" }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "examlops.componentSelector" (dict "root" $root "component" "gateway-authz") | nindent 14 }}
+      ports: [{protocol: TCP, port: 8090}]
+    {{- end }}
+    {{- if has $tier (list "agent" "autopilot-follower") }}
     - to:
         - podSelector:
             matchLabels:

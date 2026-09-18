@@ -62,8 +62,11 @@ ingress:
 controlPlane:
   # Optional least-privilege Secret. Empty preserves the global existingSecret for upgrades.
   existingSecret: ""
-  # Safe default while breaker state/runtime config remain local and failover is unverified.
-  # Durable commands plus coordinator-backed rate limits, retrain locks, and poller leases are wired.
+  # One by default. Shared state is wired (durable commands with atomic retrain dedup, crashed
+  # claims taken over after CONTROL_PLANE_COMMAND_LEASE_SECONDS, coordinator-backed rate limits,
+  # locks and leases, runtime settings in the datastore); with Postgres and NATS, /health reports
+  # runtime.horizontal_scaling_safe. tests/integration/test_control_plane_failover_kind_live.py
+  # crashes replicas mid-dispatch under load; run it on your cluster before raising this.
   replicaCount: 1
   image:
     repository: examlops-control-plane
@@ -84,8 +87,8 @@ controlPlane:
   env:
     # Safe implemented defaults. Switch only after the selected external implementations are wired
     # into the control-plane call paths and their endpoint variables are present in the Secret.
+    # The event publisher is set under `events` below, for every tier.
     EXAMLOPS_COORDINATOR: db
-    EXAMLOPS_EVENT_PUBLISHER: log
   extraEnv: []
 
 dashboard:
@@ -141,6 +144,105 @@ agent:
     enabled: true
     minAvailable: 1
 
+# ── event backbone (ADR 0124) ──────────────────────────────────────────────────────────────────
+# Every platform change is written to the transactional outbox with the change itself. `log` keeps
+# events there (the control plane's relay only logs them): nothing consumes them. `nats` makes the
+# control plane relay them to NATS JetStream, where the followers below and the dashboard's live
+# stream read them. NATS is not deployed by this chart, like Postgres: point natsUrl at it.
+events:
+  publisher: log                 # log | nats
+  natsUrl: ""                    # required with publisher nats, e.g. nats://nats.messaging:4222
+  followers:
+    # Durable consumers, one pod each (a JetStream durable consumer; no Service, no ingress).
+    autopilot:
+      # `exa autopilot follow`: runs a model's autopilot cycle when its training run completes.
+      # Sends the control plane AUTOPILOT_CONTROL_PLANE_TOKEN from the control-plane Secret when
+      # that key exists (give it only the `retrain` scope), else its CONTROL_PLANE_TOKEN.
+      enabled: false
+      mlflowTrackingUri: http://mlflow:5000
+      resources:
+        requests: {cpu: 50m, memory: 256Mi}
+        limits: {cpu: 500m, memory: 512Mi}
+    skipperWatch:
+      # `python -m skipper.watch --daemon`: raises alert.retrain the moment a training run fails.
+      enabled: false
+      resources:
+        requests: {cpu: 50m, memory: 256Mi}
+        limits: {cpu: 500m, memory: 512Mi}
+
+# ── serving gateway (plan P4.4, ADR 0126) ────────────────────────────────────────────────────────
+# The one front door to the serving plane, as Compose runs it under the `gateway` profile: Envoy
+# (credential → per-tenant quota → body limit → the model server, with timeouts and a retry budget)
+# and the authorization service that checks virtual keys and IdP tokens. Only inference is routed.
+# The Envoy configuration is files/gateway-envoy.yaml, byte-identical to Compose's.
+gateway:
+  enabled: false
+  replicaCount: 2
+  image:
+    repository: envoyproxy/envoy
+    tag: "v1.39.1"
+    digest: "sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4"
+    pullPolicy: IfNotPresent
+  # The model server the gateway fronts (not deployed by this chart), like agent.serviceUrls.
+  upstream:
+    host: ray-serving
+    port: 8001
+    grpcPort: 8081             # the model server's Open Inference Protocol gRPC port (ADR 0126)
+  tenantRpm: 600               # EXAMLOPS_GATEWAY_TENANT_RPM: per-tenant requests per minute
+  keyCacheSeconds: 60          # EXAMLOPS_GATEWAY_KEY_CACHE_SECONDS
+  resources:
+    requests: {cpu: 100m, memory: 64Mi}
+    limits: {cpu: "1", memory: 256Mi}
+  pdb:
+    enabled: true
+    minAvailable: 1
+  ingress:
+    host: ""                   # e.g. inference.example.org: its own host on the chart's Ingress
+  authz:
+    replicaCount: 2
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {cpu: "1", memory: 512Mi}
+
+# ── workload identities (ADR 0125) ──────────────────────────────────────────────────────────────
+# Each tier proves who it is to the control plane with a five-minute JWT-SVID from SPIRE, instead of
+# only a static secret. SPIRE itself (server, node agents, the SPIFFE CSI driver and the controller
+# manager) is cluster infrastructure, like Postgres: install it once with SPIRE's hardened Helm chart
+# (https://spiffe.io/docs/latest/spire-helm-charts-hardened-about/). This chart then adds a
+# ClusterSPIFFEID per tier and a spiffe-helper sidecar that reaches the Workload API through the CSI
+# driver; no hostPath, no privileges. Static credentials keep working alongside.
+workloadIdentity:
+  enabled: false
+  trustDomain: ""                # required when enabled; the SPIRE server's trust domain
+  csiDriver: csi.spiffe.io
+  socketPath: /spiffe-workload-api/spire-agent.sock   # the Workload API inside the CSI volume
+  jwtTtl: 5m
+  clusterSPIFFEID:
+    # One ClusterSPIFFEID per tier, for spire-controller-manager (needs its CRDs). false = register
+    # the IDs yourself: spiffe://<trustDomain>/ns/<namespace>/<release>-examlops/<tier>, selected by
+    # the pod labels app.kubernetes.io/{name,instance,component}.
+    create: true
+    # The controller manager acts only on its own class. SPIRE's hardened chart names it
+    # <its namespace>-<its release>, so the documented install (release `spire` in `spire-mgmt`) is
+    # spire-mgmt-spire. A wrong class is ignored silently: no entry, and no token for any tier.
+    # "" only for a controller manager that watches classless objects (watchClassless: true).
+    className: spire-mgmt-spire
+  helper:
+    image:
+      repository: ghcr.io/spiffe/spiffe-helper
+      tag: "0.11.0"
+      digest: "sha256:1c92e5998ad3621e3323f25aabe40f5a88ba730ee0edb248aa8c943ca504e8a2"
+      pullPolicy: IfNotPresent
+    resources:
+      requests: {cpu: 10m, memory: 16Mi}
+      limits: {cpu: 100m, memory: 64Mi}
+  # What each calling tier may do at the control plane: the same principal and scopes as its
+  # static credential, so commands and the audit name the same service either way.
+  callers:
+    dashboard: {principal: dashboard, scopes: [read, write]}
+    agent: {principal: skipper, scopes: [read, retrain]}
+    autopilot-follower: {principal: autopilot, scopes: [read, retrain]}
+
 # ── pod hardening applied to every tier ────────────────────────────────────────────────────────
 podSecurityContext:
   runAsNonRoot: true
@@ -178,10 +280,15 @@ networkPolicy:
       matchLabels: {kubernetes.io/metadata.name: monitoring}
   # Destination ports outside the chart: Postgres 5432, Redis 6379, Prefect 4200, MLflow 5000,
   # MinIO/S3 9000, Ray Serve 8001, Prometheus 9090, Ollama 11434, HTTPS 443 (IdP, LLM APIs, S3).
+  # With events.publisher nats, NATS (4222) is added to the control plane and the dashboard.
   egressPorts:
     controlPlane: [5432, 6379, 4200, 5000, 9000, 443]
     dashboard: [5432, 6379, 5000, 9000, 9090, 443]
     agent: [5432, 5000, 8001, 9090, 11434, 443]
+    autopilotFollower: [4222, 5432, 5000, 9000]
+    skipperWatch: [4222, 5432]
+    gateway: [8001, 8081]           # the model server: REST (upstream.port) and gRPC (upstream.grpcPort)
+    gatewayAuthz: [5432, 6379, 443] # the datastore (virtual keys), coordinator, IdP
   # Raw NetworkPolicyEgressRule entries appended to every tier (e.g. a CIDR-scoped database).
   extraEgress: []
 
@@ -194,6 +301,15 @@ metrics:
     interval: 30s
     scrapeTimeout: 10s
     labels: {}        # add the label your Prometheus' serviceMonitorSelector matches, e.g. release: kube-prometheus-stack
+  # Alert rules (a PrometheusRule): the platform's own, from files/alert_rules.yml, which is
+  # Compose's alert_rules.yml byte for byte (every rule links to its runbook). The chart renders the
+  # groups for what it deploys: examlops-control-plane always, examlops-gateway with the gateway.
+  # Add others by name for services your Prometheus scrapes itself under the same job names
+  # (e.g. examlops-serving for Ray Serve as job `ray_serve`). Needs the Prometheus Operator CRDs.
+  prometheusRule:
+    enabled: false
+    labels: {}        # the label your Prometheus' ruleSelector matches
+    extraGroups: []   # e.g. [examlops-serving, examlops-seanerbus, examlops-heartbeat]
 
 # ── OpenTelemetry export (traces + metrics) ──────────────────────────────────────────────────────
 # Every image runs under `opentelemetry-instrument`. With no collector it retries localhost:4317

@@ -18,6 +18,29 @@ def test_read_tools_never_raise():
     assert "snapshots" in out or "error" in out
 
 
+def test_snapshots_survive_a_run_of_failed_pulls():
+    """An agent asking what a source has must not be told "nothing" because it is failing now.
+
+    This tool answers over the same rows as `exa dataplane snapshots` and the service's
+    `/sources/{name}/snapshots`, and reads the fewest of the three — so it is the first to go
+    empty when a source's recent pulls fail, and it is the surface with nobody watching it read.
+    """
+    from examlops.data import dataplane as catalog
+
+    init_db()
+    good = catalog.new_pull_id()
+    catalog.insert_pull(good, "", "s", trigger_kind="manual", actor=None, parent_revision=None)
+    catalog.update_pull(good, status="succeeded", finished=True, revision="rev-abc")
+    with catalog.get_db() as conn:
+        conn.executemany(
+            "INSERT INTO dataplane_pulls (id, project, source, status) VALUES (?, '', 's', 'failed')",
+            [(catalog.new_pull_id(),) for _ in range(60)],
+        )
+
+    revs = [s["revision"] for s in tools.dataplane_snapshots("s")["snapshots"]]
+    assert revs == ["rev-abc"], revs
+
+
 def test_pull_of_a_missing_source_returns_an_error(monkeypatch):
     monkeypatch.delenv("EXAMLOPS_MCP_ALLOW_WRITES", raising=False)
     assert (

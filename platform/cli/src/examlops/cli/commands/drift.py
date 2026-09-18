@@ -5,11 +5,12 @@ import os
 
 import typer
 
+from examlops import drift_status
 from examlops.cli import _output
 from examlops.cli._help import make_ordered_group
 from examlops.cli._provenance import audit_details, reason_option
 from examlops.data import get_db, init_db
-from examlops.data.audit import write_audit_event
+from examlops.data.audit import audit_best_effort, write_audit_event
 from examlops.data.drift import (
     claim_drift_trigger,
     get_drift_auto_retrain,
@@ -20,7 +21,6 @@ from examlops.data.drift import (
     set_drift_baseline,
     set_input_baseline,
 )
-from examlops.drift_providers import resolve_drift_score_fn
 from examlops.evidence import AUTONOMOUS, correlated
 from examlops.rollback import AutonomousActionRefused, require_rollback
 
@@ -38,11 +38,9 @@ app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 
-_SNAPSHOT_WINDOW = 100
 _BASELINE_WINDOW = 500
 _WARN_Z = 2.0
 _CRIT_Z = 3.0
-_TREND_POINTS = 24  # recent-prediction points rendered as a sparkline in `drift status`
 
 _EXAMPLES_STATUS = (
     "Examples:\n\n  exa drift status\n\n  exa drift status JPCP\n\n  exa --json drift status"
@@ -52,52 +50,12 @@ _EXAMPLES_RESET = "Examples:\n\n  exa drift reset JPCP"
 
 
 def _compute_stats(values: list[float]) -> dict[str, float]:
-    n = len(values)
-    mean = sum(values) / n
-    variance = sum((v - mean) ** 2 for v in values) / n
-    std = math.sqrt(variance)
-    return {"mean": mean, "std": std, "n": float(n)}
+    return drift_status.compute_stats(values)
 
 
 def _drift_rows(model_filter: str | None) -> list[dict]:
-    init_db()
-    with get_db() as conn:
-        if model_filter:
-            models_list = [model_filter]
-        else:
-            models_rows = conn.execute("SELECT DISTINCT model FROM drift_snapshots").fetchall()
-            models_list = [r["model"] for r in models_rows]
-
-    results = []
-    for model in models_list:
-        with get_db() as conn:
-            snap_rows = conn.execute(
-                f"SELECT prediction FROM drift_snapshots WHERE model=? "
-                f"ORDER BY ts DESC, rowid DESC LIMIT {_SNAPSHOT_WINDOW}",
-                (model,),
-            ).fetchall()
-        preds = [r["prediction"] for r in snap_rows]
-        if not preds:
-            continue
-        live = _compute_stats(preds)
-        baseline = get_drift_baseline(model)
-        _score = resolve_drift_score_fn()
-        z, status = _score(live["mean"], live["std"], baseline)
-        # preds are newest-first; reverse to oldest→newest so the trend reads left-to-right.
-        recent = [round(float(p), 3) for p in reversed(preds)][-_TREND_POINTS:]
-        results.append(
-            {
-                "model": model,
-                "live_mean": round(live["mean"], 3),
-                "live_std": round(live["std"], 3),
-                "baseline_mean": round(baseline["mean"], 3) if baseline else None,
-                "z_score": round(z, 2),
-                "status": status,
-                "n_snapshots": len(preds),
-                "recent": recent,
-            }
-        )
-    return results
+    """One computation for every consumer (examlops.drift_status); see its module docstring."""
+    return drift_status.model_rows(model_filter)
 
 
 @app.command(epilog=_EXAMPLES_STATUS)
@@ -438,7 +396,8 @@ def trigger(
     """Check drift z-scores and fire POST /retrain for models above threshold."""
     import datetime
 
-    from examlops.cli._client import ClientError, post
+    from examlops import retrain_command
+    from examlops.cli._client import ClientError
     from examlops.cli._config import load_config
 
     init_db()
@@ -511,7 +470,9 @@ def trigger(
         except AutonomousActionRefused as exc:
             refused.append({"model": model, "action": "retrain", "reason": str(exc)})
             if not dry_run:
-                write_audit_event(
+                # In a handler: a raise here would replace the refusal being recorded and escape
+                # the whole `exa drift trigger` loop. `audit_best_effort` cannot raise.
+                audit_best_effort(
                     "cli",
                     actor,
                     "autonomous_action_refused",
@@ -530,13 +491,22 @@ def trigger(
             continue
         body = {"model_name": model, "dataset_name": ar["dataset_name"], "is_dummy": False}
         try:
-            result = post(f"{cfg.control_plane_url}/retrain", body, token=cfg.control_plane_token)
-            write_audit_event(
+            result = retrain_command.submit(
+                body,
+                wait=retrain_command.AUTOMATION_WAIT_SECONDS,
+                base=cfg.control_plane_url,
+                token=cfg.control_plane_token,
+            )
+            audit_best_effort(
                 "cli",
                 actor,
                 "drift_auto_retrain_triggered",
                 model,
-                {"z_score": z, "flow_run_id": result.get("flow_run_id")},
+                {
+                    "z_score": z,
+                    "flow_run_id": result.get("flow_run_id"),
+                    "command_id": result.get("command_id"),
+                },
             )
             triggered.append({"model": model, "z": z, "flow_run_id": result.get("flow_run_id")})
         except ClientError as e:
@@ -587,8 +557,13 @@ def trigger(
             continue
         body = {"model_name": model, "dataset_name": ar["dataset_name"], "is_dummy": False}
         try:
-            result = post(f"{cfg.control_plane_url}/retrain", body, token=cfg.control_plane_token)
-            write_audit_event(
+            result = retrain_command.submit(
+                body,
+                wait=retrain_command.AUTOMATION_WAIT_SECONDS,
+                base=cfg.control_plane_url,
+                token=cfg.control_plane_token,
+            )
+            audit_best_effort(
                 "cli",
                 actor,
                 "drift_auto_retrain_triggered",
@@ -597,6 +572,7 @@ def trigger(
                     "drift_kind": "concept",
                     "score": ev.get("score"),
                     "flow_run_id": result.get("flow_run_id"),
+                    "command_id": result.get("command_id"),
                 },
             )
             triggered.append(

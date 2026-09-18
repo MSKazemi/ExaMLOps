@@ -126,7 +126,9 @@ sequenceDiagram
     participant Ray as MultiModelServer
     participant ML as MLflow
     participant Drift as DriftTracker
+    participant Spool as Telemetry spool
     participant PlatDB as platform.db
+    participant CP as Control plane
 
     SB->>Bridge: HpcJobV1 {jobId, embedding[384], modelName, alias, numNodes}
     Bridge->>Ingress: POST /infer-pipeline/infer {raw HpcJobV1 fields}
@@ -141,15 +143,22 @@ sequenceDiagram
     MR-->>FT: result dict
     FT-->>Ingress: result dict
     Ingress-->>Bridge: {prediction, model_version, run_id, alias}
-    Bridge->>Drift: record(model, success=True)
-    Bridge->>PlatDB: write_drift_snapshot(model, prediction, latency)
-    Bridge->>PlatDB: write_audit_event(model, "inference", "bridge")
     Bridge->>SB: HpcInferenceResV1 {prediction, model_version, run_id}
+    Note over Bridge,SB: the reply goes first — telemetry never delays it
+    Bridge->>Drift: record(model, success=True)
+    Bridge-)Spool: offer(model, alias, prediction, embedding)
+    Note over Spool: bounded (SEANERBUS_TELEMETRY_QUEUE_MAX) — drops and counts when full
+    Spool->>PlatDB: write_drift_snapshot + input snapshot (off the event loop)
 
     alt error_rate ≥ threshold AND cooldown elapsed
         Bridge->>CP: POST /retrain {model_name, dataset_name}
+        Bridge->>PlatDB: write_audit_event("retrain_triggered")
     end
 ```
+
+Individual inferences are not audited: the audit log records decisions (a retrain, a
+promotion), not traffic. `seanerbus_telemetry_dropped_total` and
+`seanerbus_telemetry_persist_failures_total` show when drift telemetry is incomplete.
 
 ## Training Pipeline Flow
 
@@ -288,7 +297,8 @@ sequenceDiagram
      examlops_approval_age_oldest_seconds
    SeanerBUS Bridge emits bridge metrics on port 8003 (GET /metrics, no auth):
      seanerbus_bridge_up               — 1.0 while the process is running
-     seanerbus_inferences_total{model} — incremented on every successful inference
+     seanerbus_inferences_total{model} — every dispatched call, successful or not (the
+                                         denominator of the bridge error rate)
      seanerbus_inference_errors_total{model} — incremented on every inference error
      seanerbus_inference_latency_seconds{model} — histogram, end-to-end POST latency
      seanerbus_retrain_triggers_total  — incremented on each drift-triggered retrain
@@ -365,7 +375,7 @@ All host-exposed ports use a **+10000 offset** from their canonical defaults. In
 
 **Framework extensibility** — `SeanergysFrameworkAdapter` abstracts the four operations (`fit`, `predict`, `save`, `load`, `log_mlflow`) so the pipeline + Ray Serve dispatch on `framework=<flavour>` (sklearn / pytorch / huggingface) without per-model special-casing. New frameworks plug in via `register_adapter()`.
 
-**Datastore engine seam (`examlops.storage`, enterprise-readiness item 0.1)** — the shared `platform.db` is fronted by a dialect-neutral `StorageBackend` protocol so the engine can migrate from SQLite (single-writer, dev/small-fleet default) to Postgres (multi-writer, HA, per-tenant isolation) without touching the ~221 `platform_db` helper call sites. Ships a fully-tested `SqliteBackend` (unchanged behaviour via `examlops.resilience.db`) and a **working `PostgresBackend`**: `examlops.storage.pg` translates the platform's SQLite dialect (placeholders, `AUTOINCREMENT`, `DATETIME` defaults, `INSERT OR REPLACE`, `PRAGMA table_info`, `BEGIN IMMEDIATE` → advisory lock, append-only triggers) behind a `sqlite3`-shaped connection, which is why the helpers themselves did not change. Select with `EXAMLOPS_DB_BACKEND` + `EXAMLOPS_POSTGRES_DSN`; see `docs/guides/postgres-backend.md`. Verified live against Postgres 16 (all 127 tables, audit hash chain, tamper-evidence); pooling and the full-suite parity run are the remaining work.
+**Datastore engine seam (`examlops.storage`, enterprise-readiness item 0.1)** — the shared `platform.db` is fronted by a dialect-neutral `StorageBackend` protocol so the engine can migrate from SQLite (single-writer, dev/small-fleet default) to Postgres (multi-writer, HA, per-tenant isolation) without touching the ~221 `platform_db` helper call sites. Ships a fully-tested `SqliteBackend` (unchanged behaviour via `examlops.resilience.db`) and a **working `PostgresBackend`**: `examlops.storage.pg` translates the platform's SQLite dialect (placeholders, `AUTOINCREMENT`, `DATETIME` defaults, `INSERT OR REPLACE`, `PRAGMA table_info`, `BEGIN IMMEDIATE` → advisory lock, append-only triggers) behind a `sqlite3`-shaped connection, which is why the helpers themselves did not change. Select with `EXAMLOPS_DB_BACKEND` + `EXAMLOPS_POSTGRES_DSN`; see `docs/guides/postgres-backend.md`. Verified live against Postgres 16 (all 142 tables, audit hash chain, tamper-evidence); pooling and the full-suite parity run are the remaining work.
 
 **Concurrency-safe datastore access (Phase-0 hardening)** — every SQLite connection goes through `examlops.resilience.db.connect` (WAL + `busy_timeout`), enforced by a CI guard banning bare `sqlite3.connect`; the dashboard (a separate app) carries the same guarantee via its local `dbconn.connect`. Read-modify-write invariants that must be atomic across writer processes — chiefly the tamper-evident audit hash-chain and the auto-retrain cooldown claim — use an `IMMEDIATE`-lock transaction (`_immediate_write`) / a single conditional `UPDATE` under `write_retry`, so concurrent writers cannot fork the chain or double-fire a retrain. `init_db()` runs the schema DDL once per process (a path sentinel), and the SeanerBUS bridge offloads its per-inference writes off the asyncio loop.
 
@@ -374,7 +384,7 @@ All host-exposed ports use a **+10000 offset** from their canonical defaults. In
 - **Extension registry** (`examlops.providers`, ADR 0077) — a swappable calculation provider per *domain* (cost, carbon, **placement**; drift/promotion next), authored as a built-in, an `exa.providers.<domain>` entry-point plugin, or a sandboxed `providers.yaml` formula. Placement (`hpc_placement_providers.py`) injects a resolved scorer into `choose_cluster`; default `least-loaded` is byte-identical to the legacy `headroom_score`.
 - **Policy-as-code** (`examlops/policy/`, ADR 0079) — declarative `policy.yaml` rules (`action` + optional sandboxed `when` + `effect`) evaluated by `policy.decide()` before every mutation; each decision audited to `audit_events`. `exa retrain` and the mutating MCP tools consult it; no file ⇒ `allow` (backward compatible).
 - **Agent-callable** (`examlops.mcp`, ADR 0082) — the MCP tools reuse the SDK code paths; mutating tools pass the `agent_write` policy (least privilege) beyond the `EXAMLOPS_MCP_ALLOW_WRITES` switch.
-- **Trust tiers** (ADR 0081) — T1 trusted plugin (arbitrary code, install-time trust) · T2 sandboxed `simpleeval` expression (no imports/attrs/I/O) · T3 gated mutation (read-only default + policy + audit). Full design in `design/adr/0076`–`0082`; guide `docs/guides/programmable-mlops.md`.
+- **Trust tiers** (ADR 0081) — T1 trusted plugin (arbitrary code, install-time trust) · T2 sandboxed `simpleeval` expression (no imports/attrs/I/O) · T3 gated mutation (read-only default + policy + audit). Full design in `design/adr/0076-programmable-mlops-unified-extension-architecture.md`–`0082`; guide `docs/guides/programmable-mlops.md`.
 
 **Control plane sits in front of Prefect** — clients and the dataplane never hold Prefect credentials directly. The control plane validates the request against `MODEL_REGISTRY` before scheduling a flow run, and the bearer-token gate on `POST /retrain` fails closed (503) when no token is configured.
 

@@ -90,6 +90,19 @@ Browser ──GET /api/v1/stream?channels=job.*,drift.*──► routers/bff.py 
   happens. The approvals router is wired first: a successful approve/reject emits
   `approval.approved` / `approval.rejected`, so any open dashboard updates without polling. New
   publishers are one `bus.publish()` call at the mutation site.
+- **The platform's events** (`backbone.py`, ADR 0124) — with `EXAMLOPS_EVENT_PUBLISHER=nats`, every
+  dashboard replica watches the NATS event stream and republishes each event onto its bus. The
+  stream then carries what *any* surface did — a retrain the control plane saw fail, a promotion
+  from the CLI, a traffic split set on another replica — not only this process's own actions.
+  Topic families map onto the namespaces above: `retrain.*`/`modelzoo.*` → `job.<topic>`,
+  `approval.*` → `approval.*`, `alert.*` → `alert.*`, `serving.*`/`model.*` → `deploy.<topic>`, and
+  anything else → `event.<topic>`, with dots turned into `_`
+  (`retrain.run_failed` → `job.retrain_run_failed`). Each frame keeps the event's `id`, `type`,
+  `time` and `actor` under `_event`. A `default`-tenant event goes to everyone; another tenant's
+  only to that tenant. The watch is an ephemeral broadcast (every replica gets every new event,
+  nothing durable is left behind), and the NATS thread hands each event to the dashboard's loop
+  because the bus's queues are not thread-safe. The `hello` frame says `platform_events: true` when
+  the bridge is running. `DASHBOARD_BACKBONE=off` disables it.
 - **Client** (`frontend/src/lib/realtime.ts` + `useRealtime.ts`) — native `EventSource` can't send an
   `Authorization` header, so live surfaces consume `/api/v1/stream` via fetch-streaming.
   `parseSSEChunk()` turns stream bytes into typed `{event, data}` frames (comment/keep-alive-aware,

@@ -69,6 +69,14 @@ you type is relative to it. Absolute paths and `..` are refused.
   `exa cards model JPCP --out card.md`, …). The file appears under the run's output, and in the
   Workspace tab, to download.
 
+The **Workspace listing is capped at 2000 files**, and says when it hit that cap: the response
+carries `truncated: true` alongside `limit`. Until 2026-09-14 it simply stopped at 2000 and returned
+a full-looking list, so an operator hunting for the file a command had just written could conclude
+it was never produced. A path you know is still downloadable whether or not the listing showed it.
+
+Symlinks are excluded from the listing **and** refused as paths: containment resolves the path
+first, so a link inside the workspace pointing anywhere else is rejected rather than followed.
+
 Commands themselves run from the repository root, like an operator's terminal
 (`EXAMLOPS_DASHBOARD_CLI_CWD`, default `REPO_ROOT`). Commands that read the use-case pack or the
 compose files by relative path therefore work. Your path arguments are still handed over as
@@ -88,7 +96,7 @@ replica can be read by a run on another. Left empty, the chart falls back to a p
 
 ## Commands that stay in the terminal
 
-Twelve commands are listed but not runnable here, and each one says why:
+Thirteen commands are listed but not runnable here, and each one says why:
 
 | Command | Why | Use instead |
 |---|---|---|
@@ -101,6 +109,7 @@ Twelve commands are listed but not runnable here, and each one says why:
 | `exa upgrade apply` | migrates the live datastore this dashboard runs on | run it on the host in a maintenance window; `exa upgrade plan` / `history` run here |
 | `exa auth login` | an interactive device sign-in that waits for a browser approval | the dashboard has its own organisation sign-in; run it in a terminal |
 | `exa auth token` | prints the caller's bearer credential, which from the console would be the dashboard server's own | run it in a terminal |
+| `exa autopilot follow` | a long-running event consumer that starts an autopilot cycle whenever a training run completes | run it as a service on a host; `exa autopilot run` is the one-shot equivalent |
 
 A few flags are refused because they would never finish or would print a secret:
 `exa status --watch`, `exa drift status --watch`, `exa serve traffic-list --watch`,

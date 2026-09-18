@@ -7,4 +7,6 @@ FROM ghcr.io/mlflow/mlflow:v3.16.0@sha256:470607da2a70fa38724d3d7db0a54a78b50fac
 RUN apt-get update \
     && apt-get install -y --no-install-recommends --only-upgrade perl-base \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir psycopg2-binary boto3
+# `mlflow[auth]` at the base image's own version adds Flask-WTF, which MLflow's basic-auth app
+# needs (MLFLOW_AUTH=basic, plan P3.6); without it the server refuses to start in that mode.
+RUN pip install --no-cache-dir psycopg2-binary boto3 "mlflow[auth]==3.16.0"

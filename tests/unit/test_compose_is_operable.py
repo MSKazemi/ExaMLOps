@@ -24,6 +24,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.unit._compose_yaml import load_compose
+
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = sorted((ROOT / "platform" / "infra").rglob("docker-compose*.y*ml"))
 
@@ -37,7 +39,7 @@ def test_there_are_compose_files_to_check():
 
 @pytest.mark.parametrize("path", COMPOSE, ids=lambda p: p.name)
 def test_no_profile_gated_service_declares_a_required_variable(path: Path):
-    doc = yaml.safe_load(path.read_text()) or {}
+    doc = load_compose(path) or {}
     offenders: list[str] = []
     for name, service in (doc.get("services") or {}).items():
         if not isinstance(service, dict) or not service.get("profiles"):
@@ -53,5 +55,11 @@ def test_no_profile_gated_service_declares_a_required_variable(path: Path):
 
 @pytest.mark.parametrize("path", COMPOSE, ids=lambda p: p.name)
 def test_every_compose_file_parses(path: Path):
-    doc = yaml.safe_load(path.read_text())
+    doc = load_compose(path)  # Compose's `!override` / `!reset` tags included
     assert isinstance(doc, dict) and ("services" in doc or "include" in doc), path
+
+
+def test_composes_merge_tags_keep_their_value():
+    """`!override` / `!reset` (Compose 2.24+) are parsed, not rejected, so an overlay may use them."""
+    doc = load_compose('ports: !override ["127.0.0.1:1:1"]\nlabels: !reset {}\nuser: !reset ""\n')
+    assert doc == {"ports": ["127.0.0.1:1:1"], "labels": {}, "user": ""}

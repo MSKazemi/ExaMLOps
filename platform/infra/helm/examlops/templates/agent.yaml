@@ -75,6 +75,11 @@ spec:
               value: {{ .Values.agent.serviceUrls.rayServe | quote }}
             - name: PROMETHEUS_URL
               value: {{ .Values.agent.serviceUrls.prometheus | quote }}
+            {{- if .Values.workloadIdentity.enabled }}
+            # Its workload identity (ADR 0125), read on every call; the static credential is the
+            # fallback until the sidecar has written the file.
+            - {name: CONTROL_PLANE_TOKEN_FILE, value: /run/spire/svid/control-plane.jwt}
+            {{- end }}
             {{- with .Values.agent.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -99,8 +104,17 @@ spec:
             periodSeconds: 20
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            {{- if .Values.workloadIdentity.enabled }}
+            - {name: spiffe-svid, mountPath: /run/spire/svid, readOnly: true}
+            {{- end }}
+        {{- if .Values.workloadIdentity.enabled }}
+        {{- include "examlops.spiffeHelperContainer" (dict "root" . "component" "agent") | nindent 8 }}
+        {{- end }}
       volumes:
         - {name: tmp, emptyDir: {}}
+        {{- if .Values.workloadIdentity.enabled }}
+        {{- include "examlops.spiffeVolumes" . | nindent 8 }}
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

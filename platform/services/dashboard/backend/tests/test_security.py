@@ -1,6 +1,7 @@
 """Security-hardening baseline: headers middleware + rate limiter (F16 / ADR 0053)."""
 
 import pytest
+import security as sec
 from security import RateLimiter, build_csp, security_headers
 
 from tests.conftest import VIEWER_PW
@@ -146,3 +147,66 @@ def test_client_key_falls_back_when_proxy_sends_no_header(monkeypatch):
     monkeypatch.setenv("DASHBOARD_TRUSTED_PROXY", "1")
     req = _request_with([])
     assert _client_key(req) == "10.0.0.9"
+
+
+# ── the limiter's memory is bounded ───────────────────────────────────────────
+
+
+def test_expired_keys_are_released_not_just_their_hits():
+    """Hits were evicted within a key; the key itself was kept forever.
+
+    The map grew by one entry per distinct client address and never shrank — 200 000 addresses cost
+    about 160 MB and were still resident long after their windows had passed. `/api/auth/login`,
+    which this limiter protects, is unauthenticated, so an attacker rotating IPv6 source addresses
+    could grow the dashboard process without ever logging in. A rate limiter that can be made to
+    exhaust memory is an amplifier, not a control.
+    """
+    limiter = sec.RateLimiter(limit=10, window_seconds=60.0, max_keys=10_000)
+    start = 1_000.0
+    for i in range(5_000):
+        limiter.allow(f"2001:db8::{i:x}", now=start)
+    assert len(limiter._hits) == 5_000  # all inside the window, all still needed
+
+    # Long after every one of those windows has passed, one unrelated request sweeps them.
+    limiter.allow("someone-else", now=start + 10_000)
+    assert len(limiter._hits) == 1, (
+        f"{len(limiter._hits)} keys survive their own window — the map only ever grows"
+    )
+
+
+def test_a_flood_of_distinct_keys_cannot_grow_the_map_without_bound():
+    """A sweep runs on a cadence; a flood can arrive faster than it. The hard cap covers that."""
+    limiter = sec.RateLimiter(limit=10, window_seconds=60.0, max_keys=1_000)
+    now = 1_000.0
+    for i in range(50_000):  # all within one window, so no key has expired
+        limiter.allow(f"flood-{i}", now=now)
+    assert len(limiter._hits) <= limiter.max_keys + 1, (
+        f"{len(limiter._hits)} keys retained against a cap of {limiter.max_keys}"
+    )
+
+
+def test_eviction_never_lets_an_active_abuser_back_in():
+    """The property that makes the bound safe rather than a bypass.
+
+    Dropping keys to stay under the cap must not hand an allowance back to the client that is
+    actually hammering the endpoint. Least-recently-active goes first, and an abuser's hits are by
+    definition the newest.
+    """
+    limiter = sec.RateLimiter(limit=10, window_seconds=60.0, max_keys=100)
+    now = 1_000.0
+    allowed = sum(1 for _ in range(25) if limiter.allow("attacker", now=now))
+    assert allowed == 10, f"the limiter let {allowed} of 25 through"
+
+    # The realistic shape: the attacker keeps hammering *while* rotating source addresses to flush
+    # the map. Its own attempts are refused and therefore record no hit — so ordering eviction by
+    # hit times alone made it look like the stalest key in the map, and evicting it handed back a
+    # fresh allowance. Refusals now count as activity, which is what keeps its bucket alive.
+    for i in range(5_000):
+        t = now + 1 + i * 0.001
+        limiter.allow(f"noise-{i}", now=t)
+        if i % 50 == 0:
+            assert not limiter.allow("attacker", now=t), (
+                f"the abuser was let back in after {i} flood keys — the cap is a bypass"
+            )
+
+    assert not limiter.allow("attacker", now=now + 7)

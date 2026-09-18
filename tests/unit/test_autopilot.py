@@ -896,3 +896,78 @@ class TestPolicyReachesTheRealCycle:
         assert result["retrains"] == [] or len(result["retrains"]) == 0
         assert len(result["policy_blocks"]) == 1
         assert result["policy_blocks"][0]["gate"] == "autopilot_trigger"
+
+
+class TestAnAuditOutageDoesNotStopTheCycle:
+    """The cycle must survive a datastore that cannot take its audit events.
+
+    Seven audit writes inside `run_cycle`'s loop could raise, and `run_cycle`'s only outer handler
+    catches `_RunKilled`, not `Exception`. So a transient audit outage ended the self-driving cycle
+    part-way — with models already acted on, the remaining ones never reached, and
+    `update_autopilot_run()` never called, leaving the run row silent about work that had really
+    happened. These run the cycle with the audit datastore refusing every write.
+    """
+
+    def setup_method(self):
+        set_drift_auto_retrain(
+            JPCP, enabled=True, min_z_score=2.0, dataset_name="PM100Dataset", cooldown_s=0
+        )
+        set_drift_baseline(JPCP, {"mean": 1.0, "std": 0.1})
+        for _ in range(10):
+            write_drift_snapshot(JPCP, "Production", 5.0, None)
+        seed_data_drift_evidence(JPCP)
+
+    @staticmethod
+    def _break_audit(monkeypatch):
+        """Every audit append raises, as an unreachable datastore would make it.
+
+        **Both bindings, deliberately.** `autopilot_cmd` does `from examlops.data.audit import
+        write_audit_event` at import time, so patching only the source module leaves the module's
+        own bound reference intact — the raw call sites would keep working and the test would
+        exercise nothing but the helper. Mutation testing caught exactly that: reverting one call
+        site killed only the counter assertion, because the other two never reached a broken write.
+        """
+
+        def boom(*_a, **_k):
+            raise RuntimeError("audit datastore unreachable")
+
+        monkeypatch.setattr("examlops.data.audit.write_audit_event", boom)
+        monkeypatch.setattr(autopilot_cmd, "write_audit_event", boom, raising=False)
+
+    def test_the_cycle_still_completes_and_reports_the_block(self, monkeypatch):
+        self._break_audit(monkeypatch)
+        with patch.object(
+            autopilot_cmd, "_policy_decide", return_value=("deny", "blocked by policy")
+        ):
+            result = autopilot_cmd.run_cycle(dry_run=True)
+        assert result["policy_blocks"], "the cycle stopped before it could record the block"
+        assert result["policy_blocks"][0]["model"] == JPCP
+
+    def test_the_run_row_is_still_updated(self, monkeypatch):
+        """The bookkeeping at the end of the cycle is what an operator reads afterwards."""
+        from examlops.data.autopilot import list_autopilot_runs
+
+        self._break_audit(monkeypatch)
+        with patch.object(autopilot_cmd, "_policy_decide", return_value=("deny", "blocked")):
+            result = autopilot_cmd.run_cycle(dry_run=True)
+
+        runs = list_autopilot_runs(last_n=5)
+        assert runs, "no run was recorded at all"
+        row = next((r for r in runs if r["id"] == result["run_id"]), None)
+        assert row is not None, "this cycle's run row is missing"
+        assert row["policy_blocks"] == 1, (
+            "the run row does not reflect the block the cycle actually made — the cycle died "
+            "before `update_autopilot_run()`"
+        )
+
+    def test_the_loss_is_counted_rather_than_hidden(self, monkeypatch):
+        from examlops.data import audit as _audit
+
+        _audit.reset_dropped_audit_events()
+        self._break_audit(monkeypatch)
+        with patch.object(autopilot_cmd, "_policy_decide", return_value=("deny", "blocked")):
+            autopilot_cmd.run_cycle(dry_run=True)
+        dropped = _audit.dropped_audit_events()
+        assert dropped, "audit events were lost with no counter to show for it"
+        assert "policy_denied" in dropped
+        _audit.reset_dropped_audit_events()

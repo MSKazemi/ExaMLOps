@@ -27,6 +27,14 @@ for p in (str(REPO_ROOT), str(REPO_ROOT / "modelzoo")):
 from serving.ray_serving import app as rs_app  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_signature_verification(monkeypatch):
+    """These tests are about routing and caching with MLflow mocked wholesale. Verify-before-load
+    (on by default in `warn` mode since plan P4.10) would download artifacts through that mock;
+    it has its own tests in test_model_signing_ed25519.py and test_serving_admin_auth.py."""
+    monkeypatch.setattr(rs_app, "_VERIFY_MODE", "off")
+
+
 def _make_server(
     version_cache_size: int = 8, preload_aliases: list[str] | None = None
 ) -> rs_app.MultiModelServer:

@@ -75,7 +75,7 @@ def anchor_telemetry(actor: str | None = None) -> list[dict[str, Any]]:
     Idempotent between writes: a table with no new rows since its last anchor is skipped
     (``rows: 0`` in the summary), so calling this every cycle costs one range query per table.
     """
-    from examlops.data.audit import write_audit_event
+    from examlops.data.audit import audit_best_effort
 
     init_db()
     out: list[dict[str, Any]] = []
@@ -98,7 +98,7 @@ def anchor_telemetry(actor: str | None = None) -> list[dict[str, Any]]:
             "rows": count,
             "sha256": digest,
         }
-        write_audit_event("audit", actor, _ACTION, table, details)
+        audit_best_effort("audit", actor, _ACTION, table, details)
         out.append({**details, "anchored": True})
     return out
 

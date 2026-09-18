@@ -23,6 +23,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _STARTED: pytest.StashKey[float] = pytest.StashKey()
 sys.path.insert(0, str(REPO_ROOT / "platform" / "cli" / "src"))
 
+# On Postgres, give this xdist worker its own schema before anything opens a connection — the
+# per-test isolation below empties *the* schema, and eight workers sharing one truncate each
+# other's rows. No-op serially and on SQLite. See examlops.storage.testing for why it lives there.
+from examlops.storage.testing import scope_schema_to_this_worker  # noqa: E402
+
+scope_schema_to_this_worker()
+
 # Job directories go to a temporary place, never the checkout (BL-074). A scheduler adapter's
 # working directory holds job folders, generated scripts and logs — files carrying absolute local
 # paths. Their defaults are relative (`slurm_jobs`) or, for the mock, the cache directory, so a

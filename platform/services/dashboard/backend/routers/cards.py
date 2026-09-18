@@ -42,8 +42,12 @@ async def get_latest_card(model: str, _=Depends(_viewer)) -> dict:
     try:
         conn = _get_conn()
         row = conn.execute(
+            # `, id DESC` because `ts` cannot settle this: it has one-second resolution and
+            # `model_cards` keeps every generation, so regenerating a card twice in one second
+            # (a CI job, a regenerate-all loop) ties — and SQLite hands back the OLDEST of the
+            # tied rows. This endpoint answers "the current model card", an EU AI Act artefact.
             "SELECT id, ts, model, output_path, actor "
-            "FROM model_cards WHERE model=? ORDER BY ts DESC LIMIT 1",
+            "FROM model_cards WHERE model=? ORDER BY ts DESC, id DESC LIMIT 1",
             (model,),
         ).fetchone()
         conn.close()

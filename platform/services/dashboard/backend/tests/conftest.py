@@ -136,6 +136,18 @@ def _isolate_postgres_state():
     yield from postgres_isolation()
 
 
+def pytest_configure(config):  # noqa: ARG001 - pytest's hook signature
+    """On Postgres, give this xdist worker its own schema before anything connects.
+
+    The fixture above empties *the* schema, so workers sharing one truncate each other's rows
+    mid-test. This suite runs serially today, where the call is a no-op — it is here so that
+    running it with `-n auto` is simply faster rather than quietly flaky.
+    """
+    from examlops.storage.testing import scope_schema_to_this_worker
+
+    scope_schema_to_this_worker()
+
+
 # --- a dashboard test may not talk to a running backing service --------------------------
 #
 # `test_seanerbus_status_unreachable_when_bridge_down` asserted the bridge probe fails while doing

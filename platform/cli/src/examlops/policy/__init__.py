@@ -195,16 +195,16 @@ def decide(
 
 def _audit(action: str, context: Mapping[str, Any], decision: Decision) -> None:
     """Record the decision to ``audit_events`` (never raises — audit failure must not block ops)."""
-    try:
-        from examlops.data.audit import write_audit_event
-        from examlops.platform_db import _actor
+    # `audit_best_effort` keeps this docstring's promise — a policy check is never blocked by the
+    # audit log — while counting a loss instead of hiding it. `policy_engine._audit` is the twin of
+    # this function and had the same shape.
+    from examlops.data.audit import audit_best_effort
+    from examlops.platform_db import _actor
 
-        write_audit_event(
-            source="exa-policy",
-            actor=_actor(),
-            action=f"policy:{action}",
-            target=str(context.get("model") or context.get("target") or ""),
-            details={"effect": decision.effect, "rule": decision.rule},
-        )
-    except Exception:  # pragma: no cover - defensive
-        pass
+    audit_best_effort(
+        "exa-policy",
+        _actor(),
+        f"policy:{action}",
+        str(context.get("model") or context.get("target") or ""),
+        {"effect": decision.effect, "rule": decision.rule},
+    )

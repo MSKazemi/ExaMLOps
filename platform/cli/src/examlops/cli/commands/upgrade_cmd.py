@@ -111,13 +111,29 @@ def apply(
     else:
         _print_plan(res)
         if res.get("backup"):
-            _output.ok(f"Pre-upgrade backup: {res['backup']['bundle']} ({res['backup']['status']})")
+            # Not a green tick when the bundle captured nothing — that line used to be the last
+            # thing a refused upgrade printed, above a bare exit 1.
+            line = f"Pre-upgrade backup: {res['backup']['bundle']} ({res['backup']['status']})"
+            (_output.ok if res["backup"]["status"] in ("ok", "partial") else _output.warning)(line)
+        if res.get("reason"):
+            # A pre-flight refusal sets no `pending_after`, so the branch below never matched it
+            # and the operator was stopped without being told why.
+            _output.error(res["reason"])
         if dry_run:
             _output.info("Dry run — nothing changed.")
         elif res["ok"]:
             after = res.get("stamp_after") or {}
             applied = ", ".join(res["applied"]) or "none pending"
             _output.ok(f"Data at format {after.get('data_format', '—')} — applied: {applied}")
+        elif res.get("pending_after"):
+            # Not the same as "nothing to do", and the difference is the operator's next move.
+            names = ", ".join(m["name"] for m in res["pending_after"])
+            _output.error(
+                f"{len(res['pending_after'])} migration(s) did not apply and are still pending: "
+                f"{names}. The data was not left half-migrated — each migration runs in its own "
+                "transaction — so it is safe to run this again; if it keeps happening, another "
+                "process is upgrading the same datastore."
+            )
     if not res["ok"]:
         raise typer.Exit(1)
 

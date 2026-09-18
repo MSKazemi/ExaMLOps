@@ -56,3 +56,34 @@ def test_every_navigation_entry_points_at_a_page_that_exists():
         "mkdocs.yml nav names page(s) that do not exist under docs/ — a dead menu item:\n  "
         + "\n  ".join(dangling)
     )
+
+
+# ── and a page that names a file must name one that exists ───────────────────
+
+
+def test_every_repository_path_named_in_the_docs_exists():
+    """A guide that points at `tests/unit/test_x.py` or `platform/…/y.py` must point at a real one.
+
+    `mkdocs --strict` validates links between *pages*; a path to a **file in the repository** is
+    just text to it. So a guide can keep naming the test that backs its claim long after the test
+    was renamed, and the reader who goes looking finds nothing — which is worse than not naming it,
+    because the citation is what made the claim credible.
+
+    Only paths under directories the repository actually has are checked, and only where the page
+    is pointing at a file rather than illustrating a shape: a path containing a wildcard, an
+    ellipsis or a `<placeholder>` is prose.
+    """
+    roots = ("tests/", "platform/", "serving/", "pipelines/", "usecases/", "design/", ".github/")
+    pattern = re.compile(r"`((?:" + "|".join(re.escape(r) for r in roots) + r")[A-Za-z0-9_./-]+)`")
+    broken: list[str] = []
+    pages = sorted((ROOT / "docs").rglob("*.md"))
+    assert pages, "no documentation pages found — this guard would pass by scanning nothing"
+    for page in pages:
+        for named in pattern.findall(page.read_text(encoding="utf-8")):
+            if any(ch in named for ch in "*…<>") or named.endswith("/"):
+                continue  # a shape, not a path
+            if not (ROOT / named).exists():
+                broken.append(f"{page.relative_to(ROOT)} → {named}")
+    assert not broken, "documentation names repository paths that do not exist:\n  " + "\n  ".join(
+        broken
+    )

@@ -50,6 +50,7 @@ install rather than failing with a traceback:
 | `examlops[dataplane-files]` | The `files`, `zenodo` and `rest` dataplane connectors — object storage, HTTP(S), SFTP, Zenodo records |
 | `examlops[dataplane-kafka]` | The `kafka` dataplane connector — bounded batch reads from a topic |
 | `examlops[dataplane-service]` | Run the dataplane HTTP service (`platform/services/dataplane`) — not needed just to pull from the CLI |
+| `examlops[events]` | Publish to and consume from the NATS JetStream event backbone — `exa events tail`, `EventConsumer` |
 | `examlops[fairness]` | Fairlearn's `MetricFrame` for fairness slice metrics — `exa fairness` (a pure-Python fallback gives the same numbers without it) |
 | `examlops[finops]` | YAML/expression calculation providers — user-authored cost and carbon formulas |
 | `examlops[mcp]` | Serve the platform to LLM agents — `exa mcp serve` |

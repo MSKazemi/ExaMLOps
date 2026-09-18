@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import typer
 
+from examlops import control_plane_api
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 
@@ -135,9 +136,8 @@ def _render_status(cfg, watch: bool) -> None:
             f"{pending_count} pending approval{'s' if pending_count != 1 else ''} — run: exa approvals list"
         )
         try:
-            pending = _client.get(
-                f"{cfg.control_plane_url}/approvals?status=pending",
-                token=cfg.control_plane_token,
+            pending = control_plane_api.list_approvals(
+                status="pending", base=cfg.control_plane_url, token=cfg.control_plane_token
             )
             _output.print_table(
                 "Pending Approvals",

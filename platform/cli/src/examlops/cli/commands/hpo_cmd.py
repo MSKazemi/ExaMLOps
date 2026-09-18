@@ -63,22 +63,26 @@ def hpo_start(
     metric: str = typer.Option("rmse", "--metric", "-m", help="Metric to optimise"),
     dataset: str = typer.Option("PM100Dataset", "--dataset", "-d", help="Dataset class name"),
 ) -> None:
-    """Trigger an HPO study via the Control Plane."""
+    """Record an HPO study and dispatch its baseline training run via the Control Plane.
+
+    The training flow runs one training per dispatch; it does not search. The study row holds the
+    budget (``--trials``) and the metric, and an external optimiser reports each trial with
+    ``exa pipeline hpo record``.
+    """
     cfg = load_config()
     _ensure_hpo_tables()
 
-    body = {
-        "model": model,
-        "dataset": dataset,
-        "hpo_trials": trials,
-    }
+    # The control plane's retrain contract. This body used to be {"model", "dataset",
+    # "hpo_trials"}, which the control plane answers 422 (no `model_name`): `hpo start` could not
+    # start anything against a real control plane, and its tests only ever mocked the call.
+    body = {"model_name": model, "dataset_name": dataset, "is_dummy": False}
+
+    from examlops import retrain_command
 
     with _output.spinner(f"Starting HPO study for {model} ({trials} trials)..."):
         try:
-            result = _client.post(
-                f"{cfg.control_plane_url}/retrain",
-                body,
-                token=cfg.control_plane_token,
+            result = retrain_command.submit(
+                body, base=cfg.control_plane_url, token=cfg.control_plane_token
             )
         except _client.ClientError as e:
             _output.error(
@@ -107,10 +111,20 @@ def hpo_start(
             "metric": metric,
             "dataset": dataset,
             "flow_run_id": flow_run_id,
+            "command_id": result.get("command_id"),
         },
     )
 
-    _output.ok(f"HPO study started (flow_run_id={flow_run_id}, {trials} trials)")
+    if flow_run_id:
+        _output.ok(f"HPO study started (baseline flow_run_id={flow_run_id}, {trials} trials)")
+    else:
+        _output.warning(
+            f"HPO study recorded; its baseline run is accepted but not dispatched yet "
+            f"(command {result.get('command_id')})"
+        )
+    _output.hint(
+        f"Report each trial: exa pipeline hpo record {model} --trial N --params … --value …"
+    )
     _output.print_record(
         {
             "model": model,
@@ -177,7 +191,7 @@ def hpo_record(
 
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id FROM hpo_studies WHERE model=? ORDER BY ts DESC LIMIT 1",
+            "SELECT id FROM hpo_studies WHERE model=? ORDER BY ts DESC, id DESC LIMIT 1",
             (model,),
         ).fetchone()
 

@@ -15,7 +15,7 @@ import sqlite3
 
 import audit_write
 from auth import require_role
-from capabilities import PROVIDERS_MANAGE, can, deny_reason
+from capabilities import PROVIDERS_MANAGE, can, deny_reason, require_capability
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
@@ -88,7 +88,13 @@ async def read_provider_view(project: str, domain: str, name: str, _=Depends(_vi
 
 @router.post("/validate")
 async def validate_provider_view(
-    payload: dict = Body(...), principal: dict = Depends(_admin)
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROVIDERS_MANAGE)),
 ) -> dict:
     """Gate-check provider source without saving (admin / providers.manage). Returns ok + any error."""
     _require_manage(principal)
@@ -102,7 +108,15 @@ async def validate_provider_view(
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def save_provider_view(payload: dict = Body(...), principal: dict = Depends(_admin)) -> dict:
+async def save_provider_view(
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROVIDERS_MANAGE)),
+) -> dict:
     """Create/replace an authored provider (admin / providers.manage; AST-sandboxed; audited).
 
     Body: ``{project, domain, name, code, activate?}``. The source passes the AST gate before it is
@@ -140,7 +154,15 @@ async def save_provider_view(payload: dict = Body(...), principal: dict = Depend
 
 @router.post("/{project}/{domain}/{name}/activate")
 async def activate_provider_view(
-    project: str, domain: str, name: str, principal: dict = Depends(_admin)
+    project: str,
+    domain: str,
+    name: str,
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROVIDERS_MANAGE)),
 ) -> dict:
     """Make a provider the active one for its ``(project, domain)`` (admin / providers.manage; audited)."""
     _require_manage(principal)
@@ -155,7 +177,15 @@ async def activate_provider_view(
 
 @router.delete("/{project}/{domain}/{name}")
 async def delete_provider_view(
-    project: str, domain: str, name: str, principal: dict = Depends(_admin)
+    project: str,
+    domain: str,
+    name: str,
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROVIDERS_MANAGE)),
 ) -> dict:
     """Delete an authored provider (admin / providers.manage; audited)."""
     _require_manage(principal)

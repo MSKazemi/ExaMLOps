@@ -33,7 +33,7 @@ def test_retrain_status_asks_the_control_plane_about_that_run():
         result = runner.invoke(app, ["--json", "retrain-status", "abc/1"])
     assert result.exit_code == 0, result.output
     url = get.call_args.args[0]
-    assert url == "http://cp.test:8002/retrain/abc%2F1"  # the id is path-escaped
+    assert url == "http://cp.test:8002/v1/runs/abc%2F1"  # the id is path-escaped
     assert get.call_args.kwargs["token"] == "t0ken-for-tests-only"
     assert json.loads(result.output)["state"] == "RUNNING"
 
@@ -57,7 +57,7 @@ def test_production_reload_hot_reloads_the_control_plane_registry():
     with patch("examlops.cli.commands.production._client.post", return_value=reply) as post:
         result = runner.invoke(app, ["--json", "production", "reload"])
     assert result.exit_code == 0, result.output
-    assert post.call_args.args[0] == "http://cp.test:8002/admin/reload"
+    assert post.call_args.args[0] == "http://cp.test:8002/v1/admin/reload"
     assert post.call_args.kwargs["token"] == "t0ken-for-tests-only"
     payload = json.loads(result.output)
     assert payload["models"] == ["JPCP", "MACK"]

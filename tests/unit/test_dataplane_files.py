@@ -418,3 +418,70 @@ def test_refuse_unsafe_fs_blocks_an_http_filesystem():
 
     with pytest.raises(EgressDenied):
         _refuse_unsafe_fs(_FakeHttpFs(), "https")
+
+
+# ── the SFTP rebinding defence, pinned (verified by reading 2026-09-14) ───────
+
+
+def test_sftp_connects_to_the_checked_ip_and_never_resolves_the_name_again(monkeypatch):
+    """DNS rebinding on the SFTP path — the HTTP path's equivalent has been pinned; this was not.
+
+    `_connect` egress-checks the host and must open the TCP connection to the address that check
+    approved. Handing paramiko the *name* instead would let a second lookup answer differently, and
+    a source pointed at a name that resolves public-then-loopback would reach the stack's internals.
+    paramiko still receives the name separately, because known_hosts entries are keyed on it.
+    """
+    from examlops.dataplane.connectors import files as _files
+
+    approved = "93.184.216.34"
+    monkeypatch.setattr(_files, "check_address", lambda host, port: approved)
+
+    created: list[tuple] = []
+
+    class _Sock:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        _files.__dict__.get("socket") or __import__("socket"),
+        "create_connection",
+        lambda addr, timeout=None: created.append(addr) or _Sock(),
+        raising=False,
+    )
+
+    connected: dict = {}
+
+    class _Client:
+        def load_system_host_keys(self, *a, **kw):
+            pass
+
+        def set_missing_host_key_policy(self, *a, **kw):
+            pass
+
+        def connect(self, host, **kw):
+            connected.update({"host": host, "sock": kw.get("sock")})
+
+        def open_sftp(self):
+            return object()
+
+        def close(self):
+            pass
+
+    import paramiko
+
+    monkeypatch.setattr(paramiko, "SSHClient", _Client)
+
+    cls = _files._guarded_sftp_class()
+    fs = cls.__new__(cls)
+    fs.host = "rebinding.example.org"
+    fs.ssh_kwargs = {"username": "u", "password": "p"}
+    fs._connect()
+
+    assert created and created[0][0] == approved, (
+        f"the TCP connection went to {created[0][0] if created else None!r}, not the approved "
+        "address — a second DNS lookup can answer differently"
+    )
+    assert connected["host"] == "rebinding.example.org", (
+        "paramiko must still get the NAME: known_hosts entries are keyed on it"
+    )
+    assert connected["sock"] is not None, "paramiko must be handed the pre-connected socket"

@@ -293,6 +293,36 @@ def test_successful_restore_reports_ok(tmp_path, pg_engine, monkeypatch):
     assert result["failed"] == []
 
 
+def test_a_postgres_restore_forgets_the_schema_is_ready_verdict(tmp_path, pg_engine, monkeypatch):
+    """The restored schema may predate this process's cached "already initialised" answer.
+
+    `restore_bundle` cleared that cache after the **sqlite** tier, with a comment explaining why —
+    and not after the postgres tier, although exactly one of the two holds platform state at a
+    time and which one is decided by the engine. So under the Postgres engine the clearing ran on
+    the tier that was empty and was skipped on the tier that had just been replaced: `init_db()`
+    went on answering "ready", skipping the additive DDL, the data-format stamp and every online
+    migration, for a schema it had never actually looked at.
+
+    Found by a live DR drill (`tests/integration/test_postgres_dr_roundtrip_live.py`) that dropped
+    the schema out from under a running process.
+    """
+    from examlops.backup import bundle as bundle_mod
+    from examlops.backup import postgres_tier
+    from examlops.platform_db import _INITIALIZED_PATHS
+
+    bundle_dir = _bundle_with_platform_dump(tmp_path)
+    monkeypatch.setattr(postgres_tier.shutil, "which", lambda _: "/usr/bin/pg_restore")
+    _record_runs(monkeypatch, postgres_tier)
+
+    _INITIALIZED_PATHS.add("a schema this process believes it has already prepared")
+    bundle_mod.restore_bundle(bundle_dir, tiers=["postgres"], force=True)
+
+    assert not _INITIALIZED_PATHS, (
+        "after restoring platform state the process still believes the schema is prepared, so the "
+        "next helper will skip the DDL, the stamp and the migrations the restored data may need"
+    )
+
+
 # ── the CLI must not let an operator take a hollow backup ───────────────────────
 
 

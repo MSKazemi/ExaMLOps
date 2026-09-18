@@ -15,12 +15,14 @@ class Settings(BaseSettings):
     minio_url: str = "http://localhost:19000"
     minio_console_url: str = "http://localhost:19001"
     control_plane_url: str = "http://localhost:18002"
+    # Fallback bearer credential for control-plane reads when the Config page's encrypted
+    # `control_plane_token` secret is unset (control_plane_auth.py). Never sent to the browser.
+    control_plane_token: str = ""
     agent_url: str = "http://localhost:18004"
     dashboard_agent_api_key: str = ""
     agent_api_key: str = ""
     jupyterhub_url: str = "http://localhost:18888"
     loki_url: str = "http://localhost:13100"
-    seanerbus_bridge_status_url: str = "http://localhost:8003"
     # ADR 0130 — the dataplane service. Aliased because compose sets EXAMLOPS_DATAPLANE_URL
     # (the same variable name the `exa` CLI reads for its own `--remote` pulls), not the
     # DATAPLANE_URL the default field-name mapping would otherwise expect.
@@ -39,7 +41,6 @@ class Settings(BaseSettings):
     public_control_plane_url: str = "http://localhost:18002"
     public_jupyterhub_url: str = "http://localhost:18888"
     public_loki_url: str = "http://localhost:13100"
-    public_seanerbus_bridge_url: str = "http://localhost:18003"
     public_dataplane_url: str = "http://localhost:18010"
     public_dashboard_url: str = "http://localhost:18099"
     slurm_mode: str = "mock"

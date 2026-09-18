@@ -22,11 +22,11 @@ also reads through helpers, and the getenv-only first version of this guard was 
 
 from __future__ import annotations
 
+import ast
 import re
-import subprocess
 from pathlib import Path
 
-from tests.unit._guard_deps import require_binary
+from tests.unit._guard_deps import require_binary, tracked_and_new_files
 
 ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = ROOT / "docs" / "reference" / "env-vars.md"
@@ -55,6 +55,10 @@ INJECTED = {
 
 # Provided by the environment, not by ExaMLOps.
 _NOT_OURS = {
+    # pytest-xdist sets this in each worker; `examlops.storage.testing` reads it to give a worker
+    # its own Postgres schema. It is xdist's contract, and documenting it in the platform's
+    # reference would tell an operator about a knob that does not exist outside a test run.
+    "PYTEST_XDIST_WORKER",
     "PATH",
     "HOME",
     "USER",
@@ -79,24 +83,49 @@ _NOT_OURS = {
 UNDOCUMENTED: set[str] = set()
 
 
+def _settings_fields(source: str) -> set[str]:
+    """Variables a `pydantic-settings` class reads, which appear nowhere as a string.
+
+    `class Settings(BaseSettings)` maps a field named `public_ray_serve_url` to the environment
+    variable `PUBLIC_RAY_SERVE_URL` — implicitly, by name. No literal is ever written, so a scan for
+    `os.getenv("…")` cannot see it, and **nineteen variables the dashboard reads went undocumented
+    that way**, including the MinIO credential it uses. Two of them were even documented under names
+    that no longer matched the field.
+
+    So the settings classes are read as declarations: every annotated field becomes the variable it
+    resolves to. Fields that are not configuration (a nested model, a computed property) have no
+    annotation at class level and are not picked up.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:  # pragma: no cover - a broken module fails loudly elsewhere
+        return set()
+    names: set[str] = set()
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        bases = {b.id if isinstance(b, ast.Name) else getattr(b, "attr", "") for b in cls.bases}
+        if "BaseSettings" not in bases:
+            continue
+        for node in cls.body:
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names.add(node.target.id.upper())
+    return names
+
+
 def _variables_read_in_code() -> set[str]:
-    # `--others --exclude-standard` includes files that are new and not yet committed. Without it
-    # the guard cannot fail on the change that introduces a variable — only on some later one, by
-    # which point the undocumented knob is already released.
+    # Tracked plus new-and-uncommitted, so the guard fails on the change that introduces a
+    # variable rather than on some later one; paths deleted in the working tree are skipped
+    # (see `tracked_and_new_files`).
     require_binary("git", "every environment variable the code reads is documented")
-    files = subprocess.run(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.py"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
+    files = tracked_and_new_files("*.py")
     found: set[str] = set()
     for name in files:
         if name.startswith("tests/") or "/tests/" in name:
             continue
         text = (ROOT / name).read_text(errors="ignore")
         found |= set(_READ.findall(text)) | set(_LITERAL.findall(text))
+        found |= _settings_fields(text)
     # CI_* is injected by GitLab; documenting GitLab's own contract is not this file's job.
     return {
         v for v in found if v not in _NOT_OURS and v not in INJECTED and not v.startswith("CI_")

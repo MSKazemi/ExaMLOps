@@ -147,7 +147,10 @@ def entity_activity(db_path: str, entity_type: str, entity_id: str, tenant: str)
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'"
         ).fetchone():
             for r in conn.execute(
-                "SELECT actor, action, ts FROM audit_events WHERE target IN (?, ?) ORDER BY ts",
+                # By `id`: the merge below re-sorts everything on `ts`, and Python's sort is
+                # stable, so events sharing a second keep the order they arrive in. Ordering by
+                # `ts` here would hand that tie to the query plan; `id` is the chain order.
+                "SELECT actor, action, ts FROM audit_events WHERE target IN (?, ?) ORDER BY id",
                 (target, entity_id),
             ).fetchall():
                 items.append({"kind": "audit", "actor": r[0], "ts": r[2], "detail": r[1]})

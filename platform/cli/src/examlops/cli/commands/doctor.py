@@ -4,6 +4,7 @@ import sys
 import urllib.error
 import urllib.request
 
+import typer
 from rich.console import Console
 from rich.table import Table
 
@@ -138,7 +139,8 @@ def doctor() -> None:
                 "issues": len(issues),
             }
         )
-        return
+        # Non-zero without printing a second document: `--json` promises exactly one.
+        raise typer.Exit(1 if issues else 0)
 
     table = Table(title="ExaMLOps Doctor", show_header=True, header_style="bold cyan")
     table.add_column("Check", style="bold")
@@ -164,3 +166,9 @@ def doctor() -> None:
             if issue:
                 console.print(f"  [dim]→ {issue}[/dim]")
         console.print()
+        # Exit non-zero, because this command is *prescribed as a verification step*: step 5 of the
+        # full-disaster recovery order in `docs/guides/backup-restore.md` is "`exa doctor` +
+        # `exa status` to confirm coherence". It printed its findings and exited 0, so a scripted
+        # recovery check passed whatever it found — a diagnostic whose success is indistinguishable
+        # from its failure. `exa instance check` already sets this convention for the platform.
+        raise typer.Exit(1)

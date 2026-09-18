@@ -37,7 +37,7 @@ COPY usecases /app/usecases
 
 RUN pip install --upgrade pip \
     && pip install -e /app/pipelines \
-    && pip install -e '/app/platform/cli[coordination,postgres,oidc]' \
+    && pip install -e '/app/platform/cli[coordination,postgres,oidc,events]' \
     && pip install fastapi uvicorn[standard] \
        opentelemetry-distro==0.63b1 \
        opentelemetry-exporter-otlp-proto-grpc==1.42.1 \

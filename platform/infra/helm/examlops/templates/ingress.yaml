@@ -9,9 +9,10 @@ metadata:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- $gatewayHost := and (.Values.gateway | default dict).enabled ((.Values.gateway | default dict).ingress | default dict).host }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
-    - hosts: [{{ .Values.ingress.host | quote }}]
+    - hosts: [{{ .Values.ingress.host | quote }}{{ if $gatewayHost }}, {{ $gatewayHost | quote }}{{ end }}]
       secretName: {{ .Values.ingress.tls.secretName }}
   {{- end }}
   rules:
@@ -50,4 +51,17 @@ spec:
               service:
                 name: {{ include "examlops.fullname" . }}-dashboard
                 port: {name: http}
+    {{- if $gatewayHost }}
+    # The serving gateway on its own host: inference paths (/v2, /infer-pipeline) stay clear of
+    # the dashboard's, and the gateway decides what is routed.
+    - host: {{ $gatewayHost | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "examlops.fullname" . }}-gateway
+                port: {name: http}
+    {{- end }}
 {{- end }}

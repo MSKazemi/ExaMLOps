@@ -19,7 +19,7 @@ from typing import Any
 
 from .hpc_placement import ResourceAsk, ScoreFn, headroom_score
 from .providers import Provider, ProviderMeta, register_provider
-from .providers.loader import resolve_provider
+from .providers.loader import degraded_to_default, resolve_provider
 
 DOMAIN = "placement"
 
@@ -213,7 +213,8 @@ def _adapt(provider: Provider, *, strip_carbon: bool) -> ScoreFn:
         try:
             out = provider.compute(_score_inputs(ask, view))
             return float(out["score"])
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - a broken provider must not stop the calculation
+            degraded_to_default(DOMAIN, exc)
             return headroom_score(ask, view)
 
     return _score
@@ -238,7 +239,8 @@ def resolve_placement_score_fn(override: str | None = None) -> ScoreFn:
     register_builtins()
     try:
         provider = resolve_provider(DOMAIN, override=override, group=DOMAIN)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - a broken provider must not stop the calculation
+        degraded_to_default(DOMAIN, exc)
         return headroom_score
 
     requested = getattr(provider, "name", str(override or "unnamed"))

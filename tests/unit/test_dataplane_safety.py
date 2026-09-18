@@ -497,3 +497,40 @@ def test_validate_name_rejects_path_tricks(bad):
 def test_local_files_are_off_by_default(monkeypatch):
     monkeypatch.delenv("EXAMLOPS_DATAPLANE_ALLOW_LOCAL_FILES", raising=False)
     assert safety.local_files_allowed() is False
+
+
+# ── properties verified by reading on 2026-09-14, pinned so they cannot regress ──
+
+
+def test_the_guarded_backend_refuses_a_unix_socket():
+    """A unix socket is egress the address guard cannot judge, and a real SSRF target.
+
+    `_GuardedBackend` **wraps** an inner backend, so this override is the only thing standing
+    between a caller and the inner backend's own unix-socket support — `/var/run/docker.sock` is
+    the canonical example of what that reaches. The refusal was correct and untested: an httpcore
+    upgrade that renamed the method, or a refactor that dropped the override, would silently expose
+    the inner one.
+    """
+
+    class _Inner:
+        def connect_unix_socket(self, *a, **kw):  # pragma: no cover - must never be reached
+            raise AssertionError("the inner backend was reached")
+
+    backend = safety._GuardedBackend(_Inner())
+    with pytest.raises(safety.EgressDenied):
+        backend.connect_unix_socket("/var/run/docker.sock")
+
+
+def test_the_unix_socket_override_still_matches_the_backend_it_wraps():
+    """Anti-vacuity for the test above: the method must be one httpcore actually calls.
+
+    Overriding a method the library no longer uses passes the test above forever while guarding
+    nothing — the same failure mode `test_guarded_client_is_actually_wired` exists to catch for the
+    private attributes.
+    """
+    import httpcore
+
+    assert hasattr(httpcore.NetworkBackend, "connect_unix_socket"), (
+        "httpcore no longer defines `connect_unix_socket` — the override guards nothing; find the "
+        "method it renamed to and guard that instead"
+    )

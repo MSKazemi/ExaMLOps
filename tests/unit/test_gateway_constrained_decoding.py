@@ -203,8 +203,9 @@ def test_an_unconstrained_one_is_not(server):
 def test_a_datastore_from_before_gains_the_column(tmp_path, monkeypatch):
     from examlops.platform_db import get_db
     from examlops.platform_db import init_db as init
+    from examlops.storage.testing import datastore_before_a_migration
 
-    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "old.db"))
+    datastore_before_a_migration(tmp_path, monkeypatch, "structured_output_events")
     with get_db() as conn:
         conn.execute(
             "CREATE TABLE structured_output_events (id INTEGER PRIMARY KEY AUTOINCREMENT, "

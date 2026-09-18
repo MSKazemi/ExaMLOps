@@ -127,3 +127,45 @@ def _no_live_services():
     finally:
         socket.socket.connect = real_connect
         socket.socket.connect_ex = real_connect_ex
+
+
+# --- every event the control plane emits honours its published schema (plan P2.6) ------------
+#
+# Rather than one test per topic, every test in this suite is a producer test: the outbox writer
+# is wrapped for its duration, and anything the control plane enqueues is checked against
+# `examlops.events.schemas`. A topic with no schema fails too — the control plane only publishes
+# contracts. Wrapping the module attribute covers a test that reloads `app` (the reload re-binds
+# `enqueue_event` from it); patching an already-imported `app` covers one that does not.
+
+
+@pytest.fixture(autouse=True)
+def _events_honour_their_contract():
+    from examlops.data import events as data_events
+    from examlops.events import schemas
+
+    real = data_events.enqueue_event
+    violations: list[str] = []
+
+    def checked(topic, payload, *args, **kwargs):
+        # Only the control plane's own producers; a test seeding the outbox directly is not one.
+        caller = sys._getframe(1).f_globals.get("__name__", "")
+        if caller != "app" and not caller.startswith("cplane"):
+            return real(topic, payload, *args, **kwargs)
+        if topic not in schemas.SCHEMAS:
+            violations.append(f"{topic}: no schema in examlops.events.schemas")
+        violations.extend(f"{topic}: {e}" for e in schemas.validate(topic, payload))
+        return real(topic, payload, *args, **kwargs)
+
+    data_events.enqueue_event = checked
+    app_module = sys.modules.get("app")
+    patched_app = app_module is not None and getattr(app_module, "enqueue_event", None) is real
+    if patched_app:
+        app_module.enqueue_event = checked
+    try:
+        yield
+    finally:
+        data_events.enqueue_event = real
+        current = sys.modules.get("app")
+        if current is not None and getattr(current, "enqueue_event", None) is checked:
+            current.enqueue_event = real
+    assert not violations, "control-plane events broke their schema:\n" + "\n".join(violations)

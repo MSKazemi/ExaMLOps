@@ -575,7 +575,7 @@ exa pipeline validate
 
 ### `exa pipeline export-registry`
 
-Export auto-discovered model state to `pipelines/model_registry.yaml`.
+Export auto-discovered model state to `usecases/seanergy/models`.
 
 ```bash
 exa pipeline export-registry

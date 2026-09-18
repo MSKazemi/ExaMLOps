@@ -70,9 +70,37 @@ reasons, and an **Evidence integrity** summary. `--json` reports `missing`, `ins
 exa compliance art12 JPCP
 ```
 
-Verifies that the required operational event types (retrains, promotions, approvals,
-overrides) are present in the immutable audit trail (D4) and reports coverage + uncovered
-event types.
+Reports which of the required operational event types (retrains, promotions, approvals, overrides)
+are present in the immutable audit trail (D4), and which are not.
+
+!!! warning "What the coverage figure does and does not say"
+    It asks, per required type, whether **at least one** such event exists — not whether every
+    regulated action produced one. A type with a single recorded event reports as covered even if a
+    later action of the same type was never recorded, and audit writes deliberately
+    [fail open](audit-trail.md#complete-by-construction-was-too-strong-corrected-2026-09-14) so that
+    an unreachable datastore cannot block a promotion.
+
+    The hash chain does not close that gap and cannot: it proves the recorded events are
+    **untampered**, never that they are **all** of them, because it is computed over the rows that
+    exist. Completeness is not establishable from inside the log.
+
+    So treat a full score as evidence that logging is wired up, not as proof of a complete record.
+    The one signal that a specific action went unrecorded is the count of audit writes that were
+    attempted and lost; a non-zero count means the coverage figure is unsound for that window. The
+    Annex-IV section generated from this carries the same caveat.
+
+    **How to observe it.** Until 2026-09-14 that count existed only as a Python function
+    (`examlops.data.audit.dropped_audit_events()`) with no caller — this guide named it as the
+    signal while nothing in a running deployment could read it. The control plane now publishes it
+    as `examlops_audit_events_dropped_total{action=…}` on `/metrics`, with the five Art. 12 actions
+    present at zero so an alert has a series to select before the first loss, and
+    **AuditEventsDropped** fires on a single lost event
+    ([runbook](../runbooks/control-plane.md#auditeventsdropped)). Every loss is also logged at
+    `WARNING` as `audit event LOST` with the action, target, actor, tenant and cause.
+
+    The counter covers the **control plane** — the process that performs the promotions, approvals
+    and retrains this article is about. Other writers (the CLI, the agent, the bridge) keep their
+    own tally and reach the log, not this alert.
 
 ## Conformity state machine
 
@@ -146,6 +174,11 @@ documents are stored and every generation is audited, but nothing prevents their
 - **Art. 12 record-keeping.** Which required event types the audit trail holds.
 - **Saved versions.** Admins save a version (audited as `technical_file_saved`) into the store
   `exa compliance declare` reads. A declaration resting on a version with gaps stays a draft.
+
+Every panel here distinguishes *empty* from *unreadable*, and the wording says which. "No saved
+version yet" and "no systems in the register" are claims about a centre's regulatory position, so a
+read that failed says so instead, both since 2026-09-14. The API does the same: the reads behind these panels answer `503` rather than an empty
+list when the datastore cannot be queried.
 
 API (for automation): `GET /api/compliance/technical-file/{model}` (preview),
 `GET /api/compliance/technical-files/{model}` (saved versions), `GET /api/compliance/art12/{model}`,

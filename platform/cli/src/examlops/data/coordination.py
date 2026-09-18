@@ -65,7 +65,7 @@ def coord_check_and_set_idempotent(key: str, ttl_s: float) -> bool:
     ttl = max(1, int(ttl_s))
 
     def _cas() -> bool:
-        with _immediate_write() as conn:
+        with _immediate_write("coordination") as conn:
             # Purge expired first so a stale key doesn't wrongly suppress a fresh op.
             conn.execute("DELETE FROM coord_idempotency WHERE expires_at <= CURRENT_TIMESTAMP")
             cur = conn.execute(
@@ -87,7 +87,7 @@ def coord_rate_allow(bucket: str, limit: int, window_s: float) -> bool:
     win = max(1, int(window_s))
 
     def _allow() -> bool:
-        with _immediate_write() as conn:
+        with _immediate_write("coordination") as conn:
             # Integer-second datetime arithmetic (not julianday floats) so the window boundary is
             # deterministic despite SQLite's whole-second CURRENT_TIMESTAMP resolution.
             row = conn.execute(

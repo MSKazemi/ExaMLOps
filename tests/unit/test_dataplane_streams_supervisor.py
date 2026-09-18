@@ -557,7 +557,46 @@ def test_connector_state_is_mirrored_into_the_gauge(cleanup):
     assert _until(lambda: gauge("running") == 1.0)
     catalog.set()
     sup.reconcile()
-    assert gauge("stopped") == 1.0 and gauge("running") == 0.0
+    # Live finding D8: the stream is gone from the catalog, so its series goes too. It used to
+    # stand at `stopped 1` for the life of the process, and a deleted stream is indistinguishable
+    # there from a stream that is down.
+    assert gauge("stopped") is None and gauge("running") is None
+
+
+def test_a_connector_that_stops_says_so_in_the_log(cleanup, caplog):
+    """Live finding D8: the supervisor logged ``started (fake)`` and never a matching line when a
+    stream's run ended, so a whole shutdown was invisible in the service log."""
+    conn = FakeConnector()
+    catalog = Catalog(_binding())
+    sup = _supervisor(catalog, conn)
+    cleanup(sup)
+    with caplog.at_level(logging.INFO, logger="examlops.dataplane.streams.supervisor"):
+        sup.reconcile()
+        assert _until(lambda: (sup.status_of("proj", "s1") or {}).get("state") == "running")
+        catalog.set()
+        sup.reconcile()
+        assert _until(lambda: "stopped (fake)" in caplog.text)
+    assert "proj/s1: started (fake)" in caplog.text
+    assert "proj/s1: stopped (fake)" in caplog.text
+
+
+def test_a_state_change_zeroes_the_previous_state_before_the_series_is_cleared():
+    """The one-hot rule (no two states at 1) and the clearing rule, on the metrics seam itself —
+    the supervisor test above can only see the end of the sequence."""
+    from examlops.dataplane.streams import metrics as m
+
+    name = f"g-{uuid.uuid4().hex[:8]}"
+
+    def gauge(state: str) -> float | None:
+        labels = {"project": "proj", "stream": name, "state": state}
+        return REGISTRY.get_sample_value("dataplane_stream_connector_state", labels)
+
+    m.set_connector_state("proj", name, "running")
+    m.set_connector_state("proj", name, "stopped")
+    assert gauge("running") == 0.0 and gauge("stopped") == 1.0
+    m.clear_connector_state("proj", name)
+    assert gauge("running") is None and gauge("stopped") is None
+    m.clear_connector_state("proj", name)  # idempotent: a second clear is not an error
 
 
 def test_every_state_the_supervisor_emits_is_in_the_declared_vocabulary():
@@ -898,6 +937,46 @@ def test_the_catalog_view_serves_a_stale_snapshot_for_a_while_then_refuses():
         view.get("proj", "s1")
     with pytest.raises(CatalogUnavailable):
         CatalogView(read).get("proj", "s1")  # nothing ever read
+
+
+def test_invalidating_one_entry_re_reads_it_at_once():
+    """Live finding D5: a pause the state route had just applied kept serving traffic for up to
+    the view's TTL, because the push route reads the catalog through this cache. A state change
+    made in THIS process now invalidates its own entry."""
+    now = [0.0]
+    reads: list[int] = []
+    rows = [_binding()]
+
+    def read():
+        reads.append(1)
+        return list(rows)
+
+    view = CatalogView(read, ttl_s=10.0, miss_refresh_s=1.0, clock=lambda: now[0])
+    assert view.get("proj", "s1").state == "enabled" and len(reads) == 1
+    rows[:] = [_binding(state="paused")]
+    now[0] = 2.0  # well inside the TTL: without the invalidation this still reads `enabled`
+    assert view.get("proj", "s1").state == "enabled" and len(reads) == 1
+
+    view.invalidate("proj", "s1")
+    assert view.get("proj", "s1").state == "paused" and len(reads) == 2
+    # Exactly one forced re-read; the ordinary TTL rules apply again afterwards.
+    assert view.get("proj", "s1").state == "paused" and len(reads) == 2
+
+
+def test_an_invalidated_entry_whose_re_read_fails_keeps_the_last_good_snapshot():
+    now = [0.0]
+    state = {"fail": False}
+
+    def read():
+        if state["fail"]:
+            raise RuntimeError("db down")
+        return [_binding()]
+
+    view = CatalogView(read, ttl_s=10.0, miss_refresh_s=1.0, clock=lambda: now[0])
+    assert view.get("proj", "s1") is not None
+    state["fail"] = True
+    view.invalidate("proj", "s1")
+    assert view.get("proj", "s1") is not None  # a failed re-read is not a vanished stream
 
 
 # ── the ingress stack ───────────────────────────────────────────────────────────────────────

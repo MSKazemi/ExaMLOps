@@ -24,7 +24,9 @@ rule_files:
 
 scrape_configs:
   # Ray Serve metrics — auto-exported by Ray's built-in Prometheus integration.
-  # RAY_METRICS_EXPORT_PORT=8080 must be set on the ray-serving container.
+  # RAY_METRICS_EXPORT_PORT=8080 must be set on the ray-serving container. Keep this job's
+  # interval at 10 s or more: Ray clears a gauge each time it is collected and replicas report
+  # every ~10 s, so a faster scrape sees each gauge only every other time.
   - job_name: ray_serve
     static_configs:
       - targets: ['ray-serving:8080']
@@ -51,9 +53,37 @@ scrape_configs:
       - targets: ['loki:3100']
     metrics_path: /metrics
 
+  # ── Opt-in services (Compose profiles) ─────────────────────────────────────────────────────
+  # Found by DNS, not listed as static targets. A static target for a service a site does not run
+  # is an `up == 0` series forever: `TargetDown` and the service's own "down" alert fire
+  # permanently, which trains people to ignore both. Docker's DNS answers these names only for a
+  # running container, so a service is scraped once it runs. One that stops after that is kept as
+  # a target and reported down (a failed lookup keeps the last result): its alert still fires.
+  # docs/runbooks/platform.md#targetdown covers removing one on purpose.
   - job_name: seanerbus_bridge
-    static_configs:
-      - targets: ['seanerbus-bridge:8003']
+    dns_sd_configs:
+      - names: ['seanerbus-bridge']
+        type: A
+        port: 8003
+        refresh_interval: 30s
+    metrics_path: /metrics
+
+  # Serving gateway (profile `gateway`, ADR 0126): Envoy's own statistics, served on a listener
+  # that exposes only this path, and the authorization service's decisions.
+  - job_name: gateway
+    dns_sd_configs:
+      - names: ['gateway']
+        type: A
+        port: 9902
+        refresh_interval: 30s
+    metrics_path: /stats/prometheus
+
+  - job_name: gateway_authz
+    dns_sd_configs:
+      - names: ['gateway-authz']
+        type: A
+        port: 8090
+        refresh_interval: 30s
     metrics_path: /metrics
 
   - job_name: dataplane
@@ -66,11 +96,14 @@ scrape_configs:
   # node the scheduler allocated, so those are discovered from the endpoint registry via
   # `exa hpc prometheus-sd --out /etc/prometheus/targets/fleet.json` (file_sd below).
   - job_name: vllm
-    static_configs:
-      - targets: ['vllm:8000']
+    # The Compose service sits behind the `vllm` GPU profile and is absent on a CPU host, so it
+    # is found by DNS like the other opt-in services above.
+    dns_sd_configs:
+      - names: ['vllm']
+        type: A
+        port: 8000
+        refresh_interval: 30s
     metrics_path: /metrics
-    # The Compose service sits behind the `vllm` GPU profile and is absent on a CPU host;
-    # a down target there is expected, not an incident.
     honor_labels: true
 
   # Fleet service discovery: node_exporter + DCGM + running vLLM endpoints, regenerated

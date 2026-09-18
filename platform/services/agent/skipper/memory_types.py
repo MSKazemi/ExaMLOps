@@ -114,17 +114,20 @@ def audit_memory_op(
     if not config.AGENT_MEMORY_AUDIT:
         return
     try:
-        from examlops.platform_db import write_audit_event
+        from examlops.data.audit import audit_best_effort
 
-        write_audit_event(
-            source="agent-memory",
-            actor=operator,
-            action=action,
-            target=f"{kind}/{scope}" if scope else kind,
-            details={"digest": digest, "session_id": session_id},
+        # Was `log.debug`, which is invisible at any production log level — a loss nobody could
+        # see. `AGENT_MEMORY_AUDIT` is documented as a governance control, so the drop is counted
+        # (and logged at WARNING) while still never breaking a memory operation.
+        audit_best_effort(
+            "agent-memory",
+            operator,
+            action,
+            f"{kind}/{scope}" if scope else kind,
+            {"digest": digest, "session_id": session_id},
         )
-    except Exception as exc:  # noqa: BLE001 — audit must never break a memory op
-        log.debug("memory audit skipped (%s)", exc)
+    except Exception as exc:  # noqa: BLE001 — the import itself can fail without examlops present
+        log.warning("memory audit unavailable (%s)", exc)
 
 
 def _digest(text: str) -> str:

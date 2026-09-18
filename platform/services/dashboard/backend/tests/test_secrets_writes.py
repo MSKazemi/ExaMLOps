@@ -79,3 +79,26 @@ async def test_list_returns_metadata_only(client, platform_db):
     assert row["hasValue"] is True
     assert "value" not in row and "ciphertext" not in row
     assert row["version"] == 1
+
+
+async def test_a_viewer_does_not_see_another_tenants_secret_paths(client, platform_db):
+    """The value was never exposed here; the *path list* was, to every tenant.
+
+    `GET /api/secrets` selected every row of `secrets_store` with no tenant filter and bound the
+    principal to `_`. The paths a tenant stores secrets under, their versions and who last changed
+    them are that tenant's business — and a path is often the most descriptive thing about a secret
+    (`prod/centre-b/db-root`). Fixed by scoping the rows to the caller (F15 R4).
+    """
+    from examlops import secrets as sec
+
+    sec.set_secret("mine/token", "a", tenant="default")
+    sec.set_secret("other-centre/prod/db-root", "b", tenant="other-centre")
+
+    token = await _login(client, VIEWER_PW)
+    r = await client.get("/api/secrets", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    paths = {row["path"] for row in r.json()}
+    tenants = {row["tenant"] for row in r.json()}
+    assert tenants == {"default"}, f"cross-tenant leak: a default viewer saw tenants {tenants}"
+    assert "other-centre/prod/db-root" not in paths
+    assert "mine/token" in paths, "scoping must not empty the caller's own list"

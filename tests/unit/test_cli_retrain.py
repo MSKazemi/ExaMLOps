@@ -13,27 +13,30 @@ from examlops.cli.main import app
 runner = CliRunner()
 
 
-def test_retrain():
-    fake = {
-        "flow_run_id": "run-abc",
-        "deployment": "nightly",
-        "status_url": "/retrain/run-abc",
-        "parameters": {},
+def _dispatched(run_id: str) -> dict:
+    """What POST /v1/retrain answers once the command is dispatched (plan P1.6c)."""
+    return {
+        "command_id": f"v1:retrain:{run_id}",
+        "kind": "retrain",
+        "state": "succeeded",
+        "result": {"flow_run_id": run_id, "deployment": "nightly"},
+        "last_error": None,
+        "status_url": f"/v1/commands/v1:retrain:{run_id}",
     }
-    with patch("examlops.cli.commands.retrain._client.post", return_value=fake):
+
+
+def test_retrain():
+    fake = _dispatched("run-abc")
+    with patch("examlops.cli.commands.retrain._client.post", return_value=fake) as mock_post:
         # --yes skips the new confirmation prompt (non-interactive).
         result = runner.invoke(app, ["--yes", "retrain", "JPCP", "--dataset", "PM100Dataset"])
     assert result.exit_code == 0, result.output
     assert "run-abc" in result.output
+    assert mock_post.call_args[0][0].endswith("/v1/retrain")  # the command API, not POST /retrain
 
 
 def test_retrain_dummy():
-    fake = {
-        "flow_run_id": "run-xyz",
-        "deployment": "nightly",
-        "status_url": "/retrain/run-xyz",
-        "parameters": {},
-    }
+    fake = _dispatched("run-xyz")
     with patch("examlops.cli.commands.retrain._client.post", return_value=fake) as mock_post:
         runner.invoke(app, ["--yes", "retrain", "JPCP", "--dummy"])
     body = mock_post.call_args[0][1]
@@ -71,7 +74,7 @@ def test_retrain_writes_audit_event(tmp_path, monkeypatch):
     from examlops.platform_db import get_db, init_db
 
     init_db()
-    fake = {"flow_run_id": "run-audit", "deployment": "d", "status_url": "/s", "parameters": {}}
+    fake = _dispatched("run-audit")
     with patch("examlops.cli.commands.retrain._client.post", return_value=fake):
         result = runner.invoke(app, ["--yes", "retrain", "JPCP", "--dummy"])
     assert result.exit_code == 0, result.output

@@ -18,6 +18,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests.unit._guard_deps import scan_files
+
 PKG = Path(__file__).resolve().parents[2] / "platform" / "cli" / "src" / "examlops"
 
 HELPERS = ("ok", "error", "warning", "info", "hint", "detail")
@@ -52,7 +54,7 @@ def _offenders(files) -> list[str]:
 
 
 def test_no_message_helper_is_handed_markup_it_will_escape():
-    offenders = _offenders(sorted(PKG.rglob("*.py")))
+    offenders = _offenders(scan_files(PKG))
     assert not offenders, (
         "These call sites pass Rich style tags into a helper that escapes them, so the "
         "operator sees the tags as literal text:\n  " + "\n  ".join(offenders)

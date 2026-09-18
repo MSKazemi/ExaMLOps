@@ -11,7 +11,13 @@ from __future__ import annotations
 import json
 from typing import Any  # noqa: F401
 
-from examlops.platform_db import get_db, init_db, install_write_retry, write_retry  # noqa: F401
+from examlops.platform_db import (  # noqa: F401
+    begin_immediate,
+    get_db,
+    init_db,
+    install_write_retry,
+    write_retry,
+)
 
 __all__ = [
     "claim_drift_trigger",
@@ -30,6 +36,9 @@ __all__ = [
     "set_input_baseline",
     "write_drift_snapshot",
     "write_input_snapshot",
+    "drift_models",
+    "recent_drift_predictions",
+    "record_drift_statuses",
 ]
 
 
@@ -90,9 +99,18 @@ def get_drift_baseline(model: str) -> dict[str, float] | None:
     return json.loads(row["stats"]) if row else None
 
 
-def get_input_baseline(model: str) -> dict[str, Any] | None:
-    with get_db() as conn:
+def get_input_baseline(model: str, *, conn: Any = None) -> dict[str, Any] | None:
+    """A model's input-drift baseline, or ``None``.
+
+    ``conn`` lets a caller that is already inside a connection reuse it. Without it, a caller
+    looping over models paid a connection per model — free on SQLite, a pool checkout and a round
+    trip on Postgres, which is what made `input_drift_rows` open 101 connections for 50 models.
+    """
+    if conn is not None:
         row = conn.execute("SELECT stats FROM input_baselines WHERE model=?", (model,)).fetchone()
+        return json.loads(row["stats"]) if row else None
+    with get_db() as own:
+        row = own.execute("SELECT stats FROM input_baselines WHERE model=?", (model,)).fetchone()
     return json.loads(row["stats"]) if row else None
 
 
@@ -225,6 +243,76 @@ def write_input_snapshot(
             "VALUES (?,?,?,?,?,?)",
             (model, alias, emb_norm, emb_mean, emb_std, job_id),
         )
+
+
+def drift_models() -> list[str]:
+    """Every model that has drift snapshots."""
+    init_db()
+    with get_db() as conn:
+        return [r["model"] for r in conn.execute("SELECT DISTINCT model FROM drift_snapshots")]
+
+
+def recent_drift_predictions(model: str, limit: int) -> list[float]:
+    """The model's most recent ``limit`` predictions, newest first."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT prediction FROM drift_snapshots WHERE model=? "
+            "ORDER BY ts DESC, rowid DESC LIMIT ?",
+            (model, limit),
+        ).fetchall()
+    return [r["prediction"] for r in rows]
+
+
+def record_drift_statuses(
+    rows: list[dict[str, Any]], announce: Any, *, actor: str = "control-plane"
+) -> list[dict[str, Any]]:
+    """Record each model's drift status; for each that changed, call ``announce(conn, change)``.
+
+    One transaction under the ``drift`` write lock: the comparison with the last recorded status,
+    the new record, and whatever ``announce`` writes (the events) commit together, and a second
+    evaluator running at the same time sees the new record, not the old one (plan P2.4b).
+    ``announce`` returns False for a change it chose not to announce; it is recorded all the same.
+    """
+    changes: list[dict[str, Any]] = []
+    if not rows:
+        return changes
+    init_db()
+    with get_db() as conn:
+        conn.execute(begin_immediate("drift"))
+        for row in rows:
+            status = str(row["status"])
+            before = conn.execute(
+                "SELECT status FROM drift_status_state WHERE model=?", (row["model"],)
+            ).fetchone()
+            previous = before["status"] if before else None
+            if previous == status:
+                conn.execute(
+                    "UPDATE drift_status_state SET z_score=?, evaluated_at=CURRENT_TIMESTAMP "
+                    "WHERE model=?",
+                    (row["z_score"], row["model"]),
+                )
+                continue
+            conn.execute(
+                "INSERT INTO drift_status_state (model, status, z_score, changed_at, evaluated_at) "
+                "VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(model) DO UPDATE SET status=excluded.status, "
+                "z_score=excluded.z_score, changed_at=excluded.changed_at, "
+                "evaluated_at=excluded.evaluated_at",
+                (row["model"], status, row["z_score"]),
+            )
+            change = {
+                "model": row["model"],
+                "previous": previous,
+                "status": status,
+                "z_score": row["z_score"],
+                "live_mean": row["live_mean"],
+                "baseline_mean": row["baseline_mean"],
+                "n_snapshots": row["n_snapshots"],
+            }
+            if announce(conn, change, actor):
+                changes.append(change)
+    return changes
 
 
 install_write_retry(__name__)

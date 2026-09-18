@@ -55,6 +55,13 @@ spec:
           env:
             - name: CONTROL_PLANE_PORT
               value: {{ .Values.controlPlane.port | quote }}
+            {{- if .Values.workloadIdentity.enabled }}
+            # Workload identities (ADR 0125): verify JWT-SVIDs against the bundle the sidecar keeps.
+            - {name: EXAMLOPS_SPIFFE_TRUST_DOMAIN, value: {{ .Values.workloadIdentity.trustDomain | quote }}}
+            - {name: EXAMLOPS_SPIFFE_BUNDLE, value: /run/spire/svid/jwt-bundle.json}
+            - name: CONTROL_PLANE_WORKLOAD_IDENTITIES_JSON
+              value: {{ include "examlops.workloadIdentityMap" . | quote }}
+            {{- end }}
             {{- range $k, $v := .Values.controlPlane.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
@@ -67,17 +74,34 @@ spec:
           resources:
             {{- toYaml .Values.controlPlane.resources | nindent 12 }}
           readinessProbe:
+            # /readyz reads the datastore, which is bounded (EXAMLOPS_POSTGRES_POOL_TIMEOUT, 2 s)
+            # and then answers from a cached verdict. Kubernetes' default timeout is 1 s, which the
+            # first probe of an outage would exceed: a timeout reads as unready either way, but a
+            # 503 with a body says why.
             httpGet: {path: /readyz, port: http}
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 3
           livenessProbe:
+            # Deliberately /livez, which touches nothing: a datastore outage must never restart
+            # the replicas that would otherwise recover on their own.
             httpGet: {path: /livez, port: http}
             initialDelaySeconds: 15
             periodSeconds: 20
+            timeoutSeconds: 3
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            {{- if .Values.workloadIdentity.enabled }}
+            - {name: spiffe-svid, mountPath: /run/spire/svid, readOnly: true}
+            {{- end }}
+        {{- if .Values.workloadIdentity.enabled }}
+        {{- include "examlops.spiffeHelperContainer" (dict "root" . "component" "control-plane") | nindent 8 }}
+        {{- end }}
       volumes:
         - {name: tmp, emptyDir: {}}
+        {{- if .Values.workloadIdentity.enabled }}
+        {{- include "examlops.spiffeVolumes" . | nindent 8 }}
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -86,6 +110,8 @@ metadata:
   labels:
     {{- include "examlops.labels" . | nindent 4 }}
     app.kubernetes.io/component: control-plane
+    # The Prometheus job name the alert rules select (ServiceMonitor jobLabel), as in Compose.
+    examlops.io/job: control_plane
 spec:
   type: ClusterIP
   selector:

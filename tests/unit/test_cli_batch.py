@@ -51,7 +51,10 @@ def test_batch_list_empty():
 def _fake_urlopen(req, timeout=10):
     """Return a fake HTTP response with {"prediction": 42}."""
     resp = MagicMock()
-    resp.read.return_value = json.dumps({"prediction": 42}).encode()
+    # An Open Inference Protocol v2 answer (ADR 0126).
+    resp.read.return_value = json.dumps(
+        {"model_name": "jpcp", "outputs": [{"name": "predict", "shape": [1], "data": [42]}]}
+    ).encode()
     resp.__enter__ = lambda s: s
     resp.__exit__ = MagicMock(return_value=False)
     return resp
@@ -191,3 +194,26 @@ def test_batch_list_model_filter(tmp_path):
     assert "JPCP" in result.output
     # Should not show the OTHER model
     assert "OTHER" not in result.output
+
+
+def test_batch_submit_sends_oip_v2_with_the_alias(tmp_path):
+    """Rows go to /v2/models/{model}/infer (ADR 0126). --alias reaches the server unless a row
+    names its own; rows used to be posted verbatim, so --alias reached it for no row at all."""
+    input_file = tmp_path / "inputs.json"
+    input_file.write_text(
+        json.dumps([{"features": {"x": 1}}, {"features": {"x": 2}, "alias": "Staging"}])
+    )
+    sent: list = []
+
+    def capture(req, timeout=10):
+        sent.append((req.full_url, json.loads(req.data)))
+        return _fake_urlopen(req, timeout)
+
+    with patch("urllib.request.urlopen", side_effect=capture):
+        result = runner.invoke(
+            app, ["serve", "batch", "submit", "JPCP", str(input_file), "--alias", "Canary"]
+        )
+    assert result.exit_code == 0, result.output
+    assert all(url.endswith("/v2/models/JPCP/infer") for url, _ in sent)
+    assert [body["parameters"]["alias"] for _, body in sent] == ["Canary", "Staging"]
+    assert sent[0][1]["inputs"] == [{"name": "x", "shape": [1], "datatype": "FP64", "data": [1]}]

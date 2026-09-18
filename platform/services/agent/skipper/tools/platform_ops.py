@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 import sys
 import urllib.parse
-from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -19,6 +18,9 @@ if str(_CLI_SRC) not in sys.path:
     sys.path.insert(0, str(_CLI_SRC))
 
 try:
+    # Not via `platform_db`: that module's surface is frozen (the coupling ratchet), and
+    # `audit_best_effort` is deliberately not re-exported there.
+    from examlops.data.audit import audit_best_effort
     from examlops.platform_db import (
         get_db,
         get_drift_baseline,
@@ -142,6 +144,38 @@ def get_model_lineage(model_name: str, version: str = "") -> str:
     )
 
 
+def _recent_predictions(
+    models: list[str] | None = None, per_model: int = 100
+) -> dict[str, list[float]]:
+    """Each model's newest ``per_model`` predictions, keyed by model.
+
+    One query per model, the way every other drift read in the platform does it
+    (``exa drift``, ``forecast``, ``corruption``, the dashboard's drift router). The shape this
+    replaces — read the newest N rows across *all* models, then group — asks a different question:
+    a model that simply predicts less often than its neighbours falls out of the shared window and
+    comes back as having no snapshots at all. That reads as "no data" when the truth is "no data
+    *in the busiest models' recent history*", and it is the answer that silently drops a model out
+    of the auto-retrain loop.
+
+    ``models=None`` covers every model that has snapshots.
+    """
+    with get_db() as conn:
+        names = (
+            models
+            if models is not None
+            else [r["model"] for r in conn.execute("SELECT DISTINCT model FROM drift_snapshots")]
+        )
+        out: dict[str, list[float]] = {}
+        for name in names:
+            rows = conn.execute(
+                "SELECT prediction FROM drift_snapshots WHERE model=? ORDER BY ts DESC LIMIT ?",
+                (name, per_model),
+            ).fetchall()
+            if rows:
+                out[name] = [r["prediction"] for r in rows]
+    return out
+
+
 @tool
 def get_drift_status(model_name: str = "") -> str:
     """Show prediction drift status for all models or one model.
@@ -151,22 +185,9 @@ def get_drift_status(model_name: str = "") -> str:
     """
     if not _DB_OK:
         return _db_unavailable()
-    with get_db() as conn:
-        if model_name:
-            rows = conn.execute(
-                "SELECT model, prediction FROM drift_snapshots WHERE model=? ORDER BY ts DESC LIMIT 100",
-                (model_name,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT model, prediction FROM drift_snapshots ORDER BY ts DESC LIMIT 1000"
-            ).fetchall()
-    if not rows:
+    grouped = _recent_predictions([model_name] if model_name else None)
+    if not grouped:
         return "No drift snapshots recorded yet. Run exa drift baseline <MODEL> after collecting predictions."
-
-    grouped: dict[str, list[float]] = defaultdict(list)
-    for r in rows:
-        grouped[r["model"]].append(r["prediction"])
 
     lines = []
     for model, preds in grouped.items():
@@ -205,7 +226,10 @@ def query_audit_log(last_days: int = 7, model: str = "", action: str = "") -> st
     if action:
         query += " AND action=?"
         params.append(action)
-    query += " ORDER BY ts DESC LIMIT 50"
+    # `id` breaks the `ts` tie — one-second resolution means a cycle's events share a timestamp,
+    # and without it "the 50 most recent" returned the oldest of the tied second. An agent asked
+    # what happened cannot notice that the order it was handed is inverted.
+    query += " ORDER BY ts DESC, id DESC LIMIT 50"
     with get_db() as conn:
         rows = conn.execute(query, params).fetchall()
     if not rows:
@@ -255,8 +279,9 @@ def set_traffic_split(
     data, err = _http.request_json(
         "ray_serve",
         "POST",
-        f"{config.RAY_SERVE_URL}/traffic-rules/{model_name}",
+        f"{config.RAY_SERVE_URL}/infer-pipeline/traffic-rules/{model_name}",
         json=rules,
+        headers=_http.serving_admin_headers(),
     )
     if err:
         return f"Rules saved to DB but could not apply to Ray Serve: {err}"
@@ -373,6 +398,9 @@ def promote_model(
             model_name,
             {"from": from_alias, "to": to_alias, "version": version, metric: metric_val},
         )
+        from examlops import events
+
+        events.alias_changed(model_name, to_alias, version, actor="agent", via="agent")
 
     return f"Promoted {model_name} v{version} → {to_alias}  ({summary})"
 
@@ -400,38 +428,40 @@ def get_input_drift_status(model_name: str = "") -> str:
         return "No input snapshots recorded yet. Run the bridge to collect embedding data."
 
     lines = []
-    for model in models_list:
-        with get_db() as conn:
+    # One connection for the whole report rather than two per model (snapshots + baseline): on
+    # Postgres each is a pool checkout and a round trip, and this is a read nothing else depends on.
+    with get_db() as conn:
+        for model in models_list:
             snaps = conn.execute(
                 "SELECT emb_norm, emb_mean, emb_std FROM input_snapshots WHERE model=? "
                 "ORDER BY ts DESC LIMIT 200",
                 (model,),
             ).fetchall()
-        if not snaps:
-            continue
-        norms = [r["emb_norm"] for r in snaps]
-        means = [r["emb_mean"] for r in snaps]
-        stds_list = [r["emb_std"] for r in snaps]
-        live = {
-            "norm_mean": sum(norms) / len(norms),
-            "mean_mean": sum(means) / len(means),
-            "std_mean": sum(stds_list) / len(stds_list),
-        }
-        baseline = get_input_baseline(model)
-        if baseline is None:
-            max_z, status = 0.0, "OK (no baseline)"
-        else:
-            zs = []
-            for metric in ("norm_mean", "mean_mean", "std_mean"):
-                bstd = baseline.get(f"{metric}_std", 0.0)
-                if bstd > 0:
-                    zs.append(abs(live[metric] - baseline[metric]) / bstd)
-            max_z = max(zs) if zs else 0.0
-            status = "CRITICAL" if max_z >= 3.0 else "WARNING" if max_z >= 2.0 else "OK"
-        lines.append(
-            f"- {model}: norm_μ={live['norm_mean']:.3f}  emb_μ={live['mean_mean']:.4f}  "
-            f"max_z={max_z:.2f} → {status}  (n={len(snaps)})"
-        )
+            if not snaps:
+                continue
+            norms = [r["emb_norm"] for r in snaps]
+            means = [r["emb_mean"] for r in snaps]
+            stds_list = [r["emb_std"] for r in snaps]
+            live = {
+                "norm_mean": sum(norms) / len(norms),
+                "mean_mean": sum(means) / len(means),
+                "std_mean": sum(stds_list) / len(stds_list),
+            }
+            baseline = get_input_baseline(model, conn=conn)
+            if baseline is None:
+                max_z, status = 0.0, "OK (no baseline)"
+            else:
+                zs = []
+                for metric in ("norm_mean", "mean_mean", "std_mean"):
+                    bstd = baseline.get(f"{metric}_std", 0.0)
+                    if bstd > 0:
+                        zs.append(abs(live[metric] - baseline[metric]) / bstd)
+                max_z = max(zs) if zs else 0.0
+                status = "CRITICAL" if max_z >= 3.0 else "WARNING" if max_z >= 2.0 else "OK"
+            lines.append(
+                f"- {model}: norm_μ={live['norm_mean']:.3f}  emb_μ={live['mean_mean']:.4f}  "
+                f"max_z={max_z:.2f} → {status}  (n={len(snaps)})"
+            )
     return "\n".join(lines) if lines else "No input data found."
 
 
@@ -460,14 +490,10 @@ def trigger_auto_retrain(model_name: str = "") -> str:
     if not enabled:
         return "No models with auto-retrain enabled."
 
-    with get_db() as conn:
-        snap_rows = conn.execute(
-            "SELECT model, prediction FROM drift_snapshots ORDER BY ts DESC LIMIT 5000"
-        ).fetchall()
-
-    grouped: dict[str, list[float]] = defaultdict(list)
-    for r in snap_rows:
-        grouped[r["model"]].append(r["prediction"])
+    # Only the models that could actually be retrained, each read over its own window: a model
+    # enrolled in auto-retrain is one an operator wants watched regardless of how it compares in
+    # volume to its neighbours.
+    grouped = _recent_predictions(list(enabled))
 
     triggered, skipped = [], []
     for mdl, ar in enabled.items():
@@ -496,25 +522,31 @@ def trigger_auto_retrain(model_name: str = "") -> str:
             if elapsed < ar["cooldown_s"]:
                 skipped.append(f"{mdl}: cooldown {elapsed:.0f}/{ar['cooldown_s']}s")
                 continue
-        data, err = _http.request_json(
-            "control_plane",
-            "POST",
-            f"{config.CONTROL_PLANE_URL}/retrain",
-            json={"model_name": mdl, "dataset_name": ar["dataset_name"], "is_dummy": False},
-            headers={"Authorization": f"Bearer {config.CONTROL_PLANE_TOKEN}"},
+        # The command API; retries of the POST resolve to one command (plans P1.6c, P1.7).
+        data, err = _http.submit_retrain(
+            {"model_name": mdl, "dataset_name": ar["dataset_name"], "is_dummy": False},
+            automated=True,
         )
-        if err:
-            skipped.append(f"{mdl}: retrain POST failed — {err}")
+        if err or data is None:
+            skipped.append(f"{mdl}: retrain POST failed — {err or 'no answer'}")
         else:
             record_drift_trigger(mdl)
-            write_audit_event(
+            # Unprotected, this write sat in the middle of a loop over models: a raise aborted
+            # `trigger_auto_retrain` with earlier models already retrained, so the agent reported a
+            # failure for an operation that had partly succeeded — and never reached the rest.
+            audit_best_effort(
                 "agent",
                 "agent",
                 "drift_auto_retrain_triggered",
                 mdl,
-                {"z_score": z, "flow_run_id": data.get("flow_run_id")},
+                {
+                    "z_score": z,
+                    "flow_run_id": data.get("flow_run_id"),
+                    "command_id": data.get("command_id"),
+                },
             )
-            triggered.append(f"{mdl}: z={z:.2f} → flow_run_id={data.get('flow_run_id')}")
+            run = data.get("flow_run_id") or f"queued as {data.get('command_id')}"
+            triggered.append(f"{mdl}: z={z:.2f} → flow_run_id={run}")
 
     lines = []
     if triggered:
@@ -596,19 +628,34 @@ def get_platform_summary() -> str:
         _, err = _http.request_json(svc, "GET", url)
         statuses[svc] = "UP" if not err else "DOWN"
 
-    # Registered model count
-    models_data, err = _http.request_json(
-        "mlflow",
-        "GET",
-        f"{config.MLFLOW_URL}/api/2.0/mlflow/registered-models/search",
-    )
-    model_count: int | str = len(models_data.get("registered_models", [])) if not err else "?"
+    # Registered model count — over the whole registry, not one page of it. `len(page)` would
+    # report the page size forever once the platform outgrows a page, and a summary that says
+    # "Registered models: 100" for a year is a number nobody can tell is wrong.
+    model_count: int | str = "?"
+    try:
+        from examlops.mlflow_paging import all_items
+
+        def _fetch(u: str) -> dict:
+            body, fetch_err = _http.request_json("mlflow", "GET", u)
+            if fetch_err:
+                raise RuntimeError(fetch_err)
+            return body
+
+        model_count = len(
+            all_items(
+                _fetch,
+                f"{config.MLFLOW_URL}/api/2.0/mlflow/registered-models/search",
+                "registered_models",
+            )
+        )
+    except Exception:  # noqa: BLE001 - "?" already says the count is unknown, not zero
+        model_count = "?"
 
     # Pending approvals
     approvals_data, err = _http.request_json(
         "control_plane",
         "GET",
-        f"{config.CONTROL_PLANE_URL}/approvals",
+        f"{config.CONTROL_PLANE_URL}/v1/approvals",
     )
     if not err and isinstance(approvals_data, list):
         pending_count: int | str = sum(1 for a in approvals_data if a.get("status") == "pending")
@@ -650,14 +697,8 @@ def diagnose_platform() -> str:
 
     # Drift anomalies
     if _DB_OK:
-        with get_db() as conn:
-            rows = conn.execute(
-                "SELECT model, prediction FROM drift_snapshots ORDER BY ts DESC LIMIT 500"
-            ).fetchall()
-        if rows:
-            grouped: dict[str, list[float]] = defaultdict(list)
-            for r in rows:
-                grouped[r["model"]].append(r["prediction"])
+        grouped = _recent_predictions()
+        if grouped:
             for model, preds in grouped.items():
                 n = len(preds)
                 mean = sum(preds) / n
@@ -676,16 +717,18 @@ def diagnose_platform() -> str:
         since = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
         with get_db() as conn:
             err_rows = conn.execute(
+                # Patterns bound, not inlined: a literal `%` in a parameterised statement is a
+                # placeholder to psycopg, so this raised on every Postgres install.
                 "SELECT action, target FROM audit_events "
-                "WHERE ts >= ? AND (action LIKE '%fail%' OR action LIKE '%error%') LIMIT 5",
-                (since,),
+                "WHERE ts >= ? AND (action LIKE ? OR action LIKE ?) LIMIT 5",
+                (since, "%fail%", "%error%"),
             ).fetchall()
         for r in err_rows:
             findings.append(f"WARNING: recent failure — {r['action']} on {r['target']}")
 
     # Pending approval queue
     ap_data, ap_err = _http.request_json(
-        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/approvals"
+        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/v1/approvals"
     )
     if not ap_err and isinstance(ap_data, list):
         pending = [a for a in ap_data if a.get("status") == "pending"]

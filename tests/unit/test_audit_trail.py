@@ -177,3 +177,91 @@ def test_cli_bare_audit_still_works():
     runner = CliRunner()
     result = runner.invoke(app, ["audit", "--last", "7d"])
     assert result.exit_code == 0, result.output
+
+
+def test_the_audit_log_is_shown_in_chain_order_not_by_a_one_second_timestamp():
+    """ "The most recent N events" must mean the last N in the chain.
+
+    `ts` is `CURRENT_TIMESTAMP`, which has one-second resolution, and a single retrain or autopilot
+    cycle writes many events inside one second. Ordering by `ts` alone leaves every tie to the query
+    plan, and SQLite resolves them by scanning forward — so `exa audit -n 5` returned the five
+    *oldest* events of the tied second and presented them as the newest, stably enough to look
+    right. The chain's own order is `id`; that is what makes it a chain, and it is what an auditor
+    reconstructing a sequence of events is relying on.
+    """
+    from examlops import platform_db
+
+    # Seeded with one explicit `ts` rather than by writing 12 events and hoping: through
+    # `write_audit_event` they straddle a second boundary about one run in three, and the test
+    # then skipped its own precondition. The behaviour under test is the ORDER BY, and a shared
+    # timestamp with ascending ids is exactly the state that exercises it.
+    with platform_db.get_db() as conn:
+        conn.executemany(
+            "INSERT INTO audit_events (ts, source, actor, action, target) "
+            "VALUES ('2026-09-15 12:00:00', 'cli', 'alice', ?, 'JPCP')",
+            [(f"step_{i:02d}",) for i in range(12)],
+        )
+        assert len(conn.execute("SELECT DISTINCT ts FROM audit_events").fetchall()) == 1, (
+            "the events must share one second for this to test anything"
+        )
+
+    # Drive the real command, not a query written here: the defect is in the SQL the CLI runs.
+    import json as _json
+
+    from typer.testing import CliRunner
+
+    from examlops.cli.main import app
+
+    result = CliRunner().invoke(app, ["--json", "audit", "--last", "7d", "--limit", "5"])
+    assert result.exit_code == 0, result.output
+    payload = _json.loads(result.stdout)
+    shown = [e["action"] for e in (payload["events"] if isinstance(payload, dict) else payload)]
+    assert shown == ["step_11", "step_10", "step_09", "step_08", "step_07"], shown
+
+
+def test_the_audit_cli_and_the_dashboard_order_audit_reads_the_same_way():
+    """Both audit surfaces must break a `ts` tie the same way, or they disagree about history.
+
+    They are read by the same person about the same incident — the compliance pack points at the
+    CLI, the console shows the console. A tie broken differently in two places is two different
+    answers to "what happened first".
+    """
+    import ast
+    import re
+
+    root = Path(__file__).parents[2]
+    # Scoped to the FUNCTION that reads audit_events, not to the file: `platform_ops.py` also
+    # queries drift_snapshots by `ts`, which is a legitimate sample window, and a file-scoped
+    # guard flagged it. The property is "this statement reads the audit chain", and a function is
+    # the smallest unit that holds both the `FROM audit_events` and the `ORDER BY` a query-builder
+    # appends later.
+    offenders: list[str] = []
+    for src_file in sorted(root.glob("platform/**/*.py")):
+        sp = str(src_file)
+        if "/build/" in sp or "/tests/" in sp or src_file.name.startswith("test_"):
+            continue
+        text = src_file.read_text()
+        if "FROM audit_events" not in text:
+            continue
+        for fn in ast.walk(ast.parse(text)):
+            if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            literals = [
+                n.value
+                for n in ast.walk(fn)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            ]
+            if not any("FROM audit_events" in lit for lit in literals):
+                continue
+            for lit in literals:
+                for clause in re.findall(r"ORDER BY ts(?: DESC)?.*", lit):
+                    if any(k in clause for k in ("id DESC", "id ASC", "rowid")):
+                        continue
+                    offenders.append(
+                        f"{src_file.relative_to(root)}:{fn.lineno} {fn.name}(): {clause.strip()!r}"
+                    )
+    assert not offenders, (
+        "these order audit events by `ts` alone, which has one-second resolution — the tie goes "
+        "to the query plan, and `exa audit -n 5` returned the OLDEST five of a busy second as the "
+        "newest. `id` is the hash chain's order:\n  " + "\n  ".join(offenders)
+    )

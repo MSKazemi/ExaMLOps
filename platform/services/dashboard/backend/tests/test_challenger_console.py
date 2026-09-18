@@ -134,3 +134,23 @@ def test_the_router_uses_the_shared_code_paths_not_raw_sql():
     # docstring, which is the same false-positive that makes a guard get switched off.
     for fragment in ("UPDATE challenger_config", "FROM challenger_config", "INSERT INTO audit"):
         assert fragment not in src, f"router re-implements storage: {fragment!r}"
+
+
+async def test_a_viewer_does_not_see_another_tenants_challengers(client, platform_db):
+    """The leak a raw-SQL scan cannot see: the route read through a helper, not a `SELECT`.
+
+    `list_challenger_configs()` takes `tenant=None` to mean **every** tenant, and `GET /api/challenger`
+    asked for exactly that. A helper whose default is "no filter" reads like a helper with a safe
+    default, so nothing in review or in a SQL-shaped guard flagged it.
+    """
+    from examlops import data as pdb
+
+    pdb.set_challenger_config("MINE", "v2", tenant="default")
+    pdb.set_challenger_config("THEIRS", "v9", tenant="other-centre")
+
+    token = await _login(client, VIEWER_PW)
+    r = await client.get("/api/challenger", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    models = {row["model"] for row in r.json()}
+    assert "THEIRS" not in models, f"cross-tenant leak: a default-tenant viewer saw {models}"
+    assert "MINE" in models, "scoping must not empty the caller's own list"

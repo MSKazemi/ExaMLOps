@@ -1,6 +1,6 @@
 # Autoscaling & Scale-to-Zero (E5)
 
-> Next-Gen 40 · feature **E5** · ADR 0031 · spec `design/vision/specs/E5-autoscaling.md`
+> Next-Gen 40 · feature **E5** · ADR 0031 · spec `design/vision/specs/E5-autoscaling-scale-to-zero.md`
 
 E5 gives every served model a **metric-driven autoscaler** with scale-to-zero, managed
 cold starts, an optional warm pool, and anti-thrash controls. The scaling decision is a
@@ -81,6 +81,12 @@ transitions × the idle window × the GPU fraction × cost:
 exa serve autoscale savings JPCP --gpu-cost 2.0
 # JPCP: 2 scale-to-zero event(s) → 1.0 GPU-hours saved ($2.0).
 ```
+
+The transitions are counted over the model's **whole** history, not a page of recent events, so
+the figure keeps growing with the model rather than flattening once it has scaled more times than
+one listing returns. `status` deliberately differs: the events it shows, and the mean cold-start it
+reports, are about *recent* behaviour, which is what makes them useful for judging the policy.
+A total and a recent sample are different questions, and this page is the total.
 
 ## Graceful degradation
 

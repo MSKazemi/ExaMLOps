@@ -27,6 +27,7 @@ import shlex
 import typer.main
 
 from examlops.cli.main import app
+from tests.unit._guard_deps import scan_files
 
 EXAMPLE = re.compile(r"^\s*(?:\$\s*)?(exa\s+[^\n]+)$", re.M)
 
@@ -145,7 +146,7 @@ def test_every_exa_example_in_the_docs_resolves():
     global_opts = _options(root) | {"--help": False, "-h": False}
     docs = pathlib.Path(__file__).resolve().parents[2] / "docs"
     failures, checked = [], 0
-    for md in sorted(docs.rglob("*.md")):
+    for md in scan_files(docs, "*.md"):
         for raw in md.read_text(errors="ignore").splitlines():
             match = re.match(r"^`?(exa\s+[^`|]+)`?$", raw.strip().lstrip("$ ").strip())
             if not match:

@@ -161,11 +161,17 @@ def test_trigger_fires_retrain(tmp_path):
     set_drift_baseline("JPCP", {"mean": 0.0, "std": 1.0, "n": 100.0})
     seed_data_drift_evidence("JPCP", [10.0] * 20)
     runner.invoke(app, ["drift", "auto-retrain", "enable", "JPCP", "--min-z", "3.0"])
-    mock_result = {"flow_run_id": "test-flow-123"}
+    mock_result = {
+        "command_id": "v1:retrain:x",
+        "state": "succeeded",
+        "result": {"flow_run_id": "test-flow-123"},
+        "status_url": "/v1/commands/v1:retrain:x",
+    }  # POST /v1/retrain, dispatched (plan P1.6c)
     with patch("examlops.cli._client.post", return_value=mock_result) as mock_post:
         result = runner.invoke(app, ["drift", "trigger"])
     assert result.exit_code == 0, result.output
     mock_post.assert_called_once()
     call_args = mock_post.call_args
+    assert call_args[0][0].endswith("/v1/retrain")
     assert call_args[0][1]["model_name"] == "JPCP"
     assert "JPCP" in result.output

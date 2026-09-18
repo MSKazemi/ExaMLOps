@@ -232,6 +232,12 @@ jobs:
             context: platform/infra/docker-compose
             dockerfile: platform/infra/docker-compose/Dockerfile.mlflow
             description: MLflow tracking server with PostgreSQL + S3 support
+          # The workload-identity overlay's one-shot setup (ADR 0125): node PKI and SPIRE
+          # registrations. Published so a pull-only install needs no build.
+          - name: spire-init
+            context: platform/infra/docker-compose/identity
+            dockerfile: platform/infra/docker-compose/identity/Dockerfile
+            description: ExaMLOps SPIRE setup — node PKI and workload registration for the identity overlay
     env:
       IMAGE: ghcr.io/mskazemi/examlops-${{ matrix.name }}
       VERSION: ${{ needs.verify.outputs.version }}

@@ -12,9 +12,10 @@ so the dashboard can't drift from the CLI.
 from __future__ import annotations
 
 from auth import require_role
-from capabilities import COMPLIANCE_CLASSIFY, can, deny_reason
+from capabilities import COMPLIANCE_CLASSIFY, can, deny_reason, require_capability, scope_to_tenant
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, status
+from readfail import readable
 
 router = APIRouter(prefix="/compliance", tags=["compliance"])
 _viewer = require_role("viewer")
@@ -45,21 +46,23 @@ def _examlops_compliance():
 
 
 @router.get("/systems")
-async def list_systems(_=Depends(_viewer)) -> list[dict]:
-    """EU-AI-Act system register (from `compliance_systems`, the table the CLI writes)."""
-    try:
+async def list_systems(principal: dict = Depends(_viewer)) -> list[dict]:
+    """EU-AI-Act system register (from `compliance_systems`, the table the CLI writes).
+
+    Scoped to the caller's tenant (F15 R4): which models a centre has declared in scope of the
+    AI Act, and their risk tiers, is that centre's regulatory position.
+    """
+    with readable("the EU-AI-Act system register"):
         conn = connect(_db_path())
         try:
             rows = conn.execute(
                 "SELECT model, tenant, in_scope, risk_tier, intended_purpose, deployment_context, "
                 "conformity_state, updated_at, updated_by FROM compliance_systems ORDER BY model"
             ).fetchall()
-            conn.close()
-            return [dict(r) for r in rows]
+            systems = scope_to_tenant(principal, [dict(r) for r in rows])
         finally:
             conn.close()
-    except Exception:
-        return []
+    return systems
 
 
 @router.get("/risk-tiers")
@@ -74,6 +77,11 @@ async def classify(
     model: str,
     payload: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(COMPLIANCE_CLASSIFY)),
 ) -> dict:
     """Set a system's EU-AI-Act risk tier + intended purpose (admin; audited).
 
@@ -99,6 +107,11 @@ async def set_conformity(
     model: str,
     payload: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(COMPLIANCE_CLASSIFY)),
 ) -> dict:
     """Advance a system's conformity state (admin; audited).
 
@@ -177,7 +190,14 @@ async def technical_file_versions(model: str, _=Depends(_viewer)) -> list[dict]:
 
 @router.post("/technical-file/{model}")
 async def save_technical_file_version(
-    model: str, tenant: str = "default", principal: dict = Depends(_admin)
+    model: str,
+    tenant: str = "default",
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(COMPLIANCE_CLASSIFY)),
 ) -> dict:
     """Save a new technical-file version (admin + ``compliance.classify``; audited).
 

@@ -86,7 +86,10 @@ from a paused partition goes to ``refetch`` and is fetched again after the seek 
   partition waits ``retry_after`` and the attempt is **not** spent, so a backlog replay under a
   low rate never dead-letters.
 * ``validation``, ``not_found``, ``unexpected``, an oversize value (checked on the raw bytes before
-  any parse), a value that is not JSON, or a malformed envelope → dead-lettered at once.
+  any parse), a value that is not JSON, or a malformed envelope → dead-lettered at once. The three
+  the *envelope* refuses never reach the ingress, so this module counts them in
+  ``dataplane_stream_requests_total`` itself, as ``validation``: a refused message is still a
+  message this stream was sent.
 * A dead letter is: the sink record, then (when configured) the raw copy to ``dlq_topic`` and an
   ``ok:false`` reply. If any part fails — ``record()`` raises, or a delivery fails — the offset is
   not stored; after a backoff only the missing parts are redone (inference is never re-run).
@@ -123,6 +126,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import os
 import random
 import re
 import threading
@@ -230,8 +234,41 @@ def _clamp_retry_after(seconds: float) -> float:
     return min(RETRY_AFTER_MAX_S, max(0.0, float(seconds)))
 
 
+def _env_float(name: str, default: float) -> float:
+    """A non-negative float from the environment; anything unparseable keeps the default."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("dataplane streams: %s=%r is not a number; using %g", name, raw, default)
+        return default
+    return value if value >= 0 else default
+
+
 #: How often (real seconds) the poll loop publishes ``dataplane_stream_consumer_lag``.
 LAG_REPORT_INTERVAL_S = 1.0
+
+#: How often the lag report asks the broker for a *real* high watermark instead of librdkafka's
+#: cached one, in seconds of the session's own clock. Env override:
+#: :data:`WATERMARK_REFRESH_ENV`. See :meth:`KafkaStreamSession._report_lag` for why a cached-only
+#: watermark reads zero exactly when a backlog builds (live finding D3).
+WATERMARK_REFRESH_INTERVAL_S = 10.0
+WATERMARK_REFRESH_ENV = "EXAMLOPS_DATAPLANE_LAG_REFRESH_SECONDS"
+#: How long one such query may block the poll loop, per partition, and how long a whole refresh
+#: pass may. The loop must keep polling to heartbeat its group membership, so an unreachable broker
+#: must never cost (partitions × timeout) in one pass: the pass stops at the budget and resumes at
+#: the next partition on its next turn, so every partition is still refreshed in bounded time.
+#:
+#: **Deliberately not tunable** (re-review), unlike the interval above. These two are the safety
+#: bound on how long a gauge may keep this consumer out of ``poll()`` — raise them and a slow
+#: broker starts costing group membership, which is a correctness property, not a metrics one.
+#: The knob an operator actually wants is the interval: it is what changes how *often* the cost is
+#: paid, while these keep any single pass far inside ``max.poll.interval.ms`` whatever it is set
+#: to. If a site ever needs them moved, that is a code change with a reason attached.
+WATERMARK_QUERY_TIMEOUT_S = 1.0
+WATERMARK_QUERY_BUDGET_S = 2.0
 
 #: ``IngressResult.shed_reason`` values that mark the ingress's own backpressure. Defined by the
 #: ingress — the one that stamps them — and re-exported here under the name this module already
@@ -586,6 +623,12 @@ class KafkaStreamSession:
         self._transient_error: str | None = None
         self._last_status: tuple[str, str | None] | None = None
         self._last_lag_report = float("-inf")
+        self._watermark_interval = _env_float(WATERMARK_REFRESH_ENV, WATERMARK_REFRESH_INTERVAL_S)
+        self._last_watermark_query = float("-inf")
+        self._watermark_high: dict[tuple[str, int], int] = {}
+        self._watermark_low: dict[tuple[str, int], int] = {}
+        self._committed_offset: dict[tuple[str, int], int] = {}
+        self._watermark_cursor = 0  # where the next (bounded) refresh pass resumes
         self._last_warning: dict[str, float] = {}
         self._ctl_lock = threading.Lock()
         self._operator_paused = paused
@@ -723,6 +766,7 @@ class KafkaStreamSession:
 
     def _on_assign(self, consumer: Any, partitions: list[Any]) -> None:
         self._last_lag_report = float("-inf")  # a new assignment reports its lag at once
+        self._last_watermark_query = float("-inf")  # with a real watermark, not a stale one
         for tp in partitions:
             key = (str(tp.topic), int(tp.partition))
             self._parts[key] = _PartitionState(key[0], key[1])
@@ -816,6 +860,9 @@ class KafkaStreamSession:
         keys = set(self._keys(partitions))
         for key in keys:
             self._parts.pop(key, None)
+            self._watermark_high.pop(key, None)
+            self._watermark_low.pop(key, None)
+            self._committed_offset.pop(key, None)
             # A partition we no longer own must stop reporting a lag: its last value would stand
             # for ever and alert on a backlog whichever replica took it over is already serving.
             metrics.clear_consumer_lag(self.binding.project, self.binding.name, key[1])
@@ -1285,9 +1332,22 @@ class KafkaStreamSession:
         return job
 
     def _process(self, token: int, rec: _Record, attempt: int) -> _Verdict:
+        started = self._clock()
         try:
             req = self._request_of(rec)
         except EnvelopeRejected as reject:
+            # A message the envelope refuses never reaches the ingress, so nothing counted it —
+            # and a stream rejecting every message it was sent looked, in `requests_total`, like a
+            # stream nobody was using (live finding D8). The ingress's own label set, with the
+            # outcome the dead letter and the reply already carry.
+            metrics.observe_request(
+                self.binding.project,
+                self.binding.name,
+                self.binding.connector,
+                self.binding.model,
+                REJECTED_OUTCOME,
+                self._clock() - started,
+            )
             error = redact_error(f"{reject.reason}: {reject.detail}", secrets=self._secrets)
             owed = _DeadLetter(reject.reason, error, attempt, REJECTED_OUTCOME)
             return self._dead_letter(token, rec, owed)
@@ -1466,27 +1526,131 @@ class KafkaStreamSession:
             return
         self._warn("producer", text)
 
+    def _refresh_watermarks(self) -> None:
+        """Ask the broker for each owned partition's real high watermark (live finding D3).
+
+        librdkafka refreshes its cached watermark only from *fetch responses*, and a partition
+        that is paused — by the operator, or parked in a retry backoff, which is implemented as a
+        pause — is not fetched. Its cached watermark therefore freezes at the last value seen,
+        ``high - position`` collapses to 0, and the one state an operator most needs a number for
+        reports no lag at all.
+
+        So every :data:`WATERMARK_REFRESH_INTERVAL_S` seconds, and no more often, one real query
+        per assigned partition (paused ones included) with a bounded timeout. Between refreshes
+        the cached value still serves, and the two are combined with ``max`` so a stale cache can
+        never pull a watermark backwards.
+
+        A pass is bounded by :data:`WATERMARK_QUERY_BUDGET_S` in real time and resumes where it
+        stopped, so a slow or unreachable broker cannot keep the loop out of ``poll()`` — which is
+        what heartbeats this consumer's group membership — for (partitions × timeout).
+
+        The **low** watermark is kept from the same answer (it costs nothing extra), and the
+        group's committed offsets are fetched in one call for the partitions that have no position
+        of their own yet — both are the fallbacks :meth:`_report_lag` needs to report a *new*
+        stream's first backlog, before it has consumed anything (live pass 2).
+        """
+        self._last_watermark_query = self._clock()
+        keys = sorted(self._parts)
+        if not keys:
+            return
+        deadline = time.monotonic() + WATERMARK_QUERY_BUDGET_S
+        start = self._watermark_cursor % len(keys)
+        visited: list[tuple[str, int]] = []
+        for step in range(len(keys)):
+            key = keys[(start + step) % len(keys)]
+            topic, partition = key
+            self._watermark_cursor = (start + step + 1) % len(keys)
+            visited.append(key)
+            try:
+                tp = _kafka._tp(topic, partition)
+                low, high = self._consumer.get_watermark_offsets(
+                    tp, timeout=WATERMARK_QUERY_TIMEOUT_S
+                )
+            except Exception as exc:  # noqa: BLE001 - the cached value still serves
+                self._warn("watermark", f"watermark query failed ({type(exc).__name__})")
+                low, high = -1, -1
+            if int(high) >= 0:
+                self._watermark_high[key] = int(high)
+            if int(low) >= 0:
+                self._watermark_low[key] = int(low)
+            if time.monotonic() >= deadline:
+                break
+        self._refresh_committed(visited, deadline)
+
+    def _refresh_committed(self, keys: list[tuple[str, int]], deadline: float) -> None:
+        """The group's committed offset for the partitions that have no position of their own.
+
+        One call for all of them, inside the same pass's budget, and only while the fallback is
+        needed: a partition that has consumed anything has a position, which is always the better
+        answer. Kept per partition so :meth:`_report_lag` can use it whenever it runs.
+        """
+        wanted = [k for k in keys if self._position_of(self._parts.get(k)) is None]
+        if not wanted:
+            return
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return
+        try:
+            rows = self._consumer.committed(
+                [_kafka._tp(t, p) for t, p in wanted], timeout=min(WATERMARK_QUERY_TIMEOUT_S, left)
+            )
+        except Exception as exc:  # noqa: BLE001 - the low watermark still serves as a fallback
+            self._warn("committed", f"committed-offset query failed ({type(exc).__name__})")
+            return
+        for row in rows or ():
+            if getattr(row, "error", None) is not None or row.offset is None:
+                continue
+            offset = int(row.offset)
+            if offset >= 0:  # a negative offset is librdkafka's "this group committed nothing"
+                self._committed_offset[(str(row.topic), int(row.partition))] = offset
+
+    @staticmethod
+    def _position_of(st: _PartitionState | None) -> int | None:
+        """This consumer's own position on ``st``: where it would resume, else what it stored."""
+        if st is None:
+            return None
+        position = st.position()
+        return position if position is not None else st.stored
+
     def _report_lag(self) -> None:
         """Publish ``dataplane_stream_consumer_lag`` per owned partition (ADR 0131 d11, M14).
 
-        The lag is the partition's high watermark minus this consumer's own position — the offset
-        it would resume from, i.e. ``_PartitionState.position()`` (never past a non-terminal
-        offset), falling back to the stored offset. The watermark is read with ``cached=True``:
-        librdkafka keeps the last value every fetch response carried, so this costs no broker
-        round trip and is safe on the poll loop. A client that cannot answer from cache (or has
-        not fetched yet) simply publishes nothing this pass.
+        The lag is the partition's high watermark minus where this consumer would resume. The
+        watermark is the larger of librdkafka's cached value (free, refreshed by every fetch
+        response) and the last value :meth:`_refresh_watermarks` queried, so a partition nobody is
+        fetching still reports its backlog.
+
+        "Where it would resume" has three sources, most authoritative first — a *new* stream has
+        only the last two, and reporting nothing for it left the first backlog of every new stream
+        invisible until it consumed one message (live pass 2):
+
+        1. this consumer's own position: ``_PartitionState.position()`` (never past a non-terminal
+           offset), or the offset it last stored — anything it has actually worked on;
+        2. the group's committed offset (:meth:`_refresh_committed`) — assigned, nothing consumed
+           in this run, but the group has been here before: it would resume from that commit;
+        3. the partition's low watermark — a fresh group on a partition nobody has committed:
+           it would resume at the log start, so the whole log is the backlog.
+
+        A partition with no watermark at all still publishes nothing: there is no number to give.
         """
-        for (topic, partition), st in list(self._parts.items()):
+        if self._clock() - self._last_watermark_query >= self._watermark_interval:
+            self._refresh_watermarks()
+        for key, st in list(self._parts.items()):
+            topic, partition = key
+            high = self._watermark_high.get(key, -1)
             try:
                 tp = _kafka._tp(topic, partition)
-                high = int(self._consumer.get_watermark_offsets(tp, cached=True)[1])
+                cached = int(self._consumer.get_watermark_offsets(tp, cached=True)[1])
             except Exception:  # noqa: BLE001 - no cached watermark yet, or an old client
+                cached = -1
+            high = max(high, cached)
+            if high < 0:  # librdkafka's "unknown" sentinel, and no queried value either
                 continue
-            if high < 0:  # librdkafka's "unknown" sentinel
-                continue
-            position = st.position()
+            position = self._position_of(st)
             if position is None:
-                position = st.stored
+                position = self._committed_offset.get(key)
+            if position is None:
+                position = self._watermark_low.get(key)
             if position is None or position < 0:
                 continue
             metrics.set_consumer_lag(

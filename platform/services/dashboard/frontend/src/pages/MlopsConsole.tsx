@@ -116,7 +116,12 @@ function EvalGateSection({ gate }: { gate: EvalGate }) {
 
 function TrafficPanel({ name }: { name: string }) {
   const admin = isAdmin()
-  const { data, isLoading } = useModelTraffic(name)
+  // `isError` as well as `data`: this panel states where live inference traffic goes, and a read
+  // that failed must not make that statement. Dropping it told a viewer "100% Production" over a
+  // refusing datastore, and — because the seed below only runs when `data` arrives — left the
+  // previously selected model's weights in the editor at a valid sum, one click from being written
+  // to *this* model.
+  const { data, isLoading, isError } = useModelTraffic(name)
   const setTraffic = useSetModelTraffic(name)
   const [weights, setWeights] = useState<Record<string, number>>({})
   const [msg, setMsg] = useState<string | null>(null)
@@ -159,6 +164,11 @@ function TrafficPanel({ name }: { name: string }) {
       </div>
       {isLoading ? (
         <Skeleton className="h-16 w-full" />
+      ) : isError ? (
+        <p className="text-xs" style={{ color: 'var(--error-text)' }}>
+          The traffic split could not be read — this is not a statement that none is set. Check the
+          split with <code className="font-mono">exa serve traffic {name}</code> before changing it.
+        </p>
       ) : !admin ? (
         <div className="text-xs text-muted-foreground space-y-1">
           {Object.keys(data?.rules ?? {}).length === 0 ? (

@@ -11,7 +11,7 @@ from skipper.tools import _http
 def modelzoo_status() -> str:
     """Show per-model ModelZoo freshness (fresh/stale) from the control plane."""
     data, err = _http.request_json(
-        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/modelzoo/status"
+        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/v1/modelzoo/status"
     )
     if err:
         return err
@@ -28,7 +28,7 @@ def modelzoo_events(limit: int = 20) -> str:
     data, err = _http.request_json(
         "control_plane",
         "GET",
-        f"{config.CONTROL_PLANE_URL}/modelzoo/events",
+        f"{config.CONTROL_PLANE_URL}/v1/modelzoo/events",
         params={"limit": limit},
     )
     if err:
@@ -40,7 +40,7 @@ def modelzoo_events(limit: int = 20) -> str:
 def modelzoo_get_config() -> str:
     """Show ModelZoo integration runtime config (auto_retrain, poll interval, watch branch)."""
     data, err = _http.request_json(
-        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/modelzoo/config"
+        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/v1/modelzoo/config"
     )
     if err:
         return err
@@ -52,7 +52,7 @@ def modelzoo_get_config() -> str:
 def modelzoo_sync() -> str:
     """Trigger a manual ModelZoo poll cycle against GitLab."""
     data, err = _http.request_json(
-        "control_plane", "POST", f"{config.CONTROL_PLANE_URL}/modelzoo/sync"
+        "control_plane", "POST", f"{config.CONTROL_PLANE_URL}/v1/modelzoo/sync"
     )
     if err:
         return err
@@ -88,7 +88,7 @@ def modelzoo_set_config(
         if v is not None
     }
     data, err = _http.request_json(
-        "control_plane", "PUT", f"{config.CONTROL_PLANE_URL}/modelzoo/config", json=body
+        "control_plane", "PUT", f"{config.CONTROL_PLANE_URL}/v1/modelzoo/config", json=body
     )
     if err:
         return err

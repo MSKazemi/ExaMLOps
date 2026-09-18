@@ -4,8 +4,11 @@ import functools
 import inspect
 import json
 import os
+import re
 import sqlite3
 import sys
+import threading
+import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -134,8 +137,17 @@ def _install_write_retry() -> None:  # back-compat wrapper for this module
     install_write_retry(__name__)
 
 
+def begin_immediate(scope: str | None = None) -> str:
+    """The ``BEGIN IMMEDIATE`` statement for a write lock, optionally scoped (see ``lock_key``)."""
+    if scope is None:
+        return "BEGIN IMMEDIATE"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,62}", scope):
+        raise ValueError(f"invalid lock scope {scope!r}")
+    return f"BEGIN IMMEDIATE /* lock:{scope} */"
+
+
 @contextmanager
-def _immediate_write() -> Generator[sqlite3.Connection, None, None]:
+def _immediate_write(scope: str | None = None) -> Generator[sqlite3.Connection, None, None]:
     """A hardened connection holding an IMMEDIATE (RESERVED) write lock for the whole txn.
 
     Use this for read-modify-write sequences that must be atomic against other *writer
@@ -150,7 +162,8 @@ def _immediate_write() -> Generator[sqlite3.Connection, None, None]:
     conn = _open_conn()  # same engine as get_db(): the audit chain must not bypass the backend
     conn.isolation_level = None  # drive BEGIN/COMMIT explicitly (no implicit deferred txn)
     try:
-        conn.execute("BEGIN IMMEDIATE")  # Postgres: a transaction-scoped advisory lock
+        # Postgres: a transaction-scoped advisory lock, per scope (plan P1.3). SQLite: RESERVED.
+        conn.execute(begin_immediate(scope))
         yield conn
         conn.execute("COMMIT")
     except BaseException:
@@ -167,6 +180,7 @@ def _immediate_write() -> Generator[sqlite3.Connection, None, None]:
 # CREATE-TABLE-IF-NOT-EXISTS script + column migrations run once — not on every one of the ~165
 # defensive `init_db()` calls, which otherwise churned a write lock on hot read paths (item 0.5/QW8).
 _INITIALIZED_PATHS: set[str] = set()
+_INIT_LOCK = threading.RLock()  # re-entrant: a bootstrap step may open the database
 
 
 def _init_key() -> str:
@@ -193,8 +207,46 @@ def init_db(*, force: bool = False) -> None:
     cacheable = path not in (":memory:", "") and not path.startswith("file::memory:")
     if not force and cacheable and path in _INITIALIZED_PATHS:
         return
+    # One bootstrap per process at a time. Threads of one process opening a new database together
+    # otherwise ran it concurrently, and one met the schema the other was changing ("database
+    # schema has changed"): tests/unit/test_schema_bootstrap_race.py failed 3 runs in 15 without
+    # this. The waiter finds the path initialised and returns.
+    with _INIT_LOCK:
+        if not force and cacheable and path in _INITIALIZED_PATHS:
+            return
+        _bootstrap_schema(path, cacheable)
+
+
+def _executescript_retrying(conn: Any, script: str, attempts: int = 8) -> None:
+    """Run the schema script, again if another process changed the schema under it.
+
+    Several processes opening a new SQLite database at once each run the script. A statement can
+    then fail with "database schema has changed" (SQLITE_SCHEMA) when another process committed DDL
+    between its preparation and its execution; the per-process lock above cannot prevent that
+    across processes. Every statement is ``IF NOT EXISTS``, so running the script again is safe:
+    tests/unit/test_schema_bootstrap_race.py failed 2 of 18 runs of 8 processes under load without
+    this. Postgres serialises the bootstrap with its ``schema`` lock and raises other errors.
+    """
+    for attempt in range(attempts):
+        try:
+            conn.executescript(script)
+            return
+        except sqlite3.OperationalError as exc:
+            if "schema has changed" not in str(exc) or attempt == attempts - 1:
+                raise
+            time.sleep(0.02 * (attempt + 1))
+
+
+def _bootstrap_schema(path: str, cacheable: bool) -> None:
     with get_db() as conn:
-        conn.executescript("""
+        if path.startswith("pg:"):
+            # Concurrent first boots on an empty Postgres (control plane + dashboard + agent
+            # replicas) raced `CREATE TABLE IF NOT EXISTS`: IF NOT EXISTS is not atomic there, and
+            # the loser failed with a duplicate key on pg_type. The whole bootstrap is one
+            # transaction, so a transaction-scoped advisory lock serialises it and the second
+            # process finds every table already there. SQLite's file lock already does this.
+            conn.execute(begin_immediate("schema"))
+        _executescript_retrying(conn, """
             CREATE TABLE IF NOT EXISTS audit_events (
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -216,6 +268,15 @@ def init_db(*, force: bool = False) -> None:
             -- Index it so drift status doesn't full-scan the hottest table (C6).
             CREATE INDEX IF NOT EXISTS ix_drift_snapshots_model_ts
                 ON drift_snapshots (model, ts DESC);
+            -- The last drift status recorded per model, so a change is announced once
+            -- (drift.status_changed, plan P2.4b) and not on every evaluation.
+            CREATE TABLE IF NOT EXISTS drift_status_state (
+                model        TEXT PRIMARY KEY,
+                status       TEXT NOT NULL,
+                z_score      REAL,
+                changed_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                evaluated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS drift_baselines (
                 model  TEXT PRIMARY KEY,
                 stats  TEXT NOT NULL,
@@ -837,10 +898,19 @@ def init_db(*, force: bool = False) -> None:
                 attempts     INTEGER NOT NULL DEFAULT 0,
                 last_error   TEXT,
                 actor        TEXT NOT NULL DEFAULT 'system',
-                tenant       TEXT NOT NULL DEFAULT 'default'
+                tenant       TEXT NOT NULL DEFAULT 'default',
+                traceparent  TEXT
             );
             CREATE INDEX IF NOT EXISTS ix_event_outbox_unpublished
                 ON event_outbox (published_at, id);
+            -- ADR 0124 — consumer inbox: one row per (consumer, event) handled, so a redelivered
+            -- event (at-least-once) never repeats its effect.
+            CREATE TABLE IF NOT EXISTS event_inbox (
+                consumer     TEXT NOT NULL,
+                event_id     TEXT NOT NULL,
+                handled_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (consumer, event_id)
+            );
             -- Phase 0 item 0.12 — single-row distributed cycle lease so overlapping cron
             -- runs (or multiple agent replicas) don't scan/act concurrently. TTL-based so a
             -- crashed holder's lease auto-expires. Correctness of no-double-retrain is already
@@ -1784,8 +1854,30 @@ def init_db(*, force: bool = False) -> None:
             );
             CREATE INDEX IF NOT EXISTS ix_repro_bundles_mv
                 ON repro_bundles (model, version, bundle_version);
+
+            -- ADR 0127 / plan P4.2 — the serving snapshot: everything a serving replica needs to
+            -- know (alias -> version -> artifact, traffic splits, shadow targets), compiled once
+            -- and versioned by a monotonic generation. Replicas read the newest row instead of
+            -- each polling MLflow and the config tables.
+            CREATE TABLE IF NOT EXISTS serving_snapshots (
+                generation INTEGER PRIMARY KEY AUTOINCREMENT,
+                digest     TEXT NOT NULL,
+                body       TEXT NOT NULL,             -- JSON
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
         """)
+        if not path.startswith("pg:"):
+            # The column migrations check PRAGMA table_info and then ALTER TABLE: two statements.
+            # In autocommit, two processes opening a new database both saw a column missing and the
+            # second ALTER failed ("duplicate column name"). Holding SQLite's write lock makes the
+            # check and the change one step; Postgres is already serialised by the lock above.
+            conn.execute(begin_immediate("schema"))
         _migrate_columns(conn)
+        # Which outbox topics changed since a watermark (the serving-snapshot projector's trigger).
+        # Outside the script and behind a column check: a failed statement aborts a Postgres
+        # bootstrap transaction, and an outbox created by something else may lack `topic`.
+        if "topic" in {r[1] for r in conn.execute("PRAGMA table_info(event_outbox)").fetchall()}:
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_event_outbox_topic ON event_outbox (topic, id)")
         # ADR 0128: stamp the data format, refuse data a newer release made unreadable to this
         # one (IncompatibleDataError propagates — and the path stays uncached, so every later
         # call refuses too), and apply pending online migrations.
@@ -1961,6 +2053,8 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "event_outbox": {
         "actor": "TEXT NOT NULL DEFAULT 'system'",
         "tenant": "TEXT NOT NULL DEFAULT 'default'",
+        # W3C trace context of the transaction that wrote the event (plan P2.5).
+        "traceparent": "TEXT",
     },
     # Track V / ADR 0107: a *running* vLLM endpoint, not just its declared shape. The
     # pre-existing columns describe what to serve; these describe where it is, who started
@@ -1985,6 +2079,14 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "hpc_jobs": {
         "kind": "TEXT NOT NULL DEFAULT 'train'",  # train | serve
         "endpoint_url": "TEXT",
+    },
+    # ADR 0131 ruling R14: why a pack-removal sweep disabled a stream, so a re-added entry can
+    # tell the sweep's own disable from a human's. Added to the DDL after the table already
+    # existed on sites running a pre-release build of the stream ingress, where every state
+    # change (pause, resume, disable, the sweep itself) then failed with "no such column".
+    # NULL = a row whose state was never explained, which is what every earlier row is.
+    "dataplane_streams": {
+        "state_reason": "TEXT",
     },
 }
 
@@ -2041,7 +2143,7 @@ def _audit_hash(prev_hash: str, canonical: str) -> str:
 
 # Serving traffic/promotion helpers now LIVE in examlops.data.serving (item 4.5 body
 # relocation); re-exported for back-compat (data.serving imports get_db/install_write_retry).
-from examlops.data.serving import (delete_llm_endpoint, disable_challenger, get_autoscale_config, get_challenger_config, get_challenger_samples, set_challenger_judge_scores, get_device_pools, get_llm_endpoint, get_promotion_rule, get_traffic_rules, list_autoscale_configs, list_challenger_configs, list_llm_endpoints, list_scale_events, record_challenger_sample, record_scale_event, set_autoscale_config, set_challenger_config, set_llm_endpoint_state, set_promotion_rule, set_traffic_rules, upsert_llm_endpoint)  # noqa: E402, E501, F401, I001
+from examlops.data.serving import (count_scale_events, delete_llm_endpoint, disable_challenger, get_autoscale_config, get_challenger_config, get_challenger_samples, set_challenger_judge_scores, get_device_pools, get_llm_endpoint, get_promotion_rule, get_shadow_config, get_traffic_rules, serving_model_key, set_shadow_config, list_autoscale_configs, list_challenger_configs, list_llm_endpoints, list_scale_events, record_challenger_sample, record_scale_event, set_autoscale_config, set_challenger_config, set_llm_endpoint_state, set_promotion_rule, set_traffic_rules, upsert_llm_endpoint)  # noqa: E402, E501, F401, I001
 
 
 
@@ -2089,7 +2191,7 @@ from examlops.data.coordination import coord_check_and_set_idempotent, coord_rat
 from examlops.data.admission import admission_stats, claim_next_admission, complete_admission, enqueue_admission  # noqa: E402, E501, F401, I001
 # events helpers now LIVE in examlops.data.events (item 4.5 body relocation); re-exported
 # for back-compat (data.events imports get_db/etc. defined above → no cycle).
-from examlops.data.events import (claim_outbox_batch, create_federated_run, enqueue_event, get_federated_run, get_federated_sites, get_reasoning_trace, lineage_graph, lineage_impact, list_burst_events, list_federated_rounds, mark_event_failed, mark_event_published, outbox_stats, reasoning_usage_summary, record_burst_event, record_cache_event, record_federated_round, record_lineage_event, record_reasoning_usage, record_routing_event, record_structured_output_event, register_federated_site, routing_stats, store_reasoning_trace, structured_output_stats)  # noqa: E402, E501, F401, I001
+from examlops.data.events import (claim_outbox_batch, create_federated_run, enqueue_event, get_federated_run, get_federated_sites, get_reasoning_trace, lineage_graph, lineage_impact, list_burst_events, list_federated_rounds, mark_event_failed, mark_event_published, outbox_oldest_pending_age, outbox_stats, reasoning_usage_summary, record_burst_event, record_cache_event, record_federated_round, record_lineage_event, record_reasoning_usage, record_routing_event, record_structured_output_event, register_federated_site, routing_stats, store_reasoning_trace, structured_output_stats)  # noqa: E402, E501, F401, I001
 
 
 
@@ -2647,10 +2749,10 @@ _PIPELINE_KINDS = ("prefect", "rayserve")
 # ── Per-domain body relocation (item 4.5): helpers below LIVE in examlops.data.*; re-exported
 # for back-compat (at END so every primitive/constant + install_write_retry is defined first).
 from examlops.data.agent import (get_agent_session_trace, list_agent_sessions, record_agent_session, record_agent_tool_call, tool_success_rate)  # noqa: E402, E501, F401, I001
-from examlops.data.audit import (audit_chain_head, autonomous_actions, correlation_chain, export_audit_events, list_audit_checkpoints, list_training_checkpoints, sign_audit_checkpoint, verify_audit_chain, write_audit_event, write_training_checkpoint)  # noqa: E402, E501, F401, I001
+from examlops.data.audit import (audit_chain_head, autonomous_actions, correlation_chain, export_audit_events, list_audit_checkpoints, list_training_checkpoints, sign_audit_checkpoint, verify_audit_chain, write_audit_event, write_training_checkpoint, audit_stream_enabled, verify_audit_stream)  # noqa: E402, E501, F401, I001
 from examlops.data.autopilot import (claim_autopilot_lease, create_autopilot_run, get_autopilot_config, list_autopilot_runs, release_autopilot_lease, set_autopilot_config, update_autopilot_run)  # noqa: E402, E501, F401, I001
 from examlops.data.data_assets import (latest_vector_metrics, bump_asset_version, create_distributed_run, create_reindex_job, get_adapter, get_asset, get_collection, get_data_quality_checks, get_dataset_revision, get_dataset_revisions, get_distributed_run, get_encoder, get_feature_view, get_offline_features_asof, get_online_feature, get_repro_bundle, get_synthetic_dataset, is_synthetic_only, last_materialization, link_dataset_revision_run, list_adapters, list_assets, list_distributed_runs, list_encoders, list_feature_views, list_reindex_jobs, list_repro_bundles, list_synthetic_datasets, materialize_online, purge_telemetry, record_data_quality_check, record_dataset_revision, record_synthetic_dataset, register_adapter, register_asset, register_encoder_row, set_adapter_promoted, store_repro_bundle, synthetic_proportion, update_distributed_run, update_reindex_job, upsert_collection, upsert_feature_view, write_feature_record)  # noqa: E402, E501, F401, I001
-from examlops.data.drift import (claim_drift_trigger, get_corruption_baseline, get_drift_auto_retrain, get_drift_baseline, get_input_baseline, latest_drift_event, list_drift_auto_retrain, list_drift_events, record_drift_event, record_drift_trigger, set_corruption_baseline, set_drift_auto_retrain, set_drift_baseline, set_input_baseline, write_drift_snapshot, write_input_snapshot)  # noqa: E402, E501, F401, I001
+from examlops.data.drift import (claim_drift_trigger, get_corruption_baseline, get_drift_auto_retrain, get_drift_baseline, get_input_baseline, latest_drift_event, list_drift_auto_retrain, list_drift_events, record_drift_event, record_drift_trigger, set_corruption_baseline, set_drift_auto_retrain, set_drift_baseline, set_input_baseline, write_drift_snapshot, write_input_snapshot, drift_models, recent_drift_predictions, record_drift_statuses)  # noqa: E402, E501, F401, I001
 from examlops.data.evaluation import (get_calibration_by_id, get_eval_gate, get_eval_results, get_gate_reports, get_judge_calibration, list_judge_calibrations, list_perf_estimates, record_eval_result, record_gate_report, record_judge_calibration, record_perf_estimate, set_eval_gate)  # noqa: E402, E501, F401, I001
 from examlops.data.finops import (add_key_spend, aggregate_model_costs, get_carbon_records, get_fairness_gates, get_live_metrics, get_model_costs, join_predictions_with_truth, record_model_cost, set_fairness_gate, total_gateway_cost, write_carbon_record, write_ground_truth, write_live_metric, write_prediction)  # noqa: E402, E501, F401, I001
 from examlops.data.gateway import (cache_stats, create_virtual_key, get_gateway_config, get_virtual_key, list_virtual_keys, record_gateway_call, set_gateway_config)  # noqa: E402, E501, F401, I001

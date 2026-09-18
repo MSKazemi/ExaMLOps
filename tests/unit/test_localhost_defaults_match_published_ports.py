@@ -32,14 +32,10 @@ ALLOWED: dict[tuple[str, int], str] = {
         "this module is itself a Ray Serve deployment: it runs inside the ray-serving container, "
         "where 8001 is Ray Serve's own HTTP port on its own loopback."
     ),
-    ("platform/services/dashboard/backend/settings.py", 8003): (
-        "the SeanerBUS bridge is also run bare-metal in dev (`run_status_server(port=8003)`), "
-        "where it serves on the host's 8003 with no port mapping at all."
-    ),
-    ("platform/services/dashboard/backend/routers/seanerbus.py", 8003): (
-        "same bare-metal bridge as settings.py — the container path is set explicitly by compose."
-    ),
 }
+# Dropped 2026-09-13, as this guard's own failure message asks: the dashboard's SeanerBUS router was
+# deleted and its settings no longer name `localhost:8003`, so both exemptions described nothing.
+# An exemption that outlives its subject is an open door, which is why the guard fails on one.
 
 
 def _published() -> dict[int, int]:

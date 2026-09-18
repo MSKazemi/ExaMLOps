@@ -293,6 +293,47 @@ def test_snapshots_list_committed_pulls_only(client):
     assert snaps[0]["revision"]
 
 
+def test_snapshots_are_not_hidden_by_a_run_of_failed_pulls(client):
+    """`limit` on this route must bound *snapshots*, not the pulls they are filtered out of.
+
+    The endpoint is named for what the caller wants — committed snapshots, the thing a training
+    run pins to. Reading a page of pulls and discarding the uncommitted ones means the answer is
+    "snapshots among the newest N pulls", so a source whose recent pulls have been failing shows
+    fewer revisions than it has and eventually none at all: an empty list that reads as "this
+    source has never produced data", at exactly the moment someone is looking because it is
+    broken. The good revisions are still there and still pinnable.
+    """
+    from examlops.data import dataplane as catalog
+
+    r = client.post("/sources/s/pull", headers=H, json={})
+    assert _wait_for_pull(client, r.json()["pull_id"]) == "succeeded"
+    good = r.json()["pull_id"]
+
+    # A run of failures NEWER than the good snapshot. Pull ids are `{time_ns:016x}` + random, so
+    # they must come from the real generator: rows with no id sort last and would prove nothing.
+    with catalog.get_db() as conn:
+        conn.executemany(
+            "INSERT INTO dataplane_pulls (id, project, source, status) VALUES (?, '', 's', 'failed')",
+            [(catalog.new_pull_id(),) for _ in range(250)],
+        )
+        # Both halves of "committed *and* has a revision" carry their own weight, so both are here:
+        # a pull can fail after writing a revision, and an `unchanged` pull of a source that never
+        # committed anything has none to report. Neither is a snapshot anyone can pin to.
+        conn.execute(
+            "INSERT INTO dataplane_pulls (id, project, source, status, revision) "
+            "VALUES (?, '', 's', 'failed', 'rev-from-a-failed-pull')",
+            (catalog.new_pull_id(),),
+        )
+        conn.execute(
+            "INSERT INTO dataplane_pulls (id, project, source, status, revision) "
+            "VALUES (?, '', 's', 'unchanged', NULL)",
+            (catalog.new_pull_id(),),
+        )
+
+    snaps = client.get("/sources/s/snapshots", headers=H, params={"limit": 200}).json()
+    assert [s["id"] for s in snaps] == [good], snaps
+
+
 # ── metrics & health ─────────────────────────────────────────────────────────
 
 

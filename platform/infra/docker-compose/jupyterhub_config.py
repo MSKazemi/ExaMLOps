@@ -44,8 +44,10 @@ c.DockerSpawner.volumes = {
 c.DockerSpawner.environment = {
     "MLFLOW_TRACKING_URI":    "http://mlflow:5000",
     "MLFLOW_S3_ENDPOINT_URL": "http://minio:9000",
-    "AWS_ACCESS_KEY_ID":      os.environ.get("MINIO_ROOT_USER", "minioadmin"),
-    "AWS_SECRET_ACCESS_KEY":  os.environ.get("MINIO_ROOT_PASSWORD", "minioadmin"),
+    # The notebook credential (plan P3.4), which compose resolves to the root one only while no
+    # MINIO_NOTEBOOK_ACCESS_KEY is set.
+    "AWS_ACCESS_KEY_ID":      os.environ.get("MINIO_NOTEBOOK_ACCESS_KEY", "minioadmin"),
+    "AWS_SECRET_ACCESS_KEY":  os.environ.get("MINIO_NOTEBOOK_SECRET_KEY", "minioadmin"),
     "PREFECT_API_URL":        "http://orchestrator:4200/api",
     "RAY_SERVE_URL":          "http://ray-serving:8001",
     "CONTROL_PLANE_URL":      "http://control-plane:8002",

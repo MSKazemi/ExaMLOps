@@ -16,6 +16,7 @@ import functools
 import hashlib
 import inspect
 import json
+import logging
 import os
 import re
 import secrets
@@ -24,6 +25,8 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class GatewayError(RuntimeError):
@@ -406,6 +409,46 @@ def _hook_takes_params(hook: Any) -> bool:
     return False
 
 
+#: Accounting writes lost because the datastore was unreachable, this process. The number is the
+#: honest cost of the trade below: those requests happened and are missing from usage and spend.
+_ACCOUNTING_FAILURES = 0
+
+
+def accounting_failures() -> int:
+    """Gateway accounting writes this process could not persist (R8 observability)."""
+    return _ACCOUNTING_FAILURES
+
+
+def _account(what: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+    """Record usage, and never fail the caller's request because recording failed.
+
+    The datastore is what a request is *accounted for* in, not what it is *answered* by — but
+    `record_gateway_call` ran unguarded on the request path, so an unreachable datastore raised
+    **after the backend had answered and the tokens had been paid for**, and the caller received
+    `could not connect to the datastore` instead of the completion they had just bought. On the
+    failure path it was worse: the datastore error replaced `AllBackendsFailed`, so the reason
+    every backend had failed was lost.
+
+    Failing the request does not un-spend the money, and the spend is missing from the ledger
+    either way — so failing open is strictly better for the caller and neutral for the books. What
+    it must not be is **silent**: the loss is logged with its cause and counted in
+    :func:`accounting_failures`, because a budget computed from an incomplete ledger under-reports,
+    and nobody can see that from the number alone.
+    """
+    global _ACCOUNTING_FAILURES
+    try:
+        fn(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — see the docstring: accounting must not fail a request
+        _ACCOUNTING_FAILURES += 1
+        logger.warning(
+            "gateway accounting (%s) could not be persisted and is lost: %r "
+            "[lost writes this process=%d] — the request itself was served",
+            what,
+            exc,
+            _ACCOUNTING_FAILURES,
+        )
+
+
 def _call_cache_hook(hook: Any, *args: Any, params: dict[str, Any]) -> Any:
     return hook(*args, params=params) if _hook_takes_params(hook) else hook(*args)
 
@@ -547,7 +590,9 @@ class GatewayClient:
             )
             # C1 span (best-effort) + FinOps cost (R8).
             _emit_span(model, self.tenant, comp, prompt_version=prompt_version)
-            record_gateway_call(
+            _account(
+                "usage",
+                record_gateway_call,
                 key_hash,
                 model,
                 backend=comp.backend,
@@ -557,7 +602,7 @@ class GatewayClient:
                 latency_ms=(time.perf_counter() - started) * 1000.0,
             )
             if key_hash:
-                add_key_spend(key_hash, comp.cost_usd)
+                _account("key spend", add_key_spend, key_hash, comp.cost_usd)
 
             # D8 outbound scan. After the accounting on purpose: the tokens were spent and the
             # money is owed whatever the guardrail decides, so a blocked response that vanished
@@ -588,7 +633,9 @@ class GatewayClient:
 
         # The caller got an error, so the SLI must see one: a request that failed everywhere used
         # to leave no row at all, and an error rate computed from successes alone is always zero.
-        record_gateway_call(
+        _account(
+            "error",
+            record_gateway_call,
             key_hash,
             model,
             backend=None,
@@ -691,14 +738,22 @@ def add_endpoint_routes(router: Router) -> list[str]:
     reply. A failing endpoint surfaces as :class:`AllBackendsFailed` with its reason.
 
     A registry that cannot be read leaves the table as it was, so the gateway degrades to
-    exactly what it did before endpoints existed.
+    exactly what it did before endpoints existed — and **says so**, because the visible symptom is
+    otherwise a configured model answering "unknown model" with no hint that the registry, not the
+    configuration, is what failed.
     """
     try:
         from examlops.data.serving import list_llm_endpoints
         from examlops.llm_endpoints import resolve_address
 
         rows = list_llm_endpoints()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - the gateway must keep serving what it already routes
+        logger.warning(
+            "endpoint registry unreadable (%s: %s) — no endpoint routes were added, so any model "
+            "configured there will answer as unknown until this is fixed",
+            type(exc).__name__,
+            exc,
+        )
         return []
     added: list[str] = []
     for rec in rows:

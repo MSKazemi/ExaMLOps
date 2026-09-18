@@ -29,8 +29,8 @@ SLO compliance and error budget row:
 | Panel | Metric | Description |
 |---|---|---|
 | **SLO Compliance** | `rate(ray_examlops_predict_requests_total{status="error"}[5m])` | 30-day 0.5% error budget gauge |
-| **Error Budget Remaining** | derived | Seconds of budget left; turns red when < 10% |
-| **Burn Rate 1h / 6h / 24h** | derived | Rate × multiplier; >14.4× triggers SLO alert |
+| **Error Budget Remaining** | derived | Fraction of the 30-day budget left; turns red when < 10% |
+| **Burn Rate 1h / 6h / 24h** | derived | Error ratio ÷ the 0.5 % budget; yellow > 1×, red > 14.4× (the fast-burn alert) |
 | **Request Rate** | `ray_examlops_predict_requests_total` | Predictions/s by model and outcome |
 | **Latency p50 / p95 / p99** | `ray_examlops_predict_latency_seconds` | End-to-end prediction latency |
 | **Per-Model Latency Table** | `ray_examlops_predict_latency_seconds` | p50/p95/p99/p05 by model |
@@ -131,10 +131,18 @@ Rules are defined in `platform/infra/docker-compose/alert_rules.yml`, mounted in
 | `RayServeHighErrorRateCritical` | `examlops-serving` | critical | 5m error ratio > 20% for 5m |
 | `RayServeHighLatencyP99` | `examlops-serving` | warning | p99 > 1s for 10m |
 | `RayServeHighLatencyP99Critical` | `examlops-serving` | critical | p99 > 3s for 5m |
-| `RayServeNoModelsLoaded` | `examlops-serving` | critical | `ray_examlops_models_loaded == 0` for 5m |
-| `RayServeReloadFailures` | `examlops-serving` | warning | Reload errors in last 15m |
+| `RayServeNoModelsLoaded` | `examlops-serving` | critical | `ray_examlops_models_loaded == 0`, or absent, for 5m |
+| `RayServeMetricsMissing` | `examlops-serving` | critical | Ray Serve is scraped but `ray_examlops_models_loaded` is absent, for 10m |
+| `RayServeReloadFailures` | `examlops-serving` | warning | A reload failed in the last 15m, including a replica's first failure |
+| `InferenceRetryBudgetSpent` | `examlops-serving` | warning | The router's retry budget refused a retry in the last 10m |
+| `InferenceReplicasLost` | `examlops-serving` | warning | A replica died with requests in flight in the last 15m (the router retried them) |
 | `SLOErrorBudgetFastBurn` | `examlops-serving` | critical | 1h burn rate > 14.4× (budget expires in < 2h) |
 | `SLOErrorBudgetSlowBurn` | `examlops-serving` | warning | 6h burn rate > 3× for 60m |
+| `ServingGatewayDown` | `examlops-gateway` | critical | `up{job=~"gateway\|gateway_authz"} == 0` for 2m |
+| `ServingGatewayAuthorizationFailing` | `examlops-gateway` | critical | Envoy got no authorization decision (`envoy_http_ext_authz_error`) for 5m |
+| `ServingGatewayCredentialStoreUnavailable` | `examlops-gateway` | warning | `gateway-authz` answered 503 for 5m |
+| `ServingGatewayHighErrorRate` | `examlops-gateway` | warning | > 5 % of gateway answers 5xx for 10m |
+| `ServingGatewayAtCeiling` | `examlops-gateway` | warning | The whole-gateway ceiling refused requests for 10m |
 | `SeanerBUSBridgeDown` | `examlops-seanerbus` | critical | `up{job="seanerbus_bridge"} == 0` for 2m |
 | `SeanerBUSHighErrorRate` | `examlops-seanerbus` | warning | Bridge inference error ratio > 5% for 5m |
 | `SeanerBUSHighLatencyP99` | `examlops-seanerbus` | warning | Bridge p99 latency > 500ms for 10m |
@@ -154,11 +162,119 @@ Rules are defined in `platform/infra/docker-compose/alert_rules.yml`, mounted in
 | `TempoDown` | `examlops-platform` | warning | `up{job="tempo"} == 0` for 3m |
 | `AlertmanagerDown` | `examlops-platform` | warning | `up{job="alertmanager"} == 0` for 3m |
 
+### Burn rate is a ratio over a ratio
+
+Every surface that says "burn rate" must show **the observed error ratio divided by the error
+budget** — the definition `exa slo status` uses (`burn_rate = current error rate / allowed error
+rate`). It is dimensionless: `1×` is exactly the sustainable rate, `14.4×` exhausts a 30-day budget
+in about two days.
+
+The failure mode is dimensional, and it is invisible to every check that does not *evaluate* the
+expression — the broken form contains every token the correct one does, the metric exists, and the
+query is valid PromQL. It has now been found twice in this repo:
+
+| Where | The broken form | What a healthy service (0.1 % errors, a true 0.2× burn) showed |
+|---|---|---|
+| the two SLO alerts (fixed earlier) | error *rate* ÷ budget-per-second | a single error scored 144000× and paged `critical` |
+| the **Burn Rate** panel (fixed 2026-09-14) | `sum(rate(errors[1h])) / (0.005 / (30*24))` | **1440×**, past the panel's own red line at 14.4 |
+
+The panel had a second fault the alerts did not: **no denominator at all**, so the number tracked
+traffic volume rather than reliability. Two services at an identical 0.2× burn read 1440 and
+144000 purely because one served more requests. *A panel that is always red teaches operators to
+ignore it*, which costs more than showing nothing.
+
+The panel's own thresholds — yellow above `1`, red above `14.4` — were correct all along and are
+what make the error legible: they are burn-rate multipliers, so an expression that cannot produce
+small multiples was never going to agree with them. `tests/unit/test_grafana_panels_can_show_data.py`
+now substitutes traffic into each burn panel and asserts the multiple it renders, and
+`tests/unit/test_burn_rate_is_a_ratio.py` does the same for the alerts.
+
 ### Validating alert rules
 
 ```bash
-make alerts-check   # runs promtool check rules inside Docker — also runs automatically in make ci-infra
+make alerts-check   # promtool: the rules parse, and alert_rules_test.yml's cases fire as written
 ```
+
+`alert_rules_test.yml` replays input series through the rules. Add a case when you add or change
+an alert: one input it must fire on and one it must stay quiet on. CI's `alert rules` job runs the
+same checks.
+
+**A firing case is not optional, and a guard now says so.** Parsing proves nothing about firing,
+and on 2026-09-14 only 13 of 60 alerts had ever been shown to produce an alert — discovered by
+shipping one the day before and noticing nothing had made it fire.
+`tests/unit/test_alert_rule_tests.py` holds a ratchet, `UNPROVEN_ALERT_CEILING`, over the number
+of alerts with no case carrying `exp_alerts`. It may only go **down**: a new alert without a
+firing case pushes it up and fails the build, and a second test fails if the ceiling drifts above
+the real count, so it cannot be left slack.
+
+**It reached 0 on 2026-09-15**, from 49 unproven — every alert in the platform has a case that
+makes it fire. A new alert must arrive with one. It stays a ratchet rather than a bare `== 0` so
+the failure message names what slipped, and so a deliberate exception would have to be written down
+as a number; the comment above it records what each step proved.
+
+**A firing case is also the cheapest regression test for a metric's meaning.** When
+`seanerbus_inferences_total` was corrected to count every dispatched call rather than only
+successes, the alert's case was updated to assert the *figure* — 10 % of calls failing must read
+`10%`. Simulating the old denominator makes it render `11.11%`, so the replay now fails if anyone
+reverts the emitter. An expression test that only asks "did it fire" would not have noticed.
+
+Whether `increase(...) > 0` can catch the **first** event depends on something easy to miss: an
+*unlabelled* counter is created at zero when the process imports, so its series exists before
+anything happens; a *labelled* one has no series until its first event, and `increase()` over a
+series with no earlier sample is `0`. That is why the control plane pre-creates its Art. 12 audit
+actions at zero, and why the bridge's two telemetry counters — both unlabelled — need no such
+treatment. Check which kind you have before relying on the first event.
+
+A case is worth writing where the *expression* could be wrong, not merely where the threshold is
+easy. The most valuable ones so far each pin a fix that would otherwise live only in a docstring:
+the approval gauges alert on a queue this process never watched accumulate (they used to publish
+`0` after a restart, and neither alert can fire on `0`), and `HighRetrainErrorRate` keeps firing
+under a flood of `throttled` requests — its denominator names `success|error` rather than summing
+the whole counter, which a client retrying an invalid request would otherwise swell until the ratio
+dropped under the threshold during a real server-side failure.
+
+**A third trap lives between an alert and Alertmanager.** The inhibit rule that mutes an outage's
+derived symptoms is scoped `equal: ['cluster', 'service']`, so a source only silences alerts sharing
+its `service` label. `RayServeTargetDown` carried `service: platform` while every Ray Serve symptom
+carried `serving`, and the rule was inert for the whole serving plane — visible in neither file
+alone, and `amtool check-config` passes either way.
+`tests/unit/test_inhibit_rules_can_match.py` holds them against each other.
+
+Two traps the existing cases pin, and both are easy to reproduce:
+
+- **An alert cannot fire on a series that does not exist yet.** `increase()` over a series whose
+  first sample is the event returns 0, so an alert watching a counter that springs into existence
+  on the first failure stays silent for exactly the outage it was written for. This is why the
+  control plane exports its command outcomes and the Art. 12 audit-drop actions at **zero** from
+  the start, and why each has a paired `_x40 1x40` case proving the unseeded version does *not*
+  alert.
+- **A case that only expects silence proves little** — it passes just as well after the alert is
+  renamed or deleted. Another guard requires every alert tested for silence to be shown firing
+  somewhere too.
+
+### Applying a change
+
+`prometheus.yml` and `alert_rules.yml` are bind-mounted into the Prometheus container. Apply a
+change with `docker restart examlops-prometheus`. A reload signal (`docker kill -s HUP
+examlops-prometheus`) is not enough when the file was *replaced* rather than written in place,
+which is what editors, `git checkout` and `git pull` do: a file bind mount stays on the old file,
+and Prometheus re-reads the old rules. Check what it loaded on the *Rules* page
+(http://localhost:19090/rules), or count them:
+
+```bash
+curl -s localhost:19090/api/v1/rules | python3 -c "import json,sys; print(sum(len(g['rules']) for g in json.load(sys.stdin)['data']['groups']))"
+```
+
+**On Kubernetes** the Helm chart renders the same rules as a PrometheusRule
+(`metrics.prometheusRule.enabled`), from a byte-identical copy in
+`platform/infra/helm/examlops/files/`. After editing `alert_rules.yml`, copy it there too; a unit
+test fails until you do. The chart renders the groups for what it deploys, and each Service carries
+the Compose job name, so the rules match. See the chart README's *Metrics* section.
+
+After a restart, a target the new configuration no longer scrapes keeps its last `up` sample
+visible for Prometheus's 5-minute lookback, because no staleness marker is written across a
+restart. Its "down" alerts can go pending, and one with a short `for:` can fire, for up to 5
+minutes before clearing by themselves.
 
 ## Prometheus data source
 
@@ -178,6 +294,13 @@ The list matters beyond documentation: an alert that selects on a job nobody scr
 fire, because `up{job="x"}` is *empty* rather than 0. `tests/unit/test_alert_rules_can_fire.py`
 holds this table and the scrape config to each other.
 
+Services behind a Compose profile are found by DNS (`dns_sd_configs`), not listed as static
+targets. A static target for a service the site does not run reports `up == 0` forever, so
+`TargetDown` fires permanently and people learn to ignore it. With DNS discovery a service is
+scraped once it runs; one that stops afterwards stays a target reported down, so its alert still
+fires. `tests/integration/test_prometheus_optional_targets_live.py` shows both on a real
+Prometheus.
+
 | Job | Target | Purpose |
 |---|---|---|
 | `ray_serve` | `ray-serving:8080` | Ray Serve inference metrics |
@@ -185,14 +308,21 @@ holds this table and the scrape config to each other.
 | `alertmanager` | `alertmanager:9093` | Alertmanager self-monitoring |
 | `tempo` | `tempo:3200` | Trace-store self-monitoring |
 | `loki` | `loki:3100` | Log-store self-monitoring |
-| `seanerbus_bridge` | `seanerbus-bridge:8003` | Bus bridge: inference throughput, errors, latency |
+| `seanerbus_bridge` | DNS `seanerbus-bridge:8003` | Bus bridge: inference throughput, errors, latency (profile `seanerbus`) |
 | `dataplane` | `dataplane:8010` | dataplane pulls, freshness |
-| `vllm` | `vllm:8000` | vLLM serving: TTFT, queue depth, KV-cache usage (GPU profile) |
+| `vllm` | DNS `vllm:8000` | vLLM serving: TTFT, queue depth, KV-cache usage (GPU profile `vllm`) |
+| `gateway` | DNS `gateway:9902`, path `/stats/prometheus` | Serving gateway (Envoy): answers by class, authorization errors, ceiling refusals (profile `gateway`) |
+| `gateway_authz` | DNS `gateway-authz:8090` | The gateway's authorization decisions, `examlops_gateway_decisions_total{status}` (profile `gateway`) |
 | `fleet` | file_sd `/etc/prometheus/targets/*.json` | node_exporter / DCGM / HPC-launched vLLM endpoints, regenerated by `exa hpc prometheus-sd` |
 
 ## How metrics are emitted
 
 Ray Serve uses the Ray Metrics API to emit metrics from each replica. These are picked up by Prometheus automatically — no extra instrumentation needed when you deploy a new model.
+
+Ray 2.55 records these metrics through the OpenTelemetry SDK, so `OTEL_SDK_DISABLED=true` (the
+platform's switch for turning tracing off) would silence all of them. The model server removes
+that value before it starts Ray; tracing stays off. See
+[RayServeMetricsMissing](../runbooks/serving.md#rayservemetricsmissing).
 
 ```python
 # Inside MultiModelServer (serving/ray_serving/app.py)

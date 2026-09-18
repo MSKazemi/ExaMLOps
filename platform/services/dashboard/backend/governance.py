@@ -8,7 +8,6 @@ certification — gaps are surfaced as ``gap``/``partial``, never false green (F
 
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 from typing import Any
 
@@ -107,49 +106,80 @@ def model_card_coverage(db_path: str) -> dict[str, Any]:
 # ── audit hash-chain integrity (F14 R3) ───────────────────────────────────────
 
 
-def _chain_hash(prev: str, row: sqlite3.Row) -> str:
-    payload = f"{prev}|{row['id']}|{row['source']}|{row['actor']}|{row['action']}|{row['target']}"
-    return hashlib.sha256(payload.encode()).hexdigest()
-
-
 def audit_integrity(db_path: str, tail: int = 20) -> dict[str, Any]:
-    """Compute a rolling hash-chain over ordered audit events → a tamper-evidence digest (F14 R3).
+    """Report the audit log's **own** hash chain — the one `exa audit verify` checks (F14 R3).
 
-    ``audit_events`` stores no per-row hash, so we compute a deterministic chain (each event hashes
-    the previous digest + its immutable fields). The ``headDigest`` anchors the whole log: any change
-    to a past event changes the head, so an external copy of the digest detects tampering. ``verified``
-    reports that the recomputation is internally consistent.
+    This used to compute a *different* chain. Its docstring said "``audit_events`` stores no
+    per-row hash, so we compute a deterministic chain", and that was true when the page was
+    written; the platform has stored `prev_hash` and `hash` on every event since. The page had
+    become a parallel digest over five columns that no other tool could reproduce, so an operator
+    copying `headDigest` as an external anchor was anchoring a number `exa audit verify` has never
+    heard of — and `verified` was `True` *by construction*, which verifies nothing.
+
+    It also read **every row of a table that grows forever** on each render, and built a dict per
+    event to return the last twenty of them.
+
+    What it reports now:
+
+    - `headDigest` — the stored hash of the newest chained event: the real anchor, one indexed row.
+    - `count` / `unchained` — how many events exist and how many carry no hash. Unchained rows are
+      counted rather than hidden, because "we did not look at these" must never read as "these are
+      fine"; every dashboard-written event was unchained once, and a verifier that skipped them
+      still answered ok.
+    - `verified` — whether the **last `tail` links** recompute, which is what a page can honestly
+      check in constant time. `verifiedScope` says so in the payload, so a reader is never told the
+      whole log was verified when it was not. Full verification is `exa audit verify`, which reads
+      the log end to end and names the first broken link.
     """
+    from examlops.data.audit import verify_tail
+
     conn = _connect(db_path)
     try:
         if not _table_exists(conn, "audit_events"):
-            return {"count": 0, "headDigest": None, "verified": True, "entries": []}
-        prev = "genesis"
-        count = 0
-        recent: list[dict[str, Any]] = []
-        for r in conn.execute(
-            "SELECT id, source, actor, action, target FROM audit_events ORDER BY id ASC"
-        ):
-            h = _chain_hash(prev, r)
-            recent.append(
-                {
-                    "seq": r["id"],
-                    "actor": r["actor"],
-                    "action": r["action"],
-                    "hash": h,
-                    "prevHash": prev,
-                }
+            return {
+                "count": 0,
+                "headDigest": None,
+                "verified": True,
+                "verifiedScope": "no audit log yet",
+                "unchained": 0,
+                "entries": [],
+            }
+        count = int(conn.execute("SELECT COUNT(*) AS c FROM audit_events").fetchone()["c"])
+        unchained = int(
+            conn.execute("SELECT COUNT(*) AS c FROM audit_events WHERE hash IS NULL").fetchone()[
+                "c"
+            ]
+        )
+        rows = list(
+            conn.execute(
+                "SELECT id, source, actor, action, target, prev_hash, hash "
+                "FROM audit_events WHERE hash IS NOT NULL ORDER BY id DESC LIMIT ?",
+                (tail,),
             )
-            prev = h
-            count += 1
-        return {
-            "count": count,
-            "headDigest": prev if count else None,
-            "verified": True,  # recomputation is self-consistent by construction
-            "entries": recent[-tail:],
-        }
+        )
     finally:
         conn.close()
+
+    rows.reverse()  # oldest first, the order the chain runs in
+    head = rows[-1]["hash"] if rows else None
+    ok, scope = verify_tail(tail)
+    return {
+        "count": count,
+        "headDigest": head,
+        "verified": ok,
+        "verifiedScope": scope,
+        "unchained": unchained,
+        "entries": [
+            {
+                "seq": r["id"],
+                "actor": r["actor"],
+                "action": r["action"],
+                "hash": r["hash"],
+                "prevHash": r["prev_hash"],
+            }
+            for r in rows
+        ],
+    }
 
 
 # ── NIST AI RMF posture (F14 R1 — honest evidence coverage) ────────────────────
@@ -169,7 +199,10 @@ def nist_posture(db_path: str) -> dict[str, Any]:
         approval_n = 0
         if _table_exists(conn, "audit_events"):
             approval_n = conn.execute(
-                "SELECT COUNT(*) AS c FROM audit_events WHERE action LIKE '%approv%'"
+                # Bound rather than inlined: harmless today (psycopg only reads `%` when
+                # parameters are passed) and a trap the moment anyone adds one.
+                "SELECT COUNT(*) AS c FROM audit_events WHERE action LIKE ?",
+                ("%approv%",),
             ).fetchone()["c"]
         compliance_n = _count(conn, "compliance_records")
     finally:

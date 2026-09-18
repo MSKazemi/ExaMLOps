@@ -211,7 +211,13 @@ async def test_handle_vector_success(mock_http_client):
     req = _VectorReqV1(values=[0.1, 0.2, 0.3])
 
     mock_response = MagicMock()
-    mock_response.json.return_value = {"prediction": 42.0, "run_id": "abc", "model_version": "3"}
+    # An Open Inference Protocol v2 answer (ADR 0126); /predict is deprecated.
+    mock_response.json.return_value = {
+        "model_name": "jpcp",
+        "model_version": "3",
+        "parameters": {"run_id": "abc"},
+        "outputs": [{"name": "predict", "datatype": "FP64", "shape": [1], "data": [42.0]}],
+    }
     mock_response.raise_for_status = MagicMock()
     mock_response.status_code = 200
 
@@ -222,6 +228,12 @@ async def test_handle_vector_success(mock_http_client):
 
     assert isinstance(result, _VectorResV1)
     assert result.results == [42.0]
+    url = mock_http_client.post.call_args[0][0]
+    sent = mock_http_client.post.call_args.kwargs["json"]
+    assert url.endswith("/v2/models/JPCP/infer") or "/v2/models/" in url
+    assert sent["inputs"] == [
+        {"name": "embedding", "shape": [1, 3], "datatype": "FP64", "data": [0.1, 0.2, 0.3]}
+    ]
 
 
 @pytest.mark.asyncio
@@ -497,8 +509,12 @@ async def test_successful_inference_records_drift_success(mock_http_client):
 # ── QW10: per-inference telemetry writes are bundled + offloaded to a worker thread ──
 
 
-def test_persist_inference_telemetry_writes_all_three(monkeypatch):
-    """The bundled helper performs the drift, input-embedding and audit writes with correct args."""
+def test_persist_inference_telemetry_writes_drift_and_input_but_no_audit_row(monkeypatch):
+    """Drift + input-embedding writes with correct args — and no per-inference audit event.
+
+    The audit chain records decisions. An `inference_served` row per prediction was read by
+    nothing, never pruned, and took the platform-wide audit lock on the hot path (plan P0.5).
+    """
     calls: dict[str, object] = {}
     monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: calls.__setitem__("drift", a))
     monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: calls.__setitem__("input", a))
@@ -510,7 +526,7 @@ def test_persist_inference_telemetry_writes_all_three(monkeypatch):
     # embedding [3, 4] ⇒ norm=5.0, mean=3.5, std=0.5
     _, _, norm, mean, std, jid = calls["input"]  # type: ignore[misc]
     assert round(norm, 6) == 5.0 and mean == 3.5 and std == 0.5 and jid == "job-1"
-    assert calls["audit"][0] == "bridge" and calls["audit"][3] == "JPCP"  # type: ignore[index]
+    assert "audit" not in calls
 
 
 def test_persist_skips_input_snapshot_without_embedding(monkeypatch):
@@ -656,28 +672,74 @@ async def test_drift_trigger_writes_an_audit_event(mock_http_client, monkeypatch
 @pytest.mark.asyncio
 async def test_bus_retrain_request_writes_an_audit_event(mock_http_client, monkeypatch):
     seen: list[tuple] = []
-    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: seen.append(a))
+    # The bridge records this one through `audit_best_effort`, so that losing it cannot un-accept
+    # a retrain the control plane already took (see the test below).
+    monkeypatch.setattr(bridge, "audit_best_effort", lambda *a, **k: seen.append(a))
 
-    resp = MagicMock()
-    resp.json.return_value = {"flow_run_id": "fr-77"}
-    resp.raise_for_status = MagicMock()
-    mock_http_client.post = AsyncMock(return_value=resp)
-
-    req = _RetrainReqV1()
-    req.model_name = "MACK"
-    req.dataset_name = "FDataDataset"
-    req.backend_name = "dataplane"
-    req.is_dummy = False
+    # POST /v1/retrain accepts (pending); following the command finds it dispatched (P1.6c).
+    submitted = MagicMock()
+    submitted.json.return_value = _command("pending")
+    submitted.raise_for_status = MagicMock()
+    followed = MagicMock()
+    followed.json.return_value = _command("succeeded", flow_run_id="fr-77")
+    followed.raise_for_status = MagicMock()
+    mock_http_client.post = AsyncMock(return_value=submitted)
+    mock_http_client.get = AsyncMock(return_value=followed)
 
     with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
-        res = await bridge._handle_retrain(req)
+        res = await bridge._handle_retrain(_retrain_req())
 
-    assert res.flow_run_id == "fr-77"
+    assert mock_http_client.post.call_args[0][0].endswith("/v1/retrain")
+    assert "Idempotency-Key" in mock_http_client.post.call_args.kwargs["headers"]
+    assert res.flow_run_id == "fr-77" and res.status_url == "/v1/runs/fr-77"
     assert len(seen) == 1, "a bus-requested retrain must be audited"
     source, actor, action, target, details = seen[0]
     assert (source, action, target) == ("bridge", "retrain_triggered", "MACK")
     assert details["reason"] == "bus_request"
     assert details["flow_run_id"] == "fr-77"
+    assert details["command_id"] == "v1:retrain:c1"
+
+
+@pytest.mark.asyncio
+async def test_a_bus_retrain_not_yet_dispatched_replies_with_the_command(
+    mock_http_client, monkeypatch
+):
+    """Prefect down or admission full: the retrain is accepted and will run, so the requester
+    gets the command to follow — not an error inviting it to ask again."""
+    from examlops import retrain_command
+
+    monkeypatch.setattr(retrain_command, "AUTOMATION_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(bridge, "write_audit_event", lambda *a, **k: None)
+    queued = MagicMock()
+    queued.json.return_value = _command("failed", last_error="prefect unreachable")
+    queued.raise_for_status = MagicMock()
+    mock_http_client.post = AsyncMock(return_value=queued)
+    mock_http_client.get = AsyncMock(return_value=queued)
+
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        res = await bridge._handle_retrain(_retrain_req())
+
+    assert res.flow_run_id == "" and not getattr(res, "error_msg", "")
+    assert res.status_url == "/v1/commands/v1:retrain:c1"
+
+
+def _command(state: str, *, flow_run_id: str | None = None, last_error: str | None = None):
+    return {
+        "command_id": "v1:retrain:c1",
+        "state": state,
+        "result": {"flow_run_id": flow_run_id} if flow_run_id else None,
+        "last_error": last_error,
+        "status_url": "/v1/commands/v1:retrain:c1",
+    }
+
+
+def _retrain_req():
+    req = _RetrainReqV1()
+    req.model_name = "MACK"
+    req.dataset_name = "FDataDataset"
+    req.backend_name = "dataplane"
+    req.is_dummy = False
+    return req
 
 
 @pytest.mark.asyncio
@@ -740,6 +802,41 @@ async def test_transport_500_still_excluded_from_drift(mock_http_client):
     assert bridge._drift_tracker._results.get("JPCP", []) == []
 
 
+@pytest.mark.parametrize(
+    ("cause", "recorded"),
+    [
+        ("model", [False]),  # the model failed this request: a drift signal
+        (None, [False]),  # an older pipeline, without `cause`: as before
+        ("transport", []),  # the pipeline got no answer: an outage, not drift
+        ("replica_lost", []),
+        ("timeout", []),
+        ("protocol", []),
+        ("pipeline", []),
+    ],
+)
+@pytest.mark.asyncio
+async def test_only_the_models_own_failure_reaches_the_drift_tracker(
+    mock_http_client, cause, recorded
+):
+    """The pipeline says why an inference failed; only `model` is evidence about the model."""
+    body = {"error": "inference_failed", "detail": "no prediction"}
+    if cause:
+        body["cause"] = cause
+    mock_response = MagicMock()
+    mock_response.status_code = 500
+    mock_response.json.return_value = body
+    mock_response.raise_for_status = MagicMock(side_effect=_HTTPStatusError("500"))
+    mock_http_client.post = AsyncMock(return_value=mock_response)
+
+    bridge._drift_tracker._results.pop("JPCP", None)
+    req = _make_hpc_job()
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        res = await bridge._call_inference(req)
+
+    assert getattr(res, "error_msg", "")  # the caller is told it failed either way
+    assert bridge._drift_tracker._results.get("JPCP", []) == recorded
+
+
 # ─── S7: a rejected drift-retrain trigger is not a retrain ────────────────────
 
 
@@ -781,3 +878,135 @@ async def test_accepted_drift_trigger_counts_and_audits(mock_http_client, monkey
     assert "JPCP" in tracker._last_retrain
     actions = [a[2] for a in seen]
     assert actions == ["retrain_triggered"]
+
+
+# ── reply first: the database is never on the bus reply path (plan P0.5 / finding B5) ─────────
+#
+# The drift/input writes used to be awaited inside _call_pipeline. A locked or unreachable database
+# therefore failed a prediction that had already succeeded, and every job paid the write latency.
+
+
+def _ok_response():
+    response = MagicMock()
+    response.json.return_value = {"prediction": 12.0, "run_id": "r", "model_version": "3"}
+    response.raise_for_status = MagicMock()
+    response.status_code = 200
+    return response
+
+
+def _sample(name: str) -> float:
+    from prometheus_client import REGISTRY
+
+    return REGISTRY.get_sample_value(name) or 0.0
+
+
+@pytest.fixture
+def fresh_spool(monkeypatch):
+    spool = bridge._TelemetrySpool(maxsize=2)
+    monkeypatch.setattr(bridge, "_telemetry_spool", spool)
+    return spool
+
+
+@pytest.mark.asyncio
+async def test_a_database_failure_does_not_fail_the_inference(
+    mock_http_client, monkeypatch, fresh_spool
+):
+    def _db_down(*_a, **_k):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(bridge, "write_drift_snapshot", _db_down)
+    mock_http_client.post = AsyncMock(return_value=_ok_response())
+    before = _sample("seanerbus_telemetry_persist_failures_total")
+
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        prediction, _run, _version = await bridge._call_pipeline(_make_hpc_job())
+    await fresh_spool.join()
+
+    assert prediction == 12.0
+    assert _sample("seanerbus_telemetry_persist_failures_total") == before + 1
+
+
+@pytest.mark.asyncio
+async def test_the_reply_does_not_wait_for_the_database(mock_http_client, monkeypatch, fresh_spool):
+    import asyncio
+    import threading
+
+    release = threading.Event()
+    monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: release.wait(5))
+    monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: None)
+    mock_http_client.post = AsyncMock(return_value=_ok_response())
+
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        result = await asyncio.wait_for(bridge._call_pipeline(_make_hpc_job()), timeout=1.0)
+
+    assert result[0] == 12.0
+    release.set()
+    await fresh_spool.join()
+
+
+@pytest.mark.asyncio
+async def test_a_full_spool_drops_and_counts_instead_of_blocking(monkeypatch, fresh_spool):
+    import threading
+
+    gate = threading.Event()
+    monkeypatch.setattr(bridge, "_persist_inference_telemetry", lambda *a: gate.wait(5))
+    before = _sample("seanerbus_telemetry_dropped_total")
+
+    accepted = [fresh_spool.offer(("M", "Production", 1.0, None, str(i))) for i in range(6)]
+
+    # maxsize=2: the worker may already hold one record, so at most three are accepted.
+    assert accepted.count(False) >= 3
+    assert _sample("seanerbus_telemetry_dropped_total") == before + accepted.count(False)
+    gate.set()
+    await fresh_spool.join()
+
+
+def test_the_control_plane_bearer_comes_from_the_token_file_when_set(tmp_path, monkeypatch):
+    """ADR 0125: the bridge's workload identity (a JWT-SVID spiffe-helper rewrites) wins."""
+    path = tmp_path / "control-plane.jwt"
+    path.write_text("svid-bridge\n")
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN_FILE", str(path))
+    assert bridge._control_plane_headers()["Authorization"] == "Bearer svid-bridge"
+    path.write_text("svid-rotated\n")
+    assert bridge._control_plane_headers()["Authorization"] == "Bearer svid-rotated"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_audit_write_does_not_report_the_retrain_as_failed(
+    mock_http_client, monkeypatch
+):
+    """The retrain has already been accepted; losing its record must not un-accept it.
+
+    The audit write sat inside the same `try` as the control-plane POST, whose `except Exception`
+    returns `RetrainResV1(error_msg=…)`. So an unreachable audit datastore turned a retrain the
+    control plane had **accepted** into a failure reported back over the bus — and a caller that
+    retries on error would then fire a second retrain of the same model on the cluster.
+
+    `flow_run_id` is the proof the request was accepted; it must survive the loss.
+    """
+
+    def audit_fails(*_a, **_k):
+        raise RuntimeError("datastore unreachable")
+
+    monkeypatch.setattr(bridge, "write_audit_event", audit_fails)
+
+    submitted = MagicMock()
+    submitted.json.return_value = _command("pending")
+    submitted.raise_for_status = MagicMock()
+    followed = MagicMock()
+    followed.json.return_value = _command("succeeded", flow_run_id="fr-88")
+    followed.raise_for_status = MagicMock()
+    mock_http_client.post = AsyncMock(return_value=submitted)
+    mock_http_client.get = AsyncMock(return_value=followed)
+
+    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        res = await bridge._handle_retrain(_retrain_req())
+
+    # The success path constructs `RetrainResV1(flow_run_id=…, status_url=…)` with no `error_msg`
+    # at all, so its absence is itself the proof the error branch was not taken.
+    err = getattr(res, "error_msg", "")
+    assert not err, (
+        f"a lost audit event was reported to the bus as a failed retrain: {err!r}. "
+        "The caller may retry and fire a second retrain of the same model."
+    )
+    assert res.flow_run_id == "fr-88", "the accepted retrain's flow run id must still be returned"

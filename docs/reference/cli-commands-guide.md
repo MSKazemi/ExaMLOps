@@ -60,7 +60,7 @@ Runs a self-check over configuration, connectivity, and database health so you c
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa doctor` | Diagnoses config, service connectivity, and platform DB health, reporting each check. | When `exa status` looks wrong or a command errors and you need to know whether it's your config, the network, or the DB. | `exa doctor`<br>`exa --json doctor` |
+| `exa doctor` | Diagnoses config, service connectivity, and platform DB health, reporting each check. **Exits 1 when it finds anything**, so it works as a scripted gate. | When `exa status` looks wrong or a command errors and you need to know whether it's your config, the network, or the DB — and as the verification step after a restore. | `exa doctor`<br>`exa --json doctor`<br>`exa doctor \|\| echo 'setup is not clean'` |
 
 ### `exa explain` — plain-language command help
 
@@ -127,7 +127,7 @@ Auto-discovers models and datasets, runs and deploys their Prefect training flow
 | `exa pipeline promote` | Promotes a model alias when a `--if-<metric>-<op>` threshold passes (**mutation** — moves the MLflow alias). | Rule-based Staging→Production promotion gated on a metric. | `exa pipeline promote jpcp --if-rmse-lt 5.0 --dry-run`<br>`exa pipeline promote jpcp --if-rmse-lt 5.0 --save` |
 | `exa pipeline promote-delete` | Deletes saved metric-gated promotion rules (**mutation** — removes DB rules). | Clean up obsolete promotion rules. | `exa pipeline promote-delete jpcp`<br>`exa pipeline promote-delete --all` |
 | `exa pipeline add-model` | Wires an existing modelzoo model class into the pipeline by generating its YAML + config shim (**mutation** — writes files); does not create a new class. | Register a hand-written or imported model class for training/inference. | `exa pipeline add-model DemoAD --task anomaly_detection --type classification` |
-| `exa pipeline export-registry` | Exports auto-discovered model state to `pipelines/model_registry.yaml` (**mutation** — writes the registry file). | Snapshot discovered models into a versionable registry. | `exa pipeline export-registry` |
+| `exa pipeline export-registry` | Exports auto-discovered model state to `usecases/seanergy/models` (**mutation** — writes the registry file). | Snapshot discovered models into a versionable registry. | `exa pipeline export-registry` |
 
 #### `exa pipeline distributed` — distributed training + checkpoint/resume (E6)
 
@@ -147,7 +147,7 @@ Trigger and record hyperparameter-optimisation studies via the Control Plane.
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa pipeline hpo start` | Triggers an HPO study for a model via the Control Plane (**mutation** — schedules trials). | Search hyperparameters to optimise a target metric. | `exa pipeline hpo start JPCP --trials 20 --metric rmse --dataset PM100Dataset` |
+| `exa pipeline hpo start` | Records an HPO study (trial budget, metric) and dispatches its baseline training run through the Control Plane (**mutation**). The training flow runs one training per dispatch, not a search: an external optimiser reports each trial with `exa pipeline hpo record`. | Track a hyperparameter search driven by your own optimiser. | `exa pipeline hpo start JPCP --trials 20 --metric rmse --dataset PM100Dataset` |
 | `exa pipeline hpo record` | Records a single HPO trial's result (**mutation** — writes trial to DB). | Log a trial from an external/worker HPO loop. | `exa pipeline hpo record JPCP --trial 3 --params '{"lr":0.01}' --value 4.8` |
 | `exa pipeline hpo status` | Shows HPO study status (optionally for one model). | Track trial progress and best value so far. | `exa pipeline hpo status JPCP` |
 
@@ -168,6 +168,17 @@ Fires a Prefect training run through the Control Plane API (requires `CONTROL_PL
 |---|---|---|---|
 | `exa retrain` | Triggers a Prefect retrain for a model via the Control Plane (**mutation** — schedules a run; audited). | Operator/client-driven retraining without local Prefect. | `exa retrain JPCP --dry-run`<br>`exa retrain JPCP --dataset PM100Dataset --backend minio --reason "drift detected"` |
 | `exa retrain-status <flow-run-id>` | Shows the state of one retrain run (scheduled, running, completed, failed) from the control plane. | Follow a retrain you scheduled, from a terminal or a CI job. | `exa retrain-status 4f0c1e2a-…` |
+| `exa retrain --async` | Queues the retrain as an asynchronous command (`POST /v1/retrain`, 202) and returns at once; the control plane's workers dispatch it with retries and backoff. | Scripts and CI that must not wait on Prefect, or retrains during a Prefect outage. | `exa retrain JPCP --dataset PM100Dataset --async` |
+
+### `exa commands` — follow asynchronous control-plane commands
+
+Reads the control plane's `/v1/commands`: commands queued by `exa retrain --async`, their state (`pending`, `dispatching`, `failed` awaiting retry, `succeeded`, `dead` after the attempt limit, `cancelled`), attempts, result and last error. Tenant-scoped.
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa commands list` | Lists your tenant's commands, newest first, paginated (`--state`, `--limit`, `--cursor`). | See what is queued, failing or dead. | `exa commands list --state failed` |
+| `exa commands show <id>` | Shows one command: state, attempts, the flow run it created, or its last error. | Follow a queued retrain to its flow run. | `exa commands show v1:retrain:4f0c1e2a…` |
+| `exa commands cancel <id>` | Cancels a command not yet dispatched (**mutation** — audited as `command_cancelled`). | Withdraw a queued retrain. | `exa --yes commands cancel v1:retrain:4f0c1e2a…` |
 
 ### `exa scaffold` — scaffold a new model
 
@@ -313,8 +324,8 @@ Inspect registered models and their versions, compare and trace them, roll alias
 | `exa models card history [model]` | Shows model-card generation history (optionally filtered by model). | Track which cards were generated and when. | `exa models card history JPCP` |
 | `exa models cost <model>` | Shows HPC GPU-hour cost history for a model. **`--record` is a mutation** — it fetches latest scheduler (Slurm/Flux) data, writes to the DB, and tags the MLflow run. | Review training cost; ingest fresh accounting data. | `exa models cost JPCP` (read) · `exa models cost JPCP --record` (mutation) |
 | `exa models cost-list` | Shows an HPC cost summary across all models. | Compare per-model training spend fleet-wide. | `exa models cost-list` |
-| `exa models sign <model> <version> --path <artifact>` | **Mutation.** Signs a model artifact bundle (HMAC fallback or Sigstore keyless) and records the signature. | Establish artifact provenance before promotion. | `exa models sign JPCP 17 --path ./artifacts/jpcp` |
-| `exa models verify <model> <version> --path <artifact>` | Verifies a model's signature against the current artifact bytes (verify-before-load gate). `--mode enforce` (default, exit 1 on failure) or `warn` (record only). | CI gate ensuring a served artifact matches its signature. | `exa models verify JPCP 17 --path ./artifacts/jpcp --mode warn` |
+| `exa models sign <model> <version> [--path <artifact>]` | **Mutation.** Signs a model version with Ed25519 (HMAC only when just the legacy key is set) and records the signature. Without `--path` it signs the registered version as serving downloads it, and prints the public key serving needs. | Sign versions registered before signing was enabled, or re-sign after a key rotation. | `exa models sign JPCP 17` |
+| `exa models verify <model> <version> [--path <artifact>]` | Verifies a model's signature against the current artifact bytes (verify-before-load gate); without `--path`, against the registered version. Reasons: `verified`, `unsigned`, `tampered`, `bad-signature`, `untrusted-key`. `--mode enforce` (default, exit 1 on failure) or `warn` (record only). | CI gate ensuring a served artifact matches its signature. | `exa models verify JPCP 17 --mode warn` |
 | `exa models bom <model> <version>` | Generates a CycloneDX AI-BOM for a model version; `--dataset`, `--dataset-revision`, `--framework` enrich it; `--output <file>` writes JSON. | Supply-chain / SBOM compliance reporting. | `exa models bom JPCP 17 --dataset FData --dataset-revision abc123` |
 | `exa models quantize <model> <version>` | **Mutation.** Quantizes a base version (`--method awq\|gptq\|fp8\|int8`, default `awq`) and registers a new signed + BOM'd version; `--path` supplies artifacts to sign, `--dataset`/`--dataset-revision` feed the BOM. | Ship a smaller/faster variant with provenance intact. | `exa models quantize JPCP 17 --method awq --path ./artifacts/jpcp` |
 | `exa models parity <model> <target-version>` | Portability gate: compare a quantized version against its base on the model's declared tolerance. `--tolerance`. | Prove a requantisation did not change the numerics before promoting it. | `exa models parity JPCP 17-awq` |
@@ -370,6 +381,7 @@ Manage the multi-model Ray Serve deployment: what is hot-loaded, how traffic is 
 | `exa serve check` | Smoke test: health check + one prediction per model. | Post-deploy sanity check that every model answers. | `exa serve check` |
 | `exa serve infer-check` | Smoke-tests the inference pipeline end-to-end with a valid synthetic HPC job. | Verify `Ingress → FeatureTransformer → ModelRouter` wiring. | `exa serve infer-check` |
 | `exa serve benchmark` | Benchmarks Ray Serve with the dummy client and reports latency stats (`-n/--requests`). | Quick latency baseline / regression spot-check. | `exa serve benchmark -n 200` |
+| `exa serve loadtest` | Loads a model's inference endpoint at a fixed rate (open loop: latency counted from when each request was due), reports p50–p99, errors, shed and dropped requests, and exits 1 when `--p99-ms` / `--max-error-rate` is breached. Builds the request from the model's `/v2` metadata or takes `--body`; a gateway key comes from `EXAMLOPS_LOADTEST_TOKEN`, or from `serving_token` when the target is the configured `ray_serve` URL. | Capacity planning, sizing `RAY_MAX_QUEUED_REQUESTS`, an SLO gate in CI after a deploy. | `exa serve loadtest jpcp --rate 50 --duration 60 --p99-ms 300` |
 | `exa serve backend` | Shows the active serving backend (`ray-compose` default or `kserve-k8s`). | Confirm which serving substrate is in effect (E1 seam). | `exa serve backend` |
 | `exa serve manifest MODEL` | Renders a KServe `InferenceService` (classical model) or `LLMInferenceService` (LLM) for a resolved model version, checked against the pinned KServe schema; nothing is applied. | Prepare a model for Kubernetes/KServe, or review what would run there. | `exa serve manifest JPCP --canary 10 --out jpcp.yaml` · offline: `exa serve manifest JPCP --version 17 --artifact-uri s3://mlflow-artifacts/1/models/m-1/artifacts` |
 
@@ -403,6 +415,8 @@ Mirror live traffic to a second alias without serving its responses — compare 
 |---|---|---|---|
 | `exa serve shadow enable MODEL` | Enables shadow deployment, mirroring traffic to `-a/--shadow-alias`. | Test a candidate on real traffic without affecting users. **mutation** | `exa serve shadow enable JPCP --shadow-alias Staging` |
 | `exa serve shadow status` | Shows shadow deployment configuration (model optional). | Check whether shadowing is active and where it mirrors. | `exa serve shadow status JPCP` |
+| `exa serve snapshot show` | Shows the newest serving snapshot: generation, digest, age and each model's alias versions (`--json` for all of it). | Confirm what every replica is serving after a promotion or traffic change. | `exa serve snapshot show` |
+| `exa serve snapshot publish` | Compiles the serving snapshot from MLflow and the serving config now and publishes it if anything changed (audited). | Push a change made directly in MLflow without waiting for the next recompile. | `exa serve snapshot publish` |
 | `exa serve shadow log MODEL` | Shows the last 20 shadow inference comparison results. | Compare shadow vs production predictions before promoting. | `exa serve shadow log JPCP` |
 | `exa serve shadow disable MODEL` | Disables shadow deployment for a model. | Stop mirroring once the comparison is done. **mutation** | `exa serve shadow disable JPCP` |
 
@@ -470,7 +484,7 @@ Run offline/batch predictions from a file.
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa serve batch submit MODEL INPUT_FILE` | Runs synchronous batch inference from a JSON/JSONL file (`-a/--alias`, `-o/--output`). | Score a large offline dataset in one call. | `exa serve batch submit JPCP inputs.jsonl --alias Production -o preds.json` |
+| `exa serve batch submit MODEL INPUT_FILE` | Runs synchronous batch inference from a JSON/JSONL file over Open Inference Protocol v2 (`-a/--alias` for every row that names no alias or version of its own, `-o/--output`). | Score a large offline dataset in one call. | `exa serve batch submit JPCP inputs.jsonl --alias Production -o preds.json` |
 | `exa serve batch list` | Lists recent batch inference jobs (`-m/--model` filter). | Review batch job history and status. | `exa serve batch list --model JPCP` |
 
 #### Explainability (`exa serve explain`)
@@ -687,6 +701,7 @@ with `enabled_state="disabled"` so history never implies the loop was live. A re
 | `exa autopilot enable` | **[mutation]** Enable the autopilot kill-switch (persisted in `platform.db`). | Turn on hands-off closed-loop MLOps. | `exa autopilot enable` |
 | `exa autopilot disable` | **[mutation]** Disable the autopilot kill-switch (persisted in `platform.db`). | Emergency stop for all autopilot activity. | `exa autopilot disable` |
 | `exa autopilot run [model]` | **[mutation]** Run one cycle: drift scan → policy → retrain → metrics → policy → promote. `--dry-run`, optional `model` to restrict. | Manually drive (or preview) one autopilot pass. | `exa autopilot run --dry-run` |
+| `exa autopilot follow` | Long-running consumer of `retrain.run_completed` on the NATS backbone: when a retrain finishes, runs that model's autopilot cycle (every gate applies) instead of waiting for the next scheduled one. Needs `EXAMLOPS_NATS_URL`; terminal/service only. | Close the detect→retrain→promote loop in seconds rather than a schedule period. | `exa autopilot follow` |
 | `exa autopilot status` | Show recent autopilot run history. `--last` (10). | Audit what the loop did and when. | `exa autopilot status --last 20` |
 | `exa autopilot contract [behaviour]` | Print a behaviour's blast-radius contract verbatim — what it may/may not change, extent caps, its rollback and kill-switch (ADR 0113). | Read the autopilot's bounds instead of trusting reassurance; diff after an overlay change. | `exa autopilot contract drift_auto_retrain` |
 | `exa autopilot autonomy <behaviour> <level>` | **[mutation]** Set one behaviour's autonomy: `AUTONOMOUS` (requires `--ack "<text>"`, recorded), `REVIEW`, or `DISABLED` — pausable without losing its configuration. | Pause just the promote loop while keeping retrains autonomous, or grant autonomy with a recorded acknowledgment. | `exa autopilot autonomy autopilot_promote REVIEW` |
@@ -987,7 +1002,7 @@ Secrets are stored encrypted under a KEK keyring; values are never printed unles
 | `exa secrets get <path>` | Resolve a secret; redacts by default, `--reveal` prints plaintext (dangerous), `--tenant` scope | Check a value exists / read it when authorized | `exa secrets get mlflow/token` |
 | `exa secrets set <path> <value>` | **[mutation]** Store an encrypted secret (audited); `--tenant` scope | Provision a new credential | `exa secrets set mlflow/token s3cr3t` |
 | `exa secrets rotate <path>` | **[mutation]** Rotate a secret to a fresh random value (audited, R4); `--tenant` scope | Cycle a compromised/expiring credential | `exa secrets rotate mlflow/token` |
-| `exa secrets rewrap` | **[mutation]** Re-encrypt every local secret under the ACTIVE KEK (online key rotation, item 2.3); `--dry-run` reports only | Decommission an old KEK after adding a new one | `exa secrets rewrap --dry-run` |
+| `exa secrets rewrap` | **[mutation]** Re-encrypt every local secret under the ACTIVE KEK (online key rotation, item 2.3); `--dry-run` reports only. **Exits 1 if any secret could not be rewrapped** — in `--json` too — so a script never retires a key that is still in use | Decommission an old KEK after adding a new one | `exa secrets rewrap --dry-run` |
 | `exa secrets scan <target>` | Scan a file/dir for likely secrets; exit non-zero on any finding (CI gate, R10) — read-only | Fail CI if a secret was committed | `exa secrets scan ./config` |
 
 ### `exa compliance` — EU AI Act compliance evidence
@@ -1190,9 +1205,10 @@ consumers must deduplicate. `nats` and `kafka` remain fail-loud placeholders.
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa events stats` | Shows outbox backlog: pending / published / poison (attempts exhausted). | Monitor event delivery health | `exa events stats` |
+| `exa events stats` | Shows outbox backlog: pending / published / poison (attempts exhausted) and the oldest pending event's age; with the NATS publisher, each durable consumer's lag and dead letters. | Monitor event delivery health; find a consumer that fell behind | `exa events stats` |
 | `exa events publish` | Enqueues an event to the outbox (durable; later relayed). **(mutation)** | Emit a custom platform event | `exa events publish model.promoted -p '{"model":"jpcp"}'` |
 | `exa events relay` | Publishes pending outbox events to the configured broker; `-n` limit, `--loop` until drained. **(mutation, outward)** | Drain the outbox to the message broker | `exa events relay --loop` |
+| `exa events tail` | Shows the most recent CloudEvents on the NATS JetStream backbone (`--topic` filter, `--limit`), or what a consumer parked with `--dlq <consumer>`. Read-only: an ephemeral consumer that leaves no state. | See what the platform is publishing; inspect dead letters | `exa events tail --topic 'retrain.*'`<br>`exa events tail --dlq autopilot` |
 
 ### `exa admission` — admission-control queue (per-tenant fair-share)
 
@@ -1200,8 +1216,8 @@ A durable work queue drained under a global concurrency cap plus per-tenant fair
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa admission stats` | Shows queue depth by state (queued/running/done/rejected/failed). | Watch admission-queue pressure | `exa admission stats` |
-| `exa admission submit` | Enqueues a work item (durable); `--tenant`, `--project`, `--priority`. **(mutation)** | Submit throttled, fair-shared work | `exa admission submit -p '{"job":"retrain"}' --tenant team-a --priority 5` |
+| `exa admission stats` | Shows queue depth by state (queued/running/done/rejected/failed) **and `oldest_queued_age_s`** — a rising wait with a flat `running` is a queue nothing is draining. | Watch admission-queue pressure; tell a busy queue from a stranded one | `exa admission stats` |
+| `exa admission submit` | Enqueues a work item (durable); `--tenant`, `--project`, `--priority`. **Enqueues only — it does not dispatch**: `examlops.admission` takes an injected `dispatch`, and the control plane runs its own admission accounting on this table rather than through the facade, so an item submitted here waits until something claims it. **(mutation)** | Submit throttled, fair-shared work to a worker that drains this queue | `exa admission submit -p '{"job":"retrain"}' --tenant team-a --priority 5` |
 
 ### `exa exchange` — NovaFabric Exchange (signed shareable packages)
 

@@ -7,6 +7,7 @@ import urllib.request
 
 import typer
 
+from examlops import events
 from examlops.cli import _output
 from examlops.cli._config import load_config
 from examlops.data import get_db, init_db
@@ -50,21 +51,41 @@ def _ensure_table(conn) -> None:
 
 
 def _fetch_versions(cfg, model: str) -> list[dict]:
-    """Return all model versions from MLflow for *model* (lowercase)."""
+    """Return all model versions from MLflow for *model* (lowercase).
+
+    *All* means following ``next_page_token`` — the loop `examlops.serving_snapshot` already
+    documents as "the 100-model bug, by design". One page would cap how far back a rollback can
+    reach, on the one command whose purpose is to reach backwards, and it would do it silently:
+    an older version simply would not appear among the candidates.
+    """
     import urllib.parse
 
     encoded = urllib.parse.quote(model.lower())
-    url = (
-        f"{cfg.mlflow_url}/api/2.0/mlflow/model-versions/search"
-        f"?max_results=50&filter=name%3D%27{encoded}%27"
-    )
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = json.loads(r.read())
-    except urllib.error.URLError as exc:
-        _output.error(f"MLflow unreachable: {exc}", hint="Is MLflow running? Try: exa status")
-    return data.get("model_versions", [])
+    versions: list[dict] = []
+    token: str | None = None
+    seen: set[str] = set()
+    while True:
+        url = (
+            f"{cfg.mlflow_url}/api/2.0/mlflow/model-versions/search"
+            f"?max_results=1000&filter=name%3D%27{encoded}%27"
+        )
+        if token:
+            url += f"&page_token={urllib.parse.quote(token)}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+        except urllib.error.URLError as exc:
+            _output.error(f"MLflow unreachable: {exc}", hint="Is MLflow running? Try: exa status")
+        versions.extend(data.get("model_versions", []))
+        token = data.get("next_page_token")
+        # A repeated token never advances; stop rather than spin, and say so rather than hand back
+        # a quietly short list that would look exactly like the bug this loop removes.
+        if not token or token in seen:
+            if token:
+                _output.error(f"MLflow repeated a version page token for '{model}'")
+            return versions
+        seen.add(token)
 
 
 def _get_current_alias_version(cfg, model: str, alias: str) -> int | None:
@@ -194,6 +215,9 @@ def rollback(
 
     # Record in DB
     actor = os.getenv("EXAMLOPS_ACTOR", os.getenv("USER", "unknown"))
+    events.alias_changed(
+        model, alias, version, previous_version=current_version, actor=actor, via="exa-rollback"
+    )
     with get_db() as conn:
         _ensure_table(conn)
         conn.execute(

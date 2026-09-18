@@ -102,6 +102,71 @@ def test_scheduler_once_produces_bundle(tmp_path, monkeypatch):
     assert (tmp_path / "bk" / res.bundle_id / "bundle.manifest.json").exists()
 
 
+def _cycle_with_push(tmp_path, monkeypatch, pusher):
+    """One cycle whose off-site push behaves as `pusher` says."""
+    from examlops.backup import remote, schedule
+
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+    monkeypatch.setenv("EXAMLOPS_BACKUP_S3_URI", "s3://examlops-backups/nightly")
+    monkeypatch.setattr(remote, "push", pusher)
+    import examlops.platform_db as pdb
+
+    pdb.init_db()
+    return schedule.run_cycle(
+        out_dir=str(tmp_path / "bk"), tiers=["sqlite"], push=True, retain="keep=14"
+    )
+
+
+def test_a_cycle_that_could_not_replicate_says_so(tmp_path, monkeypatch):
+    """A backup that exists only on the host it was taken from is not a DR backup.
+
+    The failure was logged and nothing else: `run_cycle` returned the local bundle's status, and
+    the operator's last line was `✓ One cycle complete`. So an instance whose off-site replication
+    had never once worked — a wrong URI, a bucket nobody created, an expired credential — was
+    indistinguishable from one replicating every hour, and stayed that way until the host was gone.
+
+    Reproduced against a real MinIO first: with the target bucket absent, every push failed with
+    `NoSuchBucket`, nothing reached the store, and the cycle still exited 0 behind a green tick.
+    """
+
+    def boom(_bundle_dir, **_kw):
+        raise RuntimeError("NoSuchBucket: the specified bucket does not exist")
+
+    res = _cycle_with_push(tmp_path, monkeypatch, boom)
+
+    assert res.offsite is not None, "a cycle asked to replicate must report whether it did"
+    assert res.offsite["ok"] is False
+    assert "NoSuchBucket" in res.offsite["error"], res.offsite
+    # The local bundle is untouched and keeps its own verdict: losing a good local backup over a
+    # broken off-site target would be the worse failure, and is not what this asks for.
+    assert res.overall_status in ("ok", "partial")
+    assert (tmp_path / "bk" / res.bundle_id / "bundle.manifest.json").exists()
+
+
+def test_a_cycle_that_replicated_reports_where(tmp_path, monkeypatch):
+    """The positive control: without it, the assertion above would pass over a cycle that never
+    pushes at all."""
+    uri = "s3://examlops-backups/nightly/bundle.tar.gz"
+
+    res = _cycle_with_push(tmp_path, monkeypatch, lambda _bd, **_kw: {"uri": uri, "pushed": "b"})
+
+    assert res.offsite == {"requested": True, "ok": True, "error": None, "uri": uri}
+
+
+def test_a_cycle_not_asked_to_replicate_claims_nothing(tmp_path, monkeypatch):
+    """`offsite` is `None`, not a fabricated success: most instances never replicate at all."""
+    from examlops.backup import schedule
+
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+    import examlops.platform_db as pdb
+
+    pdb.init_db()
+    res = schedule.run_cycle(
+        out_dir=str(tmp_path / "bk"), tiers=["sqlite"], push=False, retain="keep=14"
+    )
+    assert res.offsite is None
+
+
 def test_scheduler_survives_failing_cycle(tmp_path, monkeypatch):
     from examlops.backup import bundle, schedule
 
@@ -241,6 +306,49 @@ def test_cli_legacy_four_still_work(cli_env):
 
 
 @sqlite_tier_only
+def test_cli_create_push_failure_is_not_a_success(cli_env, monkeypatch):
+    """`exa backup create --all --push` is what the documented systemd timer runs.
+
+    A timer's only signal is the exit code, so a warning printed under a green tick meant a nightly
+    job could fail to replicate every night for a year and report success every time. The local
+    bundle is still written and still verifiable — that part was right and is unchanged.
+    """
+    from typer.testing import CliRunner
+
+    from examlops.backup import remote
+    from examlops.cli.main import app
+
+    def boom(_bundle_dir, **_kw):
+        raise RuntimeError("NoSuchBucket: the specified bucket does not exist")
+
+    monkeypatch.setattr(remote, "push", boom)
+    monkeypatch.setenv("EXAMLOPS_BACKUP_S3_URI", "s3://examlops-backups/nightly")
+    out = str(cli_env / "bk")
+
+    result = CliRunner().invoke(app, ["backup", "create", "--bundle", "--push", "--out", out])
+
+    assert result.exit_code == 1, result.output
+    assert "Off-site replication FAILED" in result.output
+    assert list(Path(out).glob("examlops-backup-*")), "the local bundle must still be written"
+
+
+def test_cli_create_push_success_exits_zero(cli_env, monkeypatch):
+    """The control: the failure above must not be how every push now ends."""
+    from typer.testing import CliRunner
+
+    from examlops.backup import remote
+    from examlops.cli.main import app
+
+    monkeypatch.setattr(remote, "push", lambda _bd, **_kw: {"uri": "s3://b/p/x.tar.gz"})
+    monkeypatch.setenv("EXAMLOPS_BACKUP_S3_URI", "s3://b/p")
+
+    result = CliRunner().invoke(
+        app, ["backup", "create", "--bundle", "--push", "--out", str(cli_env / "bk2")]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Replicated off-site" in result.output
+
+
 def test_cli_bundle_create_verify_restore_status(cli_env):
     from typer.testing import CliRunner
 

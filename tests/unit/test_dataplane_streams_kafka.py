@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -1090,8 +1091,14 @@ def test_consumer_lag_is_published_per_partition_and_cleared_on_revoke(tmp_path:
     for x in range(3):
         rig.consumer.add(0, _v({"x": x}))
     rig.consumer.assign([0])
-    rig.steps(1)
-    assert _lag(0) is not None  # the poll loop publishes it, at most once a second
+    rig.steps(1)  # this step's poll takes the assignment; nothing is owned before it
+    # …and then the loop publishes, at most once a real second — which is why every assertion
+    # here drives `_report_lag()` itself. Asserting straight after `steps(1)` passed only when an
+    # earlier test in the same process had left a sample for these very labels in the global
+    # registry: the partition is not owned yet when that step reports, so on its own it published
+    # nothing and the test failed alone and under `-n`.
+    rig.session._report_lag()
+    assert _lag(0) is not None
 
     rig.settle(rounds=10)
     rig.session._report_lag()
@@ -1119,6 +1126,140 @@ def test_a_client_without_a_cached_watermark_publishes_no_lag(tmp_path: Path) ->
     rig.consumer.get_watermark_offsets = _unavailable  # type: ignore[method-assign]
     rig.session._report_lag()  # no raise, and the loop keeps going
     rig.settle(rounds=5)
+
+
+class _FrozenCache:
+    """librdkafka's own watermark caching, which the plain fake does not model.
+
+    ``cached=True`` answers from the last value a *fetch response* carried — so a partition nobody
+    is fetching (paused by the operator, or parked in a retry backoff) freezes — while a real
+    query answers the truth and refreshes the cache. This is exactly the shape of live finding D3.
+    """
+
+    def __init__(self, real: Callable[..., Any]) -> None:
+        self._real = real  # the fake consumer's own, truthful, implementation
+        self._cache: dict[int, int] = {}
+        self.queries = 0
+
+    def prime(self, topic: str, partitions: list[int]) -> None:
+        """Fill the cache as a fetch response would, without counting a query."""
+        for partition in partitions:
+            self._cache[partition] = self._real(FakeTP(topic, partition, 0))[1]
+
+    def __call__(self, tp: Any, timeout: float | None = None, cached: bool = False) -> Any:
+        if cached:
+            return 0, self._cache.get(int(tp.partition), -1001)
+        self.queries += 1
+        low, high = self._real(tp)
+        self._cache[int(tp.partition)] = high
+        return low, high
+
+
+def _freeze_watermark_cache(rig: Rig) -> _FrozenCache:
+    frozen = _FrozenCache(rig.consumer.get_watermark_offsets)
+    frozen.prime(rig.session._topic, list(rig.consumer.data))
+    rig.consumer.get_watermark_offsets = frozen  # type: ignore[method-assign]
+    return frozen
+
+
+def test_a_paused_partition_with_a_backlog_still_reports_its_lag(tmp_path: Path) -> None:
+    """Live finding D3: ``get_watermark_offsets(cached=True)`` is refreshed only by fetch
+    responses, and a paused partition is not fetched — so the gauge read 0 in the one state an
+    operator needs a number for, and batch S3's lag alert could never fire for it. The report now
+    queries the broker for a real watermark on a bounded schedule."""
+    rig = _rig(tmp_path, script={0: [ok()]})
+    rig.consumer.add(0, _v({"x": 0}))
+    rig.consumer.assign([0])
+    rig.settle(rounds=5)  # served: the partition is caught up
+
+    frozen = _freeze_watermark_cache(rig)
+    rig.session.set_paused(True)
+    rig.steps(2)
+    for x in range(1, 5):  # a backlog builds while nobody fetches it
+        rig.consumer.add(0, _v({"x": x}))
+
+    rig.session._last_watermark_query = float("-inf")  # the schedule's next turn
+    rig.session._report_lag()
+    assert frozen.queries >= 1  # it asked the broker, not only the frozen cache
+    assert _lag(0) == 4.0  # four queued messages, not the cache's zero
+
+    # …and no more often than the schedule allows: the cache alone answers in between.
+    before = frozen.queries
+    rig.session._report_lag()
+    assert frozen.queries == before
+    assert _lag(0) == 4.0  # the queried watermark still stands (max of cached and queried)
+
+
+def test_a_fresh_stream_reports_its_backlog_before_it_has_consumed_anything(
+    tmp_path: Path,
+) -> None:
+    """Live pass 2: a partition with no position of its own was skipped entirely, so a NEW
+    stream's first backlog was invisible until it consumed one message — measured live as no
+    series at all for 28 s while 20 messages waited. It now falls back to the group's committed
+    offset, and then to the low watermark."""
+    rig = _rig(tmp_path, script={0: [ok()]})
+    rig.session.set_paused(True)  # nothing is ever consumed, so no position is ever formed
+    rig.consumer.assign([0])
+    rig.steps(2)
+    for x in range(5):
+        rig.consumer.add(0, _v({"x": x}))
+
+    state = rig.session.partition_state(0)
+    assert state is not None and state.position() is None and state.stored is None
+
+    rig.session._last_watermark_query = float("-inf")
+    rig.session._report_lag()
+    assert _lag(0) == 5.0  # fresh group, nothing committed: the whole log is the backlog
+
+    # …and where the group HAS committed, that is the better answer of the two.
+    rig.consumer.committed_offsets[0] = 3
+    rig.session._last_watermark_query = float("-inf")
+    rig.session._report_lag()
+    assert _lag(0) == 2.0
+
+
+def test_a_slow_broker_cannot_keep_the_loop_out_of_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refresh runs on the poll loop, and ``poll()`` is what heartbeats this consumer's group
+    membership — so a pass is bounded in real time and resumes where it stopped, rather than
+    costing (partitions × timeout) when the broker is slow."""
+    monkeypatch.setattr(ks, "WATERMARK_QUERY_BUDGET_S", 0.05)
+    rig = _rig(tmp_path, script={p: [ok()] for p in range(6)})
+    for p in range(6):
+        rig.consumer.add(p, _v({"x": p}))
+    rig.consumer.assign(list(range(6)))
+    rig.steps(1)
+
+    queried: list[int] = []
+
+    def slow(tp: Any, timeout: float | None = None, cached: bool = False) -> Any:
+        if not cached:
+            queried.append(int(tp.partition))
+            time.sleep(0.03)
+        return 0, 99
+
+    rig.consumer.get_watermark_offsets = slow  # type: ignore[method-assign]
+    rig.session._last_watermark_query = float("-inf")
+    rig.session._refresh_watermarks()
+    first = list(queried)
+    assert 0 < len(first) < 6  # the budget stopped the pass short
+
+    rig.session._last_watermark_query = float("-inf")
+    rig.session._refresh_watermarks()
+    assert queried[len(first)] not in first  # …and the next pass carried on, not restarted
+
+
+def test_the_watermark_refresh_interval_is_configurable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ks.WATERMARK_REFRESH_ENV, "0.25")
+    rig = _rig(tmp_path, script={0: [ok()]})
+    assert rig.session._watermark_interval == 0.25
+    monkeypatch.setenv(ks.WATERMARK_REFRESH_ENV, "not-a-number")
+    assert _rig(tmp_path, script={0: [ok()]}).session._watermark_interval == (
+        ks.WATERMARK_REFRESH_INTERVAL_S
+    )
 
 
 def _expired_total() -> float:

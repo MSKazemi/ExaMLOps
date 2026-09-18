@@ -158,6 +158,27 @@ exa slo set JPCP p99-ok --target 0.99 --source prometheus \
 - **A Prometheus that can't be reached is *unmeasured*.** This is the opposite rule to the
   availability probe: a monitoring outage is not a service outage. The host comes from
   `PROMETHEUS_URL`, never from the spec.
+- **A self-diluting ratio is warned about.** If the numerator selects *some* of a counter's label
+  values and the denominator takes *all* of them, every other value sits in the denominator and
+  lowers the measured rate:
+
+  | | events | bad | measured rate |
+  |---|---|---|---|
+  | real traffic | 100 | 5 | **5.0%** |
+  | plus 900 events the numerator never selects | 1000 | 5 | **0.5%** |
+
+  So unrelated traffic can hold a burn-rate alert below its threshold during a real incident.
+
+  **Every surface that writes a spec says so**, because the query is judged in `apply_spec` rather
+  than at one call site: `exa slo set` prints it, `exa slo apply` prints it per spec (in a file of
+  twenty, "one of these dilutes itself" is not actionable), and `POST /api/slo` returns it in a
+  `warnings` array. It **only warns** — "what share of *all* events were X" is a legitimate SLI that
+  looks identical, and only the author knows which was meant, so the spec is written either way.
+
+  This is not hypothetical advice: the platform made the same mistake four times in its own alert
+  rules (see [Serving runbooks](../runbooks/serving.md) and
+  [Control plane](control-plane.md#retrain-outcomes-and-what-a-success-rate-divides-by)), where
+  refused and throttled requests were diluting the rates that decide whether anyone is paged.
 
 **Every source now has an ingester.** An SLO whose ingest cannot produce a sample, for a missing
 query, no data or an unreachable Prometheus, reports why and records nothing, because silence

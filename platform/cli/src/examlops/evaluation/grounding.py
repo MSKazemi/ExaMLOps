@@ -146,7 +146,7 @@ def _pending_approvals() -> tuple[bool, list[str]]:
 
     from examlops.cli._config import load_config
 
-    url = f"{load_config().control_plane_url.rstrip('/')}/approvals?status=pending"
+    url = f"{load_config().control_plane_url.rstrip('/')}/v1/approvals?status=pending"
     try:
         httpx.get(url, timeout=3.0).raise_for_status()
     except Exception:

@@ -10,8 +10,11 @@ so every store gets the same protection.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import threading
+import time
+import urllib.parse
 from collections.abc import Callable
 
 from .retry import is_locked_error, retry_call
@@ -53,13 +56,33 @@ def harden(
     busy_timeout_ms: int | None = None,
 ) -> sqlite3.Connection:
     """Apply the standard resilience pragmas to an open connection."""
+    timeout_ms = DB_BUSY_TIMEOUT_MS if busy_timeout_ms is None else busy_timeout_ms
+    conn.execute(f"PRAGMA busy_timeout={timeout_ms}")
     if wal:
-        conn.execute("PRAGMA journal_mode=WAL")
+        _enable_wal(conn, timeout_ms)
     conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute(
-        f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS if busy_timeout_ms is None else busy_timeout_ms}"
-    )
     return conn
+
+
+def _enable_wal(conn: sqlite3.Connection, timeout_ms: int) -> None:
+    """Switch to WAL, waiting out a concurrent opener instead of failing at once.
+
+    Changing the journal mode needs an exclusive lock, and SQLite answers "database is locked"
+    for it without calling the busy handler. Processes opening a new database together therefore
+    failed immediately, all but one. The mode is stored in the file, so once any opener has
+    switched it the retry here succeeds straight away.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    delay = 0.01
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.2)
 
 
 def connect(
@@ -80,6 +103,26 @@ def connect(
     if row_factory is not None:
         conn.row_factory = row_factory
     return harden(conn, wal=wal, busy_timeout_ms=busy_timeout_ms)
+
+
+def connect_snapshot(path: str, *, row_factory: Callable | None = sqlite3.Row):
+    """Open a file that must not be modified — a backup snapshot, an archived datastore.
+
+    The hardened :func:`connect` above **writes**: `journal_mode=WAL` changes the file. That is
+    right for a live datastore and wrong for anything being inspected, in two ways. It requires
+    permission to modify what you are only reading — which the everyday arrangement does not give,
+    since the Compose `backup` sidecar runs as root and its bundles are read back by an operator
+    who is not root — and, more basically, a reader has no business altering the artefact.
+
+    `immutable=1` alongside `mode=ro` states what is already true of a snapshot and stops SQLite
+    reaching for the `-shm` side file that a WAL-mode header would otherwise make it want. Use this
+    for any file the platform did not open in order to change.
+    """
+    uri = "file:" + urllib.parse.quote(os.path.abspath(path)) + "?mode=ro&immutable=1"
+    conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+    if row_factory is not None:
+        conn.row_factory = row_factory
+    return conn
 
 
 def write_retry[T](fn: Callable[[], T], *, retries: int = 4, base_delay: float = 0.05) -> T:

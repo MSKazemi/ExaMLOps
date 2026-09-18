@@ -342,7 +342,14 @@ jobs:
           # on GitLab's test:infra:helm (pipeline #3241): if a future fixture adds an import,
           # this job fails loudly rather than silently skipping the chart guards.
           python -m pip install --quiet pytest pyyaml prometheus_client httpx typer
-          python -m pytest tests/unit/test_helm_chart.py tests/unit/test_helm_network_and_schema.py tests/unit/test_dockerfile_build_context.py -q
+          # Every helm-gated file (tests/unit/test_github_helm_job.py keeps this list complete):
+          # three of them used to skip here, and so asserted nothing on GitHub.
+          python -m pytest tests/unit/test_helm_chart.py tests/unit/test_helm_network_and_schema.py \
+            tests/unit/test_helm_agent_scaling.py tests/unit/test_helm_secret_scoping.py \
+            tests/unit/test_dashboard_agent_credentials.py tests/unit/test_helm_events.py \
+            tests/unit/test_helm_workload_identity.py tests/unit/test_helm_gateway.py \
+            tests/unit/test_helm_prometheus_rules.py \
+            tests/unit/test_dockerfile_build_context.py -q
 
       # A chart repository nobody can build is not publishable; this is the same
       # command the release would run, minus the copy to the host.
@@ -413,6 +420,9 @@ jobs:
       - name: Install MkDocs
         run: python -m pip install --quiet -r platform/ci/requirements-docs.txt
 
+      # Two jobs in one install. The site SERVES these packages — mermaid and KaTeX — so the
+      # build fails without them rather than silently falling back to unpkg and jsdelivr in every
+      # reader's browser, and the parse check below reads the diagrams with the same mermaid.
       - name: Set up Node 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -430,14 +440,6 @@ jobs:
       - name: Build (strict)
         run: mkdocs build --clean --strict
 
-      # Two jobs in one install. The site SERVES these packages — mermaid and KaTeX — so the
-      # build fails without them rather than silently falling back to unpkg and jsdelivr in every
-      # reader's browser, and the parse check below reads the diagrams with the same mermaid. mkdocs never reads a
-      # ```mermaid fence itself — the reader's browser renders it — so the strict build passes a
-      # diagram mermaid cannot parse, and the reader gets a red error box.
-      # Eleven diagrams went unchecked for months and two of them were broken. This parses every
-      # one with the same major version the site loads. Not mirrored in .gitlab-ci.yml: that job
-      # runs on python:3.12-slim with no node, and GitHub is the release authority (ADR 0129).
       # Exit 2 (the checker could not run) fails this step too: a diagram check that silently
       # passes because nothing ran is worse than no check at all.
       - name: Diagrams parse
@@ -450,6 +452,34 @@ jobs:
           name: docs-site
           path: site/
           if-no-files-found: error
+
+  alert-rules:
+    # `promtool check rules` proves the alert rules parse; alert_rules_test.yml proves they fire on
+    # the input they are written for and stay quiet on the rest (a first event on a new series, a
+    # metric that is missing while its target is up). Neither ran here once the GitLab pipeline
+    # went. The image is the Prometheus the platform deploys, read from its Dockerfile, where it is
+    # pinned by digest. `make alerts-check` runs the same pair.
+    name: alert rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prometheus image
+        id: prometheus
+        run: echo "image=$(sed -n 's/^FROM //p' platform/infra/docker-compose/Dockerfile.prometheus)" >> "$GITHUB_OUTPUT"
+
+      - name: promtool check rules
+        env:
+          IMAGE: ${{ steps.prometheus.outputs.image }}
+        run: docker run --rm --entrypoint promtool -v "$PWD/platform/infra/docker-compose:/cfg:ro" -w /cfg "$IMAGE" check rules alert_rules.yml
+
+      - name: promtool test rules
+        env:
+          IMAGE: ${{ steps.prometheus.outputs.image }}
+        run: docker run --rm --entrypoint promtool -v "$PWD/platform/infra/docker-compose:/cfg:ro" -w /cfg "$IMAGE" test rules alert_rules_test.yml
 
   workflow-lint:
     # The workflows are code that runs with the repository's token, and nothing checked them.
@@ -508,6 +538,7 @@ jobs:
       - helm
       - control-plane
       - docs
+      - alert-rules
       - workflow-lint
       - dependency-review
     runs-on: ubuntu-latest

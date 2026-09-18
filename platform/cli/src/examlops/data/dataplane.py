@@ -36,9 +36,11 @@ __all__ = [
     "restore_pull",
     "get_pull",
     "list_pulls",
+    "list_snapshots",
     "list_active_pulls",
     "last_pull",
     "ACTIVE_PULL_STATUSES",
+    "COMMITTED_PULL_STATUSES",
     "upsert_stream",
     "get_stream",
     "list_streams",
@@ -54,7 +56,10 @@ __all__ = [
     "prune_dead_letters",
 ]
 
-_COMMITTED = ("succeeded", "unchanged")
+#: A pull that left data behind. `unchanged` counts: the source had nothing new, so the previous
+#: revision is still the current one, and the pull committed that fact.
+COMMITTED_PULL_STATUSES: tuple[str, ...] = ("succeeded", "unchanged")
+_COMMITTED = COMMITTED_PULL_STATUSES
 
 
 def _parse(row: sqlite3.Row) -> dict[str, Any]:
@@ -315,6 +320,34 @@ def list_pulls(
 # one else would ever finish.
 ACTIVE_PULL_STATUSES: tuple[str, ...] = ("running", "queued", "committing")
 _ACTIVE = ACTIVE_PULL_STATUSES
+
+
+def list_snapshots(
+    *, project: str | None = None, source: str | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Committed pulls that produced a revision, newest first — the pinnable snapshots.
+
+    Deliberately its own query rather than a filter over :func:`list_pulls`. A snapshot is rarer
+    than a pull, so bounding the pulls and discarding the uncommitted ones answers "snapshots among
+    the newest N *pulls*": a source whose recent pulls have been failing shows fewer revisions than
+    it has, and once N consecutive failures pile up, none at all — an empty list that reads as "this
+    source never produced data" at exactly the moment someone is looking because it is broken.
+    """
+    init_db()
+    placeholders = ",".join("?" * len(_COMMITTED))
+    where = [f"status IN ({placeholders})", "revision IS NOT NULL"]
+    args: list[Any] = list(_COMMITTED)
+    if project is not None:
+        where.append("project=?")
+        args.append(project)
+    if source is not None:
+        where.append("source=?")
+        args.append(source)
+    sql = "SELECT * FROM dataplane_pulls WHERE " + " AND ".join(where) + " ORDER BY id DESC LIMIT ?"
+    args.append(int(limit))
+    with get_db() as conn:
+        rows = conn.execute(sql, args).fetchall()  # noqa: S608 - fixed columns, placeheld statuses
+    return [_parse(r) for r in rows]
 
 
 def list_active_pulls() -> list[dict[str, Any]]:
@@ -628,15 +661,33 @@ def get_dead_letter_row(project: str, dead_letter_id: int) -> dict[str, Any] | N
 
 
 def list_dead_letter_rows(
-    project: str, *, stream: str | None = None, limit: int = 50
+    project: str,
+    *,
+    stream: str | None = None,
+    limit: int = 50,
+    reason: str | None = None,
+    before_id: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Dead letters of ``project`` (optionally one stream), newest first, without payloads."""
+    """Dead letters of ``project`` (optionally one stream), newest first, without payloads.
+
+    ``reason`` and ``before_id`` (the cursor: rows strictly older than that id) are **selection**,
+    not presentation, so they belong here rather than in the caller: applying either to an
+    already-limited read answers about the window the limit happened to cover, and a caller who
+    pages or filters is then shown "nothing more" when the truth is "nothing more *in the first
+    N rows*".
+    """
     init_db()
     sql = f"SELECT {_DEAD_LETTER_LIST_COLUMNS} FROM dataplane_stream_dead_letters WHERE project=?"  # noqa: S608 - fixed column list
     args: list[Any] = [project]
     if stream is not None:
         sql += " AND stream=?"
         args.append(stream)
+    if reason is not None:
+        sql += " AND reason=?"
+        args.append(reason)
+    if before_id is not None:
+        sql += " AND id<?"
+        args.append(int(before_id))
     sql += " ORDER BY id DESC LIMIT ?"
     args.append(int(limit))
     with get_db() as conn:

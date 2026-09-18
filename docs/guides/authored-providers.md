@@ -62,6 +62,14 @@ that persists it; per-row **Edit** / **Activate** / **Delete**. All writes requi
 `project.manage` capability and are audited; viewers see the list read-only. The editor is the GUI
 half of this feature — it calls the same `examlops.providers` code path as the notebook/CLI.
 
+An **empty list and an unreadable one are different answers**, and since 2026-09-14 the card says
+which. It used to render *"No authored providers yet"* whether no provider was registered or the
+read had failed — and that sentence is a claim about which Python computes this project's cost,
+carbon and drift numbers. An operator reading it concludes the built-in formulas are in force,
+when an authored provider may be active and governing every figure on the page. A failed read now
+says so and points at `exa providers list`. See
+[Empty and unreadable are different answers](../dashboard/usage-guide.md#empty-and-unreadable-are-different-answers).
+
 ## Active provider
 
 Each `(project, domain)` can have one **active** provider — the one used when a calculation is run

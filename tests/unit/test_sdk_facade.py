@@ -200,3 +200,76 @@ def test_onboard_all_models_covers_pack(tmp_path, monkeypatch):
 
     results = sdk.onboard_all_models()
     assert {r["project"] for r in results} == {"jpcp", "mack"}
+
+
+def test_status_reads_a_control_plane_older_than_v1(monkeypatch):
+    """Rolling upgrade: a new CLI against a control plane that serves only `/status` (404 on
+    `/v1/status`) still reads it, instead of reporting it unreachable."""
+    from examlops.cli import _client
+
+    asked: list[str] = []
+
+    def old_server(url, token=""):
+        asked.append(url)
+        if url.endswith("/v1/status"):
+            raise _client.ClientError("HTTP 404", status=404)
+        return {"services": {"mlflow": {"ok": True}}, "pending_approvals": 2}
+
+    monkeypatch.setattr(_client, "get", old_server)
+    st = sdk.status()
+    assert st.reachable is True and st.pending_approvals == 2
+    assert asked[0].endswith("/v1/status")
+    assert asked[1].endswith("/status") and not asked[1].endswith("/v1/status")
+
+
+def test_status_fallback_is_only_for_a_missing_route(monkeypatch):
+    """A 401 or 503 from /v1/status is an answer about the control plane, not its age."""
+    from examlops.cli import _client
+
+    asked: list[str] = []
+
+    def refusing(url, token=""):
+        asked.append(url)
+        raise _client.ClientError("HTTP 401", status=401)
+
+    monkeypatch.setattr(_client, "get", refusing)
+    assert sdk.status().reachable is False
+    assert len([u for u in asked if u.endswith("/status")]) == 1
+
+
+def test_production_models_are_read_past_the_first_registry_page(monkeypatch):
+    """The SDK is a public surface: a script's "what is in production" must not stop at page one.
+
+    `registered-models/search` paginates. The facade keeps only models carrying a Production or
+    Staging alias, so a partial read does not shorten the answer — it changes it: a model in
+    production listed past the first page is reported as not being in production at all, to a
+    caller (a notebook, a report, another service) with nothing to check it against.
+    """
+    from examlops.cli import _client
+
+    pages = {
+        None: {
+            "registered_models": [{"name": "filler", "aliases": []}],
+            "next_page_token": "p2",
+        },
+        "p2": {
+            "registered_models": [
+                {"name": "jpcp", "aliases": [{"alias": "Production", "version": "17"}]}
+            ]
+        },
+    }
+    seen = []
+
+    def get(url, *a, **k):
+        if "registered-models/search" not in url:
+            return _LIVE_STATUS
+        token = None
+        if "page_token=" in url:
+            token = url.split("page_token=")[1].split("&")[0]
+        seen.append(token)
+        return pages[token]
+
+    monkeypatch.setattr(_client, "get", get)
+    names = {m["name"] for m in sdk.status().production_models}
+    assert names == {"jpcp"}, names
+    assert seen == [None, "p2"], seen

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
-import urllib.parse
 
 import typer
 
+from examlops import control_plane_api
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.cli._enums import StorageBackend
@@ -20,6 +20,8 @@ _EXAMPLES = (
     "  exa retrain JPCP --dataset PM100Dataset\n\n"
     "  # Preview without triggering\n"
     "  exa retrain JPCP --dry-run\n\n"
+    "  # Queue it and return at once (follow with `exa commands show <id>`)\n"
+    "  exa retrain JPCP --dataset PM100Dataset --async\n\n"
     "  # Non-interactive (CI): skip the confirmation prompt\n"
     "  exa --yes retrain JPCP --dummy"
 )
@@ -37,9 +39,10 @@ def retrain_status(
 ) -> None:
     """Show the state of one retrain run (scheduled, running, completed, failed)."""
     cfg = load_config()
-    url = f"{cfg.control_plane_url}/retrain/{urllib.parse.quote(flow_run_id, safe='')}"
     try:
-        status = _client.get(url, token=cfg.control_plane_token)
+        status = control_plane_api.run_status(
+            flow_run_id, base=cfg.control_plane_url, token=cfg.control_plane_token
+        )
     except _client.ClientError as exc:
         _output.error(
             f"Could not read retrain run {flow_run_id}: {exc}",
@@ -57,6 +60,12 @@ def retrain(
         False, "--dry-run", help="Show what would be scheduled without triggering it"
     ),
     reason: str | None = reason_option(),
+    queue: bool = typer.Option(
+        False,
+        "--async",
+        help="Submit as an asynchronous command (/v1/retrain) and return at once; the control "
+        "plane's workers dispatch it with retries. Follow with `exa commands show <id>`.",
+    ),
 ) -> None:
     """Trigger a Prefect training run via the Control Plane."""
     from examlops.usecase import default_dataset_for
@@ -115,12 +124,17 @@ def retrain(
         _output.warning("Aborted — no retrain scheduled.")
         raise typer.Exit(0)
 
+    if queue:
+        _submit_async(cfg, model, dataset_name, body)
+        return
+
+    from examlops import retrain_command
+
     with _output.spinner(f"Scheduling retrain for {model}…"):
         try:
-            result = _client.post(
-                f"{cfg.control_plane_url}/retrain",
-                body,
-                token=cfg.control_plane_token,
+            # The command API, waited on until the retrain is dispatched (plan P1.6c).
+            result = retrain_command.submit(
+                body, base=cfg.control_plane_url, token=cfg.control_plane_token
             )
         except _client.ClientError as e:
             _output.error(
@@ -131,20 +145,30 @@ def retrain(
 
     _record_audit(model, dataset_name, dummy, backend_name, result, reason)
 
-    _output.ok(f"Retrain scheduled for {model} (dataset: {dataset_name})")
+    if retrain_command.dispatched(result):
+        _output.ok(f"Retrain scheduled for {model} (dataset: {dataset_name})")
+    else:
+        _output.warning(
+            f"Retrain of {model} accepted but not dispatched yet — the control plane will "
+            f"dispatch it (command {result.get('command_id')})"
+        )
     _output.print_record(
         {
             "flow_run_id": result.get("flow_run_id", "—"),
+            "command_id": result.get("command_id", "—"),
             "model": model,
             "dataset": dataset_name,
             "dummy": dummy,
         }
     )
     _emit_retrain_lineage(model, dataset_name, result)
-    _output.hint(
-        f"Follow it: exa retrain-status {result.get('flow_run_id', '<flow-run-id>')}"
-        "  |  Logs: exa stack logs --service orchestrator"
-    )
+    if retrain_command.dispatched(result):
+        _output.hint(
+            f"Follow it: exa retrain-status {result['flow_run_id']}"
+            "  |  Logs: exa stack logs --service orchestrator"
+        )
+    else:
+        _output.hint(f"Follow it: exa commands show {result.get('command_id')}")
     if _output.json_mode:
         _output.print_json(result)
 
@@ -188,25 +212,49 @@ def _record_audit(
     result: dict,
     reason: str | None = None,
 ) -> None:
-    """Write a best-effort audit event — never fail the command on audit errors."""
-    try:
-        from examlops.data.audit import write_audit_event
+    """Write a best-effort audit event — never fail the command on audit errors.
 
-        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "cli"
-        write_audit_event(
-            source="exa-retrain",
-            actor=actor,
-            action="retrain_triggered",
-            target=model.upper(),
-            details=audit_details(
-                {
-                    "dataset": dataset,
-                    "dummy": dummy,
-                    "backend": backend,
-                    "flow_run_id": result.get("flow_run_id"),
-                },
-                reason,
-            ),
+    ``retrain_triggered`` is an EU-AI-Act Art. 12 required event, so a lost one is logged and
+    counted rather than swallowed: neither the hash chain nor the coverage report can see an event
+    that never arrived.
+    """
+    from examlops.data.audit import audit_best_effort
+
+    actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "cli"
+    audit_best_effort(
+        "exa-retrain",
+        actor,
+        "retrain_triggered",
+        model.upper(),
+        audit_details(
+            {
+                "dataset": dataset,
+                "dummy": dummy,
+                "backend": backend,
+                "flow_run_id": result.get("flow_run_id"),
+            },
+            reason,
+        ),
+    )
+
+
+def _submit_async(cfg, model: str, dataset_name: str, body: dict) -> None:
+    """Queue the retrain as a durable command; the control plane dispatches it (plan P1.2)."""
+    try:
+        view = _client.post(
+            f"{cfg.control_plane_url}/v1/retrain", body, token=cfg.control_plane_token
         )
-    except Exception:
-        pass
+    except _client.ClientError as exc:
+        _output.error(
+            f"Failed to queue retrain for {model}: {exc}",
+            hint="Is the control plane running? Try: exa status",
+        )
+        return
+    if _output.json_mode:
+        _output.print_json(view)
+        return
+    _output.ok(f"Retrain queued for {model} (dataset: {dataset_name})")
+    _output.print_record(
+        {"command_id": view.get("command_id"), "state": view.get("state"), "model": model}
+    )
+    _output.info(f"Follow it: exa commands show {view.get('command_id')}")

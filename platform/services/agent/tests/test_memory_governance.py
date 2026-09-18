@@ -22,12 +22,28 @@ def _store(tmp_path):
     return store
 
 
+def _capture_audit(monkeypatch) -> list[dict]:
+    """Record every audit write, patched at the seam the code actually uses.
+
+    These tests used to patch `platform_db.write_audit_event`. `memory_types` now goes through
+    `audit_best_effort`, which calls `examlops.data.audit.write_audit_event` — a different binding,
+    so the old patch silently intercepted nothing. Patching here keeps the assertions below
+    unchanged *and* runs them through the helper that counts a lost event instead of hiding it.
+    """
+    import examlops.data.audit as audit_mod
+
+    calls: list[dict] = []
+
+    def record(source, actor, action, target, details=None, **kw):
+        calls.append({"source": source, "actor": actor, "action": action, "target": target, **kw})
+
+    monkeypatch.setattr(audit_mod, "write_audit_event", record)
+    return calls
+
+
 def test_record_writes_audit_event(tmp_path, monkeypatch):
     # GWT-1: every memory write produces an audit_events row.
-    import examlops.platform_db as pdb
-
-    calls: list = []
-    monkeypatch.setattr(pdb, "write_audit_event", lambda **kw: calls.append(kw))
+    calls = _capture_audit(monkeypatch)
     monkeypatch.setattr(config, "AGENT_MEMORY_AUDIT", True)
 
     store = _store(tmp_path)
@@ -37,10 +53,7 @@ def test_record_writes_audit_event(tmp_path, monkeypatch):
 
 
 def test_audit_disabled_is_silent(tmp_path, monkeypatch):
-    import examlops.platform_db as pdb
-
-    calls: list = []
-    monkeypatch.setattr(pdb, "write_audit_event", lambda **kw: calls.append(kw))
+    calls = _capture_audit(monkeypatch)
     monkeypatch.setattr(config, "AGENT_MEMORY_AUDIT", False)
     mt.record_preference(_store(tmp_path), "x", "y")
     assert calls == []
@@ -49,10 +62,7 @@ def test_audit_disabled_is_silent(tmp_path, monkeypatch):
 def test_erase_cascade_and_audit(tmp_path, monkeypatch):
     # GWT-3: deletion removes items and is audited; GWT-4 separation is by design
     # (audit is a separate store, untouched here).
-    import examlops.platform_db as pdb
-
-    calls: list = []
-    monkeypatch.setattr(pdb, "write_audit_event", lambda **kw: calls.append(kw))
+    calls = _capture_audit(monkeypatch)
     store = _store(tmp_path)
     mt.record_preference(store, "a", "1", operator="bob")
     mt.record_preference(store, "b", "2", operator="bob")

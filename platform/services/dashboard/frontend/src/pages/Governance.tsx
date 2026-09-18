@@ -64,7 +64,7 @@ export function ComplianceRegister() {
         </p>
       )}
 
-      {!isLoading && systems.length === 0 && !admin && (
+      {!isLoading && !error && systems.length === 0 && !admin && (
         <EmptyState title="No systems classified" description="An admin can classify a model's EU-AI-Act risk tier here." />
       )}
 

@@ -335,7 +335,7 @@ def job_detail(db_path: str, job_id: str) -> dict[str, Any] | None:
         if not _has_hpc_jobs(conn):
             return None
         r = conn.execute(
-            "SELECT * FROM hpc_jobs WHERE job_id = ? ORDER BY updated_at DESC LIMIT 1",
+            "SELECT * FROM hpc_jobs WHERE job_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
             (job_id,),
         ).fetchone()
         if r is None:

@@ -10,7 +10,9 @@ from skipper.tools import _http
 @tool
 def list_pending_approvals() -> str:
     """List pending model-change approvals awaiting sysadmin action."""
-    data, err = _http.request_json("control_plane", "GET", f"{config.CONTROL_PLANE_URL}/approvals")
+    data, err = _http.request_json(
+        "control_plane", "GET", f"{config.CONTROL_PLANE_URL}/v1/approvals"
+    )
     if err:
         return err
     if not data:
@@ -27,7 +29,7 @@ def approve_model(model_id: str) -> str:
         model_id: Model identifier (e.g. 'jpcp').
     """
     data, err = _http.request_json(
-        "control_plane", "POST", f"{config.CONTROL_PLANE_URL}/approve/{model_id}"
+        "control_plane", "POST", f"{config.CONTROL_PLANE_URL}/v1/approvals/{model_id}/approve"
     )
     if err:
         return err
@@ -48,7 +50,7 @@ def reject_model(model_id: str, reason: str = "") -> str:
     data, err = _http.request_json(
         "control_plane",
         "POST",
-        f"{config.CONTROL_PLANE_URL}/reject/{model_id}",
+        f"{config.CONTROL_PLANE_URL}/v1/approvals/{model_id}/reject",
         json={"reason": reason or None},
     )
     if err:

@@ -410,8 +410,9 @@ def snapshots_cmd(name: str, project: str = typer.Option("", "--project", "-p"))
             "rows": r.get("row_count"),
             "finished_at": r.get("finished_at"),
         }
-        for r in catalog.list_pulls(project=project, source=name, limit=200)
-        if r["status"] in ("succeeded", "unchanged") and r.get("revision")
+        # Selected as snapshots in SQL — a page of pulls narrowed afterwards would answer about
+        # the pulls, and hide every revision behind a run of recent failures.
+        for r in catalog.list_snapshots(project=project, source=name, limit=200)
     ]
     if _output.json_mode:
         _output.print_json(rows)

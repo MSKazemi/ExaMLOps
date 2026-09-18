@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from examlops.backup import postgres_tier as _pg
 from examlops.lifecycle import dataformat as _fmt
 from examlops.lifecycle import migrations as _mig
 
@@ -75,18 +76,47 @@ def _backup_dir(explicit: str | None) -> str:
 
 
 def _audit(action: str, details: dict[str, Any]) -> None:
-    try:
-        from examlops.data.audit import write_audit_event
+    # Best-effort, as before — an upgrade is never failed by the audit log, and the
+    # `platform_upgrades` row written by `dataformat` is an independent record of what ran. That
+    # argument is a reason not to *fail*, not a reason not to *count*: a separate record does not
+    # make this log complete, and a silent drop left `dropped_audit_events()` at zero.
+    from examlops.data.audit import audit_best_effort
 
-        write_audit_event(
-            "exa-upgrade",
-            os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "exa-upgrade",
-            action,
-            "platform",
-            details,
-        )
-    except Exception:  # noqa: BLE001 — auditing is best-effort; the upgrade row is the record
-        pass
+    audit_best_effort(
+        "exa-upgrade",
+        os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "exa-upgrade",
+        action,
+        "platform",
+        details,
+    )
+
+
+def default_backup_tiers() -> list[str]:
+    """Tiers the pre-upgrade bundle must capture, for the engine that is actually in use.
+
+    **The rollback point has to hold the data being migrated.** The default was
+    ``["sqlite", "config"]`` on every engine — but under ``EXAMLOPS_DB_BACKEND=postgres`` the
+    sqlite tier skips the platform DB *on purpose* (its state is in Postgres), so that bundle
+    captured none of what the migration was about to change. It still reported ``partial`` because
+    the config tier succeeded, and a partial bundle is allowed through.
+
+    The sqlite tier makes the same argument about the file it declines to copy: "backing up the
+    leftover file here would produce a bundle that looks complete and restores nothing."
+    """
+    from examlops.backup.postgres_tier import platform_dsn
+
+    return ["postgres" if platform_dsn() else "sqlite", "config"]
+
+
+def _captured(manifest: dict[str, Any], tier: str) -> bool:
+    """Whether the bundle actually holds something for ``tier``.
+
+    A tier can be requested and still capture nothing — `pg_dump` absent, the server unreachable,
+    the file missing — and it is then present in the manifest with zero ``ok`` items. Asking the
+    manifest what it holds is the only way to tell a rollback point from a directory.
+    """
+    body = (manifest.get("tiers") or {}).get(tier) or {}
+    return any((item or {}).get("status") == "ok" for item in (body.get("items") or []))
 
 
 def apply(
@@ -112,10 +142,49 @@ def apply(
 
         out = _backup_dir(backup_dir)
         Path(out).mkdir(parents=True, exist_ok=True)
-        res = create_bundle(out, tiers=tiers or ["sqlite", "config"], profile="pre-upgrade")
+        res = create_bundle(out, tiers=tiers or default_backup_tiers(), profile="pre-upgrade")
         backup_info = {"bundle": res.bundle_dir, "status": res.overall_status}
-        if res.overall_status == "failed":
-            return {**p, "applied": [], "backup": backup_info, "ok": False, "dry_run": False}
+        # `failed` is not the only status that means "no rollback point". A bundle whose every
+        # requested tier was skipped reports `skipped` — a directory with a manifest and no data in
+        # it — and migrating on that is exactly what this step exists to prevent. `partial` is
+        # allowed through: at least one requested tier was captured, and refusing it would block
+        # every instance whose (say) config tier has nothing to snapshot.
+        if res.overall_status in ("failed", "skipped"):
+            return {
+                **p,
+                "applied": [],
+                "backup": backup_info,
+                "ok": False,
+                "dry_run": False,
+                "reason": (
+                    f"refusing to upgrade: the pre-upgrade backup is '{res.overall_status}' — it "
+                    "captured nothing, so there would be no rollback point. Check the backup tiers "
+                    "(`exa backup create --all` and `exa backup verify-bundle`), or re-run with "
+                    "`--no-backup` if you have a rollback point of your own."
+                ),
+            }
+
+    # Requesting the right tier is not the same as getting it: a `partial` bundle whose platform
+    # tier captured nothing is still no rollback point for the data about to be migrated.
+    if backup_info is not None:
+        state_tier = "postgres" if _pg.platform_dsn() else "sqlite"
+        if not _captured(getattr(res, "manifest", {}) or {}, state_tier):
+            return {
+                **p,
+                "applied": [],
+                "backup": backup_info,
+                "ok": False,
+                "dry_run": False,
+                "reason": (
+                    f"refusing to upgrade: the pre-upgrade backup captured nothing for the "
+                    f"'{state_tier}' tier, which is where this instance keeps its platform state — "
+                    "so it could not roll back the data this migration changes. Check that tier "
+                    "(`exa backup create --tier "
+                    + state_tier
+                    + "` then `exa backup verify-bundle`), "
+                    "or re-run with `--no-backup` if you have a rollback point of your own."
+                ),
+            }
 
     # Schema first (additive DDL + stamp + online migrations), then whatever is still pending.
     from examlops.data import get_db, init_db
@@ -129,13 +198,21 @@ def apply(
             if stamp is not None and stamp.data_format >= m.version:
                 continue  # an online step init_db already ran
             applied.extend(_fmt.apply_migrations(conn, [m], kind="upgrade", backup_id=bid))
+    # Ask the data what happened rather than asserting it. `ok` used to be the literal `True`,
+    # which made "every migration ran" and "the compare-and-set lost the race so none of them did"
+    # the same answer — and since the CLI prints an empty `applied` as "none pending", an upgrade
+    # that moved nothing read exactly like an instance that had nothing to move.
     after = _read_stamp()
+    still_pending = _mig.pending(
+        after.data_format if after else _fmt.BASELINE_FORMAT, _mig.MIGRATIONS
+    )
     result = {
         **p,
         "applied": applied,
         "backup": backup_info,
         "stamp_after": after.to_dict() if after else None,
-        "ok": True,
+        "pending_after": _fmt._pending_dicts(still_pending),
+        "ok": not still_pending,
         "dry_run": False,
     }
     _audit(

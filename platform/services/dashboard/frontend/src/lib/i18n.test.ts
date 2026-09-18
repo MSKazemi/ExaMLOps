@@ -11,6 +11,7 @@ import {
   detectLocale,
   localeDir,
   LOCALES,
+  CATALOGS,
 } from './i18n'
 
 describe('translate', () => {
@@ -82,4 +83,29 @@ describe('locale detection + direction', () => {
   it('reports layout direction', () => {
     expect(localeDir('en')).toBe('ltr')
   })
+})
+
+describe('catalog parity', () => {
+  // A missing translation does not fail: `translate` falls back to EN and warns into a console
+  // nobody is reading, so an Italian user silently gets an English string. Nothing caught that —
+  // the other tests here check fallback *behaviour*, which is exactly what makes the gap invisible.
+  const flatten = (cat: Record<string, Record<string, string>>): string[] =>
+    Object.entries(cat)
+      .flatMap(([ns, entries]) => Object.keys(entries).map((k) => `${ns}.${k}`))
+      .sort()
+
+  const reference = flatten(CATALOGS.en as never)
+
+  it('has something to compare', () => {
+    expect(reference.length).toBeGreaterThan(5)
+    expect(LOCALES.length).toBeGreaterThan(1)
+  })
+
+  for (const { code } of LOCALES) {
+    it(`${code} defines every key EN does, and no key EN lacks`, () => {
+      const keys = flatten(CATALOGS[code] as never)
+      expect(keys.filter((k) => !reference.includes(k))).toEqual([]) // extra keys: dead strings
+      expect(reference.filter((k) => !keys.includes(k))).toEqual([]) // missing: silent EN fallback
+    })
+  }
 })

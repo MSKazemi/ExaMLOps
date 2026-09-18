@@ -162,4 +162,6 @@ def test_health_reports_shared_outbox_pending_published_and_poison_counts(cp):
 
     runtime = TestClient(cp.app).get("/health").json()["runtime"]
 
-    assert runtime["outbox"] == {"pending": 2, "published": 1, "poison": 1}
+    outbox = dict(runtime["outbox"])
+    assert outbox.pop("oldest_pending_age_seconds") >= 0  # two are pending, so there is an age
+    assert outbox == {"pending": 2, "published": 1, "poison": 1}

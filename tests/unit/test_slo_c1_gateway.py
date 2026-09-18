@@ -159,7 +159,9 @@ def test_c1_is_no_longer_reported_as_unbuilt():
 def test_a_datastore_from_before_gains_the_columns(tmp_path, monkeypatch):
     """`get_db` opens without bootstrapping the schema, so the pre-migration table is built
     through it exactly as an older release left it, and `init_db` then migrates it in place."""
-    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "old.db"))
+    from examlops.storage.testing import datastore_before_a_migration
+
+    datastore_before_a_migration(tmp_path, monkeypatch, "gateway_calls")
     with get_db() as conn:
         conn.execute(
             "CREATE TABLE gateway_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, key_hash TEXT, "

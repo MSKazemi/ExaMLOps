@@ -50,6 +50,8 @@ RAY_SERVE_URL = os.getenv("RAY_SERVE_URL", "http://localhost:18001")
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:19090")
 CONTROL_PLANE_URL = os.getenv("CONTROL_PLANE_URL", "http://localhost:18002")
 CONTROL_PLANE_TOKEN = os.getenv("CONTROL_PLANE_TOKEN", "")
+# Bearer for Ray Serve's admin routes (reload, live traffic-rule push) — plan P0.6.
+RAY_SERVE_ADMIN_TOKEN = os.getenv("RAY_SERVE_ADMIN_TOKEN", "")
 
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:18099")
 DASHBOARD_ADMIN_PASSWORD = os.getenv("DASHBOARD_ADMIN_PASSWORD", "")
@@ -172,6 +174,8 @@ AGENT_CIRCUIT_BREAKER = _env_bool("AGENT_CIRCUIT_BREAKER", True)
 # audit + episodic memory). LLM-free base loop — local and free. Kill-switch + thresholds:
 AGENT_WATCH_ENABLED = _env_bool("AGENT_WATCH_ENABLED", True)
 AGENT_WATCH_INTERVAL_S = float(os.getenv("AGENT_WATCH_INTERVAL_S", "300"))
+# With the NATS backbone configured, the daemon also alerts on failed training runs as they happen.
+AGENT_WATCH_EVENTS = _env_bool("AGENT_WATCH_EVENTS", True)
 AGENT_WATCH_DRIFT_Z = float(os.getenv("AGENT_WATCH_DRIFT_Z", "3.0"))
 # Platform-wide cost ceiling (USD) for the FinOps signal; 0 disables the cost check.
 AGENT_WATCH_COST_BUDGET = float(os.getenv("AGENT_WATCH_COST_BUDGET", "0"))

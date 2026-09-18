@@ -41,6 +41,12 @@ _FIELDS: list[tuple[str, str, str, str, bool]] = [
     ("control_plane_token", "control_plane_token", "CONTROL_PLANE_TOKEN", "", True),
     ("dashboard_token", "dashboard_token", "DASHBOARD_TOKEN", "", True),
     ("agent_token", "agent_token", "AGENT_API_KEY", "", True),
+    # Bearer for Ray Serve's admin routes (`exa serve reload`, the traffic-rule push). Unset on the
+    # server closes those routes; see serving/admin_auth.py (plan P0.6).
+    ("ray_serve_admin_token", "ray_serve_admin_token", "RAY_SERVE_ADMIN_TOKEN", "", True),
+    # Bearer for inference when `ray_serve` is the serving gateway (ADR 0126): a virtual key
+    # (`exa gateway key issue`) or an IdP access token. Sent only to URLs under `ray_serve`.
+    ("serving_token", "serving_token", "EXAMLOPS_SERVING_TOKEN", "", True),
     ("dataplane_token", "dataplane_token", "EXAMLOPS_DATAPLANE_TOKEN", "", True),
     # Organisation sign-in (ADR 0120): the IdP `exa auth login` uses when no --provider/--issuer is
     # given, and the CLI's public OAuth client id there. Per context, so each site keeps its own.
@@ -156,6 +162,8 @@ class Config:
     control_plane_token: str = ""
     dashboard_token: str = ""
     agent_token: str = ""
+    ray_serve_admin_token: str = ""
+    serving_token: str = ""
     dataplane_token: str = ""
     auth_issuer: str = ""
     auth_client_id: str = ""
@@ -197,6 +205,11 @@ def load_config() -> Config:
     values: dict[str, str] = {}
     for field, toml_key, env_key, default, _ in _FIELDS:
         values[field] = os.getenv(env_key) or data.get(toml_key) or default
+    # A token file (CONTROL_PLANE_TOKEN_FILE: a workload identity spiffe-helper keeps fresh, or a
+    # rotated Secret) wins over the static value; the file is re-read each time config is loaded.
+    from examlops.service_auth import control_plane_bearer  # noqa: PLC0415
+
+    values["control_plane_token"] = control_plane_bearer(values["control_plane_token"])
     if not values["control_plane_token"] or not values["dashboard_token"]:
         # Signed in with `exa auth login` (ADR 0120)? Then calls carry the user's own identity.
         # An explicitly configured static token always wins; no session means no change.

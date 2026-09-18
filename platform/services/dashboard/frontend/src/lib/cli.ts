@@ -462,7 +462,6 @@ export const CONSOLE_FOR_PREFIX: Record<string, string> = {
   providers: '/platform/providers',
   config: '/platform/config',
   env: '/platform/config',
-  seanerbus: '/platform/integrations',
   docs: '/documents',
 }
 

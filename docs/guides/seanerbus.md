@@ -88,7 +88,8 @@ Each subscription or service registration gets its own `Connection` object. The 
 | `DRIFT_WINDOW` | `50` | — | Rolling window size for per-model drift detection |
 | `DRIFT_THRESHOLD` | `0.5` | — | Error-rate threshold that triggers `POST /retrain` |
 | `DRIFT_COOLDOWN` | `300` | — | Seconds between auto-retrain triggers per model |
-| `MODELS_YAML_DIR` | `pipelines/models` | — | Directory scanned by `ModelSchemaRegistry` at startup |
+| `SEANERBUS_TELEMETRY_QUEUE_MAX` | `1000` | — | Bound on per-inference drift / input-embedding records waiting to be written. The bridge **replies on the bus first** and writes these in the background, so a slow or unavailable datastore never delays or fails an inference; a full spool drops records (`seanerbus_telemetry_dropped_total`) and failed writes are counted (`seanerbus_telemetry_persist_failures_total`), both alerted |
+| `MODELS_YAML_DIR` | `usecases/seanergy/models` | — | Directory scanned by `ModelSchemaRegistry` at startup |
 
 ## Per-Model UUIDs
 

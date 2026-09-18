@@ -1,0 +1,39 @@
+{{- /*
+The platform's alert rules as a PrometheusRule. files/alert_rules.yml is Compose's alert_rules.yml
+byte for byte (tests/unit/test_helm_prometheus_rules.py), promtool-checked and -tested in CI. The
+groups rendered are the ones for what this chart deploys, plus any a site names; each group is
+copied verbatim, runbook links included. Job names match Compose's because every Service carries
+examlops.io/job and every ServiceMonitor uses it as its jobLabel.
+*/ -}}
+{{- $pr := .Values.metrics.prometheusRule | default dict }}
+{{- if $pr.enabled }}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule") }}
+{{- fail "metrics.prometheusRule.enabled needs the Prometheus Operator CRDs (monitoring.coreos.com/v1 PrometheusRule) — install kube-prometheus-stack first, or pass --api-versions monitoring.coreos.com/v1/PrometheusRule to helm template." }}
+{{- end }}
+{{- $source := dict }}
+{{- range $group := (.Files.Get "files/alert_rules.yml" | fromYaml).groups }}
+{{- $_ := set $source $group.name $group }}
+{{- end }}
+{{- $wanted := list "examlops-control-plane" }}
+{{- if (.Values.gateway | default dict).enabled }}{{- $wanted = append $wanted "examlops-gateway" }}{{- end }}
+{{- range $name := ($pr.extraGroups | default list) }}
+{{- if not (hasKey $source $name) }}
+{{- fail (printf "metrics.prometheusRule.extraGroups: no group %q in alert_rules.yml (it has: %s)" $name (keys $source | sortAlpha | join ", ")) }}
+{{- end }}
+{{- $wanted = append $wanted $name }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "examlops.fullname" . }}
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+    {{- with $pr.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    {{- range $name := $wanted | uniq }}
+    - {{- toYaml (get $source $name) | nindent 6 }}
+    {{- end }}
+{{- end }}

@@ -77,7 +77,7 @@ XM.register("decisions", {
 
     { id: "audit", x: 1275, y: 410, label: "Audit trail", sub: "hash-chained", kind: "store", line: "observe",
       info: { title: "Hash-chained audit trail", sub: "audit_events in the platform datastore",
-        tasks: ["Written by the command or agent that made the change: actor, action, model and details", "Each event carries the hash of the previous one, so edits break the chain", "Approvals made from the dashboard or Skipper are recorded in the control plane's approval table instead (calling credential and time)", "Checkpoints can be anchored to an external append-only file"],
+        tasks: ["Written by the command or agent that made the change: actor, action, model and details", "Each event carries the hash of the previous one, so edits break the chain", "The control plane records its own gate decisions here too, in the same transaction: requests, approvals, rejections, retractions and dispatched retrains, from any surface, under the calling credential's principal. An approval made in the dashboard is recorded under the dashboard's own credential, not the signed-in user", "Checkpoints can be anchored to an external append-only file"],
         cli: ["exa audit --last 7d", "exa audit verify-worm", "exa audit review --sample 20"],
         links: [{ text: "Audit trail", href: "guides/audit-trail.md" }] } }
   ],

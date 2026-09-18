@@ -1,0 +1,1829 @@
+# Unit tests for alert_rules.yml, run by promtool: `make alerts-check`, and CI's `alert rules` job.
+#
+# `promtool check rules` proves a rule parses. These prove it fires on the input it is written
+# for, and stays quiet on the input it must ignore. Each case below is one that went wrong before
+# it was here: an alert whose first event was invisible, or one that watched a metric that
+# was not there. Series are sampled every 15 s, like the platform's Prometheus.
+#
+# Values: `_` is no sample (the series does not exist yet), `aXn` repeats a n+1 times,
+# `a+bXn` counts up from a by b.
+
+rule_files:
+  - alert_rules.yml
+
+evaluation_interval: 15s
+
+tests:
+  # ── A dead command is seen the first time it happens ────────────────────────────────────────
+  # The control plane exports every (kind, outcome) series at 0 from the start
+  # (metrics.initialize_command_outcomes), so the first dead command is an increase from 0.
+  - name: the first dead command alerts, because its series starts at 0
+    interval: 15s
+    input_series:
+      - series: 'control_plane_command_outcomes_total{job="control_plane",kind="retrain",outcome="dead"}'
+        values: '0x40 1x40'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ControlPlaneCommandDead
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#controlplanecommanddead"
+              summary: "An asynchronous control-plane command exhausted its attempts"
+              description: "1 command(s) went dead in 15 min. `exa commands list --state dead` shows them and their last error."
+
+  # Why the seeding matters: the same event on a series that did not exist before is invisible
+  # to increase(). This pins the Prometheus behaviour the fix depends on.
+  - name: a dead command on an unseeded series would not alert
+    interval: 15s
+    input_series:
+      - series: 'control_plane_command_outcomes_total{job="control_plane",kind="retrain",outcome="dead"}'
+        values: '_x40 1x40'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ControlPlaneCommandDead
+        exp_alerts: []
+
+  # ── A failed reload is seen even though Ray cannot seed the series ──────────────────────────
+  - name: a replica's first failed reload alerts
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_reload_total{job="ray_serve",status="error",scope="single",replica="r1"}'
+        values: '_x40 1x80'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: RayServeReloadFailures
+        exp_alerts:
+          - exp_labels: {severity: warning, service: serving, replica: r1, scope: single}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#rayservereloadfailures"
+              summary: "A Ray Serve model reload failed on replica r1"
+              description: "At least one single reload failed on replica r1 in the last 15 minutes; the models keep serving their previous versions."
+      - eval_time: 30m
+        alertname: RayServeReloadFailures
+        exp_alerts: []
+
+  - name: an old failed reload does not alert again
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_reload_total{job="ray_serve",status="error",scope="all",replica="r1"}'
+        values: '1x200'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: RayServeReloadFailures
+        exp_alerts: []
+
+  - name: a second failure on an existing series alerts
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_reload_total{job="ray_serve",status="error",scope="all",replica="r1"}'
+        values: '1x100 2x100'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: RayServeReloadFailures
+        exp_alerts:
+          - exp_labels: {severity: warning, service: serving, replica: r1, scope: all}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#rayservereloadfailures"
+              summary: "A Ray Serve model reload failed on replica r1"
+              description: "At least one all reload failed on replica r1 in the last 15 minutes; the models keep serving their previous versions."
+
+  # ── The gateway's refusals are counted from zero ────────────────────────────────────────────
+  - name: the credential store failing alerts
+    interval: 15s
+    input_series:
+      - series: 'examlops_gateway_decisions_total{job="gateway_authz",status="503"}'
+        values: '0x20 0+4x60'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: ServingGatewayCredentialStoreUnavailable
+        exp_alerts:
+          - exp_labels: {severity: warning, service: gateway}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#servinggatewaycredentialstoreunavailable"
+              summary: "gateway-authz cannot read the platform store"
+              description: "0.27 requests/s refused with 503: keys not seen in the last minute, or a model's project, could not be read."
+
+  # ── Serving metrics missing while the scrape works ──────────────────────────────────────────
+  # What the live install showed: ray-serving scraped (up 1) and no platform series at all.
+  - name: a scraped Ray Serve without the platform's series alerts
+    interval: 15s
+    input_series:
+      - series: 'up{job="ray_serve",instance="ray-serving:8080"}'
+        values: '1x80'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: RayServeMetricsMissing
+        exp_alerts:
+          - exp_labels: {severity: critical, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#rayservemetricsmissing"
+              summary: "Ray Serve is scraped but exports none of the platform's serving metrics"
+              description: "ray-serving:8080 answers, but ray_examlops_models_loaded has been absent for 10 minutes: serving alerts and SLOs are blind."
+
+  - name: a Ray Serve exporting its metrics does not
+    interval: 15s
+    input_series:
+      - series: 'up{job="ray_serve",instance="ray-serving:8080"}'
+        values: '1x80'
+      - series: 'ray_examlops_models_loaded{job="ray_serve",replica="r1"}'
+        values: '9x80'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: RayServeMetricsMissing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: RayServeNoModelsLoaded
+        exp_alerts: []
+
+  - name: a Ray Serve with nothing loaded alerts
+    interval: 15s
+    input_series:
+      - series: 'up{job="ray_serve",instance="ray-serving:8080"}'
+        values: '1x80'
+      - series: 'ray_examlops_models_loaded{job="ray_serve",replica="r1"}'
+        values: '0x80'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RayServeNoModelsLoaded
+        exp_alerts:
+          - exp_labels: {severity: critical, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#rayservenomodelsloaded"
+              summary: "No models loaded in Ray Serve"
+              description: "ray_examlops_models_loaded = 0 for 5 min — inference is impossible."
+
+  # ── The router's retries, counted by Ray (no series at 0) ───────────────────────────────────
+  - name: the first spent retry budget alerts
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_router_retries_total{job="ray_serve",reason="budget_spent",WorkerId="w1"}'
+        values: '_x40 1x80'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: InferenceRetryBudgetSpent
+        exp_alerts:
+          - exp_labels: {severity: warning, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#inferenceretrybudgetspent"
+              summary: "The inference router stopped retrying: its retry budget is spent"
+              description: "Model-server calls are failing often enough that the router refuses further retries so as not to multiply the load. Failing requests are answered with their first error."
+      - eval_time: 30m
+        alertname: InferenceRetryBudgetSpent
+        exp_alerts: []
+
+  - name: a replica lost mid-request alerts, and an old loss does not
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_router_retries_total{job="ray_serve",reason="replica_lost",WorkerId="w1"}'
+        values: '_x40 1x200'
+      - series: 'ray_examlops_router_retries_total{job="ray_serve",reason="transport",WorkerId="w1"}'
+        values: '0+1x240'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: InferenceReplicasLost
+        exp_alerts:
+          - exp_labels: {severity: warning, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#inferencereplicaslost"
+              summary: "A model-server replica died with requests in flight"
+              description: "The router retried requests whose replica was lost in the last 15 minutes. Once is a restart; repeatedly is a crashing replica (memory, or one request that kills it)."
+      - eval_time: 55m
+        alertname: InferenceReplicasLost
+        exp_alerts: []
+
+  # ── The drift evaluator ─────────────────────────────────────────────────────────────────────
+  - name: a drift evaluator that keeps failing alerts, one blip does not
+    interval: 15s
+    input_series:
+      - series: 'examlops_drift_evaluation_errors_total{job="control_plane"}'
+        values: '0x20 0+0.25x100'
+      - series: 'examlops_drift_evaluation_errors_total{job="control_plane_blip"}'
+        values: '0x20 1x100'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DriftEvaluationFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#driftevaluationfailing"
+              summary: "The control plane cannot evaluate prediction drift"
+              description: "Drift evaluations keep failing, so no drift.status_changed or alert.drift event is sent. The control-plane log says why."
+
+  - name: a single failed drift evaluation does not alert
+    interval: 15s
+    input_series:
+      - series: 'examlops_drift_evaluation_errors_total{job="control_plane"}'
+        values: '0x20 1x100'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DriftEvaluationFailing
+        exp_alerts: []
+
+  # ── The gateway stops using a model server that fails its health check ──────────────────────
+  # Added with the health check itself: an ejection is invisible otherwise, and "inference still
+  # works" hides "it is being served by half the pods".
+  - name: an ejected endpoint is reported, and a healthy cluster is not
+    interval: 15s
+    input_series:
+      - series: 'envoy_cluster_membership_healthy{job="gateway",envoy_cluster_name="ray_serving"}'
+        values: '2x20 1x40'
+      - series: 'envoy_cluster_membership_total{job="gateway",envoy_cluster_name="ray_serving"}'
+        values: '2x60'
+    alert_rule_test:
+      - eval_time: 4m          # healthy == total: nothing to say
+        alertname: ServingEndpointsUnhealthy
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ServingEndpointsUnhealthy
+        exp_alerts:
+          - exp_labels: {severity: warning, service: gateway, job: gateway, envoy_cluster_name: ray_serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#servingendpointsunhealthy"
+              summary: "The gateway is not using every model-server endpoint"
+              description: "1 of ray_serving's endpoints are healthy: the rest failed their health check and are getting no inference. Capacity is lower than the deployment suggests."
+
+  # Losing every endpoint is a different alarm: the partial one deliberately stops firing, because
+  # "some capacity left" and "none" are different pages for whoever is woken up.
+  - name: losing every endpoint is critical, and not also reported as partial
+    interval: 15s
+    input_series:
+      - series: 'envoy_cluster_membership_healthy{job="gateway",envoy_cluster_name="ray_serving"}'
+        values: '2x20 0x40'
+      - series: 'envoy_cluster_membership_total{job="gateway",envoy_cluster_name="ray_serving"}'
+        values: '2x60'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ServingNoHealthyEndpoints
+        exp_alerts:
+          - exp_labels: {severity: critical, service: gateway, job: gateway, envoy_cluster_name: ray_serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#servingnohealthyendpoints"
+              summary: "No model-server endpoint is answering the gateway's health check"
+              description: "Every endpoint of ray_serving failed `/ready`. Envoy's panic threshold keeps sending requests rather than refusing them, so callers see the model server's own errors — not a gateway 503."
+      - eval_time: 12m
+        alertname: ServingEndpointsUnhealthy
+        exp_alerts: []
+
+  # A gateway that is deployed but has no upstream yet (DNS not resolving) must not page anyone.
+  - name: a cluster with no endpoints at all is not an outage
+    interval: 15s
+    input_series:
+      - series: 'envoy_cluster_membership_healthy{job="gateway",envoy_cluster_name="ray_serving"}'
+        values: '0x60'
+      - series: 'envoy_cluster_membership_total{job="gateway",envoy_cluster_name="ray_serving"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ServingNoHealthyEndpoints
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ServingEndpointsUnhealthy
+        exp_alerts: []
+
+  # ── A dead command that left a training run behind ──────────────────────────────────────────
+  # The counter is unlabeled, so it exports 0 from the start and the first occurrence is an
+  # increase from 0 — the same seeding the dead-command alert above depends on.
+  - name: the first dead command with a run alerts, and a quiet platform does not
+    interval: 15s
+    input_series:
+      - series: 'examlops_control_plane_dead_commands_with_run_total{job="control_plane"}'
+        values: '0x40 1x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ControlPlaneDeadCommandLeftARun
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ControlPlaneDeadCommandLeftARun
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane, job: control_plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#controlplanedeadcommandleftarun"
+              summary: "A command was given up on, but Prefect is running it"
+              description: "1 dead command(s) have a Prefect flow run. The training is happening with nothing pointing at it: find the run before anyone resubmits, or a resubmission trains twice."
+
+
+  # ── A lost audit event is seen the first time it happens ────────────────────────────────────
+  # The same argument as the dead command above, and the reason the control plane pre-creates the
+  # five Art. 12 actions at zero on every scrape: one lost event IS the incident, so the alert has
+  # to fire on the first one — and it can only do that if the series already exists.
+  - name: the first lost audit event alerts, because its series starts at 0
+    interval: 15s
+    input_series:
+      - series: 'examlops_audit_events_dropped_total{job="control_plane",action="promotion"}'
+        values: '0x40 1x40'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AuditEventsDropped
+        exp_alerts:
+          - exp_labels: {severity: critical, service: control-plane, job: control_plane, action: promotion}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#auditeventsdropped"
+              summary: "Audit events were lost — the log is incomplete for this window"
+              description: "1 'promotion' event(s) could not be written. Those actions took place and are missing from the audit trail, so any coverage or completeness statement about this window — the EU AI Act Art. 12 figure included — is unsound for it."
+
+  # Without the pre-created series the counter appears at 1, and increase() over a series with no
+  # earlier sample is 0 — so the alert would stay silent for exactly the outage that created it.
+  - name: a lost audit event on an unseeded series would not alert
+    interval: 15s
+    input_series:
+      - series: 'examlops_audit_events_dropped_total{job="control_plane",action="promotion"}'
+        values: '_x40 1x40'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AuditEventsDropped
+        exp_alerts: []
+
+  # A healthy control plane must not page anyone: the series exists, and stays at zero.
+  - name: an audit trail losing nothing stays quiet
+    interval: 15s
+    input_series:
+      - series: 'examlops_audit_events_dropped_total{job="control_plane",action="promotion"}'
+        values: '0x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AuditEventsDropped
+        exp_alerts: []
+
+  # ── A retrain that started but was never recorded ───────────────────────────────────────────
+  - name: a dispatched-but-unrecorded retrain alerts
+    interval: 15s
+    input_series:
+      - series: 'examlops_retrain_requests_total{job="control_plane",model_name="JPCP",dataset_name="PM100Dataset",outcome="dispatched_unrecorded"}'
+        values: '0x40 1x40'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: RetrainDispatchedButNotRecorded
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#retraindispatchedbutnotrecorded"
+              summary: "A retrain started but the platform could not record it"
+              description: "1 retrain(s) reached Prefect and then failed their bookkeeping write. The training is running; the command shows failed and is being retried against the same idempotency key. Check the datastore."
+
+  # A successful retrain must not trip it: the alert selects one outcome, not the whole counter.
+  - name: successful retrains do not look like unrecorded ones
+    interval: 15s
+    input_series:
+      - series: 'examlops_retrain_requests_total{job="control_plane",outcome="success"}'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: RetrainDispatchedButNotRecorded
+        exp_alerts: []
+
+  # ── The approval gauges: the alerts their fix exists for ────────────────────────────────────
+  # Both gauges are re-derived from the store on every scrape rather than moved by events in this
+  # process, because a restarted control plane used to publish 0 for a queue it had never watched
+  # accumulate — and neither alert can fire on 0. These cases make the fix a fact rather than a
+  # docstring: a queue this process never saw grow still alerts.
+  - name: an inherited approval queue alerts, even though this process saw nothing happen
+    interval: 15s
+    input_series:
+      - series: 'examlops_approvals_pending{job="control_plane"}'
+        values: '14x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PendingApprovalQueueLarge
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane, job: control_plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#pendingapprovalqueuelarge"
+              summary: "Approval queue > 10 pending"
+              description: "14 approvals are pending — operator review may be backlogged."
+
+  - name: a queue at the threshold is not over it
+    interval: 15s
+    input_series:
+      - series: 'examlops_approvals_pending{job="control_plane"}'
+        values: '10x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PendingApprovalQueueLarge
+        exp_alerts: []
+
+  - name: an approval waiting over a day alerts
+    interval: 15s
+    input_series:
+      # 90000 s > 86400 s, held past the 30 m `for:`.
+      - series: 'examlops_approval_age_oldest_seconds{job="control_plane"}'
+        values: '90000x200'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ApprovalsStale
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane, job: control_plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#approvalsstale"
+              summary: "Oldest pending approval > 24 h"
+              description: "An approval request has been waiting 1d 1h 0m 0s."
+
+  # An empty queue publishes 0 for the age. Zero must not read as "waited forever".
+  - name: an empty approval queue is not a stale one
+    interval: 15s
+    input_series:
+      - series: 'examlops_approval_age_oldest_seconds{job="control_plane"}'
+        values: '0x200'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ApprovalsStale
+        exp_alerts: []
+
+  # The gauges above are only trustworthy while the scrape can read the store. This is the alert
+  # that says they are not — and it is the reason a failed scrape leaves the gauges at their last
+  # known-true values instead of overwriting them with zero.
+  - name: a control plane that cannot read its approval store during scrapes alerts
+    interval: 15s
+    input_series:
+      - series: 'examlops_metrics_scrape_errors_total{job="control_plane"}'
+        values: '0x40 0+1x80'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ApprovalMetricsUnreadable
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane, job: control_plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#approvalmetricsunreadable"
+              summary: "Control plane cannot read its approval store during scrapes"
+              description: "The approval gauges are stale, so ApprovalsStale and PendingApprovalQueueLarge cannot be trusted."
+
+  - name: scrapes that all succeed keep quiet
+    interval: 15s
+    input_series:
+      - series: 'examlops_metrics_scrape_errors_total{job="control_plane"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ApprovalMetricsUnreadable
+        exp_alerts: []
+
+  # ── The retrain error rate, and what may not dilute it ──────────────────────────────────────
+  - name: a retrain error rate over 20 percent alerts
+    interval: 15s
+    input_series:
+      - series: 'examlops_retrain_requests_total{job="control_plane",outcome="success"}'
+        values: '0+7x120'
+      - series: 'examlops_retrain_requests_total{job="control_plane",outcome="error"}'
+        values: '0+3x120'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: HighRetrainErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#highretrainerrorrate"
+              summary: "Retrain error rate > 20%"
+              description: "30% of retrain requests are failing in the last 15 min."
+
+  # The denominator names its outcomes (`success|error`) rather than summing the whole counter.
+  # A flood of client faults — a caller retrying an invalid request, or being throttled — used to
+  # swell the denominator and drag the ratio under the threshold, silencing the alert during a
+  # real server-side failure. Same errors as above, 9x the traffic in `throttled`: still fires.
+  - name: client faults do not dilute the retrain error rate
+    interval: 15s
+    input_series:
+      - series: 'examlops_retrain_requests_total{job="control_plane",outcome="success"}'
+        values: '0+7x120'
+      - series: 'examlops_retrain_requests_total{job="control_plane",outcome="error"}'
+        values: '0+3x120'
+      - series: 'examlops_retrain_requests_total{job="control_plane",outcome="throttled"}'
+        values: '0+90x120'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: HighRetrainErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#highretrainerrorrate"
+              summary: "Retrain error rate > 20%"
+              description: "30% of retrain requests are failing in the last 15 min."
+
+  - name: a healthy retrain error rate stays quiet
+    interval: 15s
+    input_series:
+      - series: 'examlops_retrain_requests_total{job="control_plane",outcome="success"}'
+        values: '0+9x120'
+      - series: 'examlops_retrain_requests_total{job="control_plane",outcome="error"}'
+        values: '0+1x120'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: HighRetrainErrorRate
+        exp_alerts: []
+
+  # ── SLO error-budget burn rate ──────────────────────────────────────────────────────────────
+  # The expression yields the BURN RATE (error ratio ÷ the 0.5% budget), not the error ratio, so
+  # `$value` and the summary's "> 14.4×" are the same quantity. They were not: the expression
+  # produced the ratio, and `humanize` renders 0.08 as "80m" — an operator paged at 3 a.m. read
+  # "burn rate is 80m×" against a summary saying "> 14.4×".
+  - name: a 16x burn alerts and says 16x
+    interval: 1m
+    input_series:
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="success"}'
+        values: '0+920x200'
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="error"}'
+        values: '0+80x200'
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: SLOErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels: {severity: critical, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#sloerrorbudgetfastburn"
+              summary: "SLO error budget burn rate > 14.4× (1 h window)"
+              description: "Error budget burn rate is 16×. At this rate the 30-day 0.5% budget is gone in ~50 hours."
+
+  # Client faults are neither failures nor successes: they must not swell the denominator and
+  # drag the burn rate under the threshold during a real serving outage. Same errors, 9x the
+  # traffic in `invalid`.
+  - name: client faults do not dilute the burn rate
+    interval: 1m
+    input_series:
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="success"}'
+        values: '0+920x200'
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="error"}'
+        values: '0+80x200'
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="invalid"}'
+        values: '0+9000x200'
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: SLOErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels: {severity: critical, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#sloerrorbudgetfastburn"
+              summary: "SLO error budget burn rate > 14.4× (1 h window)"
+              description: "Error budget burn rate is 16×. At this rate the 30-day 0.5% budget is gone in ~50 hours."
+
+  # Inside the budget: 0.4% errors is a burn rate of 0.8, and neither alert may fire.
+  - name: serving inside its error budget stays quiet
+    interval: 1m
+    input_series:
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="success"}'
+        values: '0+996x400'
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="error"}'
+        values: '0+4x400'
+    alert_rule_test:
+      - eval_time: 380m
+        alertname: SLOErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 380m
+        alertname: SLOErrorBudgetSlowBurn
+        exp_alerts: []
+
+  # 1% errors over six hours is a 2x burn: under the fast window's 14.4x, over the slow window's 3x?
+  # No — 2 < 3, so neither fires. 2.5% is a 5x burn, which the slow window catches and the fast
+  # window (14.4x) does not. That split is the point of two windows.
+  - name: a slow burn is caught by the six-hour window and not the one-hour one
+    interval: 1m
+    input_series:
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="success"}'
+        values: '0+975x500'
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="error"}'
+        values: '0+25x500'
+    alert_rule_test:
+      - eval_time: 440m
+        alertname: SLOErrorBudgetSlowBurn
+        exp_alerts:
+          - exp_labels: {severity: warning, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#sloerrorbudgetslowburn"
+              summary: "SLO error budget burn rate > 3× (6 h window)"
+              description: "Error budget burn rate is 5× over the last 6 hours."
+      - eval_time: 440m
+        alertname: SLOErrorBudgetFastBurn
+        exp_alerts: []
+
+  # ── SeanerBUS bridge ────────────────────────────────────────────────────────────────────────
+  # The denominator is every dispatched call. Until 2026-09-14 `seanerbus_inferences_total` was
+  # incremented only past `raise_for_status()`, so this was errors ÷ *successes*: it read 11 % at a
+  # true 10 %, 900 % at 90 %, and divided by zero in a total outage. The alert fired anyway —
+  # `clamp_min` saved it from the division — but the number it reported was wrong. These cases pin
+  # the figure, not just the firing.
+  - name: a bridge error rate over 5 percent alerts, and reports the true percentage
+    interval: 15s
+    input_series:
+      - series: 'seanerbus_inferences_total{job="seanerbus_bridge",model="JPCP"}'
+        values: '0+10x80'
+      - series: 'seanerbus_inference_errors_total{job="seanerbus_bridge",model="JPCP"}'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: SeanerBUSHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning, service: seanerbus}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-bridge-error-rate"
+              summary: "SeanerBUS inference error rate > 5%"
+              description: "Bridge inference error rate is 10% over the last 5 min."
+
+  # Every call failing is 100 %, not a division by zero. This is the state the old denominator
+  # could not express at all, because there were no successes to divide by.
+  - name: a total bridge outage reads as one hundred percent
+    interval: 15s
+    input_series:
+      - series: 'seanerbus_inferences_total{job="seanerbus_bridge",model="JPCP"}'
+        values: '0+10x80'
+      - series: 'seanerbus_inference_errors_total{job="seanerbus_bridge",model="JPCP"}'
+        values: '0+10x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: SeanerBUSHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning, service: seanerbus}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-bridge-error-rate"
+              summary: "SeanerBUS inference error rate > 5%"
+              description: "Bridge inference error rate is 100% over the last 5 min."
+
+  - name: a healthy bridge stays quiet
+    interval: 15s
+    input_series:
+      - series: 'seanerbus_inferences_total{job="seanerbus_bridge",model="JPCP"}'
+        values: '0+100x80'
+      - series: 'seanerbus_inference_errors_total{job="seanerbus_bridge",model="JPCP"}'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: SeanerBUSHighErrorRate
+        exp_alerts: []
+
+  # The two telemetry counters are unlabelled, so prometheus_client creates them at 0 on import —
+  # which is what lets `increase() > 0` catch the very first dropped record. Verified against the
+  # bridge's real registry, and pinned here.
+  - name: the first dropped telemetry record alerts
+    interval: 15s
+    input_series:
+      - series: 'seanerbus_telemetry_dropped_total{job="seanerbus_bridge"}'
+        values: '0x40 0+1x80'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SeanerBUSTelemetryDropping
+        exp_alerts:
+          - exp_labels: {severity: warning, service: seanerbus}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-telemetry-dropping"
+              summary: "SeanerBUS bridge is dropping inference telemetry"
+              description: "The telemetry spool is full (40 records dropped in 10 min): the datastore cannot keep up with bus traffic. Raise SEANERBUS_TELEMETRY_QUEUE_MAX only after fixing write latency."
+
+  - name: the first failed telemetry write alerts
+    interval: 15s
+    input_series:
+      - series: 'seanerbus_telemetry_persist_failures_total{job="seanerbus_bridge"}'
+        values: '0x40 0+1x80'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SeanerBUSTelemetryWritesFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, service: seanerbus}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-telemetry-writes-failing"
+              summary: "SeanerBUS bridge cannot write inference telemetry"
+              description: "40 drift/input-embedding writes failed in 10 min. Inference is unaffected, but drift detection is losing samples; check the platform datastore."
+
+  - name: a bridge writing all its telemetry stays quiet
+    interval: 15s
+    input_series:
+      - series: 'seanerbus_telemetry_persist_failures_total{job="seanerbus_bridge"}'
+        values: '0x120'
+      - series: 'seanerbus_telemetry_dropped_total{job="seanerbus_bridge"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 22m
+        alertname: SeanerBUSTelemetryWritesFailing
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: SeanerBUSTelemetryDropping
+        exp_alerts: []
+
+  # The production shape, and the one that matters: this counter is labelled by model and dataset,
+  # an unbounded pair that cannot be pre-created the way `initialize_command_outcomes` pre-creates
+  # (kind, outcome). So the first `dispatched_unrecorded` for a model arrives as a NEW series
+  # already at 1 — and for most deployments it is the only one there will ever be. `increase()`
+  # alone returns 0 there; the `unless … offset` clause is what catches it.
+  - name: the first dispatched-but-unrecorded retrain alerts on a series that never existed before
+    interval: 15s
+    input_series:
+      - series: 'examlops_retrain_requests_total{job="control_plane",model_name="JPCP",dataset_name="PM100Dataset",outcome="dispatched_unrecorded"}'
+        values: '_x40 1x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: RetrainDispatchedButNotRecorded
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#retraindispatchedbutnotrecorded"
+              summary: "A retrain started but the platform could not record it"
+              description: "1 retrain(s) reached Prefect and then failed their bookkeeping write. The training is running; the command shows failed and is being retried against the same idempotency key. Check the datastore."
+
+  # ── Catching the first event on a counter that cannot be pre-created ─────────────────────────
+  # Ray's `Counter.inc()` raises on a value <= 0, so the prometheus_client trick of touching a
+  # label to export it at zero is not available: these series genuinely do not exist until the
+  # first event. The `or (X unless X offset W)` clause is what covers that — it selects a series
+  # that exists now and did not exist a window ago — and these cases prove it, on the unseeded
+  # input that is the real production shape.
+  - name: the first lost replica alerts even though the series never existed before
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_router_retries_total{job="ray_serve",reason="replica_lost"}'
+        values: '_x40 1x40'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: InferenceReplicasLost
+        exp_alerts:
+          - exp_labels: {severity: warning, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#inferencereplicaslost"
+              summary: "A model-server replica died with requests in flight"
+              description: "The router retried requests whose replica was lost in the last 15 minutes. Once is a restart; repeatedly is a crashing replica (memory, or one request that kills it)."
+
+  - name: the first spent retry budget alerts on a series that never existed before
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_router_retries_total{job="ray_serve",reason="budget_spent"}'
+        values: '_x40 1x40'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: InferenceRetryBudgetSpent
+        exp_alerts:
+          - exp_labels: {severity: warning, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#inferenceretrybudgetspent"
+              summary: "The inference router stopped retrying: its retry budget is spent"
+              description: "Model-server calls are failing often enough that the router refuses further retries so as not to multiply the load. Failing requests are answered with their first error."
+
+  - name: a serving plane with no retries at all stays quiet
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_router_retries_total{job="ray_serve",reason="transport"}'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: InferenceReplicasLost
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: InferenceRetryBudgetSpent
+        exp_alerts: []
+
+  # ── The gauges are only as fresh as the loop that refreshes them ─────────────────────────────
+  - name: a control plane that cannot read JetStream statistics alerts
+    interval: 15s
+    input_series:
+      - series: 'examlops_event_backbone_read_errors_total{job="control_plane"}'
+        values: '0x40 0+1x80'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: EventBackboneMetricsUnreadable
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane, job: control_plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/events/#eventbackbonemetricsunreadable"
+              summary: "Control plane cannot read JetStream consumer statistics"
+              description: "The consumer-lag and dead-letter gauges are stale, so EventConsumerLagging and EventDeadLettered cannot be trusted. The backbone itself may be fine — this is about reading it."
+
+  - name: a control plane reading JetStream cleanly stays quiet
+    interval: 15s
+    input_series:
+      - series: 'examlops_event_backbone_read_errors_total{job="control_plane"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: EventBackboneMetricsUnreadable
+        exp_alerts: []
+
+  # ── A replica that has applied no snapshot at all ────────────────────────────────────────────
+  # `min()` over NO series is an empty vector, and `X - empty` is empty — so before the replica
+  # published 0 for "none applied", the most-behind replica there can be was invisible to the
+  # alert written to find it. This is the case that matters: the replica is up and serving from
+  # its fallback registry while a snapshot exists.
+  - name: a replica that has applied no snapshot is reported as behind
+    interval: 15s
+    input_series:
+      - series: 'examlops_serving_snapshot_generation{job="control_plane"}'
+        values: '7x80'
+      - series: 'ray_examlops_serving_snapshot_applied_generation{job="ray_serve",replica="r1"}'
+        values: '0x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ServingSnapshotLagging
+        exp_alerts:
+          - exp_labels: {severity: warning, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#servingsnapshotlagging"
+              summary: "A serving replica is behind the published serving snapshot"
+              description: "A replica has served generation 7 behind the control plane's for 5 min. Its /health shows snapshot.source; a model that fails to load keeps the last-known-good version and is logged."
+
+  - name: one lagging replica among caught-up ones still alerts
+    interval: 15s
+    input_series:
+      - series: 'examlops_serving_snapshot_generation{job="control_plane"}'
+        values: '7x80'
+      - series: 'ray_examlops_serving_snapshot_applied_generation{job="ray_serve",replica="r1"}'
+        values: '7x80'
+      - series: 'ray_examlops_serving_snapshot_applied_generation{job="ray_serve",replica="r2"}'
+        values: '5x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ServingSnapshotLagging
+        exp_alerts:
+          - exp_labels: {severity: warning, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#servingsnapshotlagging"
+              summary: "A serving replica is behind the published serving snapshot"
+              description: "A replica has served generation 2 behind the control plane's for 5 min. Its /health shows snapshot.source; a model that fails to load keeps the last-known-good version and is logged."
+
+  - name: replicas all on the published generation stay quiet
+    interval: 15s
+    input_series:
+      - series: 'examlops_serving_snapshot_generation{job="control_plane"}'
+        values: '7x80'
+      - series: 'ray_examlops_serving_snapshot_applied_generation{job="ray_serve",replica="r1"}'
+        values: '7x80'
+      - series: 'ray_examlops_serving_snapshot_applied_generation{job="ray_serve",replica="r2"}'
+        values: '7x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ServingSnapshotLagging
+        exp_alerts: []
+
+  # ── Every endpoint of a serving cluster down ─────────────────────────────────────────────────
+  # The warning sibling covers `ray_serving|ray_serving_grpc` but excludes the total outage
+  # (`healthy > 0`), deliberately, so it does not double-fire with this critical one. This alert
+  # therefore has to cover BOTH clusters, or a complete gRPC outage falls between them.
+  - name: every gRPC endpoint failing its health check is critical too
+    interval: 15s
+    input_series:
+      - series: 'envoy_cluster_membership_healthy{job="gateway",envoy_cluster_name="ray_serving_grpc"}'
+        values: '0x40'
+      - series: 'envoy_cluster_membership_total{job="gateway",envoy_cluster_name="ray_serving_grpc"}'
+        values: '2x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ServingNoHealthyEndpoints
+        exp_alerts:
+          - exp_labels: {severity: critical, service: gateway, job: gateway, envoy_cluster_name: ray_serving_grpc}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#servingnohealthyendpoints"
+              summary: "No model-server endpoint is answering the gateway's health check"
+              description: "Every endpoint of ray_serving_grpc failed `/ready`. Envoy's panic threshold keeps sending requests rather than refusing them, so callers see the model server's own errors — not a gateway 503."
+      - eval_time: 5m
+        alertname: ServingEndpointsUnhealthy
+        exp_alerts: []
+
+  # ── The event backbone ───────────────────────────────────────────────────────────────────────
+  - name: events waiting too long in the outbox alert
+    interval: 15s
+    input_series:
+      - series: 'examlops_event_outbox_oldest_pending_age_seconds{job="control_plane"}'
+        values: '400x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EventOutboxStalled
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/events/#eventoutboxstalled"
+              summary: "Events are waiting in the outbox instead of reaching the backbone"
+              description: "The oldest unpublished event has waited 6m 40s. /health shows event_relay_error; `exa events stats` shows the backlog. Serving and other consumers are acting on stale state."
+
+  - name: an outbox draining normally stays quiet
+    interval: 15s
+    input_series:
+      - series: 'examlops_event_outbox_oldest_pending_age_seconds{job="control_plane"}'
+        values: '30x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EventOutboxStalled
+        exp_alerts: []
+
+  - name: poisoned outbox events alert
+    interval: 15s
+    input_series:
+      - series: 'examlops_event_outbox_poison{job="control_plane"}'
+        values: '2x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EventOutboxPoison
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/events/#eventoutboxpoison"
+              summary: "Outbox events exhausted their publish attempts"
+              description: "2 event(s) will not be retried (EXAMLOPS_EVENT_MAX_ATTEMPTS). Their last_error in event_outbox says why; `exa events stats` counts them."
+
+  - name: an outbox with nothing poisoned stays quiet
+    interval: 15s
+    input_series:
+      - series: 'examlops_event_outbox_poison{job="control_plane"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EventOutboxPoison
+        exp_alerts: []
+
+  - name: a relay failing every cycle alerts
+    interval: 15s
+    input_series:
+      - series: 'examlops_event_relay_cycle_errors_total{job="control_plane"}'
+        values: '0+1x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: EventRelayFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/events/#eventrelayfailing"
+              summary: "The control plane's event relay fails every cycle"
+              description: "The publisher is misconfigured or the broker is unreachable (EXAMLOPS_EVENT_PUBLISHER, EXAMLOPS_NATS_URL). Events are safe in the outbox and will be relayed once it recovers."
+
+  - name: a relay with no cycle errors stays quiet
+    interval: 15s
+    input_series:
+      - series: 'examlops_event_relay_cycle_errors_total{job="control_plane"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: EventRelayFailing
+        exp_alerts: []
+
+  - name: a consumer falling behind alerts and names itself
+    interval: 15s
+    input_series:
+      - series: 'examlops_event_consumer_pending{job="control_plane",consumer="autopilot-follower"}'
+        values: '1500x120'
+      - series: 'examlops_event_consumer_pending{job="control_plane",consumer="skipper-watch"}'
+        values: '3x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: EventConsumerLagging
+        exp_alerts:
+          - exp_labels: {severity: warning, service: event-backbone, consumer: autopilot-follower}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/events/#eventconsumerlagging"
+              summary: "Event consumer autopilot-follower is falling behind"
+              description: "1500 events not yet delivered to autopilot-follower for 15 min. Check that its process is running; events older than the stream retention (EXAMLOPS_NATS_MAX_AGE_SECONDS) are lost to it."
+
+  # The one that matters: a dead-letter queue that is not GROWING must not keep paging. `delta`
+  # is chosen over an absolute threshold for exactly that — one parked event would otherwise
+  # alert forever.
+  - name: a dead-letter queue that is not growing stays quiet
+    interval: 15s
+    input_series:
+      - series: 'examlops_event_dlq_messages{job="control_plane",consumer="skipper-watch"}'
+        values: '5x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: EventDeadLettered
+        exp_alerts: []
+
+  - name: a newly parked event alerts and names its consumer
+    interval: 15s
+    input_series:
+      - series: 'examlops_event_dlq_messages{job="control_plane",consumer="skipper-watch"}'
+        values: '0x40 3x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: EventDeadLettered
+        exp_alerts:
+          - exp_labels: {severity: warning, service: event-backbone, consumer: skipper-watch}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/events/#eventdeadlettered"
+              summary: "Consumer skipper-watch parked an event it could not handle"
+              description: "`exa events tail --dlq skipper-watch` shows the event and the error. The consumer kept going; the parked event's effect did not happen."
+
+  # ── Dataplane ────────────────────────────────────────────────────────────────────────────────
+  - name: the dataplane service being down is critical
+    interval: 15s
+    input_series:
+      - series: 'up{job="dataplane",instance="dataplane:8010"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DataplaneDown
+        exp_alerts:
+          - exp_labels: {severity: critical, service: dataplane, job: dataplane, instance: "dataplane:8010"}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/dataplane/#dataplanedown"
+              summary: "Dataplane service is down"
+              description: "No scrape of dataplane:8010 for 2 minutes; scheduled pulls are not running."
+
+  - name: a source pulled far later than its schedule is stale
+    interval: 1m
+    input_series:
+      - series: 'dataplane_source_freshness_seconds{job="dataplane",source="pm100"}'
+        values: '10800x60'
+      - series: 'dataplane_source_schedule_seconds{job="dataplane",source="pm100"}'
+        values: '3600x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: DataplaneSourceStale
+        exp_alerts:
+          - exp_labels: {severity: warning, service: dataplane, job: dataplane, source: pm100}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/dataplane/#dataplanesourcestale"
+              summary: "Dataplane source pm100 is stale"
+              description: "No successful pull for 3h 0m 0s, more than twice its schedule; check `exa dataplane pulls --source pm100`."
+
+  # Exactly twice the schedule is NOT stale: the comparison is strict. Worth its own case because
+  # the first draft of the case above used 7200 against a 3600 schedule and quietly did not fire —
+  # a boundary input tests the boundary, not the behaviour.
+  - name: a source at exactly twice its schedule is not yet stale
+    interval: 1m
+    input_series:
+      - series: 'dataplane_source_freshness_seconds{job="dataplane",source="pm100"}'
+        values: '7200x60'
+      - series: 'dataplane_source_schedule_seconds{job="dataplane",source="pm100"}'
+        values: '3600x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: DataplaneSourceStale
+        exp_alerts: []
+
+  - name: a source pulled within twice its schedule is not stale
+    interval: 1m
+    input_series:
+      - series: 'dataplane_source_freshness_seconds{job="dataplane",source="pm100"}'
+        values: '5400x60'
+      - series: 'dataplane_source_schedule_seconds{job="dataplane",source="pm100"}'
+        values: '3600x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: DataplaneSourceStale
+        exp_alerts: []
+
+  # The documented behaviour of the join: only a source the scheduler runs gets a
+  # `schedule_seconds` series, so an on-demand one cannot read as stale however old it is. Pinned
+  # here because it is a design decision, not an accident — and it is invisible in the expression.
+  - name: an on-demand source with no schedule never reads as stale
+    interval: 1m
+    input_series:
+      - series: 'dataplane_source_freshness_seconds{job="dataplane",source="manual-drop"}'
+        values: '864000x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: DataplaneSourceStale
+        exp_alerts: []
+
+  - name: a source whose last pull failed alerts
+    interval: 1m
+    input_series:
+      - series: 'dataplane_source_up{job="dataplane",source="pm100"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: DataplanePullFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, service: dataplane, job: dataplane, source: pm100}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/dataplane/#dataplanepullfailing"
+              summary: "Dataplane pulls of pm100 are failing"
+              description: "The latest pull failed; see `exa dataplane pulls --source pm100`."
+
+  - name: a source pulling cleanly stays quiet
+    interval: 1m
+    input_series:
+      - series: 'dataplane_source_up{job="dataplane",source="pm100"}'
+        values: '1x120'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: DataplanePullFailing
+        exp_alerts: []
+
+  - name: a catalog that cannot be read alerts
+    interval: 15s
+    input_series:
+      - series: 'dataplane_catalog_up{job="dataplane"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DataplaneCatalogUnavailable
+        exp_alerts:
+          - exp_labels: {severity: warning, service: dataplane, job: dataplane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/dataplane/#dataplanecatalogunavailable"
+              summary: "Dataplane cannot read its source catalog"
+              description: "list_source_defs() has failed for 10 minutes — every per-source gauge (dataplane_source_up, freshness) is blind until the catalog recovers; see the dataplane service logs."
+
+  - name: a readable catalog stays quiet
+    interval: 15s
+    input_series:
+      - series: 'dataplane_catalog_up{job="dataplane"}'
+        values: '1x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DataplaneCatalogUnavailable
+        exp_alerts: []
+
+  # The seam between the two: when the catalog cannot be read every per-source gauge disappears at
+  # once, so `DataplanePullFailing` and `DataplaneSourceStale` go SILENT — their series are gone,
+  # not healthy. `DataplaneCatalogUnavailable` is what must fire in that window, and this case is
+  # both halves in one scenario.
+  - name: a catalog outage silences the per-source alerts and raises its own
+    interval: 15s
+    input_series:
+      - series: 'dataplane_catalog_up{job="dataplane"}'
+        values: '1x40 0x120'
+      - series: 'dataplane_source_up{job="dataplane",source="pm100"}'
+        values: '1x40 _x120'
+      - series: 'dataplane_source_freshness_seconds{job="dataplane",source="pm100"}'
+        values: '100x40 _x120'
+      - series: 'dataplane_source_schedule_seconds{job="dataplane",source="pm100"}'
+        values: '3600x40 _x120'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: DataplaneCatalogUnavailable
+        exp_alerts:
+          - exp_labels: {severity: warning, service: dataplane, job: dataplane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/dataplane/#dataplanecatalogunavailable"
+              summary: "Dataplane cannot read its source catalog"
+              description: "list_source_defs() has failed for 10 minutes — every per-source gauge (dataplane_source_up, freshness) is blind until the catalog recovers; see the dataplane service logs."
+      - eval_time: 30m
+        alertname: DataplanePullFailing
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: DataplaneSourceStale
+        exp_alerts: []
+
+  # ── Ray Serve ────────────────────────────────────────────────────────────────────────────────
+  - name: a ten percent error rate is a warning and not yet critical
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="success"}'
+        values: '0+90x120'
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="error"}'
+        values: '0+10x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RayServeHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#rayservehigherrorrate"
+              summary: "Ray Serve error rate > 5%"
+              description: "Prediction error rate is 10% over the last 5 min."
+      - eval_time: 20m
+        alertname: RayServeHighErrorRateCritical
+        exp_alerts: []
+
+  # Unlike the gateway pair, the warning does NOT exclude the critical range: at 30% both rules
+  # match. Alertmanager's inhibit rule (critical mutes warning for the same service) is what stops
+  # the double page — the expressions deliberately do not try to.
+  - name: a thirty percent error rate matches both rules, and inhibition is what separates them
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="success"}'
+        values: '0+70x120'
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="error"}'
+        values: '0+30x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RayServeHighErrorRateCritical
+        exp_alerts:
+          - exp_labels: {severity: critical, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#rayservehigherrorratecritical"
+              summary: "Ray Serve error rate > 20% (CRITICAL)"
+              description: "Prediction error rate is 30% — immediate action required."
+      - eval_time: 20m
+        alertname: RayServeHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#rayservehigherrorrate"
+              summary: "Ray Serve error rate > 5%"
+              description: "Prediction error rate is 30% over the last 5 min."
+
+  - name: a one percent error rate trips neither
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="success"}'
+        values: '0+99x120'
+      - series: 'ray_examlops_predict_requests_total{job="ray_serve",status="error"}'
+        values: '0+1x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RayServeHighErrorRate
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: RayServeHighErrorRateCritical
+        exp_alerts: []
+
+  # Latency is a cumulative histogram: every observation lands in (1s, 2s], so `le=1` stays at 0
+  # and everything from `le=2` upward carries the whole count. p99 interpolates inside that
+  # bucket to ~1.99s — over the 1s warning, under the 3s critical.
+  - name: a p99 near two seconds is a warning and not yet critical
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="0.5"}'
+        values: '0x120'
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="1"}'
+        values: '0x120'
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="2"}'
+        values: '0+100x120'
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="5"}'
+        values: '0+100x120'
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="+Inf"}'
+        values: '0+100x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RayServeHighLatencyP99
+        exp_alerts:
+          - exp_labels: {severity: warning, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#rayservehighlatencyp99"
+              summary: "Ray Serve p99 latency > 1 s"
+              description: "p99 prediction latency is 1.99s over the last 10 min."
+      - eval_time: 20m
+        alertname: RayServeHighLatencyP99Critical
+        exp_alerts: []
+
+  - name: a p99 near five seconds is critical
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="0.5"}'
+        values: '0x120'
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="1"}'
+        values: '0x120'
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="2"}'
+        values: '0x120'
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="5"}'
+        values: '0+100x120'
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="+Inf"}'
+        values: '0+100x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RayServeHighLatencyP99Critical
+        exp_alerts:
+          - exp_labels: {severity: critical, service: serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#rayservehighlatencyp99critical"
+              summary: "Ray Serve p99 latency > 3 s (CRITICAL)"
+              description: "p99 prediction latency is 4.97s."
+
+  - name: a fast serving plane trips no latency alert
+    interval: 15s
+    input_series:
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="0.5"}'
+        values: '0+100x120'
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="1"}'
+        values: '0+100x120'
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="2"}'
+        values: '0+100x120'
+      - series: 'ray_examlops_predict_latency_seconds_bucket{job="ray_serve",le="+Inf"}'
+        values: '0+100x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RayServeHighLatencyP99
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: RayServeHighLatencyP99Critical
+        exp_alerts: []
+
+  - name: the model server scrape target being down is critical
+    interval: 15s
+    input_series:
+      - series: 'up{job="ray_serve",instance="ray-serving:8080"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: RayServeTargetDown
+        exp_alerts:
+          - exp_labels: {severity: critical, service: serving, job: ray_serve, instance: "ray-serving:8080"}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/platform/#rayservetargetdown"
+              summary: "Ray Serve metrics endpoint down"
+              description: "Cannot scrape Ray Serve at ray-serving:8080 — inference metrics are dark."
+
+  # ── vLLM (third-party metrics) ───────────────────────────────────────────────────────────────
+  # `vllm:kv_cache_usage_perc` is a FRACTION (0–1) despite the `_perc` suffix, so the 0.9 threshold
+  # means 90 % — as the runbook says. That assumption is pinned here because it cannot be checked
+  # from this repo: if vLLM ever reported 0–100, this case would still pass while the alert fired
+  # at 0.9 % usage, and the case below (0.85 is quiet) is what would then look wrong.
+  - name: a kv cache over ninety percent full alerts
+    interval: 15s
+    input_series:
+      - series: 'vllm:kv_cache_usage_perc{job="vllm",instance="vllm-0:8000"}'
+        values: '0.95x120'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: VLLMKVCacheNearFull
+        exp_alerts:
+          - exp_labels: {severity: warning, service: llm-serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm/#vllmkvcachenearfull"
+              summary: "vLLM KV-cache usage above 90%"
+              description: "KV-cache at 95% — requests will start preempting."
+
+  - name: a kv cache at eighty five percent is not yet near full
+    interval: 15s
+    input_series:
+      - series: 'vllm:kv_cache_usage_perc{job="vllm",instance="vllm-0:8000"}'
+        values: '0.85x120'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: VLLMKVCacheNearFull
+        exp_alerts: []
+
+  - name: a deep vllm queue alerts
+    interval: 15s
+    input_series:
+      - series: 'vllm:num_requests_waiting{job="vllm",instance="vllm-0:8000"}'
+        values: '35x120'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: VLLMQueueBacklog
+        exp_alerts:
+          - exp_labels: {severity: warning, service: llm-serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm/#vllmqueuebacklog"
+              summary: "vLLM request queue backing up"
+              description: "35 requests waiting — the endpoint is saturated."
+
+  - name: a vllm queue within its ceiling stays quiet
+    interval: 15s
+    input_series:
+      - series: 'vllm:num_requests_waiting{job="vllm",instance="vllm-0:8000"}'
+        values: '5x120'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: VLLMQueueBacklog
+        exp_alerts: []
+
+  - name: a slow time to first token alerts
+    interval: 15s
+    input_series:
+      - series: 'vllm:time_to_first_token_seconds_bucket{job="vllm",le="1"}'
+        values: '0x120'
+      - series: 'vllm:time_to_first_token_seconds_bucket{job="vllm",le="5"}'
+        values: '0x120'
+      - series: 'vllm:time_to_first_token_seconds_bucket{job="vllm",le="10"}'
+        values: '0+100x120'
+      - series: 'vllm:time_to_first_token_seconds_bucket{job="vllm",le="+Inf"}'
+        values: '0+100x120'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: VLLMHighTTFT
+        exp_alerts:
+          - exp_labels: {severity: warning, service: llm-serving}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm/#vllmhighttft"
+              summary: "vLLM p95 time-to-first-token above 5s"
+              description: "p95 TTFT is 9.75s — users are waiting before the first token."
+
+  - name: a responsive endpoint trips no ttft alert
+    interval: 15s
+    input_series:
+      - series: 'vllm:time_to_first_token_seconds_bucket{job="vllm",le="1"}'
+        values: '0+100x120'
+      - series: 'vllm:time_to_first_token_seconds_bucket{job="vllm",le="5"}'
+        values: '0+100x120'
+      - series: 'vllm:time_to_first_token_seconds_bucket{job="vllm",le="10"}'
+        values: '0+100x120'
+      - series: 'vllm:time_to_first_token_seconds_bucket{job="vllm",le="+Inf"}'
+        values: '0+100x120'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: VLLMHighTTFT
+        exp_alerts: []
+
+  - name: an llm endpoint that stops answering is critical
+    interval: 15s
+    input_series:
+      - series: 'up{job="vllm",instance="vllm-0:8000"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: VLLMEndpointDown
+        exp_alerts:
+          - exp_labels: {severity: critical, service: llm-serving, job: vllm, instance: "vllm-0:8000"}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm/#vllmendpointdown"
+              summary: "vLLM endpoint vllm-0:8000 is unreachable"
+              description: "Prometheus has failed to scrape it for 5 min — inference is likely failing."
+
+  # ── "X is down" and the dead-man's switch ─────────────────────────────────────────────────
+  - name: ControlPlaneDown fires when its own scrape target stops answering
+    interval: 15s
+    input_series:
+      - series: 'up{job="control_plane",instance="control-plane:8002"}'
+        values: '1x20 0x80'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: ControlPlaneDown
+        exp_alerts:
+          - exp_labels: {severity: critical, service: control-plane, job: control_plane, instance: "control-plane:8002"}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#controlplanedown"
+              summary: "Control plane is down"
+              description: "control_plane scrape target has been unreachable for 2 min — retrains and approvals are blocked."
+
+  - name: ServingGatewayDown fires when its own scrape target stops answering
+    interval: 15s
+    input_series:
+      - series: 'up{job="gateway",instance="gateway:9902"}'
+        values: '1x20 0x80'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: ServingGatewayDown
+        exp_alerts:
+          - exp_labels: {severity: critical, service: gateway, job: gateway, instance: "gateway:9902"}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#servinggatewaydown"
+              summary: "Serving gateway component gateway is down"
+              description: "No scrape of gateway:9902 for 2 minutes. Envoy down: clients get connection errors. gateway-authz down: every request is refused with 503 (the gateway fails closed)."
+
+  - name: SeanerBUSBridgeDown fires when its own scrape target stops answering
+    interval: 15s
+    input_series:
+      - series: 'up{job="seanerbus_bridge",instance="seanerbus-bridge:8003"}'
+        values: '1x20 0x80'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: SeanerBUSBridgeDown
+        exp_alerts:
+          - exp_labels: {severity: critical, service: seanerbus, job: seanerbus_bridge, instance: "seanerbus-bridge:8003"}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-bridge-down"
+              summary: "SeanerBUS bridge is offline"
+              description: "The bridge has been unreachable for 2 min — inference requests from the bus are failing."
+
+  - name: LokiDown fires when its own scrape target stops answering
+    interval: 15s
+    input_series:
+      - series: 'up{job="loki",instance="loki:3100"}'
+        values: '1x20 0x80'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: LokiDown
+        exp_alerts:
+          - exp_labels: {severity: warning, service: platform, job: loki, instance: "loki:3100"}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/platform/#lokidown"
+              summary: "Loki is down — logs not being stored"
+              description: "Loki has been unreachable for 3 min."
+
+  - name: TempoDown fires when its own scrape target stops answering
+    interval: 15s
+    input_series:
+      - series: 'up{job="tempo",instance="tempo:3200"}'
+        values: '1x20 0x80'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: TempoDown
+        exp_alerts:
+          - exp_labels: {severity: warning, service: platform, job: tempo, instance: "tempo:3200"}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/platform/#tempodown"
+              summary: "Tempo is down — traces not being stored"
+              description: "Tempo has been unreachable for 3 min."
+
+  - name: AlertmanagerDown fires when its own scrape target stops answering
+    interval: 15s
+    input_series:
+      - series: 'up{job="alertmanager",instance="alertmanager:9093"}'
+        values: '1x20 0x80'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: AlertmanagerDown
+        exp_alerts:
+          - exp_labels: {severity: warning, service: platform, job: alertmanager, instance: "alertmanager:9093"}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/platform/#alertmanagerdown"
+              summary: "Alertmanager is down — notifications silenced"
+              description: "Alertmanager has been unreachable for 3 min."
+
+  # `vector(1)` — it must fire always, and in particular with no input series whatsoever. If it
+  # ever stops, the external heartbeat monitor is what notices; that only works because nothing
+  # in the platform can make this one quiet.
+  - name: the watchdog fires with no input at all
+    interval: 15s
+    input_series: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels: {severity: none, service: heartbeat}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/platform/#watchdog"
+              summary: "Alerting pipeline heartbeat (always firing)"
+              description: "If this stops reaching the external dead-man's-switch, alert delivery is down."
+
+  # ── Control plane: the rest ──────────────────────────────────────────────────────────────────
+  - name: a snapshot the control plane cannot compile alerts
+    interval: 15s
+    input_series:
+      - series: 'examlops_serving_snapshot_compile_errors_total{job="control_plane"}'
+        values: '0x40 0+1x120'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ServingSnapshotCompileFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#servingsnapshotcompilefailing"
+              summary: "The control plane cannot compile the serving snapshot"
+              description: "Replicas keep serving the last generation, so no promotion, traffic split or shadow change reaches serving. /health runtime.serving_snapshot.error says why (usually MLflow unreachable)."
+
+  - name: a control plane compiling snapshots cleanly stays quiet
+    interval: 15s
+    input_series:
+      - series: 'examlops_serving_snapshot_compile_errors_total{job="control_plane"}'
+        values: '0x160'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ServingSnapshotCompileFailing
+        exp_alerts: []
+
+  - name: a command queue that only grows alerts
+    interval: 15s
+    input_series:
+      - series: 'control_plane_command_queue_depth{job="control_plane"}'
+        values: '35x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ControlPlaneCommandBacklog
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#controlplanecommandbacklog"
+              summary: "Asynchronous command backlog is not draining"
+              description: "35 commands have waited 15 min. Check /health (dispatch, admission) and the command workers."
+
+  - name: a command queue being worked stays quiet
+    interval: 15s
+    input_series:
+      - series: 'control_plane_command_queue_depth{job="control_plane"}'
+        values: '3x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ControlPlaneCommandBacklog
+        exp_alerts: []
+
+  # An approval waiting four days matches BOTH approval-age rules — the urgent one is a strict
+  # subset of the other, by design. Alertmanager's "critical mutes warning for the same service"
+  # rule is what keeps that from being two pages; the expressions do not try to.
+  - name: an approval waiting four days is urgent, and still matches the warning
+    interval: 1m
+    input_series:
+      - series: 'examlops_approval_age_oldest_seconds{job="control_plane"}'
+        values: '345600x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ApprovalsStaleUrgent
+        exp_alerts:
+          - exp_labels: {severity: critical, service: control-plane, job: control_plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#approvalsstaleurgent"
+              summary: "Oldest pending approval > 72 h (CRITICAL)"
+              description: "An approval has been waiting 4d 0h 0m 0s and will be auto-expired."
+      - eval_time: 40m
+        alertname: ApprovalsStale
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane, job: control_plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#approvalsstale"
+              summary: "Oldest pending approval > 24 h"
+              description: "An approval request has been waiting 4d 0h 0m 0s."
+
+  - name: an approval waiting two days is stale but not yet urgent
+    interval: 1m
+    input_series:
+      - series: 'examlops_approval_age_oldest_seconds{job="control_plane"}'
+        values: '172800x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ApprovalsStaleUrgent
+        exp_alerts: []
+
+  - name: the prefect circuit breaker opening alerts at once
+    interval: 15s
+    input_series:
+      - series: 'examlops_prefect_circuit_breaker_opens_total{job="control_plane"}'
+        values: '0x40 1x80'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: PrefectCircuitBreakerOpen
+        exp_alerts:
+          - exp_labels: {severity: critical, service: control-plane, job: control_plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#prefectcircuitbreakeropen"
+              summary: "Prefect circuit breaker OPENED"
+              description: "The Prefect gateway circuit breaker has opened — control plane is fast-failing retrain requests."
+
+  - name: a closed circuit breaker stays quiet
+    interval: 15s
+    input_series:
+      - series: 'examlops_prefect_circuit_breaker_opens_total{job="control_plane"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: PrefectCircuitBreakerOpen
+        exp_alerts: []
+
+  - name: a high prefect retry rate alerts
+    interval: 15s
+    input_series:
+      - series: 'examlops_prefect_retries_total{job="control_plane",method="POST"}'
+        values: '0+3x160'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: PrefectRetryRateHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane, job: control_plane, method: POST}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#prefectretryratehigh"
+              summary: "Prefect retry rate > 0.1/s"
+              description: "Control plane is retrying Prefect calls at 200m/s — Prefect may be degraded."
+
+  - name: an occasional prefect retry stays quiet
+    interval: 15s
+    input_series:
+      - series: 'examlops_prefect_retries_total{job="control_plane",method="POST"}'
+        values: '0+1x160'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: PrefectRetryRateHigh
+        exp_alerts: []
+
+  - name: many approvals auto-expiring alerts
+    interval: 1m
+    input_series:
+      - series: 'examlops_approvals_expired_total{job="control_plane"}'
+        values: '0x30 0+1x120'
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: ManyApprovalsAutoExpired
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane, job: control_plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#manyapprovalsautoexpired"
+              summary: "60 approvals auto-expired in 1 h"
+              description: "High auto-expiry volume — operators may not be reviewing approvals or APPROVAL_EXPIRY_HOURS is too short."
+
+  - name: a couple of expiries in an hour stays quiet
+    interval: 1m
+    input_series:
+      - series: 'examlops_approvals_expired_total{job="control_plane"}'
+        values: '0x60 2x120'
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: ManyApprovalsAutoExpired
+        exp_alerts: []
+
+  - name: a slow retrain p99 alerts
+    interval: 1m
+    input_series:
+      - series: 'examlops_retrain_duration_seconds_bucket{job="control_plane",le="60"}'
+        values: '0x120'
+      - series: 'examlops_retrain_duration_seconds_bucket{job="control_plane",le="300"}'
+        values: '0x120'
+      - series: 'examlops_retrain_duration_seconds_bucket{job="control_plane",le="600"}'
+        values: '0+10x120'
+      - series: 'examlops_retrain_duration_seconds_bucket{job="control_plane",le="+Inf"}'
+        values: '0+10x120'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: RetrainDurationP99High
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#retraindurationp99high"
+              summary: "Retrain dispatch p99 > 5 min"
+              description: "Scheduling a retrain is taking 9m 57s at p99."
+
+  # Any target being down is a critical TargetDown as well as the component's own alert — the two
+  # are deliberately not exclusive, and inhibition (TargetDown mutes same-service symptoms) is
+  # what keeps it to one page.
+  - name: a down target raises the generic critical as well as its own alert
+    interval: 15s
+    input_series:
+      - series: 'up{job="loki",instance="loki:3100"}'
+        values: '1x20 0x80'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: TargetDown
+        exp_alerts:
+          - exp_labels: {severity: critical, service: platform, job: loki, instance: "loki:3100"}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/platform/#targetdown"
+              summary: "Prometheus target loki is down"
+              description: "Scrape target loki (loki:3100) unreachable for 5 min."
+
+  # ── The gateway's Envoy statistics, and the bridge's latency ─────────────────────────────────
+  - name: the gateway failing to reach its authorization service is critical
+    interval: 15s
+    input_series:
+      - series: 'envoy_http_ext_authz_error{job="gateway",envoy_http_conn_manager_prefix="serving"}'
+        values: '0+1x120'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ServingGatewayAuthorizationFailing
+        exp_alerts:
+          - exp_labels: {severity: critical, service: gateway}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#servinggatewayauthorizationfailing"
+              summary: "The gateway cannot get authorization decisions"
+              description: "0.07 requests/s get no answer from gateway-authz and are refused with 503."
+
+  - name: a gateway reaching its authorization service stays quiet
+    interval: 15s
+    input_series:
+      - series: 'envoy_http_ext_authz_error{job="gateway",envoy_http_conn_manager_prefix="serving"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ServingGatewayAuthorizationFailing
+        exp_alerts: []
+
+  # The denominator counts every response class, so it must be fed all of them: a 5xx share of
+  # 10% is over the 5% line. Feeding only the 5xx series would make any error rate read as 100%.
+  - name: a gateway returning ten percent 5xx alerts
+    interval: 15s
+    input_series:
+      - series: 'envoy_http_downstream_rq_xx{job="gateway",envoy_http_conn_manager_prefix="serving",envoy_response_code_class="2"}'
+        values: '0+90x120'
+      - series: 'envoy_http_downstream_rq_xx{job="gateway",envoy_http_conn_manager_prefix="serving",envoy_response_code_class="5"}'
+        values: '0+10x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ServingGatewayHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning, service: gateway}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#servinggatewayhigherrorrate"
+              summary: "More than 5 % of gateway answers are 5xx"
+              description: "10% of requests through the gateway got a 5xx over 10 minutes."
+
+  - name: a gateway serving mostly 2xx stays quiet
+    interval: 15s
+    input_series:
+      - series: 'envoy_http_downstream_rq_xx{job="gateway",envoy_http_conn_manager_prefix="serving",envoy_response_code_class="2"}'
+        values: '0+99x120'
+      - series: 'envoy_http_downstream_rq_xx{job="gateway",envoy_http_conn_manager_prefix="serving",envoy_response_code_class="5"}'
+        values: '0+1x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ServingGatewayHighErrorRate
+        exp_alerts: []
+
+  - name: requests shed at the gateway ceiling alert
+    interval: 15s
+    input_series:
+      - series: 'envoy_http_local_rate_limit_rate_limited{job="gateway",envoy_local_http_ratelimit_prefix="serving_ceiling"}'
+        values: '0+2x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ServingGatewayAtCeiling
+        exp_alerts:
+          - exp_labels: {severity: warning, service: gateway}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/serving/#servinggatewayatceiling"
+              summary: "The gateway's own request ceiling is refusing traffic"
+              description: "0.13 requests/s refused with 429 by the whole-gateway ceiling (not a tenant quota)."
+
+  - name: a gateway under its ceiling stays quiet
+    interval: 15s
+    input_series:
+      - series: 'envoy_http_local_rate_limit_rate_limited{job="gateway",envoy_local_http_ratelimit_prefix="serving_ceiling"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ServingGatewayAtCeiling
+        exp_alerts: []
+
+  - name: a slow bridge p99 alerts
+    interval: 15s
+    input_series:
+      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="0.1"}'
+        values: '0x120'
+      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="0.5"}'
+        values: '0x120'
+      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="1"}'
+        values: '0+50x120'
+      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="+Inf"}'
+        values: '0+50x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SeanerBUSHighLatencyP99
+        exp_alerts:
+          - exp_labels: {severity: warning, service: seanerbus}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-bridge-latency"
+              summary: "SeanerBUS p99 latency > 500 ms"
+              description: "SeanerBUS p99 inference latency is 995ms."
+
+  - name: a responsive bridge trips no latency alert
+    interval: 15s
+    input_series:
+      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="0.1"}'
+        values: '0+50x120'
+      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="0.5"}'
+        values: '0+50x120'
+      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="1"}'
+        values: '0+50x120'
+      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="+Inf"}'
+        values: '0+50x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SeanerBUSHighLatencyP99
+        exp_alerts: []

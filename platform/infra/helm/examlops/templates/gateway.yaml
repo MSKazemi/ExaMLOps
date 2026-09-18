@@ -1,0 +1,184 @@
+{{- /*
+The serving gateway (plan P4.4, ADR 0126): Envoy, the one front door to the serving plane, and
+`examlops.serving_gateway`, the authorization service it asks about every request. What Compose
+runs under the `gateway` profile. The Envoy configuration is files/gateway-envoy.yaml, byte-identical
+to Compose's gateway/envoy.yaml (tests/unit/test_helm_gateway.py), with only the addresses of the
+model server and the authorization service substituted.
+*/ -}}
+{{- $gw := .Values.gateway | default dict }}
+{{- if $gw.enabled }}
+{{- $root := . }}
+{{- $fullname := include "examlops.fullname" . }}
+{{- $authz := printf "%s-gateway-authz" $fullname }}
+{{- $config := .Files.Get "files/gateway-envoy.yaml"
+      | replace "address: ray-serving, port_value: 8001" (printf "address: %s, port_value: %d" $gw.upstream.host (int $gw.upstream.port))
+      | replace "address: ray-serving, port_value: 8081" (printf "address: %s, port_value: %d" $gw.upstream.host (int $gw.upstream.grpcPort))
+      | replace "address: gateway-authz, port_value: 8090" (printf "address: %s, port_value: 8090" $authz)
+      | replace "uri: http://gateway-authz:8090" (printf "uri: http://%s:8090" $authz) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-gateway-envoy
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+data:
+  envoy.yaml: |
+    {{- $config | nindent 4 }}
+{{- range $tier := list "gateway" "gateway-authz" }}
+{{- $isEnvoy := eq $tier "gateway" }}
+{{- $replicas := ternary $gw.replicaCount (($gw.authz | default dict).replicaCount | default 2) $isEnvoy }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-{{ $tier }}
+  labels:
+    {{- include "examlops.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $tier }}
+spec:
+  replicas: {{ $replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "examlops.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $tier }}
+  template:
+    metadata:
+      labels:
+        {{- include "examlops.labels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $tier }}
+      {{- if $isEnvoy }}
+      annotations:
+        # A config change rolls the Envoy pods: Envoy does not re-read a mounted file.
+        checksum/envoy: {{ $config | sha256sum }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "examlops.serviceAccountName" $root }}
+      {{- with $root.Values.global.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
+      {{- if $root.Values.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ $root.Values.topologySpreadConstraints.maxSkew }}
+          topologyKey: {{ $root.Values.topologySpreadConstraints.topologyKey }}
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: {{ $tier }}
+      {{- end }}
+      containers:
+        {{- if $isEnvoy }}
+        - name: gateway
+          image: {{ printf "%s:%s" $gw.image.repository $gw.image.tag }}{{ with $gw.image.digest }}@{{ . }}{{ end }}
+          imagePullPolicy: {{ $gw.image.pullPolicy }}
+          # No hot restart: it needs shared memory, which a read-only pod does not offer.
+          args: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warn", "--disable-hot-restart"]
+          ports:
+            - {name: http, containerPort: 8080}
+            - {name: metrics, containerPort: 9902}
+          securityContext:
+            {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml $gw.resources | nindent 12 }}
+          # Envoy's admin interface is loopback-only, where kubelet cannot probe: the listener.
+          readinessProbe:
+            tcpSocket: {port: http}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          volumeMounts:
+            - {name: envoy-config, mountPath: /etc/envoy, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+        {{- else }}
+        - name: gateway-authz
+          image: {{ include "examlops.image" (dict "root" $root "svc" $root.Values.controlPlane) }}
+          imagePullPolicy: {{ $root.Values.controlPlane.image.pullPolicy }}
+          command: ["uvicorn", "--factory", "examlops.serving_gateway:create_app",
+                    "--host", "0.0.0.0", "--port", "8090"]
+          ports:
+            - {name: http, containerPort: 8090}
+          # The platform datastore holds the virtual keys, so it reads the control plane's
+          # datastore settings and Secret.
+          envFrom:
+            - configMapRef:
+                name: {{ $fullname }}-config
+            - secretRef:
+                name: {{ include "examlops.controlPlaneSecret" $root | quote }}
+          env:
+            - {name: EXAMLOPS_ACTOR, value: serving-gateway}
+            - {name: EXAMLOPS_GATEWAY_TENANT_RPM, value: {{ $gw.tenantRpm | quote }}}
+            - {name: EXAMLOPS_GATEWAY_KEY_CACHE_SECONDS, value: {{ $gw.keyCacheSeconds | quote }}}
+            - {name: HOME, value: /tmp}   # the root filesystem is read-only
+          securityContext:
+            {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml (($gw.authz | default dict).resources | default dict) | nindent 12 }}
+          # /readyz reads the credential store once and latches: a replica that has never
+          # reached it can only refuse (503), so it stays out of the Service and a rolling
+          # update that shipped an unreachable store stops instead of completing.
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+          # Deliberately /healthz, which touches nothing. A store outage must never restart this
+          # pod: the verified-key cache is what carries traffic through it, and a restart
+          # discards that cache.
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+        {{- end }}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+        {{- if $isEnvoy }}
+        - name: envoy-config
+          configMap: {name: {{ $fullname }}-gateway-envoy}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-{{ $tier }}
+  labels:
+    {{- include "examlops.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $tier }}
+    # The Prometheus job name the alert rules select (ServiceMonitor jobLabel), as in Compose.
+    examlops.io/job: {{ $tier | replace "-" "_" }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "examlops.name" $root }}
+    app.kubernetes.io/instance: {{ $root.Release.Name }}
+    app.kubernetes.io/component: {{ $tier }}
+  ports:
+    {{- if $isEnvoy }}
+    - {name: http, port: 8080, targetPort: http}
+    - {name: metrics, port: 9902, targetPort: metrics}
+    {{- else }}
+    - {name: http, port: 8090, targetPort: http}
+    {{- end }}
+{{- if ($gw.pdb | default dict).enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $fullname }}-{{ $tier }}
+  labels:
+    {{- include "examlops.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $tier }}
+spec:
+  minAvailable: {{ $gw.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "examlops.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $tier }}
+{{- end }}
+{{- end }}
+{{- end }}

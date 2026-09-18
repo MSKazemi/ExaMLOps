@@ -456,14 +456,28 @@ def _utc_text(moment: datetime) -> str:
 
 
 def list_dead_letters(
-    project: str, *, stream: str | None = None, limit: int = 50
+    project: str,
+    *,
+    stream: str | None = None,
+    limit: int = 50,
+    reason: str | None = None,
+    before_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """``project``'s dead letters (optionally one stream), newest first, without payloads
-    (``has_payload`` says whether one is stored). ``limit`` is clamped to 1…1000."""
+    (``has_payload`` says whether one is stored). ``limit`` is clamped to 1…1000.
+
+    ``reason`` keeps only that failure reason and ``before_id`` only rows older than that id; both
+    narrow the query itself, so ``limit`` counts rows the caller asked for rather than rows the
+    caller is about to discard.
+    """
     from examlops.data import dataplane as catalog
 
     return catalog.list_dead_letter_rows(
-        project, stream=stream, limit=max(1, min(int(limit), _LIST_LIMIT_MAX))
+        project,
+        stream=stream,
+        limit=max(1, min(int(limit), _LIST_LIMIT_MAX)),
+        reason=reason,
+        before_id=before_id,
     )
 
 

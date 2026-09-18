@@ -180,3 +180,51 @@ def test_row_is_addressable_by_name_and_position():
     row = PgRow({"a": 1, "b": 2})
     assert row["a"] == 1
     assert row[1] == 2  # sqlite3.Row semantics the helpers rely on
+
+
+def test_a_row_slices_like_sqlite3_row():
+    """``row[3:]`` raised KeyError on Postgres and worked on SQLite, so POST /v1/retrain answered
+    500 on every Postgres control plane while the SQLite suite stayed green."""
+    from examlops.storage.pg import PgRow
+
+    values = (1, 2, 3, 4)  # sqlite3.Row slices to a tuple of the selected columns
+    row = PgRow(a=1, b=2, c=3, d=4)
+    for key in (slice(1, None), slice(None, 2), slice(1, 3), slice(None, None, -1)):
+        assert row[key] == values[key]
+        assert isinstance(row[key], tuple)
+    assert row[0] == 1 and row["c"] == 3
+
+
+def test_a_column_added_by_a_migration_gets_a_type_postgres_has():
+    """`ALTER TABLE … ADD COLUMN` carries a SQLite type, and it was not being translated.
+
+    The consequence was total: `platform_db._COLUMN_MIGRATIONS` gained
+    `project_budgets.alerted_at DATETIME`, Postgres has no such type, and every process that opens
+    the datastore died in its first `init_db()` —
+    `psycopg.errors.UndefinedObject: type "datetime" does not exist`. The control plane crash-looped
+    on startup, so a Postgres install was not degraded, it was down. Found by a kind drill whose
+    chart install would not come up.
+
+    The quieter half is the other two rows: a column added this way was int4 and float4 rather than
+    the bigint and double precision the schema means everywhere else.
+    """
+    assert translate("ALTER TABLE project_budgets ADD COLUMN alerted_at DATETIME").endswith("TEXT")
+    assert translate("ALTER TABLE gateway_calls ADD COLUMN latency_ms REAL").endswith(
+        "DOUBLE PRECISION"
+    )
+    assert translate("ALTER TABLE gateway_calls ADD COLUMN error INTEGER").endswith("BIGINT")
+    assert translate("ALTER TABLE slo_samples ADD COLUMN watermark TEXT").endswith("TEXT")
+
+
+def test_every_column_migration_in_the_schema_translates():
+    """The table above is the real input, so the guard follows it rather than a copy: a migration
+    added with a type Postgres does not have must fail here, not in production's first startup."""
+    from examlops.platform_db import _COLUMN_MIGRATIONS
+
+    postgres_types = ("TEXT", "BIGINT", "DOUBLE PRECISION", "BYTEA", "BOOLEAN", "NUMERIC")
+    for table, columns in _COLUMN_MIGRATIONS.items():
+        for name, decl in columns.items():
+            out = translate(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+            assert out.startswith(f"ALTER TABLE {table} ADD COLUMN {name} "), out
+            kind = out.split(f"ADD COLUMN {name} ", 1)[1].split(" DEFAULT")[0].strip()
+            assert kind.startswith(postgres_types), f"{table}.{name} translates to {kind!r}"

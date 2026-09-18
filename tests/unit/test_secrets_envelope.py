@@ -126,3 +126,78 @@ def test_legacy_dashboard_key_still_decrypts_but_is_not_primary(db):
     rec = pdb.get_secret_record("legacy/s", "default")
     assert rec["key_id"] == "legacy-dashboard"
     assert secrets.get_secret("legacy/s") == "v"
+
+
+# ── a scripted rotation must not report success over a failed rewrap ──────────
+
+
+def _secret_encrypted_under_a_key_that_is_gone(secrets, mp):
+    """One secret written under key A, then key A removed from the keyring.
+
+    Exactly the state a half-finished rotation leaves: the row still names `kA`, and nothing in the
+    process can decrypt it — so rewrapping it must fail.
+    """
+    mp.setenv("EXAMLOPS_SECRETS_KEYS", f"kA:{KEY_A}")
+    mp.setenv("EXAMLOPS_SECRETS_ACTIVE_KEY", "kA")
+    secrets.set_secret("stranded", "v")
+    mp.setenv("EXAMLOPS_SECRETS_KEYS", f"kB:{KEY_B}")
+    mp.setenv("EXAMLOPS_SECRETS_ACTIVE_KEY", "kB")
+
+
+def test_a_failed_rewrap_is_reported_in_the_summary(db):
+    """The premise: a secret whose key is gone cannot be rewrapped and is counted as failed."""
+    pdb, mp = db
+    from examlops import secrets
+
+    _secret_encrypted_under_a_key_that_is_gone(secrets, mp)
+    summary = secrets.rewrap_secrets(actor="admin")
+    assert summary["failed"] == 1, f"the rewrap did not fail as expected: {summary}"
+    assert summary["errors"]
+
+
+def test_a_scripted_rotation_exits_non_zero_when_a_secret_was_left_behind(db):
+    """`exa --json secrets rewrap` returned **exit 0** with failures in the payload.
+
+    Rotation exists so the previous KEK can be decommissioned. A script that reads the exit code —
+    the normal way to gate the next step — was told the rotation succeeded, and retiring the old key
+    then makes every secret still wrapped under it permanently unreadable. The human path has always
+    printed the errors and exited 1.
+    """
+    import json
+
+    from typer.testing import CliRunner
+
+    pdb, mp = db
+    from examlops import secrets
+    from examlops.cli.main import app
+
+    _secret_encrypted_under_a_key_that_is_gone(secrets, mp)
+
+    result = CliRunner().invoke(app, ["--json", "secrets", "rewrap"])
+    payload = json.loads(result.stdout)
+    assert payload["failed"] == 1, f"the failure is not even in the payload: {payload}"
+    assert result.exit_code == 1, (
+        "a scripted key rotation that left a secret behind reported success; the operator would "
+        "decommission the old key and lose that secret"
+    )
+
+
+def test_a_clean_scripted_rotation_still_exits_zero(db):
+    """Anti-vacuity: the exit code must follow the outcome, not always be 1."""
+    import json
+
+    from typer.testing import CliRunner
+
+    pdb, mp = db
+    from examlops import secrets
+    from examlops.cli.main import app
+
+    mp.setenv("EXAMLOPS_SECRETS_KEYS", f"kA:{KEY_A}")
+    mp.setenv("EXAMLOPS_SECRETS_ACTIVE_KEY", "kA")
+    secrets.set_secret("s1", "v1")
+    mp.setenv("EXAMLOPS_SECRETS_KEYS", f"kA:{KEY_A},kB:{KEY_B}")
+    mp.setenv("EXAMLOPS_SECRETS_ACTIVE_KEY", "kB")
+
+    result = CliRunner().invoke(app, ["--json", "secrets", "rewrap"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["failed"] == 0

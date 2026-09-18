@@ -35,7 +35,7 @@ Every run is audited, exactly as in the CLI Console.
 
 ## What is covered
 
-47 resources, reaching 206 of the 442 commands the dashboard can run. The rest are reports,
+48 resources, reaching 209 of the 444 commands the dashboard can run. The rest are reports,
 checks and one-off operations such as `exa status`, `exa audit verify` or `exa fleet simulate`.
 They have no "item" to put in a table, and they live in the CLI Console.
 
@@ -51,7 +51,7 @@ They have no "item" to put in a table, and they live in the CLI Console.
 | Monitoring & Quality | SLOs · Auto-retrain policies · Judge calibrations |
 | HPC, Fleet & FinOps | HPC clusters · HPC jobs · Device pools · Placement decisions · Project budgets |
 | Governance & Security | AI systems (EU AI Act register) · Approvals · Secrets (metadata only) · Policies · Policy bundles · Calculation providers · Audit checkpoints · Audit reviews |
-| Platform & Integrations | Backups · Backup bundles · SeanerBUS models · Config contexts · Modules (site feature profile: enable / disable) |
+| Platform & Integrations | Backups · Backup bundles · SeanerBUS models · Config contexts · Control-plane commands · Modules (site feature profile: enable / disable) |
 
 ## How a resource is defined
 

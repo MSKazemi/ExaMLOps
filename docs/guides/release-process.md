@@ -16,7 +16,7 @@ nothing is uploaded by hand.
 | Artifact | Where | Name |
 |---|---|---|
 | Python package (`exa` CLI + SDK) | PyPI · GitHub Release | `examlops-X.Y.Z-py3-none-any.whl`, `examlops-X.Y.Z.tar.gz` |
-| Container images | GHCR | `ghcr.io/mskazemi/examlops-{control-plane,dashboard,agent,backup,ray-serving,postgres,mlflow}:X.Y.Z` |
+| Container images | GHCR | `ghcr.io/mskazemi/examlops-{control-plane,dashboard,agent,backup,ray-serving,postgres,mlflow,spire-init}:X.Y.Z` |
 | Helm chart | GHCR (OCI) | `oci://ghcr.io/mskazemi/charts/examlops`, version `X.Y.Z` |
 | Single-node install bundle | GitHub Release | `examlops-compose-X.Y.Z.tar.gz` — pull-only compose stack pinned to this release ([guide](install-compose-bundle.md)) |
 | Release notes | GitHub Release | the `## [X.Y.Z]` section of `CHANGELOG.md`, verbatim |

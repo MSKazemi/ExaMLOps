@@ -117,4 +117,4 @@ Model UUIDs are defined in `pipelines/models/<name>.yaml` (`seanerbus_uuid`) and
 | `[Errno -3] Temporary failure in name resolution` in bridge (loops on reconnect) | reqgen container stopped (exit 137 = OOM or `docker kill`) | `cd ../seanerbus && docker compose up -d` — or `make full-up` |
 | `Connection refused` in bridge | seanerbus container not running or wrong network | Start `docker compose up -d` in seanerbus repo; check `seanerbus-net` network exists |
 | `Name or service not known` | `host.docker.internal` failed — Linux Docker | Ensure `extra_hosts: host.docker.internal:host-gateway` is in docker-compose (already set) |
-| No `[ok]` lines in reqgen but bridge shows RES | UUID mismatch | Compare `seanerbus_uuid` in `pipelines/models/jpcp.yaml` with `models.yaml` in seanerbus repo |
+| No `[ok]` lines in reqgen but bridge shows RES | UUID mismatch | Compare `seanerbus_uuid` in `usecases/seanergy/models/jpcp.yaml` with `models.yaml` in seanerbus repo |

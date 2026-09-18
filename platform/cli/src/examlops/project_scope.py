@@ -31,7 +31,9 @@ def resolve_project(model: str, *, explicit: str | None = None) -> str | None:
         from examlops.data.projects import get_project_for_model
 
         return get_project_for_model(model)
-    except Exception:
+    except Exception:  # noqa: BLE001 - called per request by the serving path; see
+        # `ray_serving.app._project_for`. An unresolved project is an absent metric label,
+        # not a hidden error, and the datastore's own outage is already reported.
         return None
 
 

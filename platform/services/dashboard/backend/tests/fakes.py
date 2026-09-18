@@ -9,12 +9,13 @@ def make_control_plane_transport(
     meta_by_model: dict[str, dict],
     readmes: dict[str, tuple[str, str]] | None = None,
 ) -> httpx.MockTransport:
-    """Emulate the control-plane endpoints the dashboard uses."""
+    """Emulate the control-plane endpoints the dashboard uses — at their /v1 paths only, so a caller
+    that slips back to a deprecated path fails here rather than in production."""
     readmes = readmes or {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        if path == "/models":
+        if path == "/v1/models":
             return httpx.Response(
                 200,
                 json=[
@@ -22,18 +23,26 @@ def make_control_plane_transport(
                     for name, meta in meta_by_model.items()
                 ],
             )
-        if path.startswith("/models/") and path.endswith("/meta"):
-            name = path.split("/")[2]
+        if path.startswith("/v1/models/") and path.endswith("/meta"):
+            name = path.split("/")[3]
             if name not in meta_by_model:
                 return httpx.Response(404, json={"detail": "Unknown"})
             return httpx.Response(200, json=meta_by_model[name])
-        if path.startswith("/models/") and path.endswith("/readme"):
-            name = path.split("/")[2]
+        if path.startswith("/v1/models/") and path.endswith("/readme"):
+            name = path.split("/")[3]
             text, sha = readmes.get(name, ("", ""))
             return httpx.Response(200, json={"text": text, "sha": sha})
         return httpx.Response(404, json={"detail": f"unhandled {path}"})
 
     return httpx.MockTransport(handler)
+
+
+#: How many model versions the fake returns per page of ``model-versions/search``.
+#: The real MLflow pages this endpoint and hands back a ``next_page_token``; a fake that returns
+#: everything at once cannot tell a caller that follows the token from one that ignores it, so
+#: every caller would look correct here and lose versions in production. Small so the paged path
+#: is exercised by a handful of rows rather than by hundreds.
+MLFLOW_VERSION_PAGE_SIZE = 2
 
 
 def make_mlflow_transport(
@@ -44,6 +53,10 @@ def make_mlflow_transport(
     ``versions_by_model`` keys are model names (matching what the router looks up).
     Each version dict may include an ``"aliases"`` list of alias name strings.
     Alias mutations (POST/DELETE /registered-models/alias) are applied in-memory.
+
+    ``model-versions/search`` **pages**, like the real one: at most
+    :data:`MLFLOW_VERSION_PAGE_SIZE` versions per response, plus a ``next_page_token`` while more
+    remain, and it honours ``page_token``.
     """
     # Build mutable alias state: {model_name: {alias: version_str}}
     alias_state: dict[str, dict[str, str]] = {}
@@ -125,7 +138,16 @@ def make_mlflow_transport(
         if "model-versions/search" in path or "search-model-versions" in path:
             name = params.get("name") or _extract_name_from_filter(params.get("filter", ""))
             canonical, versions = _resolve_model(name or "")
-            return httpx.Response(200, json={"model_versions": versions or []})
+            versions = versions or []
+            try:
+                start = int(params.get("page_token") or 0)
+            except ValueError:
+                return httpx.Response(400, json={"detail": "bad page_token"})
+            page = versions[start : start + MLFLOW_VERSION_PAGE_SIZE]
+            body: dict = {"model_versions": page}
+            if start + MLFLOW_VERSION_PAGE_SIZE < len(versions):
+                body["next_page_token"] = str(start + MLFLOW_VERSION_PAGE_SIZE)
+            return httpx.Response(200, json=body)
 
         # ── GET /runs/get ───────────────────────────────────────────────────
         if "runs/get" in path:

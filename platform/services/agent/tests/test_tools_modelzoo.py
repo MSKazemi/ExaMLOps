@@ -6,7 +6,7 @@ from skipper.tools import modelzoo
 
 @respx.mock
 def test_status():
-    respx.get("http://localhost:18002/modelzoo/status").mock(
+    respx.get("http://localhost:18002/v1/modelzoo/status").mock(
         return_value=httpx.Response(200, json={"jpcp": "fresh"})
     )
     out = modelzoo.modelzoo_status.invoke({})
@@ -16,7 +16,7 @@ def test_status():
 @respx.mock
 def test_sync_confirmed(monkeypatch):
     monkeypatch.setattr(confirm, "interrupt", lambda payload: "yes")
-    respx.post("http://localhost:18002/modelzoo/sync").mock(
+    respx.post("http://localhost:18002/v1/modelzoo/sync").mock(
         return_value=httpx.Response(200, json={"checked": 3})
     )
     out = modelzoo.modelzoo_sync.invoke({})
@@ -26,7 +26,7 @@ def test_sync_confirmed(monkeypatch):
 @respx.mock
 def test_set_config_confirmed(monkeypatch):
     monkeypatch.setattr(confirm, "interrupt", lambda payload: "yes")
-    respx.put("http://localhost:18002/modelzoo/config").mock(
+    respx.put("http://localhost:18002/v1/modelzoo/config").mock(
         return_value=httpx.Response(200, json={"auto_retrain": True})
     )
     out = modelzoo.modelzoo_set_config.invoke({"auto_retrain": True})

@@ -1,0 +1,109 @@
+# Network segmentation overlay (plan P3.5) — opt in with:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.segmented.yml up -d
+#   (or COMPOSE_FILE=docker-compose.yml:docker-compose.segmented.yml in .env)
+#
+# Without it every service shares one flat network, so anything that runs code in one container —
+# a notebook, above all — can open a connection to Postgres, the Docker API proxy or any internal
+# port. With it, a service joins only the zones whose members it talks to:
+#
+#   db          Postgres, and the services that read or write platform state or metadata
+#   objects     MinIO, and the services that move artifacts
+#   control     the control plane, orchestrator, registry, agent, event backbone and their callers
+#   ops         metrics, traces and logs: Prometheus, Alertmanager, Grafana, Loki, Promtail, Tempo,
+#               and everything they scrape or that sends them telemetry
+#   notebooks   JupyterHub and every notebook it spawns, plus exactly the services a notebook
+#               uses (MLflow, MinIO, Prefect, Ray Serve, the control plane) — nothing else
+#   docker-api  the Docker socket proxy and the dashboard, its only client
+#
+# `db`, `objects` and `docker-api` are internal: nothing on them needs the internet.
+# tests/unit/test_compose_segmentation.py derives every service-to-service dependency from the
+# compose file, its .env template and the monitoring configs, and fails if a dependency would be
+# cut, if a service is missing here, or if a notebook could reach Postgres or the Docker API.
+
+networks:
+  db:
+    internal: true
+  objects:
+    internal: true
+  control: {}
+  ops: {}
+  notebooks: {}
+  docker-api:
+    internal: true
+  lineage:
+    internal: true
+
+services:
+  postgres:
+    networks: [db]
+  postgres-init:
+    networks: [db]
+  minio:
+    networks: [objects, notebooks]
+  minio-init:
+    networks: [objects]
+  mlflow:
+    networks: [db, objects, control, notebooks]
+  orchestrator:
+    networks: [db, control, notebooks]
+  ray-serving:
+    networks: [db, objects, control, ops, notebooks]
+  control-plane:
+    networks: [db, control, ops, notebooks]
+  dataplane:
+    networks: [db, objects, control, ops]
+  # Dev/test Kafka broker (`--profile kafka`): only the dataplane talks to it, over control.
+  kafka:
+    networks: [control]
+  # Lineage receiver (`--profile lineage`): emitters reach the API over control (dataplane,
+  # dashboard, control-plane); the UI sits in ops with the other operator UIs; the database is on
+  # its own internal network, so nothing but Marquez can reach it.
+  marquez-db:
+    networks: [lineage]
+  marquez:
+    networks: [lineage, control, ops]
+  marquez-web:
+    networks: [ops]
+  agent:
+    networks: [db, control, ops]
+  prometheus:
+    networks: [ops]
+  alertmanager:
+    networks: [ops]
+  tempo:
+    networks: [ops]
+  grafana:
+    networks: [ops]
+  loki:
+    networks: [ops]
+  promtail:
+    networks: [ops]
+  docker-socket-proxy:
+    networks: [docker-api]
+  dashboard:
+    networks: [db, objects, control, ops, docker-api]
+  jupyterhub:
+    networks: [notebooks, control]
+    environment:
+      # Spawned notebooks join the notebooks zone, not the (now empty) default network.
+      DOCKER_NETWORK_NAME: examlops_notebooks
+  seanerbus-bridge:
+    networks: [db, control, ops, seanerbus-net]
+  backup:
+    networks: [db, objects]
+  nats:
+    networks: [control]
+  autopilot-follower:
+    networks: [db, control]
+  skipper-watch:
+    networks: [db, control]
+  vllm:
+    networks: [control, ops]
+  # The gateway reaches ray-serving and its authorization service on `control`; the authorization
+  # service reads virtual keys and quota counters in the platform store (`db`). Both are on `ops`
+  # for Prometheus.
+  gateway:
+    networks: [control, ops]
+  gateway-authz:
+    networks: [db, control, ops]

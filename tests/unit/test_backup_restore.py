@@ -84,6 +84,55 @@ def test_verify_passes_for_good_backup_and_fails_for_corrupted(db, tmp_path):
 
 
 @sqlite_tier_only
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores file permissions, so a read-only file proves nothing",
+)
+def test_a_backup_verifies_without_permission_to_write_it(db, tmp_path):
+    """Checking a backup must not require the right to modify it.
+
+    Verification opened the snapshot with the ordinary hardened connection, which sets
+    `journal_mode=WAL` — a write — and a snapshot copied from a live datastore carries WAL mode in
+    its header, so SQLite also reached for the `-shm` side file. Checking a backup therefore needed
+    write permission on it, and *attempt to write a readonly database* is what an operator got
+    instead of a verdict.
+
+    That is not an exotic setup, it is the shipped one: the Compose `backup` sidecar runs as root
+    inside its container, so every bundle it writes belongs to root and the operator who later
+    verifies it does not own it. Found by actually running that container
+    (`tests/integration/test_backup_sidecar_live.py`). The same applies wherever backups are
+    supposed to live — a read-only mount, WORM storage, an archive restored with its ownership
+    intact.
+    """
+    import sqlite3 as _sqlite3
+
+    from examlops import backup
+    from examlops.backup import sqlite_tier
+
+    _seed(db)
+    manifest = backup.create_backup(str(tmp_path / "backups"))
+    bfile = tmp_path / "backups" / manifest["backup_file"]
+    assert backup.verify_backup(str(bfile))["ok"] is True  # control: writable, and it passes
+
+    # The snapshot must be on a rollback journal for this to bite, and the sidecar's bundles are:
+    # `PRAGMA journal_mode=WAL` against a file that is *already* WAL writes nothing, so a snapshot
+    # that happens to carry WAL mode hides the bug completely — which is precisely how the first
+    # version of this test passed against the broken code. Changing the mode also changes the file,
+    # so this checks `_verify_db_file` rather than the manifest checksum around it; the whole-bundle
+    # path is covered by `tests/integration/test_backup_sidecar_live.py`.
+    conn = _sqlite3.connect(str(bfile))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    bfile.chmod(0o444)
+    try:
+        res = sqlite_tier._verify_db_file(str(bfile))  # noqa: SLF001 — the function that broke
+    finally:
+        bfile.chmod(0o644)
+    assert res["integrity_check"] == "ok", res
+    assert res["audit_chain_ok"] is True, res
+
+
+@sqlite_tier_only
 def test_dr_drill_create_wipe_restore_roundtrip(db, tmp_path, monkeypatch):
     """The core DR drill: snapshot, destroy the live DB, restore, assert full recovery."""
     from examlops import backup

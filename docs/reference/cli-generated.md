@@ -20,7 +20,13 @@ Show queue depth by state (queued/running/done/rejected/failed).
 
 ### `exa admission submit`
 
-Enqueue a work item (durable; drained under the global + per-tenant caps).
+Enqueue a work item (durable). A worker claims it under the global + per-tenant caps.
+
+**This enqueues; it does not dispatch.** `examlops.admission` is a facade whose `dispatch` is
+injected by whatever embeds it, and the control plane runs its own admission accounting on this
+table rather than through the facade — so an item submitted here waits until something claims
+it. `exa admission stats` reports how long the oldest queued item has been waiting, which is
+what tells a busy queue from a stranded one.
 
 - `--payload, -p` — JSON payload
 - `--tenant` — Tenant for fair-share accounting
@@ -140,7 +146,9 @@ Approve a pending model change — fires Prefect training immediately.
 
 ### `exa approvals delete`
 
-Delete a pending approval by its UUID (retract a stale or duplicate entry).
+Retract a pending approval by its UUID (a stale or duplicate entry).
+
+The approval is kept in the history, marked `retracted` with who and when; nothing is erased.
 
 ### `exa approvals list`
 
@@ -231,6 +239,7 @@ who acted, on whose behalf, under which mode, and how it would be undone. An act
 violation, and hiding them would defeat the point of asking.
 
 - `--last` — Time window (e.g. 7d, 30d)
+- `--limit` — How many actions to list (the counts always cover the whole window)
 
 ### `exa audit chain`
 
@@ -390,6 +399,15 @@ Disable the autopilot kill-switch (persistent, stored in platform.db).
 ### `exa autopilot enable`
 
 Enable the autopilot kill-switch (persistent, stored in platform.db).
+
+### `exa autopilot follow`
+
+Run each retrained model's promotion step as soon as its training run completes.
+
+A long-running consumer of ``retrain.run_completed`` on the NATS event backbone (durable name
+``autopilot``: several copies share the work). Stop with Ctrl-C or SIGTERM.
+
+- `--wait` — Seconds a fetch waits for new events
 
 ### `exa autopilot interrupt`
 
@@ -551,6 +569,26 @@ Interactive conversation with the Skipper agent
 
 - `--session, -s` — Server-side conversation ID to create or resume
 - `--stream` — Stream answer tokens as they arrive
+
+## `exa commands`
+
+Follow asynchronous control-plane commands (/v1)
+
+### `exa commands cancel`
+
+Cancel a command that has not been dispatched yet (pending or awaiting retry).
+
+### `exa commands list`
+
+List asynchronous commands in your tenant, newest first.
+
+- `--state` — pending | dispatching | failed | succeeded | dead | cancelled
+- `--limit` — Page size
+- `--cursor` — Continue from a previous page
+
+### `exa commands show`
+
+Show one command: its state, attempts, result (the flow run) or last error.
 
 ## `exa compliance`
 
@@ -1327,7 +1365,16 @@ Publish pending outbox events to the configured broker (EXAMLOPS_EVENT_PUBLISHER
 
 ### `exa events stats`
 
-Show outbox backlog: pending / published / poison (attempts exhausted).
+Show outbox backlog: pending / published / poison (attempts exhausted), and — with the
+NATS publisher — each durable consumer's lag and dead letters.
+
+### `exa events tail`
+
+Show the most recent CloudEvents on the NATS backbone (needs EXAMLOPS_NATS_URL, ADR 0124).
+
+- `--limit, -n` — How many events
+- `--topic, -t` — Topic filter; '*' matches one segment (e.g. 'retrain.*')
+- `--dlq` — Show a consumer's dead-letter subject instead of events
 
 ## `exa exchange`
 
@@ -2172,15 +2219,15 @@ Roll back a model alias (default: Production) to a specified or selected version
 
 ### `exa models sign`
 
-Sign a model artifact bundle (HMAC fallback or Sigstore keyless).
+Sign a model version's artifacts (Ed25519; HMAC when only the legacy key is set).
 
-- `--path` — Local artifact file or directory to sign
+- `--path` — Local artifact file or directory. Default: the registered version's artifacts, downloaded from MLflow exactly as the serving plane downloads them
 
 ### `exa models verify`
 
 Verify a model's signature against current artifact bytes (verify-before-load gate).
 
-- `--path` — Local artifact file or directory to verify
+- `--path` — Local artifact file or directory. Default: the registered version's artifacts, downloaded from MLflow exactly as the serving plane downloads them
 - `--mode` — enforce (exit 1 on failure) or warn (record only)
 
 ## `exa modelzoo`
@@ -2375,7 +2422,11 @@ Record an HPO trial result.
 
 #### `exa pipeline hpo start`
 
-Trigger an HPO study via the Control Plane.
+Record an HPO study and dispatch its baseline training run via the Control Plane.
+
+The training flow runs one training per dispatch; it does not search. The study row holds the
+budget (``--trials``) and the metric, and an external optimiser reports each trial with
+``exa pipeline hpo record``.
 
 - `--trials, -t` — Number of HPO trials
 - `--metric, -m` — Metric to optimise
@@ -2850,6 +2901,7 @@ Trigger a Prefect training run via the Control Plane.
 - `--backend` — Storage backend
 - `--dry-run` — Show what would be scheduled without triggering it
 - `--reason` — Why you are making this change (recorded in the audit trail)
+- `--async` — Submit as an asynchronous command (/v1/retrain) and return at once; the control plane's workers dispatch it with retries. Follow with `exa commands show <id>`.
 
 ## `exa retrain-status`
 
@@ -3225,6 +3277,25 @@ Stop an endpoint (and deregister it).
 - `--dry-run` — Preview; change nothing
 - `--reason` — Why you are making this change (recorded in the audit trail)
 
+### `exa serve loadtest`
+
+Load an inference endpoint at a fixed rate and check it against latency and error SLOs.
+
+Requests leave on schedule whatever the server does.
+Latency counts from when each request was due, so a stalled server shows as slow.
+Exits 1 on a breached SLO, or when the client could not keep to the schedule.
+A bearer credential (serving gateway) is read from EXAMLOPS_LOADTEST_TOKEN.
+
+- `--rate, -r` — Requests per second, held constant
+- `--duration, -d` — Seconds to run
+- `--url` — Server to load (default: the configured Ray Serve URL)
+- `--alias` — Alias to call (default: the server's)
+- `--body` — JSON file with the OIP v2 request to send (default: from metadata)
+- `--timeout` — Per-request timeout, seconds
+- `--max-in-flight` — Outstanding requests the client allows before dropping
+- `--p99-ms` — Fail if p99 latency is higher
+- `--max-error-rate` — Fail if more than this share of requests fail (0-1)
+
 ### `exa serve manifest`
 
 Render a KServe manifest for a resolved model version, checked against the pinned schema.
@@ -3302,6 +3373,18 @@ Show last 20 shadow inference comparison results for a model.
 #### `exa serve shadow status`
 
 Show shadow deployment configuration.
+
+### `exa serve snapshot`
+
+The serving snapshot replicas act on (ADR 0127)
+
+#### `exa serve snapshot publish`
+
+Compile the snapshot from MLflow and the serving config and publish it if it changed.
+
+#### `exa serve snapshot show`
+
+Show the newest serving snapshot (generation, digest, per-model alias versions).
 
 ### `exa serve traffic`
 

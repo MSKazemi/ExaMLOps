@@ -26,10 +26,10 @@ from typing import Any
 
 import typer
 
-from examlops import blast_radius
+from examlops import blast_radius, drift_status
 from examlops.cli import _output
 from examlops.data import init_db
-from examlops.data.audit import write_audit_event
+from examlops.data.audit import audit_best_effort, write_audit_event
 from examlops.data.autopilot import (
     claim_autopilot_lease,
     create_autopilot_run,
@@ -39,7 +39,7 @@ from examlops.data.autopilot import (
     set_autopilot_config,
     update_autopilot_run,
 )
-from examlops.data.drift import claim_drift_trigger, get_drift_baseline, list_drift_auto_retrain
+from examlops.data.drift import claim_drift_trigger, list_drift_auto_retrain
 from examlops.data.serving import get_promotion_rule
 from examlops.evidence import AUTONOMOUS, clear_rollback_ref, correlated
 from examlops.rollback import AutonomousActionRefused, require_rollback
@@ -66,7 +66,6 @@ _EXAMPLES_STATUS = (
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
 
-_SNAPSHOT_WINDOW = 50  # same as drift.py
 
 # Safety cap: the most retrains one cycle will fire, so a fleet-wide drift event (or a bug) can
 # never launch an unbounded retrain storm. Overridable via EXAMLOPS_AUTOPILOT_MAX_RETRAINS.
@@ -111,20 +110,6 @@ def _is_enabled() -> bool:
     return val == "1"
 
 
-def _compute_z(preds: list[float], baseline: dict[str, float] | None) -> tuple[float, str]:
-    """Return (z_score, status) for a list of recent predictions vs baseline."""
-    if not preds or baseline is None:
-        return 0.0, "OK (no baseline)"
-    n = len(preds)
-    mean = sum(preds) / n
-    bstd = baseline.get("std", 0.0)
-    if bstd <= 0:
-        return 0.0, "OK"
-    z = abs(mean - baseline["mean"]) / bstd
-    status = "CRITICAL" if z >= 3.0 else ("WARNING" if z >= 2.0 else "OK")
-    return round(z, 2), status
-
-
 def _policy_decide(action: str, context: dict[str, Any]) -> tuple[str, str]:
     """Return ``(effect, reason)`` from ``policy.decide``, defaulting to ``("allow", …)``.
 
@@ -150,11 +135,17 @@ def _policy_decide(action: str, context: dict[str, Any]) -> tuple[str, str]:
 
 
 def _call_retrain(cfg: Any, model: str, dataset: str) -> dict[str, Any]:
-    """POST /retrain on the control plane. Returns the response dict."""
-    from examlops.cli._client import post
+    """Submit a retrain through the control plane's command API. Returns its answer
+    (``flow_run_id`` once dispatched, else ``command_id`` + ``state``; plan P1.6c)."""
+    from examlops import retrain_command
 
     body = {"model_name": model, "dataset_name": dataset, "is_dummy": False}
-    return post(f"{cfg.control_plane_url}/retrain", body, token=cfg.control_plane_token)
+    return retrain_command.submit(
+        body,
+        wait=retrain_command.AUTOMATION_WAIT_SECONDS,
+        base=cfg.control_plane_url,
+        token=cfg.control_plane_token,
+    )
 
 
 def _get_staging_metrics(model: str) -> dict[str, float] | None:
@@ -225,9 +216,12 @@ def _do_promote(model: str, from_alias: str = "Staging", to_alias: str = "Produc
     """Promote the model's Staging version to Production via MLflow."""
     import mlflow
 
+    from examlops import events
+
     client = mlflow.MlflowClient()
     mv = client.get_model_version_by_alias(model.lower(), from_alias)
     client.set_registered_model_alias(model.lower(), to_alias, mv.version)
+    events.alias_changed(model, to_alias, mv.version, actor="autopilot", via="autopilot")
 
 
 # ── core cycle logic ─────────────────────────────────────────────────────────
@@ -329,7 +323,11 @@ def _classify_anomaly_for(model: str, drift_signal: dict[str, Any]):
         _signal, classification = assess_model(model, drift_signal)
         return classification
     except Exception as exc:  # pragma: no cover - defensive
-        write_audit_event(
+        # `audit_best_effort`, not `write_audit_event`: this write is inside the handler that is
+        # absorbing the detector's failure, and `run_cycle`'s only outer handler catches
+        # `_RunKilled`. An audit write that raised here would replace a contained failure with an
+        # uncontained one and break this function's own promise to return None.
+        audit_best_effort(
             "autopilot", _actor(), "corruption_detection_error", model, {"error": str(exc)}
         )
         return None
@@ -376,7 +374,7 @@ def run_cycle(
     # implies the loop was armed when it was not.
     enabled = _is_enabled()
     if not enabled and not dry_run:
-        write_audit_event(
+        audit_best_effort(
             "autopilot",
             actor,
             "autopilot_skipped",
@@ -391,7 +389,7 @@ def run_cycle(
     if not dry_run:
         lease_held = claim_autopilot_lease(lease_holder, _lease_ttl_s())
         if not lease_held:
-            write_audit_event(
+            audit_best_effort(
                 "autopilot",
                 actor,
                 "autopilot_skipped",
@@ -464,20 +462,15 @@ def run_cycle(
                 continue
             ar = auto_retrain_cfgs[model]
 
-            # Read drift snapshots
-            with get_db() as conn:
-                snap_rows = conn.execute(
-                    "SELECT prediction FROM drift_snapshots WHERE model=? "
-                    "ORDER BY ts DESC, rowid DESC LIMIT ?",
-                    (model, _SNAPSHOT_WINDOW),
-                ).fetchall()
-            preds = [r["prediction"] for r in snap_rows]
-            if not preds:
+            # The same computation `exa drift status` and `exa drift trigger` use: its window and
+            # the site's configured drift provider. This used to be a private copy with a
+            # 50-prediction window and hard-coded 2.0/3.0 thresholds, so the autopilot and the CLI
+            # could disagree about the same model at the same moment.
+            row = drift_status.model_row(model)
+            if row is None:
                 skipped.append({"model": model, "reason": "no drift snapshots"})
                 continue
-
-            baseline = get_drift_baseline(model)
-            z, status = _compute_z(preds, baseline)
+            z, status = float(row["z_score"]), str(row["status"])
 
             # The configured min_z_score is the ONE threshold — same rule as `exa drift trigger`.
             # A hard-coded status pre-filter (WARNING = z≥2.0) on top of it silently overrode any
@@ -529,7 +522,7 @@ def run_cycle(
             )
             if outcome == "deny":
                 blocks.append({"model": model, "gate": "autopilot_trigger", "reason": reason})
-                write_audit_event(
+                audit_best_effort(
                     "autopilot",
                     actor,
                     "policy_denied",
@@ -539,7 +532,7 @@ def run_cycle(
                 continue
             if outcome == "require_approval":
                 hitl.append({"model": model, "gate": "autopilot_trigger", "z_score": z})
-                write_audit_event(
+                audit_best_effort(
                     "autopilot",
                     actor,
                     "human_approval_required",
@@ -575,7 +568,8 @@ def run_cycle(
             except AutonomousActionRefused as exc:
                 refused.append({"model": model, "action": "retrain", "reason": str(exc)})
                 if not dry_run:
-                    write_audit_event(
+                    # In a handler: must not be able to raise. See `audit_best_effort`.
+                    audit_best_effort(
                         "autopilot",
                         actor,
                         "autonomous_action_refused",
@@ -602,18 +596,29 @@ def run_cycle(
                 try:
                     result = _call_retrain(cfg, model, ar["dataset_name"])
                     triggered_this_cycle += 1
-                    write_audit_event(
+                    # The retrain has already fired. Letting a failed audit write reach the
+                    # handler below reported an action that HAPPENED as a "retrain error" and
+                    # dropped it from `retrains`, so the cycle summary under-counted a real
+                    # autonomous action. The loss is logged and counted instead.
+                    audit_best_effort(
                         "autopilot",
                         actor,
                         "autopilot_retrain_triggered",
                         model,
-                        {"z_score": z, "flow_run_id": result.get("flow_run_id")},
+                        {
+                            "z_score": z,
+                            "flow_run_id": result.get("flow_run_id"),
+                            "command_id": result.get("command_id"),
+                        },
                     )
                     retrains.append(
                         {"model": model, "z_score": z, "flow_run_id": result.get("flow_run_id")}
                     )
                 except Exception as exc:
-                    write_audit_event(
+                    # Never `write_audit_event` in a handler: a raise here escapes `run_cycle`
+                    # (whose outer handler catches only `_RunKilled`), so one model's retrain
+                    # error would end the whole cycle with its run row never updated.
+                    audit_best_effort(
                         "autopilot", actor, "autopilot_retrain_error", model, {"error": str(exc)}
                     )
                     skipped.append({"model": model, "reason": f"retrain error: {exc}"})
@@ -700,7 +705,7 @@ def run_cycle(
                         + ", ".join(judge_failures),
                     }
                 )
-                write_audit_event(
+                audit_best_effort(
                     "autopilot",
                     _actor(),
                     "autopilot_promote_blocked",
@@ -731,7 +736,7 @@ def run_cycle(
                         "so the gate could not be evaluated"
                     )
                     blocks.append({"model": model, "gate": "autopilot_promote", "reason": reason})
-                    write_audit_event(
+                    audit_best_effort(
                         "autopilot",
                         actor,
                         "autopilot_promote_blocked",
@@ -750,7 +755,7 @@ def run_cycle(
                     failing = [m.name for m in gate_result.metrics if m.failed]
                     reason = f"eval gate FAILED ({gate_result.mode}): {', '.join(failing)}"
                     blocks.append({"model": model, "gate": "autopilot_promote", "reason": reason})
-                    write_audit_event(
+                    audit_best_effort(
                         "autopilot",
                         actor,
                         "autopilot_promote_blocked",
@@ -782,7 +787,7 @@ def run_cycle(
             )
             if outcome == "deny":
                 blocks.append({"model": model, "gate": "autopilot_promote", "reason": reason})
-                write_audit_event(
+                audit_best_effort(
                     "autopilot",
                     actor,
                     "policy_denied",
@@ -803,7 +808,7 @@ def run_cycle(
                         "metric_val": metric_val,
                     }
                 )
-                write_audit_event(
+                audit_best_effort(
                     "autopilot",
                     actor,
                     "human_approval_required",
@@ -828,7 +833,8 @@ def run_cycle(
             except AutonomousActionRefused as exc:
                 refused.append({"model": model, "action": "promote", "reason": str(exc)})
                 if not dry_run:
-                    write_audit_event(
+                    # In a handler: must not be able to raise. See `audit_best_effort`.
+                    audit_best_effort(
                         "autopilot",
                         actor,
                         "autonomous_action_refused",
@@ -860,7 +866,9 @@ def run_cycle(
                     auto_backup_before(f"autopilot-promote:{model}")
                 try:
                     _do_promote(model, from_alias=rule["from_alias"], to_alias=rule["to_alias"])
-                    write_audit_event(
+                    # The promotion has already happened; a failed audit write must not be
+                    # reported as a promote error, nor drop it from `promotions`.
+                    audit_best_effort(
                         "autopilot",
                         actor,
                         "autopilot_promoted",
@@ -881,7 +889,9 @@ def run_cycle(
                         }
                     )
                 except Exception as exc:
-                    write_audit_event(
+                    # As above: a failed audit write must not convert one model's promote error
+                    # into an escape from the cycle.
+                    audit_best_effort(
                         "autopilot", actor, "autopilot_promote_error", model, {"error": str(exc)}
                     )
                     skipped.append({"model": model, "reason": f"promote error: {exc}"})
@@ -905,7 +915,11 @@ def run_cycle(
             skipped=len(skipped),
             summary=summary,
         )
-        write_audit_event(
+        # After the work and after `update_autopilot_run`: a raise here discarded the
+        # whole cycle's result — the telemetry anchor and the event publish below never
+        # ran and the caller got a traceback instead of the summary. Both of those are
+        # already documented as 'must never fail the cycle'; so is this.
+        audit_best_effort(
             "autopilot",
             actor,
             "autopilot_cycle_complete",
@@ -980,6 +994,89 @@ def run_cycle(
 
 
 # ── CLI commands ─────────────────────────────────────────────────────────────
+
+
+# ── Event-driven promotion (ADR 0085 × ADR 0124) ────────────────────────────────
+
+
+class CycleBusy(RuntimeError):
+    """Another autopilot cycle holds the lease. Raised so the event is redelivered later."""
+
+
+def _has_enabled_promotion_rule(model: str) -> bool:
+    from examlops.data import get_db
+
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute("SELECT model FROM promotion_rules WHERE enabled=1").fetchall()
+    return any(str(r["model"]).upper() == model.upper() for r in rows)
+
+
+def on_run_completed(event: dict[str, Any]) -> str:
+    """React to ``retrain.run_completed``: run this model's cycle now, not at the next schedule.
+
+    The cycle a retrain belongs to ends when it dispatches the run, so the candidate it trains
+    waits for the next scheduled cycle to be considered for promotion. This runs that cycle as
+    soon as the run finishes — the same :func:`run_cycle`, restricted to the model, so every gate
+    applies unchanged (kill-switch, lease, policy, eval and judge gates, rollback declaration).
+    It cannot retrain again: the retrain that just finished stamped the model's drift cooldown.
+
+    Returns what happened; raises :class:`CycleBusy` when another cycle holds the lease, so the
+    consumer redelivers the event with backoff instead of dropping it.
+    """
+    model = str((event.get("data") or {}).get("model_name") or "").strip()
+    if not model:
+        return "ignored"
+    if not _is_enabled():
+        return "disabled"  # quietly: an armed-off autopilot is not an event worth auditing
+    if not _has_enabled_promotion_rule(model):
+        return "no_rule"
+    result = run_cycle(model_filter=model, triggered_by=f"event:{event.get('id', '')}")
+    if result.get("skipped"):
+        raise CycleBusy(str(result.get("reason") or "another cycle holds the lease"))
+    return "cycle_ran"
+
+
+_EXAMPLES_FOLLOW = (
+    "Examples:\n\n"
+    "  # Consider a retrained model for promotion the moment its run finishes\n"
+    "  EXAMLOPS_NATS_URL=nats://localhost:14222 exa autopilot follow"
+)
+
+
+@app.command("follow", epilog=_EXAMPLES_FOLLOW)
+def follow(
+    wait: float = typer.Option(5.0, "--wait", help="Seconds a fetch waits for new events"),
+) -> None:
+    """Run each retrained model's promotion step as soon as its training run completes.
+
+    A long-running consumer of ``retrain.run_completed`` on the NATS event backbone (durable name
+    ``autopilot``: several copies share the work). Stop with Ctrl-C or SIGTERM.
+    """
+    import signal
+    import threading
+
+    from examlops.events.consumer import EventConsumer
+    from examlops.events.nats_backend import subject_for
+
+    if not os.getenv("EXAMLOPS_NATS_URL", "").strip():
+        _output.error(
+            "exa autopilot follow consumes the NATS event backbone, which is not configured",
+            hint="Set EXAMLOPS_NATS_URL (and EXAMLOPS_EVENT_PUBLISHER=nats where events are "
+            "relayed); without it the scheduled `exa autopilot run` is the only trigger.",
+        )
+        return
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.set())
+    consumer = EventConsumer(
+        "autopilot", on_run_completed, subjects=subject_for("retrain.run_completed"), wait=wait
+    )
+    _output.info(
+        "Following retrain.run_completed — each finished run gets its model's autopilot cycle "
+        f"(kill-switch {'ENABLED' if _is_enabled() else 'disabled: events are acknowledged only'})"
+    )
+    consumer.run_forever(stop)
 
 
 @app.command(epilog=_EXAMPLES_RUN)

@@ -38,8 +38,36 @@ _search_limiter = RateLimiter(limit=30, window_seconds=10.0)
 # applied as a FastAPI dependency: Depends(rate_limit(_search_limiter))
 ```
 
+Login is limited too — `POST /api/auth/login` at 10 attempts per minute per client — which is what
+keeps the shared password from being brute-forced.
+
+### The limiter's own memory is bounded
+
+Hits were evicted *within* a key and the key itself was kept forever, so the map grew by one entry
+per distinct client address and never shrank: 200 000 addresses cost about 160 MB and were still
+resident long after their windows had passed. Login is unauthenticated, so an attacker rotating
+IPv6 source addresses could grow the dashboard process without ever logging in — **a rate limiter
+that can be made to exhaust memory is an amplifier, not a control.**
+
+There are now three sweep triggers, for three different reasons memory should be released: enough
+calls have gone by (busy), the map is over `max_keys` (flood), and a whole window has elapsed since
+the last sweep (**quiet** — a process that saw a burst and then went idle must not hold those keys
+until a thousand more requests happen to arrive). `max_keys` defaults to 10 000, roughly a kilobyte
+each.
+
+When the cap is reached the **least recently seen** keys go first, and *a refusal counts as being
+seen*. That detail is the security of it: a refused request records no hit, so ordering eviction by
+the recorded hits would evict precisely the clients being blocked and hand each a fresh allowance.
+A client that keeps hammering while rotating addresses to flush the map therefore keeps its own
+bucket and stays blocked.
+
+The honest limit of any bounded map: a client that goes quiet long enough to become the stalest key
+can be evicted, and its allowance starts again. That is inherent — the alternative is the unbounded
+map this replaced — and it costs an attacker a pause longer than 10 000 other clients' activity to
+buy one window of requests.
+
 A multi-replica deployment should swap the in-process window for a shared store (Redis); the
-dependency seam stays identical.
+dependency seam stays identical. Note that until then, *N* replicas mean *N* × the limit.
 
 ## Markdown sanitization (R2)
 

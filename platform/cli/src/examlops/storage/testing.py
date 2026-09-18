@@ -25,12 +25,60 @@ import os
 from collections.abc import Iterator
 from typing import Any
 
-__all__ = ["postgres_backend", "postgres_isolation", "reset_state"]
+__all__ = [
+    "datastore_before_a_migration",
+    "empty_datastore",
+    "postgres_backend",
+    "postgres_isolation",
+    "reset_state",
+    "scope_schema_to_this_worker",
+]
 
 
 def postgres_backend() -> bool:
     """Whether this process is configured to use the Postgres datastore."""
     return os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() == "postgres"
+
+
+def scope_schema_to_this_worker() -> str | None:
+    """Give each ``pytest-xdist`` worker its own schema. Call from ``conftest`` import, once.
+
+    The per-test isolation below empties *the* schema, which is correct in one process and wrong in
+    eight: under ``-n auto`` the workers truncate each other's rows mid-test, so the Postgres suite
+    could only ever run serially. That is the whole reason this engine's parity was measured rarely
+    and by hand — the repo's own testing guide says a gate nobody waits for is not a gate.
+
+    One schema per worker restores the property SQLite gets from a private file per test. The name
+    is derived from ``PYTEST_XDIST_WORKER`` (``exa_test`` → ``exa_test_gw3``), and the sibling
+    schemas the helpers below build hang off it, so they are per-worker too.
+
+    Returns the schema now in force, or ``None`` when there is nothing to do — SQLite, or a serial
+    run, which keeps the exact schema the caller asked for.
+
+    Must run before the first connection: the pool is keyed by ``(dsn, schema)`` and a worker that
+    has already opened one would keep it. Importing ``conftest`` is that moment.
+    """
+    worker = os.getenv("PYTEST_XDIST_WORKER", "").strip()
+    if not worker or not postgres_backend():
+        return None
+    base = os.getenv("EXAMLOPS_POSTGRES_SCHEMA", "").strip() or "public"
+    schema = f"{base}_{worker}"
+    os.environ["EXAMLOPS_POSTGRES_SCHEMA"] = schema
+    # And size the pool to what one worker needs. The platform's default (max 10) is right for a
+    # service; here it is multiplied by the worker count, by the sibling schemas the helpers below
+    # open, and again by every test that shells out to `python -m examlops.cli` — which took a
+    # `-n auto` run past `postgres:16-alpine`'s 100-connection limit and produced 149 errors
+    # reading `FATAL: sorry, too many clients already`, none of them about the platform. `-n auto`
+    # is 24 workers on the machine this was measured on, so the per-worker budget is single digits
+    # by arithmetic, not by taste.
+    #
+    # A worker runs one test at a time, so it needs one connection; the tests that want several at
+    # once take and release them per write (the audit-chain writers synchronise on a barrier
+    # *before* connecting), so a small pool makes them queue rather than deadlock. An explicit
+    # value always wins, so a suite can still ask for the service-shaped pool.
+    os.environ.setdefault("EXAMLOPS_POSTGRES_POOL_MAX", "2")
+    os.environ.setdefault("EXAMLOPS_POSTGRES_POOL_MIN", "1")
+    return schema
 
 
 def postgres_isolation() -> Iterator[None]:
@@ -137,10 +185,44 @@ def empty_datastore(tmp_path: Any, monkeypatch: Any) -> str:
     Returns the ``PLATFORM_DB`` path, already set, for callers that pass it explicitly.
     """
     db = tmp_path / "empty.db"
-    if os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() == "postgres":
+    if postgres_backend():
         base = os.getenv("EXAMLOPS_POSTGRES_SCHEMA", "public")
         monkeypatch.setenv("EXAMLOPS_POSTGRES_SCHEMA", f"{base}_empty")
     else:
         db.touch()
+    monkeypatch.setenv("PLATFORM_DB", str(db))
+    return str(db)
+
+
+def datastore_before_a_migration(tmp_path: Any, monkeypatch: Any, *tables: str) -> str:
+    """Point the platform at a datastore in which ``tables`` do **not** exist — on either engine.
+
+    Several tests make the same promise, and it is the one promise the column migrations exist to
+    keep: build a table in the shape an *older* release left it, then let ``init_db(force=True)``
+    migrate it in place and check the old rows survive with the new column absent rather than
+    wrong. Posing that question needs a datastore where the table is not there yet.
+
+    On SQLite that is a fresh ``tmp_path`` file. On Postgres ``PLATFORM_DB`` is ignored and the
+    schema is shared by the whole process, so the hand-written ``CREATE TABLE`` hit the table the
+    bootstrap had already made (``psycopg.errors.DuplicateTable``) and the test failed before it
+    could ask anything. Here it asks again: a sibling schema, with just these tables dropped.
+
+    The sibling is *not* the one :func:`empty_datastore` uses. ``init_db(force=True)`` is the
+    second half of every one of these tests, and it would bootstrap all ~130 tables into a schema
+    whose whole purpose is to have none — the tests that ask "what happens when the table is
+    absent" would then silently stop asking.
+
+    Dropping only the named tables is what makes the helper re-usable within one run: the third
+    test to call it still finds its own table gone, and the rows an earlier run left in it with it.
+    """
+    db = tmp_path / "old.db"
+    if postgres_backend():
+        base = os.getenv("EXAMLOPS_POSTGRES_SCHEMA", "public")
+        monkeypatch.setenv("EXAMLOPS_POSTGRES_SCHEMA", f"{base}_premigration")
+        from examlops import platform_db as pdb
+
+        with pdb.get_db() as conn:
+            for table in tables:
+                conn.execute(f'DROP TABLE IF EXISTS "{table}" CASCADE')
     monkeypatch.setenv("PLATFORM_DB", str(db))
     return str(db)

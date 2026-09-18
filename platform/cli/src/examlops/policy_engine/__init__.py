@@ -329,32 +329,27 @@ def _sign(content_hash: str) -> tuple[str | None, str | None]:
 
 
 def _audit(decision: str, input: PolicyInput, result: EngineDecision) -> None:  # noqa: A002
-    try:
-        from examlops.data.audit import write_audit_event
+    # A policy decision that happened and was not recorded is the gap an auditor is looking for,
+    # so the loss is counted rather than swallowed. The decision itself still stands: the engine
+    # never refuses because the audit store is unavailable.
+    from examlops.data.audit import audit_best_effort
 
-        write_audit_event(
-            "policy-engine",
-            input.subject,
-            f"policy_{decision}",
-            input.resource or input.action,
-            {"effect": result.effect, "reasons": result.reasons, "engine": result.engine},
-            tenant=input.tenant,
-        )
-    except Exception:
-        pass
+    audit_best_effort(
+        "policy-engine",
+        input.subject,
+        f"policy_{decision}",
+        input.resource or input.action,
+        {"effect": result.effect, "reasons": result.reasons, "engine": result.engine},
+        tenant=input.tenant,
+    )
 
 
 def _audit_bundle(
     tenant: str, version: int, action: str, extra: dict[str, Any], actor: str | None
 ) -> None:
-    try:
-        from examlops.data.audit import write_audit_event
+    from examlops.data.audit import audit_best_effort
 
-        write_audit_event(
-            "policy-engine", actor, action, f"{tenant}/v{version}", extra, tenant=tenant
-        )
-    except Exception:
-        pass
+    audit_best_effort("policy-engine", actor, action, f"{tenant}/v{version}", extra, tenant=tenant)
 
 
 __all__ = [

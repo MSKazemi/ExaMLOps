@@ -15,7 +15,7 @@ import json
 
 import audit_write
 from auth import require_role
-from capabilities import ADMISSION_MANAGE, can, deny_reason
+from capabilities import ADMISSION_MANAGE, can, deny_reason, require_capability
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
@@ -60,16 +60,32 @@ async def get_admission(_=Depends(_viewer)) -> dict:
     empty = {"queued": 0, "running": 0, "done": 0, "rejected": 0, "failed": 0}
     try:
         stats = admission.stats()
+        # Sum the *counts* only, by name. `stats()` also reports `oldest_queued_age_s`, which is a
+        # duration (and `None` when nothing is queued) — summing every value turned that into a
+        # 500 on an empty queue and, once something was waiting, added seconds to an item count.
+        # Naming the keys means a field added later cannot silently join the total either.
+        total = sum(int(stats.get(state) or 0) for state in empty)
     except Exception:
-        return {"stats": empty, "total": 0}
-    total = sum(int(v) for v in stats.values())
-    return {"stats": stats, "total": total}
+        # Inside the try, because the promise above is "never a 500" and the arithmetic is part of
+        # answering, not just the query.
+        return {"stats": empty, "total": 0, "oldestQueuedAgeSeconds": None}
+    return {
+        "stats": {k: v for k, v in stats.items() if k in empty},
+        "total": total,
+        # Surfaced rather than dropped: counts alone cannot tell a busy queue from a stranded one.
+        "oldestQueuedAgeSeconds": stats.get("oldest_queued_age_s"),
+    }
 
 
 @router.post("")
 async def submit_admission(
     payload: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(ADMISSION_MANAGE)),
 ) -> dict:
     """Enqueue a work item into the admission-control queue (admin; audited `source=dashboard`).
 

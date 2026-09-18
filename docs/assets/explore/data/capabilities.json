@@ -1,7 +1,7 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 454,
- "total_groups": 68,
+ "total_commands": 462,
+ "total_groups": 69,
  "panels": [
   {
    "title": "Getting Started",
@@ -125,6 +125,7 @@
     "pipeline",
     "retrain",
     "retrain-status",
+    "commands",
     "scaffold",
     "finetune",
     "reproduce"
@@ -196,7 +197,7 @@
     {
      "cmd": "exa pipeline hpo start",
      "group": "pipeline",
-     "help": "Trigger an HPO study via the Control Plane.",
+     "help": "Record an HPO study and dispatch its baseline training run via the Control Plane. The training flow runs one training per dispatch; it does not search. The study row holds the budget (--trials) and the metric, and an external optimiser reports each trial with exa pipeline hpo record.",
      "anchor": "exa-pipeline-hpo-hyperparameter-optimisation",
      "guide": "components/prefect.md"
     },
@@ -275,6 +276,27 @@
      "group": "retrain-status",
      "help": "Show the state of one retrain run (scheduled, running, completed, failed).",
      "anchor": "training-pipelines",
+     "guide": null
+    },
+    {
+     "cmd": "exa commands cancel",
+     "group": "commands",
+     "help": "Cancel a command that has not been dispatched yet (pending or awaiting retry).",
+     "anchor": "exa-commands-follow-asynchronous-control-plane-commands",
+     "guide": null
+    },
+    {
+     "cmd": "exa commands list",
+     "group": "commands",
+     "help": "List asynchronous commands in your tenant, newest first.",
+     "anchor": "exa-commands-follow-asynchronous-control-plane-commands",
+     "guide": null
+    },
+    {
+     "cmd": "exa commands show",
+     "group": "commands",
+     "help": "Show one command: its state, attempts, result (the flow run) or last error.",
+     "anchor": "exa-commands-follow-asynchronous-control-plane-commands",
      "guide": null
     },
     {
@@ -762,7 +784,7 @@
     {
      "cmd": "exa models sign",
      "group": "models",
-     "help": "Sign a model artifact bundle (HMAC fallback or Sigstore keyless).",
+     "help": "Sign a model version's artifacts (Ed25519; HMAC when only the legacy key is set).",
      "anchor": "exa-models-mlflow-model-registry",
      "guide": "components/mlflow.md"
     },
@@ -1125,6 +1147,13 @@
      "guide": "components/ray-serve.md"
     },
     {
+     "cmd": "exa serve loadtest",
+     "group": "serve",
+     "help": "Load an inference endpoint at a fixed rate and check it against latency and error SLOs. Requests leave on schedule whatever the server does. Latency counts from when each request was due, so a stalled server shows as slow. Exits 1 on a breached SLO, or when the client could not keep to the schedule. A bearer credential (serving gateway) is read from EXAMLOPS_LOADTEST_TOKEN.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
      "cmd": "exa serve manifest",
      "group": "serve",
      "help": "Render a KServe manifest for a resolved model version, checked against the pinned schema. The alias is resolved to a concrete version and its artifact URI before rendering, so the manifest names exactly what would run. Nothing is applied to a cluster.",
@@ -1191,6 +1220,20 @@
      "cmd": "exa serve shadow status",
      "group": "serve",
      "help": "Show shadow deployment configuration.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve snapshot publish",
+     "group": "serve",
+     "help": "Compile the snapshot from MLflow and the serving config and publish it if it changed.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve snapshot show",
+     "group": "serve",
+     "help": "Show the newest serving snapshot (generation, digest, per-model alias versions).",
      "anchor": "exa-serve-ray-serve-operations",
      "guide": "components/ray-serve.md"
     },
@@ -1603,6 +1646,13 @@
      "cmd": "exa autopilot enable",
      "group": "autopilot",
      "help": "Enable the autopilot kill-switch (persistent, stored in platform.db).",
+     "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
+     "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa autopilot follow",
+     "group": "autopilot",
+     "help": "Run each retrained model's promotion step as soon as its training run completes. A long-running consumer of retrain.run_completed on the NATS event backbone (durable name autopilot: several copies share the work). Stop with Ctrl-C or SIGTERM.",
      "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
      "guide": "guides/programmable-mlops.md"
     },
@@ -2459,7 +2509,7 @@
     {
      "cmd": "exa approvals delete",
      "group": "approvals",
-     "help": "Delete a pending approval by its UUID (retract a stale or duplicate entry).",
+     "help": "Retract a pending approval by its UUID (a stale or duplicate entry). The approval is kept in the history, marked `retracted` with who and when; nothing is erased.",
      "anchor": "exa-approvals-sysadmin-approval-gate-for-model-changes",
      "guide": "guides/control-plane.md"
     },
@@ -3281,7 +3331,14 @@
     {
      "cmd": "exa events stats",
      "group": "events",
-     "help": "Show outbox backlog: pending / published / poison (attempts exhausted).",
+     "help": "Show outbox backlog: pending / published / poison (attempts exhausted), and — with the NATS publisher — each durable consumer's lag and dead letters.",
+     "anchor": "exa-events-novafabric-event-backbone-transactional-outbox",
+     "guide": null
+    },
+    {
+     "cmd": "exa events tail",
+     "group": "events",
+     "help": "Show the most recent CloudEvents on the NATS backbone (needs EXAMLOPS_NATS_URL, ADR 0124).",
      "anchor": "exa-events-novafabric-event-backbone-transactional-outbox",
      "guide": null
     },
@@ -3295,7 +3352,7 @@
     {
      "cmd": "exa admission submit",
      "group": "admission",
-     "help": "Enqueue a work item (durable; drained under the global + per-tenant caps).",
+     "help": "Enqueue a work item (durable). A worker claims it under the global + per-tenant caps. **This enqueues; it does not dispatch.** `examlops.admission` is a facade whose `dispatch` is injected by whatever embeds it, and the control plane runs its own admission accounting on this table rather than through the facade — so an item submitted here waits until something claims it. `exa admission stats` reports how long the oldest queued item has been waiting, which is what tells a busy queue from a stranded one.",
      "anchor": "exa-admission-admission-control-queue-per-tenant-fair-share",
      "guide": null
     },

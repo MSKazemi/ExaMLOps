@@ -26,9 +26,30 @@ Env vars:
     MODEL_STAGE                 default: Production            (default alias)
     RAY_PRELOAD_ALIASES         default: "Production,Canary,Staging"
     RAY_VERSION_CACHE_SIZE      default: 8                     (LRU size for raw versions)
-    RAY_RELOAD_POLL_SECONDS     default: 60                    (0 disables polling)
-    RAY_NUM_REPLICAS            default: 2
+    RAY_RELOAD_POLL_SECONDS     default: 60                    (0 disables MLflow polling)
+    RAY_SNAPSHOT_MODE           default: auto                  (serve from the control plane's
+                                                                serving snapshot; off = legacy)
+    RAY_SNAPSHOT_POLL_SECONDS   default: 2                     (how often a newer generation is
+                                                                looked for)
+    RAY_SNAPSHOT_CACHE          default: <tmp>/examlops-serving-snapshot.json (last-known-good)
+    RAY_ARTIFACT_CACHE          default: off                   (directory of content-addressed
+                                                                model versions)
+    RAY_ARTIFACT_CACHE_MAX_GB   default: 20                    (LRU bound for that directory)
+    RAY_NUM_REPLICAS            default: 2                     (the floor, with autoscaling on)
+    RAY_AUTOSCALE_MAX_REPLICAS  default: unset                 (set: Ray autoscales up to it)
+    RAY_AUTOSCALE_TARGET_ONGOING      default: 5               (in-flight requests per replica)
+    RAY_AUTOSCALE_UPSCALE_DELAY_S     default: 30
+    RAY_AUTOSCALE_DOWNSCALE_DELAY_S   default: 300
+    RAY_MAX_QUEUED_REQUESTS     default: -1                    (unbounded; set it to shed load)
+    RAY_GAUGE_REFRESH_SECONDS   default: 5                     (republish gauges; Ray 2.55 drops
+                                                                a gauge not set since its last export)
     RAY_SERVE_PORT              default: 8001
+    RAY_SERVE_GRPC_PORT         default: 8081                  (Open Inference Protocol v2 over
+                                                                gRPC; 0 turns it off)
+    RAY_SERVE_GRPC_MAX_MESSAGE_MB default: 8                   (largest gRPC request or answer)
+    RAY_SERVE_HOST              default: 0.0.0.0               (127.0.0.1 under the workload-
+                                                                identity overlay: the mTLS sidecar
+                                                                in this namespace is the way in)
 """
 
 # NOTE: deliberately NOT using `from __future__ import annotations`.
@@ -63,12 +84,13 @@ import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from typing import Any
+from typing import Annotated, Any
 
 import mlflow
 import mlflow.pyfunc
 import ray
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from ray import serve
 from ray.util.metrics import Counter, Gauge, Histogram
@@ -86,6 +108,13 @@ MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:15000")
 MODEL_STAGE = os.getenv("MODEL_STAGE", "Production")
 NUM_REPLICAS = int(os.getenv("RAY_NUM_REPLICAS", "2"))
 SERVE_PORT = int(os.getenv("RAY_SERVE_PORT", "8001"))
+# The address the HTTP proxy binds. Loopback leaves the model server reachable only from its own
+# network namespace, where the mutual-TLS sidecar runs (ADR 0125 phase 3).
+SERVE_HOST = os.getenv("RAY_SERVE_HOST", "0.0.0.0").strip() or "0.0.0.0"
+# The Open Inference Protocol v2 over gRPC (ADR 0126), on the same host as REST. 8081 is the port
+# KServe and MLServer use for it. It answers through the REST implementation on loopback.
+GRPC_PORT = int(os.getenv("RAY_SERVE_GRPC_PORT", "8081") or 0)
+GRPC_MAX_MESSAGE_BYTES = int(float(os.getenv("RAY_SERVE_GRPC_MAX_MESSAGE_MB", "8")) * 1024 * 1024)
 METRICS_EXPORT_PORT = int(os.getenv("RAY_METRICS_EXPORT_PORT", "8080"))
 
 PRELOAD_ALIASES = [
@@ -117,6 +146,87 @@ PREDICT_TIMEOUT = float(os.getenv("RAY_PREDICT_TIMEOUT", "30"))
 # Retry the startup hot-set scan so a transient MLflow blip at boot doesn't leave
 # the replica permanently empty until the next poll cycle.
 from examlops.resilience import is_transient_network, retry_call  # noqa: E402
+from serving.admin_auth import require_serving_admin  # noqa: E402
+from serving.budgets import HEADER as BUDGET_HEADER  # noqa: E402
+from serving.budgets import Deadline  # noqa: E402
+from serving.ray_serving import oip  # noqa: E402
+from serving.ray_serving.artifact_cache import ArtifactCache  # noqa: E402
+from serving.ray_serving.snapshot import SnapshotReader  # noqa: E402
+
+# Serving snapshot (ADR 0127, plan P4.2): `auto` serves from the snapshot the control plane
+# publishes whenever one exists and falls back to scanning MLflow when none does; `off` keeps the
+# legacy per-replica MLflow polling only.
+SNAPSHOT_MODE = os.getenv("RAY_SNAPSHOT_MODE", "auto").strip().lower()
+SNAPSHOT_POLL_SECONDS = max(0.5, float(os.getenv("RAY_SNAPSHOT_POLL_SECONDS", "2")))
+# Ray 2.55 exports a gauge only for the report interval in which it was set, so the replica
+# publishes its gauges again on this cadence (see MultiModelServer._publish_gauges). 0 disables.
+GAUGE_REFRESH_SECONDS = float(os.getenv("RAY_GAUGE_REFRESH_SECONDS", "5"))
+
+# Verify-before-load (plan P0.6 / finding S3): `off` | `warn` (default since models are signed at
+# registration, plan P4.10: every load is checked and a failure audited, nothing is refused) |
+# `enforce`. Serving loads pickled artifacts, so whoever can move an MLflow alias or write the
+# artifact store can otherwise run code in this process; `enforce` is what closes that.
+_VERIFY_MODE = os.getenv("EXAMLOPS_SERVING_VERIFY", "warn").strip().lower()
+
+
+# Content-addressed local copies of model versions (ADR 0127 decision 5, plan P4.3): with the
+# snapshot, what lets a replica restart and serve while MLflow is down. Off unless configured.
+_ARTIFACT_CACHE = ArtifactCache.from_env()
+
+
+def _verified_uri(name: str, version: str, uri: str, *, record: dict | None = None) -> str:
+    """The URI to load: ``uri`` itself, or a local copy whose bytes passed signature verification.
+
+    With ``RAY_ARTIFACT_CACHE`` set, the copy comes from the artifact cache (fetched by version on
+    a miss, digest-checked on a hit), and verification runs against those cached bytes.
+
+    In ``warn``/``enforce`` mode the artifacts are downloaded once, verified with
+    ``examlops.supplychain.verify_before_load``, and the *verified local copy* is what gets loaded.
+    Loading ``uri`` again after checking a separate download would verify one set of bytes and run
+    another. ``enforce`` refuses (raises) on an unsigned, tampered or unverifiable artifact; the
+    hot-set loader then keeps serving the last-known-good version.
+
+    ``record`` is the signature the serving snapshot carries for this version; with it nothing is
+    read from the datastore. Without it the ``model_signatures`` row is looked up.
+    """
+    cache = _ARTIFACT_CACHE
+    if cache is not None:
+        try:
+            cached = cache.fetch(name, version)
+        except Exception as exc:  # noqa: BLE001 - the registry path below is the fallback
+            logger.warning("Artifact cache could not supply %s v%s: %s", name, version, exc)
+        else:
+            if _VERIFY_MODE in ("warn", "enforce"):
+                from examlops.supplychain import verify_before_load  # noqa: PLC0415
+                from serving.ray_serving.artifact_cache import MANIFEST  # noqa: PLC0415
+
+                paths = [p for p in cached.rglob("*") if p.is_file() and p.name != MANIFEST]
+                if not verify_before_load(
+                    name, version, paths, mode=_VERIFY_MODE, root=cached, record=record
+                ):
+                    cache.discard(name, version)  # never load, or keep, bytes that failed
+                    raise RuntimeError(
+                        f"refusing to load {name} v{version}: signature verification failed "
+                        f"(EXAMLOPS_SERVING_VERIFY={_VERIFY_MODE}; sign with `exa models sign`)"
+                    )
+            return str(cached)
+    if _VERIFY_MODE not in ("warn", "enforce"):
+        return uri
+    from pathlib import Path  # noqa: PLC0415
+
+    from examlops.supplychain import verify_before_load  # noqa: PLC0415
+
+    local = mlflow.artifacts.download_artifacts(artifact_uri=uri)
+    paths = [p for p in Path(local).rglob("*") if p.is_file()]
+    if not verify_before_load(
+        name, version, paths, mode=_VERIFY_MODE, root=Path(local), record=record
+    ):
+        raise RuntimeError(
+            f"refusing to load {name} v{version}: signature verification failed "
+            f"(EXAMLOPS_SERVING_VERIFY={_VERIFY_MODE}; sign with `exa models sign`)"
+        )
+    return local
+
 
 _REGISTRY_ENTRIES: list | None = None
 
@@ -193,7 +303,9 @@ def _project_for(model_name: str) -> str | None:
         from examlops.project_scope import resolve_project
 
         return resolve_project(model_name)
-    except Exception:
+    except Exception:  # noqa: BLE001 - per request on the serving path: logging here would
+        # emit a line per inference when the datastore is away, drowning the outage itself.
+        # Unattributed traffic shows up as the `project` label going absent on the metrics.
         return None
 
 
@@ -219,8 +331,15 @@ class _StubMV:
     when ``client.get_model_version`` is unavailable or fails.
     """
 
-    def __init__(self, version: Any, tags: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        version: Any,
+        tags: dict[str, str] | None = None,
+        signature: dict[str, Any] | None = None,
+    ) -> None:
         self.version = version
+        # The signature record a serving snapshot carries for this version (plan P4.10).
+        self.signature = signature
         self.tags = tags or {}
 
 
@@ -256,6 +375,46 @@ class PredictResponse(BaseModel):
     model_version: str | None
     run_id: str | None
     prediction: Any
+
+
+def _oip_error(message: str, status: int) -> JSONResponse:
+    """An Open Inference Protocol error: ``{"error": message}`` (not FastAPI's ``detail``)."""
+    return JSONResponse({"error": message}, status_code=status)
+
+
+def _platform_version() -> str:
+    try:
+        import importlib.metadata as md  # noqa: PLC0415
+
+        return md.version("examlops")
+    except Exception:  # noqa: BLE001 - metadata is informational
+        return "unknown"
+
+
+_PLATFORM_VERSION = _platform_version()
+# RFC 9745: when /predict was deprecated (2026-09-11), the same instant the control plane uses.
+PREDICT_DEPRECATED_AT = "@1789084800"
+
+
+def _server_scaling() -> dict[str, Any]:
+    """Replicas of the model server (plan P4.8): ``RAY_NUM_REPLICAS`` of them, or — with
+    ``RAY_AUTOSCALE_MAX_REPLICAS`` set — Ray-native autoscaling between the two, from the
+    platform's own policy mapping (``examlops.autoscale``). Every replica holds the whole hot set,
+    so the ceiling is a memory decision as much as a throughput one.
+    """
+    ceiling = os.getenv("RAY_AUTOSCALE_MAX_REPLICAS", "").strip()
+    if not ceiling:
+        return {"num_replicas": NUM_REPLICAS}
+    from examlops.autoscale import AutoscalePolicy, to_ray_autoscaling_config  # noqa: PLC0415
+
+    policy = AutoscalePolicy(
+        min_replicas=NUM_REPLICAS,
+        max_replicas=max(int(ceiling), NUM_REPLICAS),
+        target_value=float(os.getenv("RAY_AUTOSCALE_TARGET_ONGOING", "5")),
+        stabilization_s=int(os.getenv("RAY_AUTOSCALE_UPSCALE_DELAY_S", "30")),
+        cooldown_s=int(os.getenv("RAY_AUTOSCALE_DOWNSCALE_DELAY_S", "300")),
+    )
+    return {"autoscaling_config": to_ray_autoscaling_config(policy)}
 
 
 # ─── Ray Serve deployment ─────────────────────────────────────────────────────
@@ -302,9 +461,13 @@ def _is_mlflow_unreachable(exc: BaseException) -> bool:
 
 
 @serve.deployment(
-    num_replicas=NUM_REPLICAS,
+    **_server_scaling(),
     ray_actor_options={"num_cpus": 1},
     max_ongoing_requests=int(os.getenv("RAY_MAX_ONGOING_REQUESTS", "100")),
+    # Load shedding (P4.6): once this many requests wait at a caller, the next gets 503 rather
+    # than a place in an ever-longer queue. -1 = unbounded (Ray's default); see "Overload" in
+    # docs/components/ray-serve.md for sizing.
+    max_queued_requests=int(os.getenv("RAY_MAX_QUEUED_REQUESTS", "-1")),
 )
 @serve.ingress(_app)
 class MultiModelServer:
@@ -378,6 +541,14 @@ class MultiModelServer:
 
         self._replica_id = _os.getenv("RAY_WORKER_ID", "default")
 
+        # The serving snapshot this replica acts on (ADR 0127): its generation, where it came from,
+        # and the shadow targets it carries (which replace the per-request TTL read of the table).
+        self._snapshot_reader: SnapshotReader | None = (
+            SnapshotReader() if SNAPSHOT_MODE != "off" else None
+        )
+        self._snapshot_generation: int | None = None
+        self._snapshot_shadow: dict[str, Any] | None = None
+
         # ── Online metrics ────────────────────────────────────────────────────
         # NB: `version` is deliberately NOT a label on the hot-path counter/histogram
         # (cardinality guard, item 3.2/QW5): a new MLflow version would mint a fresh time
@@ -428,12 +599,62 @@ class MultiModelServer:
             description="Number of hot-reload operations",
             tag_keys=("status", "scope", "replica"),
         )
+        self._snapshot_gauge = Gauge(
+            "examlops_serving_snapshot_applied_generation",
+            description="Serving-snapshot generation this replica is serving (ADR 0127), or 0 if "
+            "it has applied none; compare with the control plane's "
+            "examlops_serving_snapshot_generation for config lag",
+            tag_keys=("replica",),
+        )
         # ──────────────────────────────────────────────────────────────────────
 
-        self._load_hot_aliases()
+        if not self._apply_newest_snapshot():
+            self._load_hot_aliases()
         self._start_poller()
+        self._start_gauge_refresher()
 
     # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _publish_gauges(self) -> None:
+        """Set every gauge from the replica's current state.
+
+        Ray 2.55 exports a gauge value only for the report interval in which it was set. A gauge
+        set once, at load or reload, is visible for a few seconds and then gone: the absent() arm
+        of RayServeNoModelsLoaded then fires on a healthy replica, ServingSnapshotLagging has no
+        applied generation to compare, and the model-version gauge exists only while predictions
+        flow. Counters are unaffected. tests/integration/test_serving_metrics_live.py shows both.
+        """
+        with self._cache_lock:
+            entries = [(key, entry.get("version")) for key, entry in self._hot.items()]
+        replica = {"replica": self._replica_id}
+        self._models_gauge.set(len(entries), tags=replica)
+        # 0 means "no snapshot applied", which is a state this gauge has to be able to express:
+        # generations are rowids starting at 1, and `ServingSnapshotLagging` is
+        # `max(published) - min(applied) > 0`, where `min()` over NO series is an empty vector —
+        # so a replica that has never applied a snapshot, the most-behind replica there can be,
+        # was invisible to the alert that exists to find it.
+        generation = getattr(self, "_snapshot_generation", None)
+        self._snapshot_gauge.set(0 if generation is None else generation, tags=replica)
+        for (model_name, alias), version in entries:
+            try:
+                value = float(str(version))
+            except ValueError:
+                continue  # a non-numeric version has no gauge, as on the predict path
+            self._version_gauge.set(value, tags={"model_name": model_name, "alias": alias or ""})
+
+    def _start_gauge_refresher(self) -> None:
+        if GAUGE_REFRESH_SECONDS <= 0:
+            return
+
+        def _run() -> None:
+            while True:
+                time.sleep(GAUGE_REFRESH_SECONDS)
+                try:
+                    self._publish_gauges()
+                except Exception:  # noqa: BLE001 - metrics must never take the replica down
+                    logger.debug("gauge refresh failed", exc_info=True)
+
+        threading.Thread(target=_run, name="gauge-refresh", daemon=True).start()
 
     def _load_hot_aliases(self) -> None:
         """Scan MLflow for every (model, alias) in PRELOAD_ALIASES and load it."""
@@ -499,6 +720,84 @@ class MultiModelServer:
             sorted(f"{n}@{a}" for (n, a) in hot_keys),
         )
 
+    def _apply_newest_snapshot(self) -> bool:
+        """Serve from the newest serving snapshot. False when there is none to serve from.
+
+        True also when the newest generation is the one already applied — the snapshot stays
+        authoritative and MLflow is not polled.
+        """
+        reader = getattr(self, "_snapshot_reader", None)
+        if reader is None:
+            return False
+        snapshot = reader.newest()
+        if snapshot is None:
+            return False
+        if snapshot["generation"] != getattr(self, "_snapshot_generation", None):
+            self._apply_snapshot(snapshot)
+        return True
+
+    def _apply_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """Make the hot set match ``snapshot``: load what moved, keep what did not, drop what left.
+
+        Models are loaded **by version** (``models:/name/7``), never by alias: the alias can move
+        again between the snapshot and the download, and the replica must serve what the snapshot
+        says. A load that fails keeps the last-known-good entry, as the MLflow path does.
+        """
+        models = snapshot.get("models", {})
+        with self._cache_lock:
+            current = dict(self._hot)
+        new_hot: dict[tuple[str, str], dict[str, Any]] = {}
+        moved: set[str] = set()
+        for entry in models.values():
+            name = entry["name"]
+            aliases = entry.get("aliases", {})
+            wanted = set(_get_serve_aliases_for(name))
+            for alias, facts in aliases.items():
+                previous = current.get((name, alias))
+                if previous is not None and previous["version"] == facts["version"]:
+                    new_hot[(name, alias)] = previous
+                    continue
+                if alias not in wanted:
+                    continue  # a cold alias whose version moved is reloaded on its next request
+                try:
+                    mv = _StubMV(
+                        facts["version"],
+                        {"framework": facts.get("framework", "sklearn")},
+                        signature=facts.get("signature"),
+                    )
+                    new_hot[(name, alias)] = {
+                        "model": self._load_by_flavour(name, None, mv),
+                        "version": str(facts["version"]),
+                        "run_id": facts.get("run_id"),
+                    }
+                    moved.add(name)
+                    logger.info("Loaded '%s'@%s (v%s) from snapshot", name, alias, facts["version"])
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "Failed to load '%s'@%s v%s: %s", name, alias, facts["version"], exc
+                    )
+                    if previous is not None:
+                        new_hot[(name, alias)] = previous
+        with self._cache_lock:
+            self._hot = new_hot
+            for k in [k for k in self._version_cache if k[0] in moved]:
+                self._version_cache.pop(k, None)
+            hot_count = len(new_hot)
+        self._snapshot_shadow = {
+            key: str(value.get("alias"))
+            for key, value in snapshot.get("shadow", {}).items()
+            if value.get("alias")
+        }
+        self._snapshot_generation = int(snapshot["generation"])
+        self._models_gauge.set(hot_count, tags={"replica": self._replica_id})
+        self._snapshot_gauge.set(self._snapshot_generation, tags={"replica": self._replica_id})
+        logger.info(
+            "Serving snapshot generation %d applied (%d entries, source=%s)",
+            self._snapshot_generation,
+            hot_count,
+            getattr(self._snapshot_reader, "source", None),
+        )
+
     def _load_by_flavour(self, name: str, alias: str | None, mv: Any) -> Any:
         """Load the right MLflow flavour based on the model-version's ``framework`` tag.
 
@@ -518,7 +817,12 @@ class MultiModelServer:
             pass
 
         suffix = f"@{alias}" if alias else f"/{mv.version}"
-        uri = f"models:/{name}{suffix}"
+        uri = _verified_uri(
+            name,
+            str(mv.version),
+            f"models:/{name}{suffix}",
+            record=getattr(mv, "signature", None),
+        )
 
         if flavour == "pytorch":
             return importlib.import_module("mlflow.pytorch").load_model(uri)
@@ -577,8 +881,8 @@ class MultiModelServer:
         own loop. Either way ``_poller_alive`` is set so ``/health`` can surface a
         dead poller as a watchdog signal.
         """
-        if RELOAD_POLL_SECONDS <= 0:
-            logger.info("RAY_RELOAD_POLL_SECONDS=0 — polling disabled.")
+        if RELOAD_POLL_SECONDS <= 0 and getattr(self, "_snapshot_reader", None) is None:
+            logger.info("RAY_RELOAD_POLL_SECONDS=0 and RAY_SNAPSHOT_MODE=off — polling disabled.")
             return
         try:
             loop = asyncio.get_running_loop()
@@ -607,11 +911,26 @@ class MultiModelServer:
         )
 
     async def _poll_loop(self) -> None:
-        """Refresh any (model, alias) entry whose MLflow version changed."""
+        """Follow the serving snapshot; without one, refresh entries whose MLflow version moved.
+
+        With a snapshot the loop wakes every ``RAY_SNAPSHOT_POLL_SECONDS`` and MLflow is not
+        polled at all. Only while no snapshot exists does it fall back to scanning MLflow every
+        ``RAY_RELOAD_POLL_SECONDS``.
+        """
         client = mlflow.MlflowClient()
+        snapshots = getattr(self, "_snapshot_reader", None) is not None
+        tick = min(SNAPSHOT_POLL_SECONDS, RELOAD_POLL_SECONDS) if snapshots else RELOAD_POLL_SECONDS
+        if tick <= 0:
+            tick = SNAPSHOT_POLL_SECONDS
+        next_scan = time.monotonic() + RELOAD_POLL_SECONDS
         while True:
             try:
-                await asyncio.sleep(RELOAD_POLL_SECONDS)
+                await asyncio.sleep(tick)
+                if snapshots and await asyncio.to_thread(self._apply_newest_snapshot):
+                    continue
+                if RELOAD_POLL_SECONDS <= 0 or time.monotonic() < next_scan:
+                    continue
+                next_scan = time.monotonic() + RELOAD_POLL_SECONDS
                 changes = self._detect_alias_changes(client)
                 if not changes:
                     continue
@@ -866,6 +1185,11 @@ class MultiModelServer:
             "version_cache_size": version_cache_size,
             "poller_alive": self._poller_alive,
             "poll_interval_s": RELOAD_POLL_SECONDS,
+            "snapshot": {
+                "mode": SNAPSHOT_MODE,
+                "generation": getattr(self, "_snapshot_generation", None),
+                "source": getattr(getattr(self, "_snapshot_reader", None), "source", None),
+            },
             "models": [
                 {
                     "model_name": name,
@@ -908,6 +1232,9 @@ class MultiModelServer:
         Any failure — no database, no table, a locked file — returns ``None``. A shadow that
         cannot read its own configuration must look exactly like a shadow that is switched off.
         """
+        snapshot_shadow = getattr(self, "_snapshot_shadow", None)
+        if snapshot_shadow is not None:  # the snapshot carries it: no database read at all
+            return snapshot_shadow.get(model_name.lower())
         now = time.time()
         cached = self._shadow_cache.get(model_name)
         if cached is not None and now - cached[1] < self._shadow_ttl:
@@ -917,8 +1244,11 @@ class MultiModelServer:
             from examlops.platform_db import get_db
 
             with get_db() as conn:
+                # Case-insensitive: the CLI and dashboard store the canonical lowercase key, but a
+                # direct `/predict/JPCP` call names the model as typed (plan P0.4 / finding B4).
                 row = conn.execute(
-                    "SELECT shadow_alias, enabled FROM shadow_config WHERE model=?",
+                    "SELECT shadow_alias, enabled FROM shadow_config WHERE lower(model)=lower(?) "
+                    "ORDER BY updated_at DESC LIMIT 1",
                     (model_name,),
                 ).fetchone()
             if row and row["enabled"]:
@@ -1011,63 +1341,41 @@ class MultiModelServer:
             with self._shadow_lock:
                 self._shadow_inflight -= 1
 
-    @_app.post("/predict/{model_name}", response_model=PredictResponse)
-    def predict(self, model_name: str, request: PredictRequest) -> PredictResponse:
-        """Run inference for *model_name* with optional alias / version selection."""
-        try:
-            resolved = self._resolve(model_name, request.alias, request.version)
-        except HTTPException:
-            self._req_counter.inc(
-                tags={
-                    "model_name": model_name,
-                    "alias": request.alias or "",
-                    "status": "not_found",
-                }
-            )
-            raise
-
-        model = resolved["model"]
-        version = resolved["version"]
-        alias = resolved["alias"]
-
-        import numpy as np
-
-        # Build + validate the feature vector *before* timing/predicting so a
-        # non-numeric feature is a clean 422 (client error), not an opaque 500
-        # that also pollutes the error-rate metric.
-        row: list = []
-        for v in request.features.values():
-            if isinstance(v, list):
-                row.extend(v)
-            else:
-                row.append(v)
-        try:
-            input_array = np.array([row], dtype=float)
-        except (ValueError, TypeError) as exc:
-            self._req_counter.inc(
-                tags={
-                    "model_name": model_name,
-                    "alias": alias or "",
-                    "status": "invalid",
-                }
-            )
-            raise HTTPException(status_code=422, detail=f"features must be numeric: {exc}") from exc
-
+    def _run_model(
+        self,
+        model_name: str,
+        alias: str | None,
+        version: str | None,
+        model: Any,
+        input_array: Any,
+        deadline: Deadline,
+    ) -> Any:
+        """Run ``model`` on ``input_array`` for either protocol: under the replica's hard timeout
+        or the caller's shorter budget, with the request metrics, the latency histogram and the
+        shadow mirror. Returns the prediction as a list (one entry per row). Raises
+        HTTPException 504 on a timeout and 500 when the model raises.
+        """
         _t0 = time.time()
+        # The caller's remaining budget, when shorter than this replica's own hard limit.
+        timeout = min(self._predict_timeout, deadline.remaining())
+        budget_limited = timeout < self._predict_timeout
         try:
             # Run under a hard timeout so a hung model can't pin the replica worker.
             _predict_future = self._predict_pool.submit(model.predict, input_array)
-            raw = _predict_future.result(timeout=self._predict_timeout)
-            prediction: Any = raw.tolist() if hasattr(raw, "tolist") else raw
-            if isinstance(prediction, list) and len(prediction) == 1:
-                prediction = prediction[0]
+            raw = _predict_future.result(timeout=timeout)
+            result: Any = raw.tolist() if hasattr(raw, "tolist") else raw
         except FuturesTimeoutError as exc:
-            self._note_predict_timeout(_predict_future)
+            if budget_limited:
+                # The caller gave up, not the model: a merely-slow call is not a hung thread, and
+                # counting it as one would recycle a healthy pool under a tight client budget.
+                _predict_future.cancel()
+            else:
+                self._note_predict_timeout(_predict_future)
             self._req_counter.inc(
                 tags={
                     "model_name": model_name,
                     "alias": alias or "",
-                    "status": "timeout",
+                    "status": "deadline_exceeded" if budget_limited else "timeout",
                 }
             )
             self._latency_hist.observe(
@@ -1075,13 +1383,14 @@ class MultiModelServer:
                 tags={"model_name": model_name, "alias": alias or ""},
             )
             logger.error(
-                "Prediction TIMEOUT (>%ss) for '%s' v%s",
-                self._predict_timeout,
+                "Prediction TIMEOUT (>%.3fs%s) for '%s' v%s",
+                timeout,
+                ", caller's budget" if budget_limited else "",
                 model_name,
                 version,
             )
             raise HTTPException(
-                status_code=504, detail=f"Prediction timed out after {self._predict_timeout}s"
+                status_code=504, detail=f"Prediction timed out after {timeout:.3g}s"
             ) from exc
         except Exception as exc:  # noqa: BLE001
             self._req_counter.inc(
@@ -1115,23 +1424,117 @@ class MultiModelServer:
                 )
             except (TypeError, ValueError):
                 pass  # non-numeric version (rare) — skip the gauge, metrics still flow
-        if isinstance(prediction, (int, float)):
-            self._pred_value_hist.observe(float(prediction), tags={"model_name": model_name})
+        single = result[0] if isinstance(result, list) and len(result) == 1 else result
+        if isinstance(single, (int, float)):
+            self._pred_value_hist.observe(float(single), tags={"model_name": model_name})
 
         logger.info(
             "predict | model=%s alias=%s v%s → %s (%.3fs)",
             model_name,
             alias,
             version,
-            prediction,
+            single if input_array.shape[0] == 1 else f"<{input_array.shape[0]} rows>",
             _latency,
         )
         # ADR 0024 clause 1. Last thing before returning, and only on the success path: a
         # request that 4xx'd or timed out has no champion prediction to compare against, so
         # mirroring it would add a shadow row with nothing on the other side of it. Fire-and-
         # forget — `_mirror` never waits, never raises, and never touches this response.
-        self._mirror(model_name, input_array, prediction)
+        if input_array.shape[0] == 1:  # a shadow compares one champion prediction, not a batch
+            self._mirror(model_name, input_array, single)
+        return result
 
+    @_app.post("/predict/{model_name}", response_model=PredictResponse)
+    def predict(
+        self,
+        model_name: str,
+        request: PredictRequest,
+        budget_ms: Annotated[str | None, Header(alias=BUDGET_HEADER)] = None,
+        response: Response = None,  # type: ignore[assignment]  # FastAPI injects it
+    ) -> PredictResponse:
+        """Run inference for *model_name* with optional alias / version selection.
+
+        Deprecated in favour of Open Inference Protocol v2 (ADR 0126): every answer carries RFC 9745
+        ``Deprecation`` and an RFC 8288 ``Link`` to ``/v2/models/{name}/infer``, as the control
+        plane's legacy routes do. No removal date is set yet, so there is no ``Sunset``.
+
+        ``X-ExaMLOps-Budget-Ms`` (sent by the inference router, optional for direct callers) is
+        the time the caller still waits. The model runs under the smaller of that and
+        ``RAY_PREDICT_TIMEOUT``, and a request whose budget ran out while it was queued is
+        answered 504 without running the model at all (P4.6).
+        """
+        if response is not None:
+            response.headers["Deprecation"] = PREDICT_DEPRECATED_AT
+            response.headers["Link"] = f'</v2/models/{model_name}/infer>; rel="successor-version"'
+        deadline = Deadline.from_budget_ms(budget_ms, default=self._predict_timeout)
+        if deadline.expired():
+            self._req_counter.inc(
+                tags={
+                    "model_name": model_name,
+                    "alias": request.alias or "",
+                    "status": "deadline_exceeded",
+                }
+            )
+            raise HTTPException(status_code=504, detail="deadline exceeded before the model ran")
+        try:
+            resolved = self._resolve(model_name, request.alias, request.version)
+        except HTTPException:
+            self._req_counter.inc(
+                tags={
+                    "model_name": model_name,
+                    "alias": request.alias or "",
+                    "status": "not_found",
+                }
+            )
+            raise
+
+        model = resolved["model"]
+        version = resolved["version"]
+        alias = resolved["alias"]
+
+        import numpy as np
+
+        # Build + validate the feature vector *before* timing/predicting so a
+        # non-numeric feature is a clean 422 (client error), not an opaque 500
+        # that also pollutes the error-rate metric.
+        # A model with a column signature gets its features by name, in the signature's order:
+        # MLflow refuses an unnamed array for it, so /predict answered 500 on every such model.
+        signature = oip.signature_of(model)
+        row: list = []
+        if signature is not None and signature.columns:
+            missing = [n for n in signature.names if n not in request.features]
+            if missing:
+                self._req_counter.inc(
+                    tags={"model_name": model_name, "alias": alias or "", "status": "invalid"}
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"missing features {missing}; the model takes {list(signature.names)}",
+                )
+            row = [request.features[n] for n in signature.names]
+        else:
+            for v in request.features.values():
+                if isinstance(v, list):
+                    row.extend(v)
+                else:
+                    row.append(v)
+        try:
+            input_array = np.array([row], dtype=float)
+        except (ValueError, TypeError) as exc:
+            self._req_counter.inc(
+                tags={
+                    "model_name": model_name,
+                    "alias": alias or "",
+                    "status": "invalid",
+                }
+            )
+            raise HTTPException(status_code=422, detail=f"features must be numeric: {exc}") from exc
+
+        prediction = self._run_model(
+            model_name, alias, version, model, oip.model_input(input_array, signature), deadline
+        )
+        if isinstance(prediction, list) and len(prediction) == 1:
+            prediction = prediction[0]
         return PredictResponse(
             model_name=model_name,
             alias=alias,
@@ -1140,7 +1543,143 @@ class MultiModelServer:
             prediction=prediction,
         )
 
-    @_app.post("/reload")
+    # ── Open Inference Protocol v2 (plan P4.5, ADRs 0126 and 0141) ───────────────────────────
+    # The same models and the same execution path as /predict, spoken in the protocol KServe,
+    # Triton and MLServer clients use. Errors are {"error": ...}; health is 200 (true) or 4xx
+    # (false) with an empty body, as the protocol specifies.
+
+    @_app.get("/v2")
+    def v2_server_metadata(self) -> dict[str, Any]:
+        return {"name": "examlops-ray-serving", "version": _PLATFORM_VERSION, "extensions": []}
+
+    @_app.get("/v2/health/live")
+    def v2_health_live(self) -> Response:
+        return Response(status_code=200)
+
+    @_app.get("/v2/health/ready")
+    def v2_health_ready(self) -> Response:
+        with self._cache_lock:
+            loaded = bool(self._hot)
+        return Response(status_code=200 if loaded else 400)
+
+    @_app.get("/v2/models/{model_name}")
+    def v2_model_metadata(self, model_name: str) -> Any:
+        return self._v2_metadata(model_name, None)
+
+    @_app.get("/v2/models/{model_name}/versions/{version}")
+    def v2_model_version_metadata(self, model_name: str, version: str) -> Any:
+        return self._v2_metadata(model_name, version)
+
+    @_app.get("/v2/models/{model_name}/ready")
+    def v2_model_ready(self, model_name: str) -> Response:
+        return Response(status_code=200 if self._v2_is_ready(model_name, None) else 400)
+
+    @_app.get("/v2/models/{model_name}/versions/{version}/ready")
+    def v2_model_version_ready(self, model_name: str, version: str) -> Response:
+        return Response(status_code=200 if self._v2_is_ready(model_name, version) else 400)
+
+    @_app.post("/v2/models/{model_name}/infer")
+    def v2_infer(
+        self,
+        model_name: str,
+        body: Any = Body(default=None),
+        budget_ms: Annotated[str | None, Header(alias=BUDGET_HEADER)] = None,
+    ) -> Any:
+        return self._v2_infer(model_name, None, body, budget_ms)
+
+    @_app.post("/v2/models/{model_name}/versions/{version}/infer")
+    def v2_version_infer(
+        self,
+        model_name: str,
+        version: str,
+        body: Any = Body(default=None),
+        budget_ms: Annotated[str | None, Header(alias=BUDGET_HEADER)] = None,
+    ) -> Any:
+        return self._v2_infer(model_name, version, body, budget_ms)
+
+    def _v2_is_ready(self, model_name: str, version: str | None) -> bool:
+        """Loaded and able to infer now. A readiness probe never triggers a model download."""
+        if version is None:
+            return self._hot_get(model_name, MODEL_STAGE) is not None
+        with self._cache_lock:
+            if (model_name, str(version)) in self._version_cache:
+                return True
+            return any(
+                n.lower() == model_name.lower() and str(e.get("version")) == str(version)
+                for (n, _), e in self._hot.items()
+            )
+
+    def _v2_metadata(self, model_name: str, version: str | None) -> Any:
+        try:
+            resolved = self._resolve(model_name, None, version)
+        except HTTPException as exc:
+            return _oip_error(str(exc.detail), exc.status_code)
+        return oip.model_metadata(
+            model_name,
+            [str(resolved["version"])],
+            "mlflow",
+            oip.signature_of(resolved["model"]),
+        )
+
+    def _v2_infer(self, model_name: str, version: str | None, body: Any, budget_ms: Any) -> Any:
+        params = oip.infer_parameters(body)
+        requested_alias = params.get("alias") if isinstance(params.get("alias"), str) else None
+        alias = None if version is not None else requested_alias
+        deadline = Deadline.from_budget_ms(budget_ms, default=self._predict_timeout)
+        if deadline.expired():
+            self._req_counter.inc(
+                tags={"model_name": model_name, "alias": alias or "", "status": "deadline_exceeded"}
+            )
+            return _oip_error("deadline exceeded before the model ran", 504)
+        try:
+            resolved = self._resolve(model_name, alias, version)
+        except HTTPException as exc:
+            self._req_counter.inc(
+                tags={"model_name": model_name, "alias": alias or "", "status": "not_found"}
+            )
+            return _oip_error(str(exc.detail), exc.status_code)
+        signature = oip.signature_of(resolved["model"])
+        try:
+            array = oip.to_array(body, signature)
+        except oip.ProtocolError as exc:
+            self._req_counter.inc(
+                tags={
+                    "model_name": model_name,
+                    "alias": resolved["alias"] or "",
+                    "status": "invalid",
+                }
+            )
+            return _oip_error(str(exc), exc.status)
+        try:
+            result = self._run_model(
+                model_name,
+                resolved["alias"],
+                resolved["version"],
+                resolved["model"],
+                oip.model_input(array, signature),
+                deadline,
+            )
+        except HTTPException as exc:
+            return _oip_error(str(exc.detail), exc.status_code)
+        outputs = body.get("outputs") if isinstance(body, dict) else None
+        output_name = "predict"
+        if isinstance(outputs, list) and outputs and isinstance(outputs[0], dict):
+            output_name = str(outputs[0].get("name") or "predict")
+        return oip.response(
+            model_name,
+            str(resolved["version"]) if resolved["version"] is not None else None,
+            result,
+            request_id=body.get("id") if isinstance(body.get("id"), str) else None,
+            output_name=output_name,
+            parameters={
+                k: v
+                for k, v in (("alias", resolved["alias"]), ("run_id", resolved.get("run_id")))
+                if v
+            },
+        )
+
+    # Admin routes need RAY_SERVE_ADMIN_TOKEN (plan P0.6 / finding S1); /predict does not.
+    @_app.post("/reload", dependencies=[Depends(require_serving_admin)])
     def reload(self) -> dict:
         """Hot-reload every model in the hot set from MLflow."""
         try:
@@ -1162,7 +1701,7 @@ class MultiModelServer:
             "count": len(hot_keys),
         }
 
-    @_app.post("/reload/{model_name}")
+    @_app.post("/reload/{model_name}", dependencies=[Depends(require_serving_admin)])
     def reload_model(self, model_name: str) -> dict:
         """Targeted hot-reload — used by the Prefect webhook on promotion."""
         try:
@@ -1181,7 +1720,23 @@ class MultiModelServer:
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 
+def _prepare_ray_environment() -> None:
+    """Keep the platform's tracing switch from switching off Ray's metrics.
+
+    ``OTEL_SDK_DISABLED=true`` is how the platform turns tracing off, and the default in Compose
+    and Helm. Ray 2.55 records every metric (its own and ``ray.util.metrics`` ones such as
+    ``ray_examlops_models_loaded``) through the OpenTelemetry SDK, which that same variable turns
+    into a no-op: the metrics port then serves only process statistics, every serving alert and
+    SLO panel is blind, and ``RayServeNoModelsLoaded`` fires permanently. The platform treats an
+    unset variable as tracing off (``examlops.observability``), so removing a true value before
+    Ray starts its processes keeps tracing off and gives Ray its metrics back.
+    """
+    if os.getenv("OTEL_SDK_DISABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
+        del os.environ["OTEL_SDK_DISABLED"]
+
+
 def main() -> None:
+    _prepare_ray_environment()  # before ray.init: Ray's processes inherit this environment
     ray.init(
         ignore_reinit_error=True,
         include_dashboard=True,
@@ -1189,18 +1744,38 @@ def main() -> None:
         _metrics_export_port=METRICS_EXPORT_PORT,
     )
 
-    serve.start(http_options={"host": "0.0.0.0", "port": SERVE_PORT})
+    serve.start(http_options={"host": SERVE_HOST, "port": SERVE_PORT})
     serve.run(MultiModelServer.bind(), name="multi_model_server", route_prefix="/")  # type: ignore[attr-defined]
 
     from serving.inference_pipeline.app import pipeline_app  # noqa: PLC0415
 
     serve.run(pipeline_app, name="inference_pipeline", route_prefix="/infer-pipeline")
 
+    grpc_server = None
+    if GRPC_PORT > 0:
+        # REST is the model server's primary interface: a gRPC front end that cannot start (a port
+        # in use, a broken install) is logged loudly and REST keeps serving.
+        try:
+            from serving.oip_grpc.server import start_in_thread  # noqa: PLC0415
+
+            grpc_server = start_in_thread(
+                SERVE_HOST,
+                GRPC_PORT,
+                f"http://127.0.0.1:{SERVE_PORT}",
+                max_message_bytes=GRPC_MAX_MESSAGE_BYTES,
+            )
+        except Exception:  # noqa: BLE001 - see above
+            logger.exception(
+                "OIP gRPC server did not start on port %d; REST is unaffected", GRPC_PORT
+            )
+
     print("\nExaMLOps Ray Multi-Model Serving is up:")
     print(f"  API:       http://localhost:{SERVE_PORT}")
     print(f"  Models:    http://localhost:{SERVE_PORT}/models")
     print(f"  Pipeline:  http://localhost:{SERVE_PORT}/infer-pipeline/infer")
     print(f"  Docs:      http://localhost:{SERVE_PORT}/docs")
+    if grpc_server is not None:
+        print(f"  gRPC:      localhost:{grpc_server.port}  (inference.GRPCInferenceService)")
     print("  Dashboard: http://localhost:18265  (Serve → deployments)")
     print(f"  Replicas:  {NUM_REPLICAS} per model")
     print(f"  Aliases:   {PRELOAD_ALIASES}")
@@ -1219,6 +1794,8 @@ def main() -> None:
         time.sleep(1)
 
     print("Shutting down Ray Serve...")
+    if grpc_server is not None:
+        grpc_server.stop()
     serve.shutdown()
     ray.shutdown()
 

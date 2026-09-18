@@ -51,6 +51,13 @@ _SCRATCH = {
     "a": "tests/unit/test_storage_pg_translate.py — likewise",
     "jobs": "tests/unit/test_dataplane_sql.py — the remote source database a SQL connector pulls"
     " from, not platform state",
+    # tests/integration/test_postgres_service_roles_live.py — stand-ins for what an existing
+    # install's MLflow and Prefect databases hold, owned by the superuser, so the test can show
+    # the service roles taking them over. Not platform state.
+    "legacy_models": "test_postgres_service_roles_live.py — a superuser-owned MLflow-side table",
+    "dashboard_comments": "test_postgres_service_roles_live.py — likewise",
+    "legacy_flow_run": "test_postgres_service_roles_live.py — a superuser-owned Prefect-side table",
+    "roles_check": "test_postgres_service_roles_live.py — a table the mlflow role creates",
 }
 
 

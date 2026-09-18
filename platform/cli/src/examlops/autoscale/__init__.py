@@ -133,20 +133,29 @@ def to_ray_autoscaling_config(policy: AutoscalePolicy) -> dict[str, Any]:
     Instead of an in-process controller polling + calling ``decide_scale`` per model (which doesn't
     survive a replica restart and fights Ray's own autoscaler), this emits the declarative config Ray
     Serve autoscales from directly — same policy, actuated by the platform. ``scale_to_zero`` maps to
-    ``min_replicas=0``; the anti-thrash windows map to Ray's up/downscale delays; the queue-depth
-    target maps to ``target_num_ongoing_requests_per_replica``. Pure — no Ray import needed.
+    ``min_replicas=0`` and Ray's ``downscale_to_zero_delay_s``; the anti-thrash windows map to the
+    up/downscale delays; the queue-depth target maps to ``target_ongoing_requests``. Pure — no Ray
+    import needed.
+
+    The target used to be emitted as ``target_num_ongoing_requests_per_replica``, a name Ray Serve
+    no longer has. Ray ignores unknown keys, so every policy's target silently became Ray's default
+    of 2. ``tests/unit/test_ray_autoscaling_config.py`` feeds this output through Ray's own
+    ``AutoscalingConfig`` so a key Ray does not know fails the build.
     """
     min_r = 0 if policy.scale_to_zero_after_s > 0 else policy.min_replicas
     initial = max(policy.warm_pool, min_r)
-    return {
+    config: dict[str, Any] = {
         "min_replicas": min_r,
         "max_replicas": policy.max_replicas,
         "initial_replicas": initial,
-        "target_num_ongoing_requests_per_replica": max(1.0, policy.target_value),
+        "target_ongoing_requests": max(1.0, policy.target_value),
         "upscale_delay_s": policy.stabilization_s,
-        # Scale-down is the risky direction → gate on the longer of cooldown / scale-to-zero idle.
-        "downscale_delay_s": max(policy.cooldown_s, policy.scale_to_zero_after_s or 0),
+        "downscale_delay_s": policy.cooldown_s,
     }
+    if policy.scale_to_zero_after_s > 0:
+        # The last replica goes only after this much idle time (Ray's own scale-to-zero delay).
+        config["downscale_to_zero_delay_s"] = max(policy.cooldown_s, policy.scale_to_zero_after_s)
+    return config
 
 
 def to_ray_deployment_kwargs(policy: AutoscalePolicy) -> dict[str, Any]:
@@ -213,12 +222,14 @@ def scale_to_zero_savings(model: str, *, gpu_cost_per_hour: float = 2.0) -> dict
     cfg = platform_db.get_autoscale_config(model)
     frac = cfg["gpu_fraction"] if cfg else 1.0
     window_h = (cfg["scale_to_zero_after_s"] / 3600.0) if cfg else 0.0
-    events = platform_db.list_scale_events(model, last_n=500)
-    to_zero = [e for e in events if e["to_replicas"] == 0]
-    saved_replica_hours = len(to_zero) * max(window_h, 0.0) * frac
+    # Counted in the database: this is a total the dashboard and CLI print without a window, so
+    # counting matches inside a listing of recent events would under-report savings by more and
+    # more as the model accumulates history.
+    to_zero = platform_db.count_scale_events(model, to_replicas=0)
+    saved_replica_hours = to_zero * max(window_h, 0.0) * frac
     return {
         "model": model,
-        "scale_to_zero_events": len(to_zero),
+        "scale_to_zero_events": to_zero,
         "saved_gpu_hours": round(saved_replica_hours, 4),
         "saved_cost": round(saved_replica_hours * gpu_cost_per_hour, 4),
     }

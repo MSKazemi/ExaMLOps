@@ -57,7 +57,7 @@ def estimate_cost_via_provider(
     recording never hard-fails.
     """
     from ..providers import get_provider
-    from ..providers.loader import load_domain_config, resolve_provider
+    from ..providers.loader import degraded_to_default, load_domain_config, resolve_provider
     from . import cost_providers  # noqa: F401 - importing registers the built-ins
 
     if project:
@@ -68,7 +68,8 @@ def estimate_cost_via_provider(
             # With no explicit choice, honour the project's active-provider selection for this domain.
             if provider is None:
                 provider = get_active_provider(project, "cost")
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - a broken provider must not stop the calculation
+            degraded_to_default("cost", exc)
             pass  # authored providers are additive — never block the built-in path
 
     block = dict(config) if config is not None else load_domain_config("cost")
@@ -76,7 +77,8 @@ def estimate_cost_via_provider(
     inputs = {**coeffs, **overrides, "gpu_hours": gpu_hours, "cpu_hours": cpu_hours}
     try:
         prov = resolve_provider("cost", override=provider, config=block)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - a broken provider must not stop the calculation
+        degraded_to_default("cost", exc)
         prov = get_provider("cost", "flat-rate")
     result = dict(prov.compute(inputs))
     result["provider"] = prov.name

@@ -19,14 +19,22 @@ def predict(
         alias: MLflow alias to target (default 'Production').
         version: Optional explicit version; overrides alias when set.
     """
-    body: dict = {"features": features, "alias": alias}
-    if version:
-        body["version"] = version
+    # Open Inference Protocol v2 (ADR 0126). /predict wanted a feature dict, so the list this
+    # tool takes was refused (422) on every call; OIP takes it as one row of features.
+    from examlops import oip_client
+
     data, err = _http.request_json(
-        "ray_serve", "POST", f"{config.RAY_SERVE_URL}/predict/{model_name}", json=body
+        "ray_serve",
+        "POST",
+        f"{config.RAY_SERVE_URL}{oip_client.infer_path(model_name, version or None)}",
+        json=oip_client.features_request(features, alias=None if version else alias),
     )
     if err:
         return err
+    try:
+        data = oip_client.result(data)
+    except ValueError as exc:
+        return f"Error: the model server's answer is not a prediction ({exc})"
     return (
         f"prediction={data.get('prediction')}, model={model_name}, "
         f"version=v{data.get('model_version', '?')}, alias={data.get('alias', alias)}"
@@ -72,7 +80,9 @@ def reload_models(model_name: str = "") -> str:
         model_name: Optional single model to reload; empty reloads everything.
     """
     path = f"/reload/{model_name}" if model_name else "/reload"
-    data, err = _http.request_json("ray_serve", "POST", f"{config.RAY_SERVE_URL}{path}")
+    data, err = _http.request_json(
+        "ray_serve", "POST", f"{config.RAY_SERVE_URL}{path}", headers=_http.serving_admin_headers()
+    )
     if err:
         return err
     return f"reload result: {data}"

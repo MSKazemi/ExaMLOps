@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from pathlib import Path
 
-from tests.unit._guard_deps import require_binary
+from tests.unit._guard_deps import require_binary, tracked_and_new_files
 
 REPO = Path(__file__).resolve().parents[2]
 PRIVATE_PARTS = {".claude", ".codex"}
@@ -30,14 +29,9 @@ def _public_paths() -> list[Path]:
         "git",
         "no private assistant material, personal home path or consumer email address is tracked in the public tree",
     )
-    output = subprocess.run(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
-        cwd=REPO,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    return [Path(line) for line in output.splitlines()]
+    # Paths deleted in the working tree but not yet staged are skipped: a file that is gone
+    # leaks nothing (see `tracked_and_new_files`).
+    return [Path(name) for name in tracked_and_new_files()]
 
 
 def test_home_path_pattern_exempts_url_templates_and_nothing_else():

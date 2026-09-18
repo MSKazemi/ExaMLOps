@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import audit_write
 from auth import require_role
-from capabilities import SLO_MANAGE, can, deny_reason
+from capabilities import SLO_MANAGE, can, deny_reason, require_capability, scope_to_tenant
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, status
+from readfail import readable
 
 router = APIRouter(prefix="/slo", tags=["slo"])
 _viewer = require_role("viewer")
@@ -46,21 +47,24 @@ def _examlops_slo():
 
 
 @router.get("")
-async def list_slos(_=Depends(_viewer)) -> list[dict]:
-    """SLO specs + best-effort live status (SLI / budget-remaining / burn-rate). Fail-open to []."""
-    try:
+async def list_slos(principal: dict = Depends(_viewer)) -> list[dict]:
+    """SLO specs + best-effort live status (SLI / budget-remaining / burn-rate). Fail-open to [].
+
+    Scoped to the caller's tenant (F15 R4). The principal used to be bound to ``_`` and the query
+    had no ``WHERE`` at all, so every viewer of every tenant saw every other tenant's SLO
+    definitions — ``sli_query`` included, which is a Prometheus expression carrying that tenant's
+    metric and label names.
+    """
+    with readable("the SLO register"):
         conn = connect(_db_path())
         try:
             rows = conn.execute(
                 "SELECT model, tenant, name, sli_source, sli_query, target, window, higher_is_better, "
                 "version, gate_promotion, updated_at FROM slo_specs ORDER BY model, name"
             ).fetchall()
-            conn.close()
-            specs = [dict(r) for r in rows]
+            specs = scope_to_tenant(principal, [dict(r) for r in rows])
         finally:
             conn.close()
-    except Exception:
-        return []
     # Best-effort live status via the shared computation; never fail the list if it's unavailable.
     status_by_key: dict[tuple[str, str, str], dict] = {}
     try:
@@ -92,6 +96,11 @@ async def list_slos(_=Depends(_viewer)) -> list[dict]:
 async def set_slo(
     payload: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(SLO_MANAGE)),
 ) -> dict:
     """Define/update an SLO spec (admin; audited).
 
@@ -126,7 +135,8 @@ async def set_slo(
         "gate_promotion": bool(payload.get("gatePromotion", False)),
     }
     s = _examlops_slo()
-    s.apply_spec(spec)
+    # Returned to the caller rather than logged: whoever wrote the query is the one who can fix it.
+    spec_warnings = s.apply_spec(spec) or []
     conn = connect(_db_path())
     try:
         _audit(
@@ -143,6 +153,9 @@ async def set_slo(
             "name": name,
             "target": target,
             "gatePromotion": spec["gate_promotion"],
+            # Advisory, never a refusal: the spec above is already written. The console shows these
+            # so the person who wrote the query learns what the CLI would have told them.
+            "warnings": spec_warnings,
         }
     finally:
         conn.close()

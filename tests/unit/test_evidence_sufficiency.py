@@ -179,6 +179,42 @@ def test_an_autonomous_action_without_an_inverse_makes_record_keeping_insufficie
     assert any("declared no rollback_ref" in r for r in s.reasons)
 
 
+def test_a_violation_is_still_counted_behind_a_hundred_thousand_compliant_actions():
+    """The count of policy violations must be exact, not a slice of the newest rows.
+
+    ``record_keeping`` is *insufficient* when any autonomous action declared no inverse (ADR 0110
+    decision 4) and verified otherwise, so the count decides the control. Counting by listing rows
+    and adding them up makes that decision depend on a page size: once a platform has run more
+    autonomous actions than the listing returns, an older violation falls off the end and the
+    section reports **verified** — a compliance pack vouching for a record that contains exactly
+    the entry an auditor would ask about.
+
+    A listing may be bounded; a count may not be. 100k rows cost ~0.15 s to seed here, so this
+    asserts the real threshold rather than a shrunk imitation of it.
+
+    It asserts on the count rather than on the section's status because these rows are inserted
+    without chain hashes: that makes the *chain* check fail first and report `unverified`, which
+    would hide the miscount behind an unrelated red. The consequence of the miscount is what the
+    neighbouring test already covers — one uncounted violation and the section reports verified.
+    """
+    from examlops import platform_db
+    from examlops.compliance.sufficiency import integrity_state
+
+    with platform_db.get_db() as conn:
+        # The violation is the OLDEST autonomous action: NULL rollback_ref, then buried.
+        conn.execute(
+            "INSERT INTO audit_events (source, actor, action, target, mode, rollback_ref) "
+            "VALUES ('autopilot', 'autopilot', 'promotion', 'JPCP', 'autonomous', NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO audit_events (source, actor, action, target, mode, rollback_ref) "
+            "VALUES ('autopilot', 'autopilot', 'promotion', ?, 'autonomous', 'undo-ref')",
+            [(f"JPCP-{i}",) for i in range(100_000)],
+        )
+
+    assert integrity_state().autonomous_without_rollback == 1
+
+
 def test_the_nist_report_does_not_count_insufficient_evidence_as_satisfied():
     from examlops.governance import governance_report
 

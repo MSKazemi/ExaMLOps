@@ -257,6 +257,40 @@ def test_audit_chain_command_on_an_unknown_id_says_so():
     assert "No events correlated" in result.output
 
 
+def test_audit_autonomy_counts_the_window_not_the_page():
+    """`exa audit autonomy` must report the window's real totals, however long the listing is.
+
+    The compliance pack points an auditor straight here ("see: exa audit autonomy"), so the two
+    surfaces have to agree. The listing is bounded — rightly, nobody reads 100k rows — but its
+    `count` and its "N of M declared no inverse" warning are *counts*, and a count taken from the
+    length of a page silently becomes "among the newest few hundred". An operator reading
+    "1 of 500" would conclude there is one violation.
+    """
+    from examlops import platform_db
+
+    with platform_db.get_db() as conn:
+        conn.execute(
+            "INSERT INTO audit_events (source, actor, action, target, mode, rollback_ref) "
+            "VALUES ('autopilot', 'svc', 'no_undo', 'JPCP', 'autonomous', NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO audit_events (source, actor, action, target, mode, rollback_ref) "
+            "VALUES ('autopilot', 'svc', 'promotion', ?, 'autonomous', 'undo-ref')",
+            [(f"JPCP-{i}",) for i in range(600)],
+        )
+        # A human action, also without an inverse. It is NOT a policy violation — ADR 0110
+        # decision 4 is about what the platform did on its own — so neither total may count it.
+        conn.execute(
+            "INSERT INTO audit_events (source, actor, action, target, mode, rollback_ref) "
+            "VALUES ('cli', 'alice', 'promotion', 'JPCP', 'manual', NULL)"
+        )
+
+    result = runner.invoke(app, ["--json", "audit", "autonomy", "--last", "30d"])
+    assert result.exit_code == 0, result.output
+    assert '"count": 601' in result.output, result.output
+    assert '"without_rollback": 1' in result.output, result.output
+
+
 def test_audit_autonomy_command_counts_undoable():
     with evidence.correlated(mode=evidence.AUTONOMOUS, on_behalf_of="autopilot"):
         write_audit_event("autopilot", "svc", "no_undo", "JPCP")

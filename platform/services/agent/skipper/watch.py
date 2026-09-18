@@ -12,6 +12,12 @@ on a threshold breach, fans the alert out three ways — reusing existing infras
 Run it once (a CI gate / cron tick) with ``python -m skipper.watch --once`` or as a loop with
 ``--daemon``. A best-effort cross-process lock (``examlops.data.coordination``) keeps a single daemon
 active across replicas. Everything degrades: a missing `platform.db` yields zero signals, not a crash.
+
+**Events, not only polls (ADR 0124).** Drift and cost are measurements, so they are polled. A
+training run that fails is an *event*: with the NATS backbone configured (``EXAMLOPS_NATS_URL``),
+``--daemon`` also runs a durable consumer of ``retrain.*`` and raises an ``alert.retrain`` for a run
+that ends FAILED, CRASHED or MISSING — within seconds, once per run (the consumer's inbox), through
+the same three-way fan-out. ``--follow`` runs only that consumer.
 """
 
 from __future__ import annotations
@@ -141,12 +147,15 @@ def _raise_alert(alert: dict[str, Any]) -> None:
         log.warning("outbox unavailable for alert %s/%s", kind, target)
     try:
         from examlops.data import init_db
-        from examlops.data.audit import write_audit_event
+        from examlops.data.audit import audit_best_effort
 
         init_db()
-        write_audit_event("skipper-watch", _actor(), "alert_raised", target, alert)
-    except Exception:  # noqa: BLE001
-        pass
+        # Counted, not passed over: the alert may still have reached the outbox, so an operator
+        # sees it while the governance record that it was raised does not exist — and the hash
+        # chain cannot show a row that never arrived.
+        audit_best_effort("skipper-watch", _actor(), "alert_raised", target, alert)
+    except Exception:  # noqa: BLE001 - init_db itself can fail; the alert still went out
+        log.warning("audit unavailable for alert %s/%s", kind, target)
     _record_episode(alert)
 
 
@@ -170,6 +179,56 @@ def _record_episode(alert: dict[str, Any]) -> None:
         pass
 
 
+# ── events: failed training runs (ADR 0124) ────────────────────────────────────
+
+# Terminal states worth a human's attention. CANCELLED is someone's decision, not a failure.
+_RUN_SEVERITY = {"FAILED": "critical", "CRASHED": "critical", "MISSING": "warn"}
+
+
+def alert_for_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    """The alert a ``retrain.run_*`` event deserves, or ``None`` when it deserves none."""
+    data = event.get("data") or {}
+    state = str(data.get("run_state") or "").upper()
+    severity = _RUN_SEVERITY.get(state)
+    if severity is None:
+        return None
+    model = str(data.get("model_name") or "unknown")
+    run = str(data.get("flow_run_id") or "?")
+    reason = "Prefect no longer knows the run" if state == "MISSING" else f"the run ended {state}"
+    return {
+        "kind": "retrain",
+        "target": model,
+        "severity": severity,
+        "detail": f"{model} retrain (flow run {run[:12]}): {reason}",
+        "value": None,
+        "threshold": None,
+        "flow_run_id": data.get("flow_run_id"),
+        "run_state": state,
+        "event_id": event.get("id"),
+    }
+
+
+def on_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    """Consumer handler: raise the alert a run event deserves. Returns it (for logs and tests)."""
+    alert = alert_for_event(event)
+    if alert is not None:
+        _raise_alert(alert)
+        log.warning("skipper-watch: %s", alert["detail"])
+    return alert
+
+
+def _events_configured() -> bool:
+    return bool(os.getenv("EXAMLOPS_NATS_URL", "").strip()) and config.AGENT_WATCH_EVENTS
+
+
+def follow(stop: Any) -> None:  # pragma: no cover - long-running loop; the handler is tested
+    """Consume ``retrain.*`` until ``stop`` is set (a durable consumer: replicas share the work)."""
+    from examlops.events.consumer import EventConsumer
+    from examlops.events.nats_backend import subject_for
+
+    EventConsumer("skipper-watch", on_event, subjects=subject_for("retrain.>")).run_forever(stop)
+
+
 # ── cycle + loop ──────────────────────────────────────────────────────────────
 
 
@@ -188,6 +247,13 @@ def run_daemon() -> None:  # pragma: no cover - long-running loop
         from examlops.data.coordination import coord_try_lock, coord_unlock
     except Exception:  # noqa: BLE001
         coord_try_lock = coord_unlock = None  # type: ignore
+    if _events_configured():
+        import threading
+
+        threading.Thread(
+            target=follow, args=(threading.Event(),), name="skipper-watch-events", daemon=True
+        ).start()
+        log.info("skipper-watch: following retrain.* on the event backbone")
     while config.AGENT_WATCH_ENABLED:
         got = True
         if coord_try_lock is not None:
@@ -209,8 +275,19 @@ def _main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m skipper.watch")
     p.add_argument("--once", action="store_true", help="Run a single cycle and exit")
     p.add_argument("--daemon", action="store_true", help="Loop on AGENT_WATCH_INTERVAL_S")
+    p.add_argument(
+        "--follow", action="store_true", help="Only consume retrain.* events (needs NATS)"
+    )
     p.add_argument("--dry-run", action="store_true", help="Detect + print, do not raise alerts")
     args = p.parse_args(argv)
+    if args.follow:
+        if not os.getenv("EXAMLOPS_NATS_URL", "").strip():
+            print("skipper-watch --follow needs the NATS event backbone: set EXAMLOPS_NATS_URL")
+            return 2
+        import threading
+
+        follow(threading.Event())
+        return 0
     if args.daemon:
         run_daemon()
         return 0

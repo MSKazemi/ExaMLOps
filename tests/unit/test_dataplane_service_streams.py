@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import signal
 import threading
 import time
+import uuid
 from types import SimpleNamespace
 from typing import Any
 
@@ -569,6 +571,54 @@ def test_a_streams_own_max_bytes_lowers_the_cap(make):
     assert _push(e.client, "tiny", body={"x": 1}).status_code == 200
 
 
+def _requests_total(stream: str, outcome: str, project: str = "") -> float:
+    from prometheus_client import REGISTRY
+
+    return (
+        REGISTRY.get_sample_value(
+            "dataplane_stream_requests_total",
+            {
+                "project": project,
+                "stream": stream,
+                "connector": "http",
+                "model": "JPCP",
+                "outcome": outcome,
+            },
+        )
+        or 0.0
+    )
+
+
+def test_a_refusal_the_route_makes_is_counted_like_any_other_request(make, monkeypatch):
+    """Live finding D8: a 413 and an envelope rejection never reach the ingress, and nothing else
+    counted them — so a stream refusing everything it was sent read, in ``requests_total``, as a
+    stream nobody was using. Every refusal made once the stream is known is counted."""
+    name = f"count-{uuid.uuid4().hex[:8]}"
+    _stream("", name, limits={"max_bytes": 64})
+    e = make()
+    before = _requests_total(name, "validation")
+
+    _is_problem(_push(e.client, name, body={"x": "y" * 200}), 413, "too-large")
+    _is_problem(_push(e.client, name, content="this is not json"), 422, "validation")
+    _is_problem(
+        _push(e.client, name, headers={**H, "Idempotency-Key": "\x00bad"}), 422, "validation"
+    )
+    assert e.ingress.calls == []  # none of them reached the ingress
+    assert _requests_total(name, "validation") == before + 3
+
+
+def test_an_oversize_body_to_an_unknown_or_paused_stream_answers_for_the_stream(make):
+    """Every size check waits for the binding, which is what makes the 413 countable. The answer
+    for a stream that cannot serve the message at all is the stream's, at any size."""
+    _stream("", "paused-big", state="paused")
+    e = make()
+    big = {"x": "y" * 4096}
+    unknown = _is_problem(_push(e.client, "never-defined", body=big), 404, "not-found")
+    paused = _is_problem(_push(e.client, "paused-big", body=big), 503, "paused")
+    assert unknown["detail"] == "stream 'never-defined' not found"
+    assert paused["detail"] == "stream paused"
+
+
 def test_a_bad_cap_fails_at_startup(monkeypatch):
     monkeypatch.setenv("EXAMLOPS_DATAPLANE_PUSH_MAX_BYTES", "lots")
     with pytest.raises(ValueError, match="EXAMLOPS_DATAPLANE_PUSH_MAX_BYTES"):
@@ -773,11 +823,15 @@ def test_streams_default_on_whatever_start_scheduler_says():
 # ── drain ───────────────────────────────────────────────────────────────────────────────────
 
 
-def test_the_drain_runs_in_order(make):
+def test_the_drain_runs_in_order(make, caplog):
     e = make()
     e.client.post("/streams/push1/messages", json={"x": 1}, headers=H)  # builds the stack
     e.app.state.scheduler.stop = lambda wait_s=10.0: e.log.append("scheduler.stop")
-    e.client.__exit__(None, None, None)
+    with caplog.at_level(logging.INFO, logger="examlops.dataplane.service.app"):
+        e.client.__exit__(None, None, None)
+    # Live finding D8: the whole drain was silent, so a log could not say whether a process
+    # drained or was killed. One line when it begins and one when it ends.
+    assert "drain started" in caplog.text and "drain finished" in caplog.text
     assert e.log == [
         "supervisor.stop draining=True",  # 1 (draining on) then 2
         "drift",  # 4

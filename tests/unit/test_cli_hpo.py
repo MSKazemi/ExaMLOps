@@ -29,6 +29,16 @@ def isolated_db(tmp_path):
     os.environ.pop("PLATFORM_DB", None)
 
 
+def _dispatched(run_id: str) -> dict:
+    """What POST /v1/retrain answers once the command is dispatched (plan P1.6c)."""
+    return {
+        "command_id": f"v1:retrain:{run_id}",
+        "state": "succeeded",
+        "result": {"flow_run_id": run_id, "deployment": "nightly"},
+        "status_url": f"/v1/commands/v1:retrain:{run_id}",
+    }
+
+
 # Test 1: hpo status with no studies → empty message
 def test_hpo_status_empty():
     result = runner.invoke(app, ["pipeline", "hpo", "status"])
@@ -38,10 +48,15 @@ def test_hpo_status_empty():
 
 # Test 2: hpo start JPCP with mocked control plane → study created
 def test_hpo_start_creates_study():
-    mock_response = {"flow_run_id": "abc123"}
-    with patch("examlops.cli._client.post", return_value=mock_response):
+    mock_response = _dispatched("abc123")
+    with patch("examlops.cli._client.post", return_value=mock_response) as mock_post:
         result = runner.invoke(app, ["pipeline", "hpo", "start", "JPCP", "--trials", "20"])
     assert result.exit_code == 0, result.output
+    # The control plane's retrain contract. The body used to be {"model", "dataset",
+    # "hpo_trials"}, which the control plane refuses with 422 — this mock accepted it.
+    url, body = mock_post.call_args[0][:2]
+    assert url.endswith("/v1/retrain")
+    assert body == {"model_name": "JPCP", "dataset_name": "PM100Dataset", "is_dummy": False}
     assert "abc123" in result.output
     assert "20" in result.output
 
@@ -55,7 +70,7 @@ def test_hpo_start_creates_study():
 
 # Test 3: hpo status shows the created study
 def test_hpo_status_shows_study():
-    mock_response = {"flow_run_id": "xyz789"}
+    mock_response = _dispatched("xyz789")
     with patch("examlops.cli._client.post", return_value=mock_response):
         runner.invoke(
             app, ["pipeline", "hpo", "start", "JPCP", "--trials", "30", "--metric", "rmse"]
@@ -70,7 +85,7 @@ def test_hpo_status_shows_study():
 
 # Test 4: hpo record records a trial
 def test_hpo_record_trial():
-    mock_response = {"flow_run_id": "flow-record-test"}
+    mock_response = _dispatched("flow-record-test")
     with patch("examlops.cli._client.post", return_value=mock_response):
         runner.invoke(app, ["pipeline", "hpo", "start", "JPCP"])
 
@@ -134,7 +149,7 @@ def test_hpo_record_no_study():
 
 # Test 7: hpo status filtered by model
 def test_hpo_status_filtered_by_model():
-    mock_response = {"flow_run_id": "flow-a"}
+    mock_response = _dispatched("flow-a")
     with patch("examlops.cli._client.post", return_value=mock_response):
         runner.invoke(app, ["pipeline", "hpo", "start", "JPCP"])
         runner.invoke(app, ["pipeline", "hpo", "start", "OTHERMODEL"])

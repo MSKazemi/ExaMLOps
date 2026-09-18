@@ -20,7 +20,7 @@ XM.register("signals", {
     { id: "cp2", x: 118, y: 670, label: "Control plane", sub: "commands", line: "control" },
 
     { id: "prom", x: 400, y: 170, label: "Prometheus", sub: "scrape 15 s · 7 days", line: "observe",
-      info: { title: "Prometheus", sub: "Port 19090", tasks: ["Scrapes Ray Serve, control plane, bridge, Alertmanager, Loki, Tempo, vLLM and fleet exporters every 15 s", "Keeps 7 days of metrics", "Evaluates 31 alert rules"], cli: ["make monitoring-up", "make alerts-check"] } },
+      info: { title: "Prometheus", sub: "Port 19090", tasks: ["Scrapes Ray Serve, control plane, bridge, Alertmanager, Loki, Tempo, vLLM and fleet exporters every 15 s", "Keeps 7 days of metrics", "Evaluates the alert rules; every rule links to its runbook"], cli: ["make monitoring-up", "make alerts-check"] } },
     { id: "alert", x: 660, y: 110, label: "Alertmanager", sub: "group · route", line: "observe",
       info: { title: "Alertmanager", sub: "Port 19093", tasks: ["Groups by alert name, cluster and service", "Critical: paging and chat, repeated hourly; warnings: chat, every 4 h", "A heartbeat proves the alert path is alive"] } },
     { id: "pager", x: 930, y: 110, label: "Paging · chat", kind: "external", line: "observe" },
@@ -44,14 +44,14 @@ XM.register("signals", {
       info: { title: "Transactional outbox", tasks: ["Events such as retrain.scheduled and approval.approved are written in the same transaction as the change"], cli: ["exa events stats"] } },
     { id: "relay", x: 660, y: 670, label: "Relay", sub: "every 1 s", line: "observe",
       info: { title: "Outbox relay", tasks: ["Runs inside the control plane every second, 100 events at a time", "Retries up to 5 times, then parks the event as poison", "exa events relay drains it by hand"], cli: ["exa events relay --loop"] } },
-    { id: "publisher", x: 930, y: 670, label: "Publisher", sub: "log · Redis Streams", line: "observe",
-      info: { title: "Event publisher", sub: "EXAMLOPS_EVENT_PUBLISHER", tasks: ["log (default) writes events to the service log", "redis publishes to Redis Streams", "Delivery is at least once, with stable event ids"] } }
+    { id: "publisher", x: 930, y: 670, label: "Publisher", sub: "log · NATS JetStream", line: "observe",
+      info: { title: "Event publisher", sub: "EXAMLOPS_EVENT_PUBLISHER", tasks: ["log (default) writes events to the service log", "nats publishes to NATS JetStream, where the event followers and the dashboard's live stream read them", "Delivery is at least once, with stable event ids"] } }
   ],
   edges: [
     { id: "ray-prom", from: "ray", to: "prom", line: "observe", via: [[300, 120], [300, 158]], end: [324, 158] },
     { id: "cp-prom", from: "cp", to: "prom", line: "observe", via: [[300, 220], [300, 178]], end: [324, 178] },
     { id: "bridge-prom", from: "bridge", to: "prom", line: "observe", via: [[308, 320], [308, 186]], end: [324, 186] },
-    { id: "prom-alert", from: "prom", to: "alert", line: "observe", via: [[400, 110]], label: "31 rules", labelAt: 0.7 },
+    { id: "prom-alert", from: "prom", to: "alert", line: "observe", via: [[400, 110]], label: "alert rules", labelAt: 0.7 },
     { id: "alert-pager", from: "alert", to: "pager", line: "observe" },
     { id: "prom-grafana", from: "prom", to: "grafana", line: "observe", start: [476, 176], via: [[800, 176], [800, 282]], end: [854, 282], label: "PromQL", labelAt: 0.3 },
     { id: "tempo-grafana", from: "tempo", to: "grafana", line: "observe", label: "traces" },
@@ -60,7 +60,6 @@ XM.register("signals", {
     { id: "containers-promtail", from: "containers", to: "promtail", line: "observe", via: [[250, 420], [250, 400]], end: [324, 400] },
     { id: "promtail-loki", from: "promtail", to: "loki", line: "observe", label: "push" },
     { id: "writers-audit", from: "writers", to: "audit", line: "human", label: "append" },
-    { id: "bridge-audit", from: "bridge", to: "audit", line: "observe", dashed: true, start: [160, 346], via: [[240, 346], [240, 548]], end: [324, 548], label: "inference served", labelAt: 0.5 },
     { id: "audit-checkpoint", from: "audit", to: "checkpoint", line: "observe", label: "sign head" },
     { id: "checkpoint-worm", from: "checkpoint", to: "worm", line: "observe", label: "anchor" },
     { id: "cp2-outbox", from: "cp2", to: "outbox", line: "control", label: "enqueue" },

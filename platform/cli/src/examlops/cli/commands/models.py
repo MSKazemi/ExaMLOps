@@ -44,14 +44,20 @@ _EXAMPLES_INFO = "Examples:\n\n  exa models info jpcp\n\n  exa --json models inf
 @app.command("list", epilog=_EXAMPLES_LIST)
 def list_models():
     """List all registered models with their production alias and latest version."""
+    from examlops.mlflow_paging import PagingError, all_items
+
     cfg = load_config()
     url = f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/search"
     try:
-        data = _client.get(url)
+        # "all registered models" in the docstring means all of them: the endpoint pages, and this
+        # is the command an operator uses to find out whether a model exists at all.
+        models = all_items(_client.get, url, "registered_models")
     except _client.ClientError as e:
         _output.error(f"Failed to list models: {e}", hint="Is MLflow running? Try: exa status")
         return
-    models = data.get("registered_models", [])
+    except PagingError as e:
+        _output.error(f"Failed to list models: {e}", hint="Check the MLflow server's paging.")
+        return
     rows = []
     for m in models:
         aliases = {a["alias"]: a["version"] for a in m.get("aliases", [])}

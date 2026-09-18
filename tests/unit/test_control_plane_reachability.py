@@ -31,7 +31,40 @@ NOT_OPERATOR_ROUTES = {
     "/webhooks/modelzoo/gitlab": "Inbound push webhook called by GitLab, not by an operator.",
     "/api/changes": "CI change notification (platform/ci/notify_model_changes.py) that opens "
     "approvals; operators act on the result through `exa approvals`.",
+    "/retrain": "The deprecated synchronous retrain. Every platform caller submits through its "
+    "successor, POST /v1/retrain (examlops.retrain_command, plan P1.6c), which `exa retrain` "
+    "reaches; the route stays for outside clients until a Sunset date is set.",
 }
+
+
+def _v1_twins() -> dict[str, str]:
+    """``/v1/...`` path → the legacy path whose handler it is (plan P1.6).
+
+    A twin is the same capability at a versioned path, so it is reachable exactly when its legacy
+    route is — CLI calls migrate to /v1 over time, and either spelling counts until they have.
+    """
+    import sys
+
+    sys.path.insert(0, str(REPO / "platform" / "services" / "control_plane"))
+    from cplane.versioning import ALIASES
+
+    return {a.v1: a.legacy for a in ALIASES if a.same_handler}
+
+
+def _client_calls(text: str) -> set[str]:
+    """/v1 paths the operator surfaces reach through the generated client (``control_plane_api``)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "gen_cp_client", REPO / "platform" / "ci" / "gen_cp_client.py"
+    )
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)  # type: ignore[union-attr]
+    return {
+        path
+        for (_method, path), name in gen.NAMES.items()
+        if re.search(rf"control_plane_api\.{name}\(", text)
+    }
 
 
 def _static_prefix(route: str) -> str:
@@ -55,9 +88,15 @@ def _source_text() -> str:
 def test_every_control_plane_route_is_reachable_by_an_operator():
     routes = sorted(json.loads(CONTRACT.read_text())["paths"])
     text = _source_text()
+    twins = _v1_twins()
+    called = _client_calls(text)
+    called |= {twins[p] for p in called if p in twins}  # a twin's call reaches its legacy route
     unreachable = []
     for route in routes:
-        if route in NOT_OPERATOR_ROUTES:
+        if route in called:
+            continue
+        route = twins.get(route, route)  # a /v1 twin is judged by the route it serves
+        if route in called or route in NOT_OPERATOR_ROUTES:
             continue
         prefix = _static_prefix(route)
         tail = route.rsplit("}", 1)[-1] if "}" in route else ""
@@ -76,3 +115,11 @@ def test_every_control_plane_route_is_reachable_by_an_operator():
 def test_exemptions_name_real_routes():
     routes = set(json.loads(CONTRACT.read_text())["paths"])
     assert set(NOT_OPERATOR_ROUTES) <= routes
+
+
+def test_every_v1_twin_names_a_real_legacy_route():
+    """A twin mapping to a route that no longer exists would exempt the twin from this guard."""
+    routes = set(json.loads(CONTRACT.read_text())["paths"])
+    twins = _v1_twins()
+    assert set(twins) <= routes
+    assert set(twins.values()) <= routes

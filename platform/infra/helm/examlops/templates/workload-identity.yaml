@@ -1,0 +1,67 @@
+{{- /*
+Workload identities (ADR 0125). SPIRE itself is cluster infrastructure (its hardened chart installs
+the server, node agents, the SPIFFE CSI driver and spire-controller-manager); this release adds one
+ClusterSPIFFEID per tier and the helper configuration its sidecars read.
+*/ -}}
+{{- $wi := .Values.workloadIdentity | default dict }}
+{{- if $wi.enabled }}
+{{- if not $wi.trustDomain }}
+{{- fail "workloadIdentity.enabled needs workloadIdentity.trustDomain: the trust domain of the cluster's SPIRE server, e.g. example.org" }}
+{{- end }}
+{{- $root := . }}
+{{- $components := prepend (include "examlops.spiffeCallers" . | fromJsonArray) "control-plane" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "examlops.fullname" . }}-spiffe-helper
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+data:
+  {{- range $component := $components }}
+  {{ $component }}.conf: |
+    agent_address = {{ $wi.socketPath | quote }}
+    cmd = ""
+    cert_dir = "/run/spire/svid"
+    daemon_mode = true
+    # This tier's own SVID, should the pod match more than one identity.
+    hint = {{ $component | quote }}
+    {{- if eq $component "control-plane" }}
+    # The trust bundle the control plane checks every JWT-SVID against (EXAMLOPS_SPIFFE_BUNDLE).
+    jwt_bundle_file_name = "jwt-bundle.json"
+    jwt_bundle_file_mode = 0644
+    {{- else }}
+    # Read by the tier on every call through CONTROL_PLANE_TOKEN_FILE. 0644: the helper must be
+    # able to rewrite its own file, and the tier runs as the same user.
+    jwt_svids = [{ jwt_audience = "control-plane", jwt_svid_file_name = "control-plane.jwt" }]
+    jwt_svid_file_mode = 0644
+    {{- end }}
+  {{- end }}
+{{- if ($wi.clusterSPIFFEID | default dict).create }}
+{{- range $component := $components }}
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  # Cluster-scoped, so the namespace is part of the name.
+  name: {{ printf "%s-%s-%s" $root.Release.Namespace (include "examlops.fullname" $root) $component }}
+  labels:
+    {{- include "examlops.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  {{- with $wi.clusterSPIFFEID.className }}
+  className: {{ . | quote }}
+  {{- end }}
+  spiffeIDTemplate: {{ include "examlops.spiffeID" (dict "root" $root "component" $component) | quote }}
+  hint: {{ $component | quote }}
+  jwtTtl: {{ $wi.jwtTtl | quote }}
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: {{ $root.Release.Namespace }}
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "examlops.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $component }}
+{{- end }}
+{{- end }}
+{{- end }}

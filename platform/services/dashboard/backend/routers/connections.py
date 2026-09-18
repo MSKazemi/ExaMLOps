@@ -19,7 +19,7 @@ import sqlite3
 
 import audit_write
 from auth import require_role
-from capabilities import CONNECTION_MANAGE, can, deny_reason
+from capabilities import CONNECTION_MANAGE, can, deny_reason, require_capability
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
@@ -166,7 +166,13 @@ def list_kinds(_=Depends(_viewer)) -> dict[str, list[str]]:
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_connection_view(
-    payload: dict = Body(...), principal: dict = Depends(_admin)
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(CONNECTION_MANAGE)),
 ) -> dict:
     """Create a named connection (admin / connection.manage; audited).
 
@@ -231,6 +237,11 @@ async def test_connection_view(
     name: str,
     project: str | None = Query(default=None),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(CONNECTION_MANAGE)),
 ) -> dict:
     """Reachability probe for a connection (admin / connection.manage). Never returns a secret."""
     _require_manage(principal)
@@ -247,6 +258,11 @@ async def delete_connection_view(
     name: str,
     project: str | None = Query(default=None),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(CONNECTION_MANAGE)),
 ) -> dict:
     """Delete a connection (admin / connection.manage; audited). Does not delete the secret value."""
     _require_manage(principal)

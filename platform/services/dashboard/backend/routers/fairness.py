@@ -12,9 +12,10 @@ import json
 
 import audit_write
 from auth import require_role
-from capabilities import FAIRNESS_MANAGE, can, deny_reason
+from capabilities import FAIRNESS_MANAGE, can, deny_reason, require_capability, scope_to_tenant
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, status
+from readfail import readable
 
 router = APIRouter(prefix="/fairness", tags=["fairness"])
 _viewer = require_role("viewer")
@@ -49,16 +50,22 @@ def _examlops_governance():
 
 
 @router.get("")
-async def list_fairness(_=Depends(_viewer)) -> list[dict]:
-    """Per-model fairness configs (slice_attrs parsed from JSON). Fail-open to []."""
-    try:
+async def list_fairness(principal: dict = Depends(_viewer)) -> list[dict]:
+    """Per-model fairness configs (slice_attrs parsed from JSON).
+
+    A failed read is a 503, not an empty list: "no fairness policy is configured" is a claim about
+    this centre's governance, and it must not be produced by an unreachable datastore.
+
+    Scoped to the caller's tenant (F15 R4): the protected attributes a centre slices on are
+    disclosive of its data, and its thresholds are its own policy.
+    """
+    with readable("the fairness policy register"):
         conn = connect(_db_path())
         try:
             rows = conn.execute(
                 "SELECT model, tenant, slice_attrs, threshold, min_samples, gate_promotion, enabled, "
                 "updated_at FROM fairness_config ORDER BY model"
             ).fetchall()
-            conn.close()
             out = []
             for r in rows:
                 d = dict(r)
@@ -66,17 +73,21 @@ async def list_fairness(_=Depends(_viewer)) -> list[dict]:
                 d["gate_promotion"] = bool(d["gate_promotion"])
                 d["enabled"] = bool(d["enabled"])
                 out.append(d)
-            return out
+            configs = scope_to_tenant(principal, out)
         finally:
             conn.close()
-    except Exception:
-        return []
+    return configs
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def set_fairness(
     payload: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(FAIRNESS_MANAGE)),
 ) -> dict:
     """Declare a model's fairness config (admin; audited).
 

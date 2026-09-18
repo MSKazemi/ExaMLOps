@@ -14,7 +14,7 @@ def client_factory():
 
 async def test_get_meta(client_factory):
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/models/JPCP/meta"
+        assert request.url.path == "/v1/models/JPCP/meta"
         return httpx.Response(
             200,
             json={
@@ -56,7 +56,7 @@ async def test_get_readme(client_factory):
 
 async def test_list_model_names(client_factory):
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/models"
+        assert request.url.path == "/v1/models"
         return httpx.Response(
             200,
             json=[

@@ -506,7 +506,12 @@ def test_init_generates_every_secret_once_and_keeps_them_private(tmp_path):
     assert values["EXAMLOPS_VERSION"] == "1.2.3"
     assert values["EXAMLOPS_STATE_UID"] == str(os.getuid())
     assert values["EXAMLOPS_STATE_GID"] == str(os.getgid())
-    assert not [k for k, v in values.items() if "__" in v], "a placeholder survived init"
+    # `"__" in v` was a ~1% flaky failure, not a check: every placeholder in `env.template` has
+    # the form `__NAME__`, but a generated Fernet key is urlsafe-base64 whose alphabet includes
+    # `_`, so roughly one key in a hundred contains `__` by chance (measured: 0.97% over 200 000
+    # keys). Match the placeholder's actual shape instead of a substring of it.
+    placeholder = re.compile(r"^__[A-Z0-9_]+__$")
+    assert not [k for k, v in values.items() if placeholder.match(v)], "a placeholder survived init"
     generated = [values[s] for s in SECRETS]
     assert len(set(generated)) == len(generated), "two credentials received the same value"
     assert all(len(v) >= 16 for v in generated)

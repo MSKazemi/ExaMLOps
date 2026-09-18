@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-09-18
+
 ### Added — every published page is loaded in a browser, and the site is whole
 
 `mkdocs build --strict` checks the links between pages; nothing checked what a page then asks the
@@ -137,32 +139,6 @@ promotion; a 24-hour SLO could not answer about the last 24 hours.
 - Verified: `tests/unit/test_slo_status_window.py` (13 new), 88 SLO tests green, 5/5 mutations
   killed.
 
-### Fixed — running the platform no longer writes into the repository it was run from
-
-- A scheduler adapter created its working directory the moment it was constructed, so simply
-  listing platform status made a `slurm_jobs/` or `flux_jobs/` folder in whatever directory the
-  command ran in. Adapters now create nothing until a job actually needs it.
-- The mock scheduler wrote its job folders *inside the installed package*
-  (`platform/infra/slurm-adapter/mock_hpc_jobs`). It now uses the cache directory. A real Slurm or
-  Flux adapter keeps its previous relative default, because those paths are handed to `sbatch
-  --output` and must resolve on the cluster.
-- New `EXAMLOPS_HPC_WORKDIR` says where an adapter keeps its own job files. On a cluster, point it
-  at a filesystem the compute nodes can see.
-- With a local MLflow tracking store, the encoder registry now keeps its artifacts under the
-  instance-data root instead of a `mlruns/` folder in the current directory. A tracking server
-  still owns its own artifact store, and with no data root configured nothing changes.
-- `exa pipeline validate`, which runs pytest, no longer leaves a `.pytest_cache` behind.
-- The unit suite now fails any test that leaves something in the checkout.
-
-### Added — Apptainer guide for HPC nodes with no Docker daemon
-
-- `docs/guides/apptainer.md`: how to pull a released ExaMLOps image by digest and run it with
-  `apptainer exec` on an HPC login or compute node, including the `examlops-backup` image
-  (`ENTRYPOINT ["exa"]`) as a no-network, no-`pip` way to get the CLI on shared storage. Not a
-  replacement for the Compose bundle or Helm chart — Apptainer runs one image at a time, with no
-  service graph and no port publishing — and cross-links the platform's existing Apptainer path
-  (vLLM serving on Slurm/Flux) rather than duplicating it.
-
 ### Fixed — release verification no longer depends on a third-party cosign installer
 
 - `.github/workflows/release-verify.yml` installed cosign with `sigstore/cosign-installer`, which
@@ -176,66 +152,4333 @@ promotion; a 24-hour SLO could not answer about the last 24 hours.
   releases, installs cosign v3.1.3, oras 1.3.4 and Helm v3.22.0 — the same versions the workflow
   already pinned — and all three report their version correctly.
 
-### Added — the dataplane serves live inference streams: HTTP push and Kafka (ADR 0131)
+### Fixed — a lost audit event on six governance paths was passed over in silence
 
-- **A stream is a named binding** of one inbound connector to one project's model and alias, held
-  in the new `dataplane_streams` catalog. Where a *source* turns `(connection, spec, watermark)`
-  into a snapshot that training pins to, a *stream* turns one inbound message into one inference
-  call, answered as it arrives. Streams are declared in the active pack's model YAML, under
-  `inference.streams`; the dataplane re-reads that list at startup and at most once a minute after
-  that.
-- **Two ways in.** `http` is served by the dataplane service itself: `POST
-  /streams/{name}/messages?project=` pushes one message and gets one answer in the same call, with
-  an `Idempotency-Key` header making a retried push safe for 600 seconds. `kafka` is a
-  consumer-group member that reads a topic and, with `options.reply_topic` set, answers on it.
-- **The binding's project, model and alias are authoritative, never the caller's.** A stream in
-  project `P` may bind model `M` only if `M` belongs to `P`; a stream with no project may bind only
-  an unscoped model, and a refusal never names the owning project. A message naming a different
-  model is rejected, and one naming a different alias is rejected too unless the binding opted in
-  with `options.allow_alias_override` — a caller must not be able to choose which model version
-  answers it, nor which alias's drift window its prediction lands in. A pack sync never overwrites
-  a stream an operator defined, and removing an entry from the YAML disables the stream rather than
-  deleting it, remembering the state to restore if it comes back.
-- **Kafka delivery is at least once, with a dead-letter queue.** An offset is stored only once its
-  message is terminal: answered (the reply produced and confirmed) or dead-lettered (the database
-  row written, plus the `dlq_topic` copy and the failure reply where configured). A message that
-  keeps failing past `limits.max_attempts` is dead-lettered as `retries_exhausted`; one that falls
-  out of the log while parked for a retry is dead-lettered as `expired_from_log` rather than
-  silently dropped. Dead letters are listable, replayable and purgeable over HTTP. A payload is
-  stored only when the binding opts in, at most 256 KiB, UTF-8 only, with secrets and personal data
-  redacted first; reading one needs the `write` scope and is itself audited. Rows are pruned after
-  `EXAMLOPS_DATAPLANE_DLQ_RETENTION_DAYS` (7 by default).
-- **Telemetry and drift come after the reply, never before it.** Embedding statistics and the
-  input-drift baseline feed are computed at ingress and handed to a bounded, drop-on-full spool, so
-  a slow database cannot slow an answer down. Only a genuine `model` outcome counts as a drift
-  failure and only `ok` as a success; a transport failure, a deadline, a shed request or a
-  validation error never touches drift. When a model's failure rate over its window trips the
-  threshold, the aggregator asks the existing retrain trigger to run, honouring that model's own
-  `drift_auto_retrain` cooldown, and audits the suppression when no dataset is configured.
-- **Process roles, leader election and a bounded drain.** `EXAMLOPS_DATAPLANE_ROLE` splits the
-  service into `all` (the default), `api` (routes and the pull scheduler, no connectors) and
-  `streams` (connectors plus `/health`, `/ready` and `/metrics`). A connector that cannot balance
-  itself across replicas runs under a fenced lease, so a stalled replica can never overlap with the
-  one that took over; Kafka does not need it, because its consumer group already balances
-  partitions. Shutdown is one deadline (`EXAMLOPS_DATAPLANE_DRAIN_SECONDS`, 20 by default, also
-  given to uvicorn): stop taking work, finish what is in flight, flush drift and telemetry, release
-  the leases. Compose gives the service `stop_grace_period: 30s` so the drain is not cut short.
-- **A new `ingest` scope, and a token that holds only it.** Push is never open: with neither a
-  token nor identity federation it answers 503. `DATAPLANE_TOKEN` now grants read, write and
-  ingest; the optional `DATAPLANE_INGEST_TOKEN` grants ingest alone, so a producer can push without
-  being able to read the catalog, pause a stream or replay a dead letter. A caller without access
-  gets one fixed 403 whether or not the stream exists.
-- **Runtime controls.** `POST /streams/{name}/state` sets a binding to `enabled`, `paused` or
-  `disabled`. Pausing a Kafka stream pauses its assignment in place — it keeps polling, keeps its
-  group membership and its lease, and resumes exactly where it stopped; a push stream answers 503
-  while paused and 404 while disabled. Twelve `dataplane_stream_*` metric families cover requests
-  by outcome, latency, in-flight, sheds, telemetry drops and failures, connector state, expired
-  messages, consumer lag, dead letters and the embedding gauges.
-- **Not in this release:** no `exa` command for streams, no dashboard page, no SeanerBUS req/res
-  connector, and no alerts or runbook for the new metrics — those land in later batches. There is
-  also no HTTP route yet to define a stream: the library write path exists and is tenancy-checked
-  and audited, but the model YAML is the only way in today. The operator documentation is the new
-  "Live streams" section of the [dataplane guide](docs/guides/dataplane.md).
+`audit_best_effort` exists because the platform's two ways of trusting the audit log are both blind
+to an event that never arrived: the hash chain proves **integrity, not completeness** — it is
+computed over the rows that exist — and the Article 12 check asks only whether *at least one* event
+of each required type exists. So the helper fails open (an audit outage must not block a secret read
+or a policy decision) while recording the loss at `WARNING` and counting it in
+`dropped_audit_events()`, which the control plane publishes as `audit_events_dropped`.
+
+Twenty-eight call sites wrote the event themselves inside `except Exception: pass`. That keeps the
+failing-open half and throws away the recording half: the operation succeeds, the record is gone,
+the counter stays at zero, and any completeness statement about that window is silently unsound.
+
+Nine are converted — the paths where a missing record is the one an auditor asks for — and each now
+has a test proving the loss is *counted*, not merely that the call changed. That coverage is no
+longer a hand count: a check scans the tree for every function calling `audit_best_effort` and maps
+it to the test that breaks the audit log for it. Per **function**, not per module — `policy_engine`
+holds two audit sites, and the bundle one had no test while a per-module tally called it covered.
+
+The same check found eleven *older* `audit_best_effort` sites with no declared drop-counting test.
+Seven now have one, chosen by what an investigation reaches for first: the sysadmin **approval** and
+**rejection** decisions, `retrain_triggered` through both the CLI and the agent, the eval gate's
+calibration refusal (Article 12 required events), and the **telemetry anchor**, which is what makes
+rows outside the hash chain tamper-evident at all, plus the agent's own autonomous retrain record. Three remain, held by a
+ratchet; each sits behind a gate that makes a unit test reach for a real MLflow or control plane, so
+they wait on an isolated fixture rather than on more audit work. It also
+made clear how carefully "untested" has to be said: `autopilot_cmd.run_cycle` was in that list until
+reading `test_autopilot.py` showed it proved exactly this property. Absence from the mapping means
+*no test is named*, not *no test exists*.
+
+- **`examlops.secrets`** — a secret read or write. Its comment said *"audit must never block a
+  secret operation"*, which the helper preserves; only the hiding is gone.
+- **`examlops.supplychain`** — model signing and attestation.
+- **`examlops.policy_engine` and `examlops.policy`** — policy decisions and bundle changes. A denial
+  that happened and was not recorded reads, afterwards, exactly like a denial that never happened.
+  These are near-twins with the same private `_audit`, and the first pass converted only the one
+  whose name came up in the sweep — which is how a near-twin survives a cleanup.
+- **`exa upgrade`** — a data-format migration. Its comment argued the silence (*"the upgrade row is
+  the record"*, and `platform_upgrades` genuinely is written elsewhere), but a separate record does
+  not make *this* log complete: that is a reason not to fail, not a reason not to count.
+- **The agent's memory governance** (`AGENT_MEMORY_AUDIT`) — it logged the loss at `DEBUG`, which is
+  invisible at any production log level.
+- **`examlops.guardrails`** — a block or redaction. This one also shared a single `try` with the
+  `guardrail_events` telemetry insert, so a failed insert skipped the audit write too; they are now
+  independent, because a counters table being unavailable is a different system's problem.
+- **`skipper-watch`** — the monitoring daemon's own alerts. Its three sinks are each best-effort,
+  and losing the audit row was the worst of the three: the alert still reaches the outbox, so an
+  operator sees it while the record that it was raised does not exist.
+
+The remaining 17 are held by a **ratchet** that may only go down. It asserts equality, not `<=`, so
+the ceiling has to be lowered as sites are converted — otherwise a ratchet quietly stops meaning
+anything.
+
+Three shapes are deliberately not flagged, because they do not hide the loss: a handler that returns
+the cause to its caller (`mcp._audit` hands back *"action succeeded but was not audited: …"*), one
+that re-raises, and a narrow `except ImportError: pass` falling through to a documented alternative
+— the dashboard's own `audit_write` uses exactly that shape while logging and re-raising everything
+else. `log.debug` is **not** disclosure. The scan also resolves aliased imports, after a mutant
+writing `from ... import write_audit_event as _w` slipped past a name-matching version of it.
+
+### Verified — a window read as a sequence is tie-broken, and the unit-suffixed metrics are honest
+
+The previous entry deferred on one more judgement: a tie *inside* a window (`LIMIT 100` feeding an
+average) is harmless, because a mean does not care what order its rows arrive in. That holds for
+symmetric aggregates and fails for anything reading the window as a **sequence** — a slope, a
+first-vs-last delta, a differenced series — where the tie decides which samples sit at the ends.
+Exactly one such read exists (`forecast_model_drift`) and it is already tie-broken; a guard now
+keeps that true and catches the next one. As before, the detector was proved on a planted case.
+
+A units sweep opened alongside it — the class that produced this session's SLO burn-rate error —
+and also came back clean. The risky shape is an **age** gauge (`now − db_timestamp`, where the
+database stores naive UTC and a host may not be): both `outbox_oldest_pending_age` and the
+approval-age gauge attach `UTC` to the naive value and compare against `datetime.now(UTC)`, and say
+so in their docstrings. No `_total` name on a non-monotonic type, and no counter written with
+`.set()`.
+
+### Verified — the remaining `ORDER BY ts` reads really are display only, with one exception
+
+The previous entry deliberately left ~12 `LIMIT N` reads alone, on the judgement that a tie there
+reorders rows on screen rather than changing an answer. That judgement was checked rather than
+assumed: a `LIMIT N` read stops being display the moment a caller takes `rows[0]`, so an AST sweep
+looked for exactly that — a name bound from a read ordered by a bare timestamp, then subscripted at
+`[0]` or `[-1]`. **Zero sites**, and the detector was proved against a planted positive first, since
+a sweep that finds nothing is a claim about the detector.
+
+One real divergence turned up on the way: `get_gate_reports` ordered by `ts` alone while
+`list_perf_estimates` in the same file and the dashboard's `eval_gate_state` both order by `id`. Its
+first entry is read as the standing verdict — the MCP `gate_reports` tool hands the list to an agent
+— and two gate reports land in one second whenever a promote and an autopilot cycle judge the same
+model, or a CI matrix runs the suite twice. Now `ORDER BY ts DESC, id DESC`.
+
+The `rows[0]` sweep is kept as a guard at zero, because it catches the case the `LIMIT 1` guard
+structurally cannot.
+
+### Fixed — "the current model card" was the oldest of the cards written that second
+
+Six reads picked *the latest* row of an append-only table with `ORDER BY <time> DESC LIMIT 1`.
+`CURRENT_TIMESTAMP` has one-second resolution, and on a table that keeps every write, two writes in
+one second is not a rare race — it is what a CI job or a regenerate-all loop does. The tie then goes
+to the query plan, and SQLite returns the **oldest** of the tied rows.
+
+Reproduced: three model cards written in one second, and the dashboard served `card_v1.md` as the
+current card while `card_v3.md` was the newest — a stale EU AI Act artefact, stable enough to look
+right every time you check it. The same tie decided which A/B test `_ab_analysis` reported on, so a
+statistical verdict could describe the wrong experiment.
+
+Fixed with `, id DESC` in all six: the model-card reader, three `ab_tests` readers (`exa serve ab
+record`/`analyze` and the dashboard), `hpo_studies`, and the facility job detail.
+
+**Deliberately not changed:** `traffic_rules` and `shadow_config` are `model TEXT PRIMARY KEY` —
+one row per model, so there is nothing to tie, and a tiebreaker there would be noise. The new guard
+reads the schema to tell the two kinds of table apart rather than carrying a list of the files that
+were fixed, and it verifies its own classifier against both kinds before trusting it.
+
+### Fixed — `exa audit -n 5` showed the five oldest events of a busy second as the newest
+
+`audit_events.ts` is `CURRENT_TIMESTAMP`, which has one-second resolution, and a single retrain or
+autopilot cycle writes several events inside one second. Four audit reads ordered by `ts` alone, so
+every tie went to the query plan — and SQLite scans a tied group forward. Seeding twelve events in
+one second and asking for the most recent five returned `step_00 … step_04`: the **oldest** five,
+in ascending order, labelled as the newest, and stably enough to look correct.
+
+This is the log an auditor reconstructs a sequence from, and the chain's own order — the sequence
+`prev_hash` links — is `id`, which was not being used. All four now order by `ts DESC, id DESC`:
+`exa audit`, the dashboard's `/api/audit`, the agent's `query_audit_log`, and the collaboration
+activity feed. Two surfaces breaking a tie differently are two different answers to *what happened
+first* about the same incident.
+
+A guard holds it for **any** function that reads `audit_events`, so a fifth surface cannot be added
+with the old ordering.
+
+### Fixed — four more registry reads stopped at page one, including the public SDK
+
+The previous sweep for this bug grepped for `next_page_token` and `max_results` — which can only
+find callers that *already* mention paging, while a caller with the bug in full mentions neither.
+Searching from the **endpoint** instead (every call to an API known to paginate, then: which handle
+continuation?) found four more, all on `registered-models/search`:
+
+- **`examlops.sdk.status()`** — the public typed SDK. It keeps only models holding a Production or
+  Staging alias, so a partial read reported **nothing in production** to a script, notebook or
+  service with nothing to check it against.
+- **The agent's platform summary** counted models as `len(page)` — "Registered models: 100",
+  permanently, once a platform outgrows a page. (A listing may be bounded; a count may not be.)
+- **`exa models list`**, whose docstring promises "all registered models" and which is the command
+  an operator uses to find out whether a model exists at all.
+- **The MCP `list_models` tool**, read by agents that cannot sanity-check a short list.
+
+All four now use one shared `examlops.mlflow_paging.all_items`, which follows the token to the end
+and raises rather than returning a partial list. Seven independent rediscoveries of the same bug is
+what a missing helper looks like; it takes the caller's own transport, so `urllib`, `httpx` and the
+agent's request wrapper share it without agreeing on anything else.
+
+Two candidates the sweep flagged were **not** defects and were left alone: `authz.list_objects` is a
+relationship-authz database read that only shares a name with S3's, and the evaluation grounding
+check calls the endpoint as a reachability probe without reading the list.
+
+### Fixed — three MLflow reads stopped at page one, and the answers flipped rather than shrank
+
+MLflow pages `registered-models/search` and `model-versions/search`. Three callers read the first
+page and stopped. Because each then *selects* something out of the result, the consequence was not
+a shorter list but a wrong answer:
+
+- **The dashboard reported a serving model as having no production version.** `list_versions`
+  resolved aliases from the first page only, so a Production alias pointing at a version beyond it
+  simply vanished — `GET /api/models/{name}/detail` showed no production stage while the model was
+  serving. Three existing tests caught this the moment the fake was made to page.
+- **The agent answered "No models found in the registry" for models that exist.** `list_models`
+  fetched 100 registered models and matched the name in Python. To an agent, that is
+  indistinguishable from the model not existing.
+- **`exa models rollback` could not reach past 50 versions** — on the one command whose purpose is to reach
+  backwards. Its docstring already promised "all model versions".
+
+All three now follow `next_page_token`, the loop `examlops.serving_snapshot._registered_models` has
+carried since the *"100-model bug"* it names in its own docstring — the fix was already written down
+in this codebase, just not applied where it was needed. Each refuses (502 / a non-zero exit) if a
+registry repeats a token or never stops paging, rather than returning a silently short list, which
+is the bug wearing a loop.
+
+**The test fakes now page too**, at a deliberately tiny page size. A fake that returns everything in
+one response cannot distinguish a caller that follows the token from one that ignores it, so it made
+the defect invisible in the place meant to find it.
+
+### Fixed — a failing source reported having no snapshots at all
+
+A dataplane source's committed snapshots were found by reading a page of **pulls** and discarding
+the uncommitted ones. The limit therefore bounded pulls, not snapshots, so a source whose recent
+pulls had been failing showed fewer revisions than it had — and after a run of failures longer than
+the page, none at all. An empty list that reads as *this source has never produced data*, at
+exactly the moment someone is looking because it is broken. The revisions were still there and
+still pinnable the whole time.
+
+- All three surfaces had it, and each one re-spelled the status tuple: the service's
+  `GET /sources/{name}/snapshots` (limit 200), `exa dataplane snapshots` (200), and the
+  `dataplane_snapshots` MCP tool (50 — the first to go empty, and the one whose caller is least
+  able to sanity-check the answer).
+- New `catalog.list_snapshots()` selects committed-with-a-revision in SQL, and all three call it.
+  `COMMITTED_PULL_STATUSES` is now defined once; the four copies of `("succeeded", "unchanged")`
+  are gone.
+- `exa dataplane pulls` is unchanged and is still where failures are visible: `pulls` lists
+  attempts, `snapshots` lists what a training run can pin to.
+
+### Fixed — a policy violation stopped being counted once the platform got busy
+
+Three counts were taken by listing rows and measuring the list. A listing is bounded — rightly,
+nobody reads a hundred thousand rows — so each number silently meant "among the newest N", while
+being printed as though it meant "in the window". **A listing may be bounded; a count may not be.**
+
+- **EU AI Act `record_keeping` could report *verified* over a record containing violations.**
+  `integrity_state()` counted autonomous actions with no declared inverse (ADR 0110 decision 4) by
+  pulling up to 100,000 rows and summing. Past that many autonomous actions, an older violation
+  falls off the end, the count reads 0, and the section — whose whole job is to be *insufficient*
+  when one exists — passes. A fail-open inside a function documented as fail-closed. Now an exact
+  `COUNT(*)` (`count_autonomous_without_rollback`).
+- **`exa audit autonomy` reported the same number differently.** With 601 autonomous actions and
+  one violation it printed `"count": 500, "undoable": 500` — no violation at all. The compliance
+  section points an auditor at this command by name, so the two surfaces disagreed precisely where
+  it mattered. `count`, `undoable` and the new `without_rollback` are now counted over the window;
+  `listed` reports how many rows the page holds, and the command says when it truncated. New
+  `--limit` (default 500) so an operator can reach an older violation rather than only count it.
+- **A FinOps savings figure under-reported money saved.** `scale_to_zero_savings` counted
+  scale-to-zero transitions inside the newest 500 scale events and published the result as an
+  unqualified total through the dashboard's scaling panel and `exa serve autoscale savings`; at 600
+  transitions it reported 500. Now `count_scale_events(model, to_replicas=0)`. The neighbouring
+  `cold_start_seconds` deliberately keeps its recent window — a mean over recent behaviour is a
+  different question from a lifetime total, and only the total was being mis-stated.
+
+**How they were found, which is the reusable part.** Yesterday's detector matched a `LIMIT` string
+literal in the same function as the filter — and it found yesterday's defect *by luck*, because
+that route's docstring happened to contain the word "limit"; the route holds no SQL at all, its
+bound is an argument to a helper. A detector that instead learns which functions are bounded reads
+and then looks at their callers found a different set entirely, including all three of these.
+
+### Fixed — a dead-letter queue could not be paged past its first read
+
+- `GET /streams/{name}/dead-letters` read the newest 1000 rows and then applied `reason` and the
+  `cursor` to *those rows* in Python. Both are selection, so both were answering about the window
+  rather than the stream: paging stopped dead at the 1000th newest dead letter and reported
+  `next_cursor: null` — everything older was unreachable through the API — and a `reason` that had
+  last occurred further back than that came back as an empty list, indistinguishable from a failure
+  that never happened.
+- Both predicates now narrow the query (`AND reason=?`, `AND id<?`), and the route reads exactly one
+  row past the page to decide whether a next page exists. `null` now means what a caller reads it to
+  mean: no more rows match, at any depth.
+- The store-read ceiling stays, but it can no longer size a page. A guard pins it above
+  `_DLQ_LIST_MAX`, because a ceiling lowered under a page would truncate the page itself and bring
+  the same silent short-read back through a constant.
+
+### Fixed — a quiet model was invisible to the agent's drift tools, and never auto-retrained
+
+- `get_drift_status`, `trigger_auto_retrain` and `diagnose_platform` read the newest 1000/5000/500
+  prediction snapshots **across all models** and then grouped them by model. The window is filled by
+  whichever models predict most often, so a low-traffic model fell out of it completely and was
+  reported as having *no snapshots* — the skip that removes it from the closed loop while blaming
+  missing data that was in fact present. A model past its drift threshold would never be retrained
+  because a busier neighbour was chattier.
+- All three now read one window per model (that model's newest 100), which is what every other drift
+  read in the platform already did — `exa drift status`, `exa drift forecast`, the corruption check
+  and the dashboard's drift router. One shared helper, `_recent_predictions()`, so the three cannot
+  drift apart again.
+- "No snapshots" survives as an answer for a model that genuinely has none, and a named model with
+  no snapshots answers instead of dividing by an empty sample (it raised `ZeroDivisionError` under a
+  mutant — the guard that prevents it is now tested rather than incidental).
+
+### Fixed — a tenant could be shown none of their own autoscale events
+
+- `GET /api/nextgen/autoscale/events` took the newest `limit` rows **across every tenant** and then
+  filtered them in Python with `scope_to_tenant`. The limit ran first, so a caller's own events
+  were pushed out of the window by tenants they cannot see: fewer rows than exist, and **none at
+  all** once another tenant had `limit` newer ones — an empty list that reads as "nothing happened".
+- New `tenant_sql_filter(principal)` puts the same rule in the `WHERE`, so the limit applies to the
+  caller's own rows. It returns `("1=1", ())` for a cross-tenant platform admin, who must still see
+  every tenant — the half a well-meaning "always filter by tenant" change would drop, and there is
+  now a test for it.
+- `scope_to_tenant` stays on the result: the predicate narrows the query, the filter is the check.
+
+**Why the existing guard could not see it.** `tests/unit/test_dashboard_tenant_scoping.py` asks
+whether a router scopes *at all*, and trusts the whole file if it does — a documented approximation
+("these are small modules"). This router does scope; the defect was the *order* of the limit and the
+filter, which is invisible to that question. Asking a different one — per query, are the rows the
+filter receives all the rows the caller is entitled to? — found it in the one place ~~it occurs~~
+*a **tenant** filter runs after a limit*. Extending that question past tenancy, to every in-process
+filter fed by a limited read, found two more instances the next day (below): the claim held for the
+sweep that was run, and was narrower than the sentence made it sound.
+
+### Verified — the 61 alert cases are load-bearing, not vacuous
+
+- A case asserting a non-empty `exp_alerts` cannot pass if its alert stops firing: promtool compares
+  it against `got:[]`. That is structural, and the quiet-only cases are covered by a separate guard
+  that requires every alert tested for silence to be shown firing somewhere too.
+- Spot-checked anyway, by rewriting three alerts across different groups so they cannot fire
+  (`(expr) and on() (vector(1) > 1)`): each one failed a case. A full 61-mutant sweep would take
+  half an hour of promtool runs for a result the first three and the structure already settle.
+
+### Added — every alert in the platform is now proven to fire, ratchet 12 → 0
+
+- The remaining twelve — the rest of the control plane, the Envoy gateway statistics and the
+  bridge's latency histogram — now have replay cases, each paired with what it must ignore. The
+  unproven-alert ratchet reads **0 of 61**, having started at 49 unproven.
+- It stays a ratchet rather than a bare `== 0`, so the failure message names what slipped and a
+  deliberate exception would have to be written down as a number. The comment above it records
+  what each step proved.
+- Two cases pin relationships the expressions deliberately do not enforce, because Alertmanager's
+  inhibition does: an approval waiting four days matches **both** approval-age rules, and any down
+  target raises the generic critical `TargetDown` **as well as** its component's own alert.
+- The gateway error-rate case feeds every response class, not just the 5xx series — its denominator
+  counts all of them, so feeding only the errors would make any rate read as 100 % and the case
+  would pass while proving nothing.
+
+**What the exercise was actually worth.** Writing these cases found, in order: the SLO burn rate
+reported as an error ratio (`80m×` on a critical page), a Grafana panel permanently red and
+measuring traffic rather than reliability, the bridge's error rate computed against successes
+instead of calls, an alert that could not fire on the only occurrence it would ever see, a replica
+that had applied no snapshot being invisible to the alert written for it, a total gRPC outage
+firing nothing, and an Alertmanager inhibit rule that was inert for the whole serving plane.
+`promtool check rules` was green for every one of them.
+
+### Added — a guard that every job an alert selects is actually scraped
+
+- Seven alerts are `up{job="..."} == 0`. The job name is a string written in `alert_rules.yml` and
+  satisfied in `prometheus.yml`: rename a scrape job, or mistype one in a new alert, and the alert
+  selects an empty vector forever while `promtool check rules` stays green and the component it
+  watches is simply no longer watched.
+- The guard accepts job names a **file_sd target group** supplies, because those override the scrape
+  config's `job_name` — **verified against a real Prometheus**: a group labelled `job: vllm` under a
+  scrape config named `fleet` produces `up{job="vllm"}`. Renaming `loki` in `prometheus.yml` now
+  fails the guard. Nothing was wrong today; the rename is what it exists for.
+
+### Added — the "X is down" alerts and the Watchdog proved to fire, ratchet 19 → 12
+
+- `ControlPlaneDown`, `ServingGatewayDown`, `SeanerBUSBridgeDown`, `LokiDown`, `TempoDown` and
+  `AlertmanagerDown` each now have a case that takes their target from up to down.
+- **The Watchdog's case feeds no input series at all.** It is the dead-man's switch the external
+  heartbeat monitor watches, and it is only a switch if nothing inside the platform can quiet it.
+  A first mutant (`vector(1)` → `vector(0)`) did *not* kill the case — an alert fires on any sample
+  returned, whatever its value — so the real mutant is an expression that returns **nothing**
+  (`vector(1) > 1`), and that one fails the case.
+
+### Verified — VLLMEndpointDown does not misattribute a node exporter
+
+- Its selector is `job=~"vllm|fleet"`, and the `fleet` scrape config also discovers node and DCGM
+  exporters, which looked like a critical "LLM endpoint down" for a downed node exporter. It is not:
+  the file_sd groups set `job` to `node`, `dcgm` or `vllm` explicitly, and those labels win — so
+  only the vLLM endpoints match. Confirmed by running a real Prometheus over the same shape rather
+  than reasoning about the precedence rules.
+
+### Added — the vLLM alerts proved to fire, ratchet 23 → 19
+
+- `VLLMEndpointDown`, `VLLMKVCacheNearFull`, `VLLMQueueBacklog` and `VLLMHighTTFT` now have replay
+  cases, each paired with the input it must ignore.
+- **One case pins an assumption this repo cannot check.** `vllm:kv_cache_usage_perc` is a *fraction*
+  (0–1) despite the `_perc` suffix — vLLM's own convention — which is why the rule compares against
+  `0.9` and the runbook says 90 %. The case states it: `0.95` fires, `0.85` does not, and a mutant
+  reading the threshold as a 0–100 percentage fails. If a future vLLM reported 0–100, the alert
+  would fire at 0.9 % usage and the quiet case is what would start looking wrong. The runbook now
+  says this too.
+
+### Verified — the RayServeTargetDown relabel was safe on every surface that joins on `service`
+
+- The previous entry changed a label after checking the route matchers. `service` is also a
+  `group_by` key, appears in the PagerDuty and Slack templates, and could have been filtered by a
+  dashboard or the chart. Checked all of them: routing is by `severity`/`alertname`; the templates
+  use it for display only (the alert now reads `serving`, which is more accurate); neither dashboard
+  that queries `ALERTS` filters by service; the chart adds no service filtering. Grouping changes,
+  which was the intent.
+- Also confirmed **every one of the 61 alerts carries a `service` label**, so no alert falls into an
+  empty-service group where the "critical mutes warning" rule would match unrelated alerts.
+
+### Fixed — a whole inhibit rule was inert for the serving plane
+
+- Alertmanager's second inhibit rule names four "X is down" alerts as sources that mute the derived
+  symptoms of the same component, scoped with `equal: ['cluster', 'service']`. **A source can only
+  mute alerts carrying the same `service` label.**
+- `RayServeTargetDown` carried `service: platform` while all twelve Ray Serve symptom alerts carry
+  `service: serving`. The rule could never match, so when the model server went down its symptom
+  alerts were **never muted** — the double-paging that rule exists to prevent.
+- The alert now carries `service: serving`, matching what it is meant to silence. Routing is by
+  `severity` and `alertname`, so this changes grouping and inhibition only, not where it pages.
+- `tests/unit/test_inhibit_rules_can_match.py` holds the two files against each other. Neither is
+  wrong read alone — the alert is valid, the inhibit rule is valid, and `amtool check-config` is
+  happy; only the pair shows it. Reverting the label fails the guard.
+- Found by writing the alert's first firing case and having it fail on the label I assumed.
+
+### Added — Ray Serve and the dataplane seam proved, ratchet 28 → 23
+
+- The two error-rate rules and the two latency rules now have cases, including the pair's
+  relationship: at 30% errors **both** rules match, and Alertmanager's inhibition — not the
+  expressions — is what stops the double page. That is the opposite of the gateway pair, where the
+  warning excludes the critical, and the cases now say which is which.
+- The latency cases build a real cumulative histogram so `histogram_quantile` interpolates inside a
+  bucket: everything in `(1s, 2s]` gives a p99 of ~1.99s, over the warning and under the critical.
+- A dataplane case pins the seam between its alerts: when the catalog cannot be read, every
+  per-source gauge disappears, so `DataplanePullFailing` and `DataplaneSourceStale` go **silent**
+  and `DataplaneCatalogUnavailable` is what must fire. Both halves in one scenario.
+
+### Added — the dataplane's four alerts proved to fire, ratchet 32 → 28
+
+- `DataplaneDown`, `DataplaneSourceStale`, `DataplanePullFailing` and `DataplaneCatalogUnavailable`
+  now have replay cases, each paired with what it must ignore.
+- **Two cases exist to pin behaviour a reader would otherwise "fix".** A source at *exactly* twice
+  its schedule is not yet stale — the comparison is strict — and a source with no schedule series
+  at all (pulled on demand, or disabled) can never read as stale however old it is, because the
+  join has nothing to match. The runbook already said the second one; **nothing had ever checked
+  it**, and a plausible-looking change that makes on-demand sources joinable now fails that case.
+- I wrote the first stale case with freshness `7200` against a `3600` schedule, and it quietly did
+  not fire: `7200 > 2 × 3600` is false. My input was the boundary, not the behaviour — so the
+  boundary is now its own case rather than a mistake I silently corrected.
+
+### Documented — EventDeadLettered clears while the events are still parked
+
+- It watches the dead-letter count **growing**, so it resolves fifteen minutes after the last event
+  is parked, whether or not anything was done about the ones already there. That is deliberate —
+  an absolute threshold would page forever over one parked event — but it means **the alert
+  clearing is not a sign the backlog is gone**. The runbook now says so, and points at
+  `exa events tail --dlq` as the only thing that does tell you.
+
+### Added — the event backbone's five alerts proved to fire, ratchet 37 → 32
+
+- `EventOutboxStalled`, `EventOutboxPoison`, `EventRelayFailing`, `EventConsumerLagging` and
+  `EventDeadLettered` each now have a replay case, and each is paired with the input it must ignore.
+- **The case worth having is the negative.** A dead-letter queue holding five parked events that is
+  **not growing** must stay quiet — otherwise one bad event pages forever and the alert is trained
+  out of existence. That is precisely why the rule reads `delta(...)` rather than an absolute
+  threshold, and a mutant that swaps it for `> 0` on the gauge now fails that case.
+- `EventConsumerLagging` names the consumer that is behind (`autopilot-follower`) while a healthy
+  one alongside it (`skipper-watch`) is ignored; dropping its `by (consumer)` grouping fails the
+  case, so the label in the message is pinned too.
+- Annotations were taken from what promtool actually rendered rather than transcribed — the
+  outbox-age message reads "waited 6m 40s" for 400 seconds, which is `humanizeDuration` doing its
+  job on a value no one had checked before.
+
+### Fixed — a one-in-three flake in the kind gateway test, and it was the harness
+
+- The allowed-request test intermittently saw an empty body. The diagnostic added the day before
+  answered it in one run: **HTTP 200 with nothing in it** — so authorization had succeeded and the
+  gateway was never at fault.
+- The cause is `kubectl run --rm -i`, which *attaches* to the pod: when the container exits before
+  the attach lands, kubectl captures **nothing** and still exits zero. The test now runs the pod to
+  completion, reads its logs and deletes it — deterministic instead of a race.
+- **Measured rather than assumed**: 2 failures in 6 runs before, 6 clean runs after. Under the
+  original rate, six clean runs would happen by chance about 9% of the time — good evidence
+  alongside a mechanism that is a documented `kubectl` behaviour, not conclusive on its own.
+- The stub upstream also now speaks HTTP/1.1 rather than `BaseHTTPRequestHandler`'s 1.0 default,
+  which is the right shape for a keep-alive proxy. **It was not the cause** — that was a hypothesis
+  that did not pay off, and its comment says so rather than taking credit.
+
+### Verified — all seven live targets now execute, 74 tests among them
+
+- `test_helm_workload_identity_kind_live.py` (4 tests) was the last file never run; it passes.
+  Every gated suite has now been executed at least once: prometheus 3, postgres-roles 15, ray 2,
+  pgvector 15, nats 8, redis 5, spire 18, helm-kind 8.
+
+### Fixed — the kind chart test ran against whatever image was lying around
+
+- `helm-kind-live` failed with a bare `Error: context deadline exceeded` after seven minutes. The
+  cause, once the failure was made legible: **both `gateway-authz` pods were `0/1 Running`** and
+  their logs showed `GET /readyz → 404`. The chart's gateway readiness probe was pointed at
+  `/readyz` on 2026-09-14; the image on the machine had been built on 2026-09-12 and had no such
+  route, so the pods could never become ready and `helm --wait` expired.
+- Not a chart defect and not a code defect — a **stale test image**. The fixture builds nothing and
+  skips only when the image is *absent*, so a stale one is silently tested. `make helm-kind-live`
+  now builds it from the current tree first, as `chaos-drills-kind` already did.
+- With the image rebuilt the suite goes from four errors in seven minutes to **four passing in
+  ninety seconds**.
+- **The real lesson is about mixed versions**, and it applies beyond the test: a chart whose probe
+  names a route the image does not serve produces pods that never become ready. The chart and the
+  image have to ship together.
+
+### Added — failures in the kind test now say what happened
+
+- `helm --wait` reports only `context deadline exceeded`. Seven minutes of waiting deserves better,
+  so the fixture now dumps `kubectl get pods`, describes every not-ready pod and tails its logs
+  before the teardown deletes the evidence. That dump is what identified the 404 in one run.
+- The allowed-request test used to fail with `IndexError: list index out of range` when the body
+  was empty. It now re-issues the request for its status code and says whether the gateway refused
+  (401/403) or the upstream answered with nothing (200). **That test failed on two runs and passed
+  on the third** — an intermittent the new diagnostic exists to characterise next time.
+
+### Fixed — two new targets died with `unbound variable` instead of saying what to set
+
+- `iam-live` and `lineage-live` each check for their configuration and print a sentence naming the
+  variables and where to get a reference broker. Neither sentence ever printed: this Makefile runs
+  recipes under `SHELL := /bin/bash -euo pipefail`, and `-u` aborts on a bare `$$VAR` **at the
+  presence test itself**. A presence test that dies when the thing is absent has tested nothing.
+- Fixed with `$${VAR:-}`, and both now print their guidance. Found by *running* the targets — `make
+  -n` expands the recipe and proves nothing about what bash does with it, which is exactly why the
+  previous entry's "every target works" rested on the three that had actually been executed.
+- `tests/unit/test_makefile_presence_tests_survive_nounset.py` catches the shape statically, and
+  fails if `-u` is ever dropped from `SHELL` (which would make its own reasoning obsolete).
+
+### Verified — six of the seven live targets run green; the seventh is honestly unresolved
+
+- `spire-live` passes: **18 tests** across SPIFFE attestation, workload identity and model-server
+  mTLS. It needed a longer look than the first attempt gave it — the attestation file builds and
+  starts the whole identity overlay before asserting, taking about three minutes on its own, so an
+  early timeout read as a hang. The guide now says to allow four minutes.
+- `helm-kind-live` **did not pass here**: `helm upgrade --install` returned `context deadline
+  exceeded` after seven minutes on a machine already running other workloads. The target's plumbing
+  is confirmed — it created the cluster and reached helm — but whether the chart deploys is
+  **unestablished**, not verified and not refuted. Recorded as such rather than rounded either way.
+
+### Added — three more unrunnable test suites given targets, and 48 tests run for the first time
+
+- Yesterday's guard was scoped to `tests/integration/*_live.py` and gates spelled `*LIVE*` — the
+  shape of the files that prompted it. It passed at zero while three more suites sat unrunnable,
+  because none matched that spelling: **`tests/unit/test_pgvector_store.py`** (nine tests on
+  pgvector/SQLite ranking parity), `EXAMLOPS_NATS_TEST_URL` and `EXAMLOPS_REDIS_TEST_URL`.
+- The guard now keys on the **property** — a test file that reads an environment variable with no
+  default — and on the *file* rather than the variable, which drops the two false positives
+  (`EXAMLOPS_POSTGRES_DR_DSN` and `EXAMLOPS_AGENT_DIR` both have fallbacks, so they gate nothing).
+- `make pgvector-live`, `make nats-live`, `make redis-live` each start their own container on an
+  **ephemeral** port, read it back with `docker port`, and remove it afterwards. A fixed port
+  collided with an unrelated pgvector already running on the machine — which is how that lesson
+  arrived.
+- **Every target was run, not dry-run.** 48 tests executed for the first time and all passed:
+  prometheus 3, postgres-roles 15, ray 2, pgvector 15, nats 8, redis 5. Nothing had rotted — but
+  nothing had been checking either, which is the point.
+
+### Verified — the skips in the ordinary run are all legitimate
+
+- Enumerated every skip in `make test-fast`. Besides the gated suites above: `promtool not
+  installed` (the tool is reached through Docker for `make alerts-check`), a Helm test needing a
+  cluster, an optional Kafka extra, and the agent suite's missing `langchain_core`.
+- One reads oddly and is correct: `test_known_gap_is_documented` reports *"got empty parameter
+  set"* because `KNOWN_GAPS` is **empty** — every Dockerfile build-context gap has been fixed, and
+  a sibling test fails if a fixed one is left in the list. A parametrised test with nothing to
+  parametrise is the healthy end state here, not a hole.
+
+### Added — every live test can now be run, and a guard keeps it that way
+
+- The `tests/integration/*_live.py` files prove what the unit suite cannot: what Prometheus does
+  with a DNS-discovered target whose container stops, what Ray really exports, whether the
+  per-service Postgres roles refuse the writes they should. Each is gated on an environment
+  variable so it skips in the ordinary run — correct, since they need Docker, a cluster or a broker.
+- **11 of 17 gates had no runner at all**: no `make` target, no CI job, nothing but a command in the
+  test's own docstring. A test nobody can run is documentation, not verification — it never
+  executes, so the claim it makes is unchecked and its rot is undetectable.
+- Seven targets added — `prometheus-live`, `ray-live`, `postgres-roles-live`, `spire-live`,
+  `iam-live`, `lineage-live`, `helm-kind-live` — each with a `make help` line saying what it needs,
+  and a section in the testing guide naming what each proves.
+- `tests/unit/test_live_tests_are_runnable.py` holds the count at **0**, with an anti-vacuity check
+  so the inventory cannot quietly become empty.
+- Found while *relying* on one of them: `test_prometheus_optional_targets_live.py` is the sole
+  verification that a stopped container stays a target with `up == 0`, which is what eleven "Down"
+  alerts depend on. Nothing had run it outside someone's terminal.
+
+### Fixed — a guard whose scope was "the rest of the Makefile"
+
+- `test_chaos_drills_are_documented.py` sliced the Makefile from `chaos-drills:` **to the end of the
+  file** while its docstring said "the drills the chaos targets run". Identical only while nothing
+  lived below it; the new targets swept eight unrelated tests in and demanded game-day sections for
+  a Prometheus discovery check.
+- It now reads the two chaos targets' own recipes. Verified it kept its teeth rather than losing
+  them: adding an undocumented drill *inside* `chaos-drills` still fails two of its tests.
+
+### Verified — the `up == 0` design, and the seam sweep
+
+- Every one of the eleven "Down" alerts is `up{…} == 0`, and none uses `absent(up)` — so a target
+  that vanishes from discovery would be invisible. It cannot vanish: the core jobs are
+  `static_configs` (always a target, `up` = 0 when the scrape fails), and the DNS-discovered ones
+  are opt-in services whose absence must *not* alert. A stopped container keeps its target because
+  Prometheus holds the last good lookup — asserted in a comment, and proven by the live test above,
+  which stops the container and re-checks through several DNS refreshes.
+- Swept every alert with an exclusion clause for another gRPC-shaped seam. The rest are the
+  first-appearance idiom, and the one real pair (`RayServeMetricsMissing` / `RayServeTargetDown`)
+  partitions `up == 1` and `up == 0` exactly.
+
+### Fixed — a total gRPC serving outage fired no alert at all
+
+- `ServingEndpointsUnhealthy` (warning) covers both serving clusters, `ray_serving` and
+  `ray_serving_grpc`, but deliberately **excludes** the total outage (`… and healthy > 0`) so it
+  does not double-fire with the critical alert. `ServingNoHealthyEndpoints` (critical) selected only
+  `ray_serving`.
+- So every endpoint of the gRPC cluster could fail its health check and **neither alert fired**: the
+  warning's `healthy > 0` was false, and the critical did not select the cluster. `ray_serving_grpc`
+  is a real routed cluster, not a placeholder.
+- The critical alert now selects both, matching its sibling. That symmetry is load-bearing rather
+  than cosmetic — anything the critical omits has no critical alert at all, because the warning
+  hands the total-outage case to it — and both the rule and the runbook now say so.
+- Found by asking which alerts compare two metrics, then reading the pair together rather than each
+  on its own.
+
+### Verified — the `0` sentinel cannot collide with a real generation
+
+- Yesterday's "a replica that has applied no snapshot publishes `0`" rests on no real generation
+  ever being `0`. Published three snapshots through the real code path: they come back `1`, `2`, `3`.
+  Generations are rowids and start at one.
+
+### Fixed — the most-behind replica there can be was invisible to ServingSnapshotLagging
+
+- The alert is `max(published) - min(applied) > 0`. A replica that has **applied no snapshot at
+  all** published no `applied_generation` series — the gauge was written only when a generation
+  existed — and `min()` over no series is an empty vector, so the whole expression was empty and
+  the alert could not fire.
+- That replica is not slightly behind: it is serving from its fallback registry while a snapshot
+  exists, which is the worst case the alert was written for.
+- Replicas now publish `0` for "none applied". Generations are rowids starting at 1, so `0` is
+  unambiguous, and the difference then reads as the full published generation.
+- **This reverses a deliberate earlier choice**, and the test that encoded it has been updated
+  rather than deleted: withholding the gauge read as "nothing to claim", which is true of the
+  replica and false of the monitoring. A state that cannot be represented cannot be alerted on.
+- Found by writing the alert's first firing case — the fourth defect in this series that a replay
+  surfaced and no amount of reading the expression would have.
+
+### Verified — nothing else keeps a last-known value in silence
+
+- Swept every gauge refreshed inside a `try` whose handler neither resets it nor reports the
+  failure. **Two matches, both correct and both already documented as such**: a non-numeric model
+  version is skipped rather than published, and the dataplane's embedding baselines leave a gauge
+  unset rather than publishing a zero that "would draw a floor on the panel and read as a real
+  measurement". The approval and event-backbone gauges fixed earlier were the only remote-read
+  cases.
+
+### Added — the event-backbone gauges now say when they are stale
+
+- `EventConsumerLagging` and `EventDeadLettered` read gauges refreshed from JetStream by the relay
+  loop. A failed read deliberately **keeps the last values** rather than publishing zeros — zero lag
+  is the reading that means "healthy", and an unreachable broker must not be able to produce it.
+- That choice is right, and it left both alerts judging numbers of **unknown age** with nothing
+  saying so. The failure was logged and counted nowhere. The approval gauges on the same endpoint
+  have had exactly this signal for longer (`metrics_scrape_errors` → `ApprovalMetricsUnreadable`);
+  the backbone had no equivalent.
+- New counter `examlops_event_backbone_read_errors_total` (unlabelled, so the series exists from
+  import and the first outage is catchable) and alert **EventBackboneMetricsUnreadable**, with a
+  runbook section. `EventConsumerLagging`'s section now opens by telling the operator to check the
+  gauge is fresh before acting on the number.
+- The alert arrived **with** its firing and quiet cases, so the unproven-alert ratchet stays at 38
+  while the rule count goes to 61 — which is the ratchet doing its job rather than a figure to
+  celebrate.
+
+### Verified — the earlier sweeps did not have the blind spot that produced yesterday's false finding
+
+- Yesterday a detector judged a fragment of each alert expression and reported three alerts as
+  broken when they were not. Re-derived the metric names from all 61 rules with a tokenizer that has
+  **no lookahead** and diffed against what the original sweep matched: **no name escaped it**. The
+  "every alert's metric is emitted" verdict stands on the whole expression, not part of one.
+
+### Changed — one way of catching a counter's first event, instead of two
+
+- Yesterday's `RetrainDispatchedButNotRecorded` fix added a dedicated unlabelled counter so the
+  alert could fire on a first occurrence. **The platform already had an idiom for this** — an
+  `or (X unless X offset W)` clause selecting a series that exists now and did not a window ago —
+  on three serving alerts whose Ray counters *cannot* be pre-created (`Counter.inc()` raises on a
+  value of `0`). I had not looked before adding a metric.
+- The extra counter is removed and the alert uses the idiom. The deciding argument is not tidiness:
+  a second tally of the same event is a **divergence risk**, and the bug fixed two days earlier in
+  the bridge was exactly two tallies of one quantity disagreeing. There is now one counter and one
+  way of asking this question.
+- Proven by replay in both places, and the clause is load-bearing: removing it from the retrain
+  alert fails the unseeded case, and removing it from `InferenceReplicasLost` fails two.
+- The runbook now states the whole rule in one place: pre-create the label values where they are
+  enumerable at startup (`initialize_command_outcomes`, the Art. 12 audit actions); use the `unless
+  … offset` clause where they are not (model × dataset, and every Ray counter).
+
+### Verified — the previous fix sat on a single choke point
+
+- `examlops_retrain_requests_total` is written from exactly one place, and that place is
+  `record_retrain`. Checked by grepping callers rather than definitions, which is the check that
+  would have caught a second writer bypassing the new counter.
+
+### Fixed — RetrainDispatchedButNotRecorded could not fire on the occurrence it exists for
+
+- The alert read `examlops_retrain_requests_total{outcome="dispatched_unrecorded"}`. That counter is
+  labelled by **model and dataset**, so the series appears when it is first incremented — arriving
+  already at `1`, with nothing earlier for `increase()` to subtract from. For most deployments the
+  first `dispatched_unrecorded` is the **only** one there will ever be, so the alert was effectively
+  silent for its whole reason to exist.
+- The repo had already reasoned this out once: `initialize_command_outcomes` exports every
+  `(kind, outcome)` at zero so `ControlPlaneCommandDead` can catch the first dead command, and says
+  so in its docstring. The same treatment is impossible here — model × dataset is unbounded and
+  cannot be enumerated at startup.
+- So the rare failure gets a dedicated **unlabelled** counter,
+  `examlops_retrain_dispatched_unrecorded_total`, created when the process imports and therefore
+  present before anything happens. The labelled outcome stays for the per-model breakdown.
+- The promtool case from two days ago **seeded the series at zero**, which encoded the assumption
+  instead of testing it. It now points at the counter that really is seeded, and a paired case pins
+  the negative: the same event on an unseeded series does *not* alert.
+
+### Verified — every alert that must catch a first event, not just the two I had looked at
+
+- Swept all 16 `(alert, counter)` pairs whose threshold is `> 0`. Nine read unlabelled counters
+  (created at import — safe), three read third-party Envoy series, and two were already pre-created
+  deliberately (`control_plane_command_outcomes_total`, and the Art. 12 audit actions).
+- ~~**Three remain, all in serving**~~ — **this was wrong, corrected the next day.** All three
+  (`RayServeReloadFailures`, `InferenceRetryBudgetSpent`, `InferenceReplicasLost`) already carried an
+  `or (X unless X offset W)` clause that catches a series' first appearance. The sweep truncated
+  their expressions at the leading `increase(...)` and never saw it. Proven by replay since: each
+  fires on an unseeded series.
+
+### Added — the bridge alerts proved to fire, and the denominator fix pinned by replay
+
+- The unproven-alert ratchet goes **41 → 38**: `SeanerBUSHighErrorRate`,
+  `SeanerBUSTelemetryDropping` and `SeanerBUSTelemetryWritesFailing`.
+- The error-rate cases assert the **figure**, not just the firing: 10 % of calls failing must read
+  `10%`, and every call failing must read `100%`. Simulating the previous success-only denominator
+  makes both fail — the first renders `11.11%` and the outage case cannot be expressed at all. The
+  replay now guards yesterday's emitter fix.
+- The telemetry cases pin why `increase(...) > 0` can catch the *first* dropped record here:
+  both counters are unlabelled, so `prometheus_client` creates them at zero on import. Checked
+  against the bridge's real registry rather than assumed — the labelled `seanerbus_inferences_total`
+  has no series until its first inference, which is the distinction that matters.
+
+### Verified — the emitter fix reached more consumers than the previous entry claimed
+
+- It said four. There are **eight**: the four ratio consumers plus four panels that display the
+  counter directly — *Total Inferences (24 h)* and *Inference Rate by Model (req/s)* on two
+  dashboards. Those were **also** wrong before, and in a way that flattered an outage: counting only
+  successes, the throughput panel fell toward zero while the bus was still sending requests.
+- Nothing outside Prometheus reads the metric — the CLI and the bridge's own `/stats` use the
+  internal tally, which already counted every call and now agrees with the exported counter.
+
+### Fixed — the bridge's error rate was errors ÷ successes, so 90 % failures read as 900 %
+
+- `seanerbus_inferences_total` is documented — in its own help text, and by the bridge's internal
+  `_bridge_stats["inferences_total"]`, which counts every branch — as *every dispatched call*. The
+  Prometheus counter was incremented **after `raise_for_status()`**, so it counted only successes,
+  while `seanerbus_inference_errors_total` counted the failures.
+- Everything dividing one by the other therefore computed errors ÷ successes and called it an error
+  rate: **11 % at a true 10 %, 900 % at 90 %, and `+Inf` during a total outage** — on three panels
+  declaring a `percent` unit, at the moment an operator is most likely to be looking.
+  `SeanerBUSHighErrorRate` kept firing (its `clamp_min` denominator saved it from the division), so
+  nothing was missed; the number was simply wrong.
+- The counter now increments beside each `inferences_total`, which is the one place that decides
+  what a dispatched call is — so the metric, its name, its help and the internal tally agree, and
+  all four consumers became correct without touching an expression.
+- One document had it right all along: `docs/guides/architecture.md` said "incremented on every
+  **successful** inference". The docs described the behaviour and every consumer assumed the name.
+
+### Verified — every panel that declares a bounded unit, not only the ones titled "burn"
+
+- The previous entry's guard only evaluated panels whose title says "burn". Generalised to the real
+  property — *a panel declaring `percent` or `percentunit` is promising a range its expression must
+  keep* — and swept all 13 such targets. That is what surfaced the bridge ratio above.
+- The remaining `examlops_*` ratios all name their denominator's label values and clamp it, so they
+  stay inside their declared range; `Error Budget Remaining` can go negative when a budget is
+  overspent, which its `min: 0` gauge floors at zero — recorded as understating rather than lying.
+
+### Fixed — the SLO burn-rate panel was permanently red, and measured traffic rather than reliability
+
+- The **SLO Burn Rate (1 h / 6 h / 24 h)** panel computed
+  `sum(rate(errors[1h])) / (0.005 / (30 * 24))` — an error *rate* divided by "budget per hour". That
+  is the same dimensional error the two SLO **alerts** were fixed for earlier; it was left behind in
+  the panel. Found by checking whether yesterday's alert fix had reached the dashboards.
+- A service comfortably inside its SLO — 0.1 % errors, a true burn rate of **0.2×** — rendered
+  **1440**, far past the panel's own red threshold of 14.4. The panel was red whatever the service
+  did, and *a panel that is always red teaches operators to ignore it*.
+- It also had **no denominator**, so the number followed traffic volume rather than reliability: two
+  services at an identical 0.2× burn showed 1440 and 144000 because one served more requests. A real
+  outage (20× burn) and a healthy busy service both showed 144000 — indistinguishable.
+- All three targets now compute what the alert computes: errors ÷ valid events ÷ the 0.5 % budget.
+  The panel's thresholds (yellow > 1×, red > 14.4×) were correct all along and needed no change —
+  they are burn-rate multipliers, which is what makes the old expression's output absurd.
+- Guarded by evaluation, not by grep: `test_grafana_panels_can_show_data.py` substitutes a traffic
+  mix into every burn panel and asserts the multiple it renders (0.1 % errors → 0.2×, 10 % → 20×,
+  and the same 0.1 % at 100× the traffic → still 0.2×). The broken form contains every token the
+  correct one does, so only evaluating it tells them apart.
+
+### Fixed — a critical SLO page whose own description contradicted its summary
+
+- `SLOErrorBudgetFastBurn` and `SLOErrorBudgetSlowBurn` announce a **burn rate** — their summaries
+  say `> 14.4×` and `> 3×`, the runbook explains them in multiples, and `exa slo status` prints
+  `burn_rate` defined as *error rate ÷ allowed error rate*. The expressions yielded the **error
+  ratio** instead.
+- So `$value` was the wrong quantity, and `humanize` made it worse: it renders small numbers with
+  SI prefixes, so a **16× burn printed as `80m×`** — against a summary reading `> 14.4×`. An
+  operator paged at 3 a.m. by a `critical` alert got a number that looks like *milli* (or like
+  minutes) and contradicts the line above it.
+- Both expressions now divide by the 0.5 % budget, so the value *is* the burn rate and the
+  threshold is the multiplier the summary already quoted. **The meaning of the thresholds is
+  unchanged** — `0.072 = 14.4 × 0.005` and `0.015 = 3 × 0.005` — so nothing fires differently; only
+  the reported number changes, from `80m×` to `16×`.
+- Found by writing the alert's first firing case: the replay prints what the annotation actually
+  renders, which reading the expression does not.
+- An existing guard, `test_burn_rate_is_a_ratio.py`, asserted the old shape (`threshold ==
+  multiplier × budget`) and went red. Its **six behavioural scenarios all still passed** — which is
+  what showed the change altered the reported number and not which traffic fires. Its threshold
+  assertion was rewritten to the stronger invariant the new form allows: the threshold *is* the
+  advertised multiplier, and the expression must divide by the budget. Removing that divisor now
+  fails two tests.
+
+### Added — the unproven-alert ratchet goes 43 → 41
+
+- Both SLO alerts now have firing cases, each paired with what they must ignore: serving inside its
+  budget (0.4 % errors, a 0.8× burn) alerts on neither, and a 5× burn is caught by the six-hour
+  window and *not* the one-hour one — the split that is the point of having two.
+- One case pins a fix rather than a threshold: a 9× flood of `invalid` requests must not dilute the
+  denominator and drag the burn rate under the line during a real serving outage.
+
+### Added — four more alerts proved to fire, including two that guard earlier fixes
+
+- The unproven-alert ratchet goes **47 → 43**. Each case was chosen where the *expression* could be
+  wrong, not where the threshold is easy to hit:
+  - **PendingApprovalQueueLarge** and **ApprovalsStale** now alert on a queue this process never
+    watched accumulate. Both gauges are re-derived from the store on every scrape precisely because
+    a restarted control plane used to publish `0`, and neither alert can fire on `0` — that fix
+    lived in a docstring and a Python test, and nothing had ever replayed the alert.
+  - **ApprovalMetricsUnreadable**, the alert that says the two gauges above are not to be trusted.
+  - **HighRetrainErrorRate** keeps firing under a 9× flood of `throttled` requests. Its denominator
+    names `success|error` rather than summing the whole counter; reverting that in a mutant makes
+    the new case fail with `got:[]`, i.e. the alert goes silent during a real server-side failure
+    exactly as it did before the fix. **The case now guards the fix.**
+- Each is paired with the input it must ignore: a queue *at* the threshold, an empty queue whose
+  age is `0` (which must not read as "waited forever"), scrapes that all succeed, and a healthy
+  10% error rate.
+
+### Verified — the ratchet cannot be sidestepped through the chart
+
+- The ratchet reads Compose's `alert_rules.yml`, so an alert added only to the chart's copy would
+  be invisible to it. An existing guard already holds the two files **byte-identical**, so that
+  route is closed — checked rather than assumed.
+
+### Added — a ratchet on alerts nobody has ever shown to fire
+
+- `promtool check rules` proves a rule *parses*; a separate guard proves its metric is *emitted*.
+  Neither shows the expression produces an alert for the condition it describes. Measured:
+  **only 13 of 60 alerts had ever been demonstrated firing.** Found by shipping
+  `AuditEventsDropped` the previous day and then asking what had made it fire — nothing had.
+- `tests/unit/test_alert_rule_tests.py` now carries `UNPROVEN_ALERT_CEILING`, over the number of
+  alerts with no case carrying `exp_alerts`. It may only go **down**: a new alert without a firing
+  case pushes it up and fails the build. A second test fails if the ceiling drifts *above* the real
+  count, so it cannot be quietly left slack. The remaining 47 are a backlog to work through, not a
+  reason to switch the guard off.
+- Two alerts proved this round, both previously unproven and both recent additions of ours:
+  **AuditEventsDropped** (fires on the first lost event; stays quiet at zero; and a paired case
+  shows the *unseeded* series would **not** alert — which is precisely why the control plane
+  pre-creates the Art. 12 actions at zero) and **RetrainDispatchedButNotRecorded** (fires on its
+  own outcome; a successful retrain does not trip it).
+- `docs/components/grafana.md` states the requirement and both traps it exists to catch.
+
+### Verified — AuditEventsDropped actually fires, by replay rather than by reading
+
+- The previous entry claimed the alert would fire. A valid expression over an existing counter is
+  not that proof. It is now replayed through `promtool test rules`, and raising its threshold so it
+  can never fire makes the replay **fail** — so the case bites.
+
+### Fixed — the signal that the audit trail is incomplete had no way of reaching anyone
+
+- `examlops.data.audit.dropped_audit_events()` counts audit writes that were attempted and lost.
+  Two guides named it as **the** signal that a window's coverage figure is unsound — and it had
+  **no caller anywhere**. No metric, no endpoint, no alert, no dashboard. Observing it would have
+  meant attaching a debugger to a running container.
+- The control plane now publishes it as `examlops_audit_events_dropped_total{action=…}` on
+  `/metrics`, and **AuditEventsDropped** fires on a *single* lost event — one is already the
+  incident, so there is no rate threshold. New runbook section, and both guides corrected: they
+  described an observable control that did not exist.
+- **The five Art. 12 actions are pre-created at zero.** An alert cannot fire on a series that does
+  not exist yet, so without this the series would have been created by the very outage it exists to
+  report — the same defect the approval gauges on this endpoint were fixed for earlier.
+- Scope stated plainly in the docs rather than left to be assumed: this covers the **control
+  plane**. The CLI, agent and bridge keep their own per-process tally and reach the log, not this
+  alert.
+
+### Verified — both alert detectors, proven on a known-positive before their result was believed
+
+- The previous entry reported two clean sweeps of the alert rules. A clean sweep is a claim about
+  the detector, so each was re-run against a copy of the rules carrying a deliberate fault: an
+  alert on `examlops_totally_made_up_metric_total`, and one selecting
+  `examlops_gateway_decisions_total{status="599"}`. **Both were caught**, so the clean verdicts
+  stand. (The detectors had each already been wrong once, in both cases by matching the rendered
+  series name instead of what the source contains.)
+
+### Fixed — a failed read said no authored code governs this project's numbers
+
+- The Providers card rendered *"No authored providers yet"* whether none was registered or the read
+  had failed. That sentence is a claim about **which Python computes this project's cost, carbon and
+  drift figures**: an operator who reads it concludes the built-in formulas are in force, when an
+  authored provider may be active and governing every number on the page. It now says the list could
+  not be read, and points at `exa providers list`.
+- This is the third and last panel from the sweep of every page *and* component. The rule they share
+  is now written down once, in
+  [Empty and unreadable are different answers](dashboard/usage-guide.md), with the three panels and
+  what each one's empty state actually asserted — rather than repeated in each guide.
+
+### Verified — the alerting layer, and two things that turned out to be sound
+
+- **Every alert rule's metric is emitted.** 59 rules were checked for a metric name nothing in the
+  tree produces — a control with no callers. The only names without an emitter are Envoy's and
+  vLLM's, which those binaries export themselves. Clean.
+- **Every alert's label *values* are emitted too** — the failure PromQL cannot catch, since
+  `{status="503"}` against a metric that only ever emits `200` is valid and silent forever. Checked
+  against a live scrape of `/metrics`, not against the source: all five gateway decision statuses
+  are present from the start, including `503`.
+- **`/readyz` was re-verified against a real store rather than a patched one.** A corrupt SQLite
+  file, an unwritable path, and a Postgres DSN with nothing listening each report `starting` with
+  the true cause logged; a fresh empty store reports `ok`, because a platform that has issued no
+  keys is working, not broken. Pinned as a test — the earlier ones patched `get_virtual_key`, which
+  only ever proves the branch is wired.
+- **The dashboard Config page cannot erase config after a failed read**: its save sends only keys
+  whose value differs from what was loaded, so an empty form produces an empty payload.
+
+### Fixed — the serving gateway's readiness probe could not tell a working replica from a dead one
+
+- `gateway-authz` had **one** endpoint, `GET /healthz`, returning a constant `{"status": "ok"}`,
+  and the Helm chart pointed **both** the readiness and the liveness probe at it. So it had no
+  readiness signal at all.
+- What that costs: a replica that has never reached its credential store refuses **every** request
+  with `503` (the gateway fails closed, and the verified-key cache is empty because nothing ever
+  verified). Readiness said `ok` anyway, so Kubernetes kept it in the Service — and a rolling
+  update that shipped an unreachable store replaced working replicas with ones that authorize
+  nothing and **completed as a success**.
+- New `GET /readyz` performs the real read path with a digest no key can hash to: a reachable store
+  answers "no such key", an unreachable one raises. The chart's readiness probe now uses it, and
+  the Compose healthcheck follows, so `depends_on: service_healthy` waits for a gateway that can
+  actually authorize rather than one that is merely listening.
+- **The answer latches, deliberately.** After the first success a later outage must not un-ready
+  the replica: the store is shared, so every replica would leave rotation together and clients
+  would get connection errors instead of a `503` they can read — and the key cache is what carries
+  verified traffic through a blip. `/healthz` stays constant for the same reason: it is liveness,
+  and a restart discards that cache.
+
+### Verified — `/healthz` on the agent, executed rather than read
+
+- The previous entry's agent `/healthz` change was covered by tests that **skipped** in the shared
+  dev venv (no `langchain_core`), so nothing local exercised it. They now stub only the bridge's
+  import-time symbols — which `/healthz` never touches — and run the real route everywhere:
+  `degraded` with a count of 2 for a map with two bad entries, `ok` for a clean one, and no
+  principal name in either body. A mutant that leaks the reasons is caught.
+- A sweep of every health/readiness route in the tree (`platform/`, `serving/`, `pipelines/`) found
+  **21**, of which only three returned a literal. Two are the control plane's `/ready` and `/livez`,
+  both correct: they are liveness, and the chart already probes readiness at the computed `/readyz`.
+  The third was the gateway, above. The dataplane's Compose healthcheck was checked against its
+  routes and does hit a real, computed `/ready`.
+
+### Fixed — a partly-rejected agent credential map looked exactly like a correct one
+
+- `AGENT_API_KEYS_JSON` is validated entry by entry, and a bad one is ignored: a non-string value,
+  an empty value, an empty principal name. Refusing them is right — the alternative is authorizing
+  something nobody wrote, and a map that does not parse at all deliberately leaves authentication
+  **on** rather than off. **Doing it silently was not right.**
+- The failure is *per principal*, which is what made it invisible. Provision five principals with
+  one bad value and four work: the service starts, answers, and reports healthy, while the fifth's
+  `401`s are indistinguishable from a wrong token. Verified by execution —
+  `{"alice": "…", "bob": 123, "carol": "…"}` resolves to `alice` and `carol`, with
+  `auth_misconfigured()` returning `False` and nothing logged anywhere.
+- Now: each refused entry is logged once at `WARNING` naming the principal and the reason,
+  `skipper.auth.credential_config_problems()` returns them in-process, and `GET /healthz` answers
+  `{"status": "degraded", "credential_config_problems": N}` instead of an unconditional `ok`.
+- **Credential material appears in none of them, and `/healthz` reports only a count** — it is
+  unauthenticated, and which principals a centre provisions is not something it should disclose.
+  The named reasons go to the log, which is already a trusted surface.
+
+### Verified — the traffic fix's blast radius, and the sibling surface
+
+- `useSetModelTraffic` has exactly one caller, so the previous entry's fix covers the traffic
+  split's only write path.
+- The separate **Traffic** console (A/B tests, shadow deployments) was checked for the same defect
+  and is already honest: it takes `error`, renders it, and gates its list on `data &&`, so it never
+  claims "No A/B tests" over a read that failed. Its form state is fixed defaults rather than
+  seeded from the read, so it cannot carry one model's values to another.
+
+### Fixed — a failed read told the operator traffic was 100% Production, and armed the wrong weights
+
+- The MLOps console's **traffic-split** panel bound `data` and dropped `error`, so a refusing
+  datastore produced two different dishonest answers from the same line:
+  - a **viewer** was told *"No traffic split set (100% Production by default)"* — not an absence,
+    but a positive claim about where live inference traffic is going;
+  - an **admin** who had selected a *second* model was left with the *first* model's weights in the
+    editor. The panel is not remounted per model and its seed only runs when `data` arrives, so the
+    stale weights stayed at a valid sum of 100 — which is exactly the condition that enables
+    **Set split**. One click would have written one model's live routing onto another, with no
+    error shown at any point.
+- The panel now renders neither the weights nor the editor when the read failed, and says so:
+  *"The traffic split could not be read — this is not a statement that none is set."*
+- `docs/dashboard/usage-guide.md` also described this console as **read-only**. It is not: the
+  traffic panel is an admin write, and the page now says so and lists both traffic actions.
+
+### Verified — the shape of this class, measured rather than assumed
+
+- The one-sentence property is narrower than "discards the error": **a component that renders a
+  sentence asserting records are absent, on a read that failed.** Of 168 files, 49 bindings discard
+  the error, but most render no such claim — search filters (*"No matches"*, *"No results for …"*)
+  and `<option>` labels (*"— none (provision only) —"*) are not statements about stored records.
+- **No guard was added, deliberately.** The narrowest honest version of it — an editor seeded from a
+  read whose error is discarded — has **9** hits, of which 8 are list-and-delete panels where a
+  failed read simply yields no rows to act on. A guard that is 8 parts allowlist is one that gets
+  switched off; the remaining hits are recorded as a worked queue instead.
+
+### Fixed — a failed read told the operator no technical file had ever been saved
+
+- The Compliance page's **saved-versions** panel defaulted its query to `[]` and rendered *"No saved
+  version yet. A declaration of conformity rests on a saved version with no gaps."* — a statement
+  about a model's regulatory record, produced by a read that failed. The page's *register* was
+  fixed for exactly this earlier; this panel, one component over, was not.
+- It now distinguishes the two, with wording that says which it is: *"The saved versions could not
+  be read — this is not a statement that none exist."*
+- **A sweep of all 43 pages found exactly one such destructuring, and this was it** — but that
+  sweep looked only in `pages/`, and the 55 files in `components/` render panels of their own.
+  Corrected the next day by the wider sweep in the entry above: the claim held for pages and was
+  never established for the tree.
+
+
+### Fixed — the CLI workspace listing stopped at 2000 files and said nothing
+
+- `GET /api/v1/cli/workspace` breaks out of its walk at 2000 entries and returned a full-looking
+  list, so an operator hunting for the file a command had just written could conclude it was never
+  produced. The cap itself is right — the endpoint must not stream an unbounded tree — but a
+  truncated answer has to admit it is one.
+- The response now carries `truncated` and `limit`. The count is also taken from the files actually
+  collected rather than the loop index, so symlinks and directories skipped along the way no longer
+  eat into the budget.
+
+### Verified — several security and lifecycle properties, checked rather than assumed
+
+- **The previous entry's own fix, attacked first:** `_captured()` reads a manifest shape I had only
+  ever fed it from my own stubs. Checked against a manifest `create_bundle` really produced — it
+  recognises a real `sqlite` tier and correctly says no for a tier the bundle holds nothing for. A
+  false refusal there would have blocked every upgrade, which is worse than the bug it replaced.
+- **CLI-console caps:** all ten `EXAMLOPS_DASHBOARD_CLI_*` knobs are read *and* enforced, including
+  the upload limit, which reads `limit + 1` bytes rather than buffering the body.
+- **Workspace path containment:** `contain_path` resolves before comparing, so a symlink inside the
+  workspace pointing at `/etc/passwd` is refused rather than followed — executed, not read, and
+  already covered by an existing test.
+
+
+### Fixed — on Postgres, the pre-upgrade backup held none of the data being migrated
+
+- The previous entry stopped an upgrade whose backup captured *nothing*, and allowed `partial`
+  through on the reasoning "at least one requested tier was captured". That reasoning has a hole,
+  and it is the **default configuration of the enterprise backend**.
+- `apply()` defaulted to `tiers=["sqlite", "config"]` on every engine. Under
+  `EXAMLOPS_DB_BACKEND=postgres` the sqlite tier skips the platform DB **on purpose** — its state is
+  in Postgres, dumped by the `postgres` tier, which that default never requested. The config tier
+  succeeded, so the bundle was `partial`, so it was allowed through: a breaking migration ran against
+  Postgres with a rollback point containing none of the migrated data.
+- The sqlite tier already argues this exact point about the file it declines to copy: *"backing up
+  the leftover file here would produce a bundle that looks complete and restores nothing."* The
+  bundle-level default was doing what the tier refuses to do.
+- Two changes, because asking for the right tier is not the same as getting it:
+  - the default tier list is chosen from the engine (`postgres` or `sqlite`, plus `config`);
+  - the upgrade then refuses unless the manifest shows the platform-state tier actually **captured**
+    something — so a requested `postgres` tier that found no `pg_dump` still stops the upgrade.
+- A config tier with nothing to snapshot still lets the upgrade run; that case must not be blocked,
+  and it has its own test.
+- **A stub of mine was lying and only this surfaced it**: the iteration-129 fixture returned
+  `overall_status: "ok"` with an empty manifest, which no real bundle does. Made consistent.
+
+
+### Fixed — an upgrade could migrate production data with no rollback point
+
+- `exa upgrade apply` backs up **before** it migrates, and refused to continue only when the bundle
+  reported `overall_status: failed`. A bundle whose every requested tier was **skipped** reports
+  `skipped` — a directory with a manifest and no data in it — so the breaking migration ran with no
+  rollback point at all. The same distinction the restore path drew earlier: a tier that captured
+  nothing is not a tier you can restore from.
+- Both `failed` and `skipped` now stop the upgrade. `partial` is deliberately allowed through — at
+  least one requested tier was captured, and refusing it would block every instance whose config
+  tier simply has nothing to snapshot.
+- **The refusal reached the payload but not the person.** The CLI's failure branch keys on
+  `pending_after`, which a pre-flight refusal never sets, so the run printed a green
+  `✓ Pre-upgrade backup: … (skipped)` and exited 1 with nothing said. The reason is now printed, and
+  that status line is no longer a tick when the bundle captured nothing.
+
+### Fixed — `admission.stats()` promised `int` values and returned `None`
+
+- Residue from two entries ago: the annotation said `dict[str, int]` while the new
+  `oldest_queued_age_s` is `None` on an empty queue. mypy could not catch it, because the helper it
+  delegates to returns `dict[str, Any]` — so the false promise reached a consumer, which summed the
+  values and raised. The annotation is honest now and the docstring states the mixed value space
+  outright, since that mix is what makes summing dangerous.
+
+
+### Fixed — the admission console 500'd on an empty queue (a regression from the previous entry)
+
+- Adding `oldest_queued_age_s` to `admission.stats()` broke a consumer I did not check. The
+  dashboard's `GET /api/v1/admission` computes `total = sum(int(v) for v in stats.values())`, so the
+  new field — `None` when nothing is queued — raised `TypeError`, **outside** the fail-open `try`,
+  on the commonest state of the page. With something queued it was quieter and worse: the wait in
+  seconds was added to the item count, so one item waiting five minutes read as a total of 301.
+- The endpoint's own promise is "never a 500". The total is now summed **by name** over the five
+  count states, inside the `try`, and the age is returned in its own `oldestQueuedAgeSeconds` field
+  rather than dropped — so the console can show what the CLI shows. A field added to `stats()` later
+  is inert here rather than silently counted, which is asserted by its own test.
+- **The repo's existing test caught this; I had not run it.** `make test-fast` covers `tests/unit/`
+  only — the dashboard backend suite runs under `make dashboard-check`, and iteration 127 changed a
+  *library* function without running its consumer's suite. Changing shared code means running the
+  suites of everything that imports it, not just the one nearest the edit.
+
+
+### Fixed — `exa admission submit` accepted work nothing would ever do
+
+- `examlops.admission` is a facade whose `dispatch` is **injected**, and nothing in the platform
+  calls `worker_step`/`drain`. The control plane runs its own admission accounting directly on the
+  `admission_queue` table rather than through the facade. So an item submitted via
+  `exa admission submit` or the dashboard's `POST /api/admission` is enqueued durably and **never
+  claimed** — verified by execution, not inference.
+- The CLI advertised it as *"Submit throttled, fair-shared work"* with a `retrain` example, and its
+  help said the item is *"drained under the global + per-tenant caps"* without saying by what.
+- **The instrument was the real gap.** `exa admission stats` reported counts only, so `{"queued": 1}`
+  from a stranded queue is indistinguishable from a queue that is simply busy this second. Stats now
+  also report **`oldest_queued_age_s`** (`None` when nothing is queued) — a rising wait against a
+  flat `running` is exactly the signature of a queue nothing is draining.
+- `submit` now says the item waits for a worker and points at `exa admission stats`; the CLI
+  reference and the control-plane runbook say the same. Nothing was removed: the facade is correct
+  and useful to whatever embeds it — it just must not imply that submitting is dispatching.
+
+### Changed — regenerated CLI reference and capability atlas
+
+- Editing a command's docstring changes two **generated** surfaces, and the repo's own guards caught
+  it: `test_the_generated_cli_reference_is_not_stale` and `test_atlas_is_up_to_date` both failed
+  until `make docs-cli` and `make docs-explore` were re-run. Worth remembering as a rule — a
+  docstring edit is a documentation build, not a code comment.
+
+### Verified — the admission fairness guarantee itself is sound
+
+- Read before judging (the previous entry's lesson): `claim_next_admission` runs the whole
+  select-and-claim inside a RESERVED write lock, so two schedulers cannot hand out the same slot;
+  max-min fairness picks the tenant with the fewest running; and a crashed worker's `running` row
+  is recycled by TTL. No TOCTOU on the per-tenant cap.
+
+
+### Added — two SSRF defences that were correct and untested
+
+- A sweep of the dataplane's egress guard found **no defect** — the control is reached by every
+  connector, and the HTTP backend connects to the address the check approved rather than to the
+  name, so there is no DNS-rebinding window. Redirects, proxy env vars, downgrade redirects and
+  cross-origin header leakage are all already pinned by tests.
+- Two properties were not: the HTTP backend's **refusal of unix sockets** (`_GuardedBackend` wraps
+  an inner backend, so that override is all that stands between a caller and
+  `/var/run/docker.sock`), and the **`sftp` connector's IP pinning** — the same rebinding defence
+  the HTTP path has, tested for HTTP and untested for SFTP.
+- Both now pinned, and both verified by mutation: restoring the inner backend's unix-socket support,
+  and handing paramiko the name instead of the approved address, each fail their own test. The
+  unix-socket test carries an anti-vacuity check that `httpcore` still defines the method being
+  overridden — overriding one the library no longer calls would pass forever and guard nothing.
+- The dataplane security notes now state both, alongside the residuals they already documented
+  honestly (S3 first hop only, Kafka metadata hops).
+
+### Verified — the CLI exit-code class is sound by design, checked rather than assumed
+
+- Following the previous entry's rule ("check the exit code first"), a sweep found **126** commands
+  that print an error yet appear to exit 0. All 126 are false positives: `_output.error()` is
+  annotated `NoReturn` and unconditionally raises `typer.Exit(exit_code)`, default 1. No caller
+  passes `exit_code=0`. **Reading the helper's contract first would have cost two minutes and
+  saved the sweep** — recorded as the lesson.
+
+
+### Fixed — a scripted KEK rotation reported success while leaving secrets behind
+
+- `exa secrets rewrap` re-encrypts every secret under the new active key **so the previous one can
+  be decommissioned**. When a secret could not be rewrapped, the interactive path printed each error
+  and exited 1; the `--json` path printed the summary and **returned exit 0**.
+- That is the worst consequence this class of defect has had. A script gates the next step on the
+  exit code, is told the rotation succeeded, and the operator retires the old key — at which point
+  every secret still wrapped under it is **permanently unreadable**. The failures were in the
+  payload, but the exit code is what a rotation script checks.
+- `--json` now exits 1 when `failed` is non-zero, and 0 otherwise. Documented in the backup/DR guide
+  (where KEK handling already lives) with the one-line gate, and in the CLI reference.
+- The test builds the real state — a secret written under a key that is then removed from the
+  keyring — rather than mocking the failure, and the premise is asserted separately so the case
+  cannot pass vacuously.
+
+### Verified — the previous entry's "almost all legitimate" claim, checked rather than assumed
+
+- The sweep that found 76 commands with a warning after a JSON early-exit was followed up on the
+  sharpest subset: **exit codes**. Of 15 candidates, 14 were false positives of my own detector —
+  their JSON branch has no exit at all and falls through to the shared `Exit(1)`, which is correct.
+  One was real, and is the entry above.
+- Two earlier "findings" were also my detector's fault, not the code's: `governance validate` and
+  `audit verify-anchors` both *do* raise `Exit(1)` in their JSON branch — the first version of the
+  check returned the first `Raise`/`Return` that `ast.walk` reached, and BFS order found the bare
+  `return` first. Fixed to collect **every** reachable exit before judging.
+
+
+### Fixed — a scripted `exa audit verify` passed in silence over a log it had only partly read
+
+- The same two-audience defect as the previous entry, on the command that produces **compliance
+  evidence**. `exa audit verify` warns a human when rows carry no hash and could not be
+  recomputed — the `--json` branch returned before that line, so a scripted compliance check saw
+  `ok: true`, exit 0, and nothing else.
+- The command's own comment already made the argument: *"a green tick over a partially-read log is
+  the failure this exists to prevent."* That is as true of the machine path as of the human one.
+- **`ok` and `fully_verified` answer different questions.** `ok` means *the chain that exists is
+  intact* and must stay true over pre-chain history — crying wolf about rows that cannot be
+  retro-fitted (rewriting an append-only log is the one thing it must never do) would make the
+  command useless. `fully_verified` means *every row was checked*, which is what a compliance script
+  is asking. The exit code still follows `ok`, deliberately.
+- The warning is now emitted in both modes, on stderr, so stdout still carries exactly one document.
+- **Deliberately not shipped:** the sweep that found this also flagged **76** commands whose JSON
+  path returns before a later warning. Almost all are legitimate — the payload already carries the
+  facts and the warning is prose over them. A 76-hit guard whose hits are mostly correct is the
+  "fuzzy definition gets switched off" failure; the real defect is narrower (a warning whose
+  substance is *not* derivable from the payload) and is not mechanically detectable. The two cases
+  worth fixing were found by reading the list, not by automating it.
+
+
+### Fixed — the scripted disaster recovery was still told it had succeeded
+
+- The previous entry made `exa backup restore-bundle` tell an **operator** what it left behind. The
+  `--json` branch returns before that line, so the path the DR runbook actually prescribes — a
+  scripted recovery — still exited **0** with `ok: true` and said nothing.
+- Executed rather than reasoned about: a restore leaving the `objects` tier behind returned exit
+  code 0, `ok: true`, and the models still missing.
+- **`ok` and `complete` answer different questions**, and only the first existed. `ok` means
+  *everything I was asked to restore came back* — it has to stay true for a deliberate
+  `--tier sqlite` restore, or every partial restore would read as a failure. `complete` means
+  *everything the bundle held came back*, which is what a DR script is really asking. The exit code
+  still follows `ok`, deliberately: a script that asked for one tier and got it did not fail.
+- The warning is now emitted in **both** modes. `_output.warning` writes to stderr, so stdout still
+  carries exactly one JSON document — the structured-output contract, re-verified — while a human
+  watching a scripted recovery sees that the platform is only partly back.
+- Mutants: making `complete` an alias of `ok` fails two tests; warning only on the human path fails
+  the CLI and the scripted test. The scripted test asserts both halves — one document on stdout,
+  and the warning genuinely on stderr.
+
+
+### Fixed — a disaster recovery that restored half the bundle and showed a green tick
+
+- `exa backup restore-bundle` defaults to the `sqlite` and `config` tiers. A bundle taken with
+  `--all` also holds `postgres` and `objects` — the models and the MLflow artifacts — and those were
+  left behind with **nothing said**: the command's last line was
+  `✓ Restored tiers ['config', 'sqlite']`, which after a disaster reads as *the platform is back*.
+- The confirmation prompt did name the tiers, but the DR runbook prescribes a scripted recovery and
+  `--yes` skips the prompt entirely. Neither the library result nor the output carried what the
+  bundle *held*, so a script could not check either.
+- `restore_bundle()` now returns `available_tiers` and `skipped_tiers` beside `restored_tiers`, and
+  the command prints what is still missing **before** the tick, with the exact command that finishes
+  the job.
+- **A tier counts as left behind only if the bundle captured something for it.** `postgres` and
+  `objects` appear in *every* manifest with `status: skipped` and zero items when the stack was not
+  up at backup time — there is nothing to restore, and naming them on every restore is the noise
+  that gets a warning ignored. Asserted in both directions.
+- The module already made this argument one step further along: *"a restore that failed and reported
+  success is worse than one that raised: the operator believes state is back."* The same sentence
+  applies to a restore that put back less than it had.
+- Three mutants, each killed by its own test: the library stops reporting; the CLI stops presenting
+  while the library still knows; and a tier with no captured items gets counted (the noise case).
+
+
+### Fixed — the SLI warning reached one surface out of three
+
+- The previous entry wired the dilution warning into `exa slo set` and stopped there. Two other
+  paths write SLO specs and said nothing: **`exa slo apply`** — the bulk path, where a file of specs
+  is applied at once and a mistake is *most* likely to go unread — and the dashboard's
+  `POST /api/slo`.
+- Rather than add two more call sites, the judgment moved to **`apply_spec`**, the one function all
+  three go through. It now returns its warnings and each surface presents them in its own idiom: the
+  CLI prints them, `exa slo apply` prefixes each with the spec it belongs to, and the API returns a
+  `warnings` array. A fourth surface inherits the check by construction.
+- A guard fails the build if any caller of `apply_spec` **discards** its verdict — a bare
+  `apply_spec(...)` statement throws the warning away, which is exactly how these two were missed.
+  It named all three offenders the moment it was written.
+- Proven per surface rather than assumed: making the choke point stop judging fails tests on **all
+  three**; silencing only the bulk path fails the bulk test *and* the discard guard.
+- **Checked and deliberately unchanged:** the console's SLO form submits model, name, target and
+  gate only — it has no query field, so the UI cannot originate a diluting query and has nothing to
+  display. The `warnings` array is there for every other API client.
+
+
+### Added — `exa slo set` warns when an SLI query would dilute itself
+
+- The previous two entries fixed this shape in the platform's own alert rules and dashboards. The
+  **third** place a metric expression lives is the one an operator writes: `exa slo set --source
+  prometheus --query <promql>` takes arbitrary PromQL and generates burn-rate alerts from it, so the
+  same mistake was one command away with nothing said about it.
+- `examlops.slo.diluting_denominator()` detects the shape — a counter filtered on a label in the
+  numerator and taken whole in the denominator — and names the metric, the label, and the fix.
+  Checked per metric, so an honest ratio beside a diluted one is not reported.
+- **A warning, not a refusal, and deliberately so:** "what share of *all* events were X" is a
+  legitimate SLI and looks identical; only the author knows which was meant. The spec is still
+  written, which is asserted by its own test so the warning cannot quietly become a gate.
+- Verified through the CLI rather than against the function: removing the wiring — leaving the
+  detector perfectly correct but never called — fails the end-to-end test, and an honest query
+  produces no warning.
+
+
+### Fixed — the retrain alert was quietest exactly when it should be loudest
+
+- Generalising the previous entry's rule to *every* alert found one more: `HighRetrainErrorRate`
+  filtered `outcome="error"` in its numerator and divided by the **whole** counter. Fixing the
+  Grafana success-rate panels for this had left the alert untouched, and the alert is the half that
+  decides whether anyone is paged.
+- The arithmetic: 3 errors out of 5 attempts is **60%** and fires; add 50 **throttled** requests and
+  the same three errors read **5.5%** and do not. Throttling is what happens when a system is
+  already under pressure, so the dilution is *anti*-correlated with the alert firing.
+- Now divides by `outcome=~"success|error"`, matching the panels — so the alert and the dashboard
+  measure the same thing.
+- The guard is no longer written against one metric. `test_sli_counts_only_valid_events.py` now
+  sweeps **every** alert for "a numerator that selects some label values divided by a denominator
+  that takes all of them", with an exemption list (empty) for a genuine share-of-total, and a test
+  that an exemption still refers to an alert that exists.
+
+### Added — the SLI claim is now executed, not argued
+
+- The previous entry's table was arithmetic in a CHANGELOG. It is now a test: a small status-aware
+  evaluator substitutes each selector with the summed rate of the statuses it actually selects, so a
+  traffic mix the expression does **not** select can be represented — which is the whole point, and
+  what a "one term is errors, the other is total" substitution cannot do.
+- What it demonstrates: during a **10% outage with 900 client faults in flight**, the corrected SLI
+  measures 10% and fires *both* burn-rate alerts; the pre-fix expression measures 1% and fires
+  **neither**. Reverting the four denominators fails three tests, including this one.
+
+
+### Fixed — malformed client requests improved the SLO and could silence the outage alert
+
+- Every serving error rate divided by the **unfiltered** prediction counter, so `invalid` (422) and
+  `not_found` (404) — requests the service correctly *refused* — sat in the denominator while never
+  entering the numerator. Client traffic therefore moved the measured error rate:
+
+  | | requests | server errors | measured error rate |
+  |---|---|---|---|
+  | real traffic | 100 | 5 | **5.0%** |
+  | the same, plus 900 malformed requests | 1000 | 5 | **0.5%** |
+
+- That is not only a flattering dashboard. **Four alert rules used that denominator, including both
+  burn-rate alerts**, so a burst of junk could hold a burn-rate alert below its threshold *during a
+  real outage* — the alerts that exist to page you, silenced by unrelated traffic. Ten expressions
+  in total: 4 alerts and 6 panels.
+- The denominator is now `success|error|timeout|deadline_exceeded` — the requests the service
+  accepted and had to answer. Client faults are separated rather than hidden: the by-model panel
+  (now *served vs failed vs refused*) shows them as their own series, so a spike of malformed
+  requests reads as the caller problem it is. Neither `invalid` nor `not_found` had appeared on any
+  panel before.
+- `tests/unit/test_sli_counts_only_valid_events.py` holds all three directions: no error rate
+  divides by the bare counter, no client fault is counted as a bad event, and a serving status in
+  none of the three buckets (good / bad / client fault) fails the build until someone classifies it.
+
+### Fixed — two guards that would have mis-read the corrected expressions
+
+- `test_error_alerts_see_every_failure.py` read the **whole** expression when collecting "the
+  statuses this alert counts as failures", so naming the statuses in the denominator made `success`
+  look like something the alert counts as an error. It now reads the numerator, which is what its
+  own docstring always said.
+- Its dashboard scanner likewise treated any status selector as a failure selector. It now skips a
+  selector containing `success` (an SLI denominator) or consisting **entirely** of client faults —
+  by subset, deliberately, so a selector that *mixes* them (`error|invalid`) is still caught. Both
+  exclusions were verified by mutation: a mixed selector still fails.
+- `test_burn_rate_is_a_ratio.py` **evaluates** the burn-rate expressions against synthetic traffic,
+  and told the two streams apart by "filtered = errors, bare = all traffic". With the denominator
+  now filtered, both terms substituted to the error stream, every expression became
+  `errors / errors = 1.0`, and three scenarios reported firing that should not — a broken test
+  describing a broken alert. It now decides by **what the selector names**: the one naming `success`
+  is the valid-events stream. Verified still able to fail: restoring the old dimensionally-wrong
+  fast-burn threshold breaks it again.
+
+
+### Fixed — a "success rate" that divided by everything, including a throttle
+
+- Adding the `dispatched_unrecorded` outcome in the previous entry had a consequence I had not
+  checked: both Grafana **Retrain Success Rate** panels divide `success` by the *unfiltered*
+  counter, so the new label value landed in their denominator. A retrain that lost its bookkeeping
+  write and then succeeded on retry read as **50% success**. The alert stopped lying and the
+  dashboard started.
+- Checking that exposed the same defect twice over, pre-dating it: `dedup` and `throttled` were
+  already in that denominator. A request refused by the rate limit — the platform doing exactly what
+  it was configured to do — *lowered the retrain success rate*.
+- Both panels now divide by `outcome=~"success|error"`: the outcomes that represent an attempt that
+  concluded.
+
+### Fixed — a panel titled "by Outcome" that omitted two outcomes
+
+- `throttled` appeared on **no** panel of either dashboard and never had, so a rate-limited retrain
+  was invisible to anyone reading them; `dispatched_unrecorded` would have joined it. Both
+  by-outcome panels now carry all five series.
+- Guarded in `tests/unit/test_grafana_panels_can_show_data.py`, which already held the converse
+  ("a panel querying a metric nothing emits"). The new direction is **a value the code emits that no
+  panel shows**, derived from the `record_retrain` call sites rather than listed.
+- **The guard's first version was too weak and a mutant proved it.** It pooled outcomes across all
+  dashboards, so deleting the `throttled` series from the control-plane panel still passed because
+  the overview dashboard happened to show it. "Visible somewhere" is not the promise a panel titled
+  *by Outcome* makes; it is now checked per panel, and the same mutant fails on either dashboard.
+
+
+### Fixed — a retrain that started was counted as a retrain that failed, and it pages
+
+- The command worker dispatches to Prefect and then records the result. If the **bookkeeping**
+  raised — a datastore blip, a superseded lease — the `except` branch recorded
+  `outcome="error"` on `examlops_retrain_requests_total`. But the retrain had already **started**;
+  only the platform's record of it failed.
+- **`HighRetrainErrorRate` pages above a 20% error rate over 15 minutes, and retrains are rare.**
+  One miscounted success against one real retrain is 100%, and even after the retry succeeds it is
+  50% for the rest of the window. A transient write failure paged the on-call about a subsystem
+  that was working.
+- The two cases are now distinguished — they are only indistinguishable from *inside* the `except`,
+  so `flow_run_id` is bound before the `try`. A dispatch that never reached Prefect is still
+  `error`; one that landed is `dispatched_unrecorded`, which is what actually happened, and is
+  logged at `WARNING` naming the flow run.
+- New alert **`RetrainDispatchedButNotRecorded`** with its own runbook section, because this is the
+  precursor to `ControlPlaneDeadCommandLeftARun`: the same condition, persisting across every
+  attempt, is how a command ends up buried while its training runs.
+- **Checked and found sound while here**, recorded so it is not re-examined: the retry cannot
+  duplicate training (`_dispatch_flow_run` passes the command key as Prefect's idempotency key);
+  `_complete_command` commits one transaction, so a mid-way failure writes nothing; and
+  `_fail_command` is guarded on `state='dispatching'`, so it cannot overwrite a succeeded command.
+  The backup scheduler is likewise guarded — its loop wraps each cycle and its push and prune are
+  best-effort by construction.
+
+
+### Fixed — the autopilot finished its work, then threw the result away
+
+- Running the cycle against a refusing audit datastore — rather than reading the code — showed it
+  surviving the loop and then dying on the `autopilot_cycle_complete` write *after* it. Every model
+  had been processed and `update_autopilot_run()` had already recorded the run, but the raise still
+  discarded everything downstream: the telemetry anchor never ran, the **event-backbone publish**
+  never ran (so dashboard SSE, notifiers and `exa autopilot follow` never learned the cycle ended),
+  and the caller got a traceback instead of the summary.
+- The two statements immediately below that line are both commented *"best-effort — must never fail
+  the cycle"*. The audit line between them was not, and nothing said so.
+- **"Inside the loop" was the wrong boundary**, and only executing the degraded path showed it. The
+  guard's rule is now: *a function that audits inside a loop is a batch operation, and none of its
+  audit writes may raise.* One sentence, structural, no list of files — it caught three more writes
+  in `run_cycle` and will apply to a batch function written tomorrow.
+
+### Fixed — a test whose monkeypatch never reached the code it was testing
+
+- The new cycle tests patched `examlops.data.audit.write_audit_event`, but `autopilot_cmd` binds
+  that name at import, so the raw call sites kept working and the tests exercised only the helper.
+  **Mutation testing is what exposed it:** reverting one call site killed just one of three
+  assertions, which is the signature of a test that is not reaching its subject. They now patch
+  both bindings, and reverting either the in-loop or the post-loop write fails all three.
+
+
+### Fixed — a transient audit failure could end the self-driving cycle part-way
+
+- An audit write that can raise, inside a loop over items, does not merely lose a record: it ends
+  the loop. Earlier items have already been acted on, later ones never will be, and the end-of-run
+  bookkeeping is skipped. **Seven of these were in the autopilot's own `run_cycle`** — whose only
+  outer handler catches `_RunKilled`, not `Exception` — so an unreachable datastore could stop the
+  self-driving cycle with models already retrained or promoted and `update_autopilot_run()` never
+  reached, leaving the run row silent about actions that had really happened.
+- Four more: `exa drift trigger` (×2 — and that loop claims each model's cooldown *before* the
+  retrain, so the models it never reached kept their claim), the dataplane stream sync, and the
+  telemetry anchor. All eleven now use `audit_best_effort`, which cannot raise.
+- The distinction is deliberate and is the reason the fix is not applied everywhere: of **145**
+  unprotected raw audit writes in the tree, only these 11 are inside a loop. In a one-shot command
+  a traceback tells the operator the audit failed, which is arguably the right outcome; in an
+  autonomous loop nobody is watching.
+- The guard is **structural** — a raw audit write inside a loop body with no `except Exception`
+  between it and the loop's exit — so it carries no list of files and applies to a loop written
+  tomorrow. Its anti-vacuity test checks all three directions: a planted write in a loop is found,
+  a protected one is not, and one outside a loop is not.
+
+
+### Fixed — a lost audit event told the bus a successful retrain had failed
+
+- The SeanerBUS bridge's `retrain_triggered` write sat inside the same `try` as the control-plane
+  POST, whose handler answers the bus with `error_msg`. An unreachable audit datastore therefore
+  reported a retrain the control plane had **accepted** as a failure — and a caller that retries on
+  error fires a **second retrain of the same model on the cluster**. A lost record became duplicate
+  HPC work, under a log line reading "Retrain request failed".
+- `retrain_triggered` has **four** doors — CLI, agent, dashboard, bridge — each a separate call site
+  with its own error handling, and three successive sweeps each found a different subset. The
+  dashboard's was already honest; the other three were not, and were fixed one iteration at a time
+  because the guard kept being narrower than the property.
+
+### Fixed — the guard that was supposed to find these could not see four of its own shapes
+
+- Probing the detector with every spelling rather than trusting it: of five ways to write an action
+  name it saw **two**. It matched a literal and a keyword argument, and was blind to a conditional
+  (`"model_promoted" if … else …` — the form `routers/models.py` actually uses for an Art. 12
+  event), an f-string, and a name bound to a literal.
+- It was also blind to **how the dashboard writes every audit event**: `asyncio.to_thread(
+  audit_write.audit, …)` passes the writer as an *argument*, so a sweep reading `call.func` sees a
+  call to `to_thread` and nothing else.
+- And its "is this handler silent?" test looked for `logger`/`logging` by substring, so
+  `log.error(...)` — the bridge's own style, on every line of the handler — read as silence. That
+  false positive is what surfaced the bridge defect, which turned out to be real but *not* the one
+  the guard had named.
+- All four fixed, each with a test that fails when the detector narrows again. The widened walk's
+  one real cost is recorded rather than hidden: a `details` value exactly equal to an action name
+  matches. Prose that merely contains the word does not — I predicted it would and measured that it
+  does not.
+
+
+### Fixed — an audit event that was never written left no trace, and the chain cannot show it
+
+- Around forty call sites wrap their audit write in `except Exception: pass`. **The policy is right
+  and is unchanged:** a promotion must not be refused, and a secret must not go un-rotated, because
+  the audit datastore blinked. The defect was that the loss was *invisible* — and the platform's two
+  ways of trusting this log are blind to it by construction:
+  - **`exa audit verify` proves integrity, never completeness.** The chain is recomputed over the
+    rows that exist, so an event that never arrived leaves a perfectly valid chain. A missing *link*
+    breaks it; a missing *event* does not create one. (The same lesson was learned on 2026-09-02 for
+    rows that are present but unchained — those are now counted rather than skipped. A row that
+    never arrived cannot even be counted.)
+  - **`exa compliance art12` asks only whether at least one event of each required type exists**, so
+    a dropped `eval_gate_override` reports as covered while any sibling survives.
+- New `examlops.data.audit.audit_best_effort()` still fails open, but logs the loss at `WARNING`
+  with action/target/actor/tenant/cause and counts it in `dropped_audit_events()`. **A non-zero
+  count is a record-keeping incident, not a warning.** Every write of an EU-AI-Act Art. 12 event
+  type — the events the compliance report is *about* — now goes through it, in the CLI **and** in
+  the agent.
+- The guard that holds this is **derived, not hand-written**, and the first version was not. It
+  named the four files already fixed, so it passed while Skipper still wrote `retrain_triggered`
+  through a silent handler — a guard scoped to the things you fixed cannot tell you what you
+  missed. It now sweeps every runtime file for a write of an Art. 12 action and checks the handler
+  that protects it.
+
+### Fixed — a failed audit write could end the whole autopilot cycle
+
+- The inverse shape, found while fixing the first and materially worse. Six audit writes sat
+  **inside** the `except` handler that was absorbing an error. `run_cycle`'s only outer handler
+  catches `_RunKilled`, not `Exception`, so an unreachable datastore turned one model's handled
+  retrain error into an escape from the entire cycle — with the run row never updated, because the
+  bookkeeping at the end never ran. `_classify_anomaly_for`'s own docstring promises "a broken
+  detector cannot take the whole loop down"; the line beneath it falsified that.
+- Two more sites were subtler and wrong in a different way: the `autopilot_retrain_triggered` and
+  `autopilot_promoted` writes sat in a `try` whose handler recorded a *retrain error* and appended
+  the model to `skipped`. So a failed audit write after a **successful** retrain reported an action
+  that had actually fired as not having fired, and dropped it from the cycle summary.
+- All seven now use `audit_best_effort`, which cannot raise. A tree-wide guard fails the build on
+  any audit write inside an exception handler — 0 remain across `platform/`, `pipelines/`,
+  `serving/`.
+- The agent had the same shape in a third place, missed by the first pass: `trigger_auto_retrain`
+  wrote `drift_auto_retrain_triggered` **unprotected inside a loop over models**, so a failed audit
+  write aborted the tool with earlier models already retrained — reporting a failure for an
+  operation that had partly succeeded, and never reaching the rest.
+- **Already honest, checked and recorded so the ground is not re-covered:** the dashboard's single
+  `audit_write.audit()` helper logs at `ERROR` *and re-raises*, so no dashboard audit write is
+  silent; and every MCP tool returns the `_err` SDK envelope rather than an empty result.
+
+### Fixed — a test that failed roughly once in a hundred runs, from randomness alone
+
+- `test_init_generates_every_secret_once_and_keeps_them_private` rejected a leftover placeholder
+  with `"__" in value`. Every placeholder in `env.template` has the form `__NAME__`, but the
+  generated `DASHBOARD_SECRET_KEY` is a urlsafe-base64 Fernet key whose alphabet includes `_` — so
+  a key containing `__` by chance failed the build with "a placeholder survived init".
+- **Measured, not estimated: 1947 of 200 000 generated keys contain `__` — 0.97%, about one red
+  build every 103 runs.** It surfaced here as an unexplained failure in a full-suite run that
+  passed when re-run alone, which is exactly how a flake teaches people to re-run instead of read.
+- The check now matches the placeholder's shape (`^__[A-Z0-9_]+__$`): all four real placeholder
+  forms still caught, and 0 false positives over another 200 000 keys.
+
+### Documented — two claims about the audit log that were stronger than the code
+
+- `docs/guides/audit-trail.md` said every source writes through one helper "so the chain is
+  **complete by construction**". One writer is not one guarantee; it now explains precisely what
+  `verify` can and cannot establish, and what a dropped-event count means.
+- `docs/guides/eu-ai-act-compliance.md` and `check_art12_logging`'s own docstring now state that the
+  coverage figure counts **event types present**, not actions verified — evidence that logging is
+  wired up, not proof of a complete record.
+
+
+### Fixed — six governance reads served a failed query as a clean bill of health
+
+- `except Exception: return []` on a dashboard read makes two very different states identical to
+  the operator: *this register is empty* and *this query crashed*. On six surfaces the first is a
+  **claim** — no model is in scope of the EU AI Act, no fairness policy applies, no SLO is defined,
+  no model is drifting, no inputs have moved, nothing auto-retrains. A table a half-applied
+  migration never created, an unreachable datastore, or a `NameError` from an edit therefore
+  produced a reassuring and entirely fictional register, **silently**: nothing in the service log
+  said a read had failed at all.
+- `GET /api/compliance/systems`, `/api/fairness`, `/api/slo`, `/api/drift/status`,
+  `/api/drift/input-status` and `/api/drift/auto-retrain` now answer **503** naming the surface, via
+  the new `readfail.readable()`. That is not a new convention: these same routers already answered
+  503 when their *import* was unavailable — `compliance.py` did both, raising for a missing package
+  and returning `[]` for a failed query, on the same register.
+- The failure is logged at `WARNING` with a traceback and a per-surface count that
+  `readfail.read_failures()` reports; the exception's **class** reaches the browser and its **text**
+  never does, because a datastore message carries paths, table names and Postgres connection
+  details.
+- **The frontend had the same defect one layer up.** The Compliance page defaulted its query to
+  `[]` and drew "No systems in the register" on an error, so the backend fix alone would have
+  changed nothing an operator sees. It now distinguishes the two, and the register's empty state no
+  longer renders alongside the error banner.
+- Verified in both directions: with a real schema and no rows every one of the six still answers
+  `200 []`, so the refusal cannot pass by refusing everything. Reverting any single route fails
+  exactly its own test; making the helper refuse a healthy read fails only the empty-schema test.
+- `tests/unit/test_failed_reads_are_not_empty_reads.py` ratchets the rest — 43 silent handlers
+  across 26 routers, counted per file by an AST walk, shrink-only, with the six converted files held
+  at zero. Most of the remainder are benign best-effort enrichments; the point is that the
+  population cannot grow while it is worked down. The detector is fed five shapes (bare `except:`,
+  `except Exception`, a logged handler, a named exception, a re-raise) before any conclusion rests
+  on it.
+- **Unchanged and already honest:** the BFF-composed `governance/overview`. `bff.aggregate` omits a
+  section it could not build and names it in `_partial`, which is the same distinction made a
+  different way — the direct routers were the ones that had lost it.
+
+
+### Added — the guard now covers every document, not only the runbooks
+
+- The previous entry made the eight runbooks' commands honest. The same argument applies to the
+  rest of the documentation with only the urgency removed: a guide that names `exa challenger` is
+  wrong whether or not anyone reads it at three in the morning, and a reader who types it gets
+  `No such command` from a page that is otherwise trusted.
+- The scan now reads **every** Markdown file under `docs/` — **2609** `exa …` mentions — and
+  resolves each against the live Click tree. Three did not resolve, and each was a real rename the
+  docs had missed:
+  - `docs/guides/model-gateway.md` — `exa challenger` → **`exa serve challenger judge`**
+  - `docs/reference/env-vars.md` — `exa synth` → **`exa data synth`**
+  - `docs/guides/agent.md` — `exa infer predict` → **`exa predict`**
+- `tests/unit/test_documented_commands_exist.py` replaces the runbook-only check in
+  `test_alert_runbooks.py` (which now carries a pointer comment instead, so the coverage is not
+  silently lost). Three tests: the instrument's own sanity (a known command resolves, a nonsense one
+  does not), the all-docs sweep, and an allow-list freshness check so an exception that stops being
+  needed fails the build rather than lingering.
+- The allow-list holds only prose forms a tree walk cannot resolve — placeholders and elisions —
+  and it may only shrink.
+
+### Added — a runbook can no longer name a command the CLI does not have
+
+- The runbook guards held the **links** honest — every alert has a runbook URL, every URL points at
+  a section, every section has an alert — and nothing held the **contents** honest. A page whose
+  value is that an operator can follow it at three in the morning is worth exactly as much as its
+  commands are real, and a command renamed since it was written sends them down a dead end at the
+  worst possible moment.
+- All **90** `exa …` mentions across the eight runbooks resolve against the live Click tree today;
+  the new check keeps it that way. Renaming one in a runbook fails the build, naming the file and
+  the command.
+- Verified as a negative first, and the instrument took three attempts: the command tree's `name`
+  is the **full** path (`exa approvals list`), not a leaf to be joined with its parents. Assuming
+  otherwise reported *every* runbook command as broken — three times — which reads exactly like
+  catastrophic drift. The guard therefore asserts the tree's shape, and that a known command is
+  found and a nonsense one is not, **before** any conclusion rests on it.
+- Also confirmed while there: all three commands the disaster-recovery runbook prescribes now fail
+  when they should. `exa audit verify` already exited 1 on a broken chain, `exa doctor` does since
+  the previous entry, and `exa status` does too — via `_output.error`, which a grep for
+  `typer.Exit` misses.
+
+### Fixed — `exa doctor` reported problems and exited 0
+
+- It printed every issue it found — a missing config file, an unset credential, an unreachable
+  service — and returned success. That is not merely an interactive nicety: **step 5 of the
+  full-disaster recovery order** in `docs/guides/backup-restore.md` is "`exa doctor` + `exa status`
+  to confirm coherence", so a scripted recovery check passed whatever doctor reported. Measured: 2
+  issues found, exit code 0.
+- It now exits **1** when it finds anything, matching the convention `exa instance check` already
+  set. `--json` still prints exactly one document — the non-zero exit adds no second document.
+- Documented in both places it is prescribed: the CLI reference (with a `||` example) and the DR
+  runbook, which now says the step can be scripted and what it used to do.
+- **First tests for this command.** It had none because it makes real HTTP calls to MLflow, Prefect,
+  Ray Serve and the dashboard, which the suite refuses — so the probes are stubbed, which also makes
+  the all-clear branch reachable at all. Four tests cover clean (exit 0), unreachable services,
+  missing config, and the one-document contract; reverting the exit fails three of the four while
+  the clean case still passes.
+
+### Documented — the Helm first-install race is fixed, and two guides still said it was not
+
+- `platform/infra/helm/examlops/README.md` and `docs/guides/enterprise-installation.md` both told
+  operators the control plane "never runs the check again", stays `0/1`, and needs a manual
+  `kubectl rollout restart`. The recheck that fixes it is in the code, tested, and its own docstring
+  names this race as the reason it exists — so two user-facing documents were prescribing a manual
+  workaround for a bug that no longer happens in the working tree.
+- Both now describe the real behaviour: losing the race was never the problem, since the table
+  exists a second later. What made it fatal was that the checks ran **once at boot and never
+  again**. A failing check is now re-evaluated by the probes, rate-limited to one battery every
+  `CONTROL_PLANE_STARTUP_RECHECK_SECONDS` (default 10), so the pod reaches `1/1` on its own with no
+  restart. The collision is still logged — an install that recovers by itself should leave evidence
+  that the tiers raced.
+- The workaround is kept, scoped to the published charts **v0.54.0–v0.56.0**, which do not carry
+  the fix.
+- **New test:** `/readyz` itself flips 503 → 200 once the dependency returns. `/health` recovering
+  was already covered, but `/readyz` is what the chart's `readinessProbe` calls and therefore the
+  only place the recovery is visible to Kubernetes. Removing the recheck call now fails both.
+
+### Found — the WCAG contrast audit was auditing a copy of the theme, and the real theme fails one pair
+
+- `lib/a11y.test.ts` checked four colours **transcribed into the test file**, under theme names the
+  stylesheet does not use (`dark`/`light`/`high-contrast`; the CSS ships `:root`, `day`,
+  `midnight`). Editing `index.css` could not fail it — and the guide claimed "editing a token that
+  regresses contrast **fails CI**", which was therefore untrue. It now reads the stylesheet and
+  checks **nine** text-on-surface pairs per theme instead of three.
+- Widening it found what the old shape could not see: **`--primary-foreground` on `--primary` is
+  3.42:1** in the default and `midnight` themes — the label on primary buttons, below AA's 4.5 for
+  normal text. `day` is fine at 6.13.
+- **Recorded, not silently fixed, because the fix is a design decision.** `--primary` serves two
+  roles — a surface carrying text, and a foreground on the page background — and on a dark theme *no
+  single lightness satisfies both at AA*: white text on it needs L ≤ 0.565, while it needs L ≥ 0.58
+  to stay readable on the background. Either give `--primary-foreground` a dark value (measured
+  5.66:1, one line per theme, but blue buttons get near-black labels) or split the token into a
+  surface and an accent. Both are the owner's call.
+- The guard carries the failure as a named exception **with its measurement**, and a second
+  assertion fails if a recorded failure stops reproducing — so the entry cannot outlive the problem.
+  Mutation-checked both ways: a plausible token tweak is caught with its exact ratio (2.76:1), and
+  fixing the recorded pair fails the "still reproduces" test.
+- Note for anyone extending this: Vite's `?raw` import yields an **empty string** for `.css` here
+  because the Tailwind plugin claims the extension, so the audit reads the file and references node
+  typings for that one file rather than loosening the app project's `types`.
+
+### Added — the gateway's two datastore touches fail in opposite directions, and both are now pinned
+
+- `authorize()` **fails closed**: with the datastore away a keyed request is refused before any
+  backend call, so nothing is spent. Accounting **fails open**, because by then the money is spent
+  and refusing to answer cannot un-spend it. Neither half was tested against an unreachable
+  datastore; both are now, and making `authorize` swallow the error breaks four tests.
+- **Correction to the previous entry.** It said a lost accounting write means "a key can pass a
+  budget check it should have failed". Measured: it cannot, in the ordinary case — `authorize()`
+  refuses the request at the door during an outage, so a **keyed** request is never
+  served-but-unaccounted. The gap opens only for requests with **no virtual key** (usage telemetry
+  is what is lost) or when the datastore fails **mid-request**, after authorization and before the
+  accounting write. `docs/guides/model-gateway.md` now states it that way, with a table of which
+  half fails which way.
+- Also documented, since it surprised the measurement: a budget is **post-paid**. A call's cost is
+  unknown until it completes, so a key can end a call over budget and is refused on the *next* one —
+  which is what the guide already said, now with the reason.
+
+### Added — a missing Italian string can no longer ship silently
+
+- `translate` falls back to EN and warns into a console nobody reads, so a missing Italian key shows
+  an English string and nothing fails. The existing tests covered that fallback *behaviour*, which
+  is exactly what made the gap invisible.
+- `CATALOGS` now has a parity test: every locale must define each key EN does, and define no key EN
+  lacks (an extra key is a dead string). Adding an untranslated EN key fails it by name.
+
+### Fixed — an unreachable datastore threw away LLM answers the caller had already paid for
+
+- `record_gateway_call` ran **unguarded on the request path**. An unreachable datastore therefore
+  raised *after* the backend had answered and the tokens had been spent, and the caller received
+  `could not connect to the datastore` instead of the completion they had just bought. Reproduced
+  directly: the caller got the exception; the answer existed and was discarded.
+- On the failure path it was worse — the datastore error **replaced `AllBackendsFailed`**, so the
+  reason every backend had failed was lost and the operator debugged the wrong component.
+- Accounting now fails open, and the reasoning is narrow because failing open is usually wrong for
+  anything touching budgets: **failing the request does not un-spend the money**, and the spend is
+  missing from the ledger either way — so refusing to answer costs the caller their reply and buys
+  the books nothing.
+- It is not silent. The loss is logged at `WARNING` with its cause and a running count, and
+  `examlops.gateway.accounting_failures()` reports how many writes this process has lost. The guide
+  says to treat a non-zero count as a **billing incident**: those requests cost money, are missing
+  from `gateway_calls` and from every key's `spent_usd`, so a budget computed while the datastore
+  was away under-reports and a key can pass a check it should have failed.
+- Both properties are mutation-checked: swallowing the failure silently fails the first test,
+  re-raising it fails both.
+
+### Documented — retention covers two tables of fifty-two, and the other thirty are now an explicit question
+
+- `exa data retention-prune` prunes `drift_snapshots` and `input_snapshots`. The command says
+  exactly that, so nothing is mis-documented — but the schema has **52 append-only event tables**,
+  and its stated use case is "reclaim `platform.db` space". On a busy gateway `gateway_calls` gains
+  a row per LLM request and `guardrail_events` roughly two, forever, whatever the retention job is
+  set to.
+- **Twenty are kept on purpose and should be:** the audit chain and its WORM anchors, attestations,
+  the EU-AI-Act register, lineage, evaluation and gate reports, dataset and feature provenance,
+  carbon and GPU cost history. **Thirty have no retention decision recorded at all.**
+- **Nothing was added to the prune list.** Expanding it starts deleting operators' data on the next
+  scheduled run, and the trade — data minimisation against keeping evidence — is a retention
+  *policy* decision rather than a code change. Left for the owner, with the candidates named.
+- New `tests/unit/test_retention_is_decided.py` makes the decision visible instead of making it:
+  every append-only table must be classified as deliberately retained (with its reason) or as an
+  open question, a table added later belongs to neither until somebody says which, and a table
+  recorded as retained can never appear in the prune list. Verified exhaustive — 20 + 2 + 30 = 52,
+  with nothing unclassified and nothing named that the schema no longer has.
+- `docs/guides/production-hardening.md` gains the operator-facing version: watch the datastore's
+  size as a first-class signal rather than assuming retention bounds it.
+
+### Changed — the CLI console's per-request capability now reaches the centre's policy
+
+- `routers/cli.py` was the last router checking a capability without the enforcing path, and it
+  needed a different shape rather than the same edit: its capability is chosen **per request** —
+  `cli.run` for a read-tier `exa` command, `cli.write` for one that changes platform state — and is
+  only known after the argv has been built, so there is nothing to name in a route-level
+  dependency. `_require` now calls `iam_gate.enforce` itself, once the answer exists.
+- Why it matters for policy: a centre previously saw only the coarse `api.write` for
+  `/api/v1/cli/runs` whatever command was in the body, so it could not permit read-only `exa` use
+  while forbidding the mutating kind — the entire reason there are two capabilities. Both halves
+  are now tested against a real PDP, and removing the `enforce` call fails both.
+- The guard accepts **two legitimate shapes**: a route-level `Depends(require_capability(CAP))`
+  where the capability is static, and a direct `enforce(...)` where it is not. A router using
+  neither fails the build. `UNGATED` is now empty — down from 20.
+
+### Changed — a centre's capability-level policy now reaches every dashboard write route but one
+
+- 42 further write routes across 16 routers gained the enforcing dependency, completing the batch
+  started with traffic and autopilot: `secrets.manage`, `project.manage`, `connection.manage`,
+  `drift.baseline`, `gateway.manage`, `platform.manage`, `prompt.manage`, `providers.manage`,
+  `scaling.manage`, `slo.manage`, `compliance.classify`, `fairness.manage`, `feature.manage`,
+  `events.manage`, `admission.manage`. **47 routes across 18 routers in total**; the ratchet in
+  `tests/unit/test_capability_gate_is_reached.py` falls from 20 to **1**.
+- Every conversion adds the dependency **alongside** the route's existing role dependency, never in
+  place of it — `require_capability` admits operators, so a swap would widen who may act while
+  looking like a tightening.
+- A second behavioural test drives a centre PDP that forbids `secrets.manage` and asserts the write
+  is refused; removing the dependency from that one route fails it.
+- **The one remaining entry is `cli.py`, and it needs a different shape rather than the same edit:**
+  its check takes the capability as an argument (`cli.run` for a read-tier command, `cli.write` for
+  a mutating one), chosen per request from the command being run, so there is no single capability
+  to name in a route-level dependency.
+
+### Changed — a centre's capability-level policy now reaches traffic and autopilot too
+
+- Five write routes gained the enforcing dependency: `POST /api/v1/traffic/ab/start`, `/ab/stop`,
+  `/shadow`, and `POST /api/v1/autopilot/enable`, `/disable`. A centre policy written as
+  `traffic.manage` or `autopilot.manage` — the vocabulary ADR 0120's own example uses — previously
+  could not stop them, because the PDP only ever saw the coarse `api.write` for those paths.
+- Added **alongside** each route's existing admin dependency, never in place of it:
+  `require_capability` admits operators, and widening who may act was not this change's business.
+- A behavioural test drives a centre PDP that forbids `traffic.manage` and asserts the A/B start is
+  refused; removing the dependency from that one route fails it.
+- The ratchet in `tests/unit/test_capability_gate_is_reached.py` falls from 19 to **17**.
+
+### Fixed — promoting a model through the challenger console skipped step-up and the centre's PDP
+
+- `capabilities.require_capability(cap)` is the enforcing dependency: it refuses a role that lacks
+  the capability **and then** calls `iam_gate.enforce`, where RFC 9470 step-up and the federated
+  centre's PDP veto live. `routers/challenger.py` checked `model.promote` with a bare
+  `can(role, cap)` instead — reusing the *name* of a gate without the gate. Its own module docstring
+  said it reused `model.promote` "which is a step-up capability … rather than inventing a third
+  name", which is exactly what made the omission invisible.
+- The effect, with step-up opted in: `PUT /api/models/…/alias` answered **401
+  `insufficient_user_authentication`** while `POST /api/challenger/{model}/promote` — the same
+  model, promoted to production — went through. Now covered, with a behavioural test that fails
+  when the dependency is removed.
+- The enforcing dependency was added **alongside** the existing admin requirement, not in place of
+  it: `require_capability` admits operators too, and widening who may promote was not this fix's
+  business.
+- **New guard** `tests/unit/test_capability_gate_is_reached.py`, with two rules of different force:
+  a route guarding a **step-up** capability with a bare `can()` fails the build outright, and the
+  **19** routers that still check other capabilities that way are listed so the number can only
+  fall. Converting them is real work with a real risk, so they are tracked rather than rushed.
+- **Correction to the sentence above, made the following day.** It first said those 19 routers
+  "never consult the centre's PDP". They do: `require_role`, which every router uses, calls
+  `center_route_check` on every authenticated route for a federated caller. What they miss is the
+  **granularity** — that check asks the PDP about `api.read` / `api.write` on the route path, while
+  `require_capability` asks about the **named capability**. A centre whose policy is written in
+  capability terms (`model.promote`, which is how ADR 0120's own test writes one) does not bite on
+  the coarse question. A real gap, and a narrower one than first stated.
+
+### Fixed — the rate limiter could be made to exhaust the dashboard's memory
+
+- `RateLimiter` evicted hits *within* a key and kept the key itself forever, so its map grew by one
+  entry per distinct client address and never shrank. Measured: 200 000 addresses retained
+  200 001 entries (~160 MB), still resident long after every window had passed. `POST
+  /api/auth/login` is unauthenticated and rate-limited by this, so an attacker rotating IPv6 source
+  addresses could grow the process without ever logging in. **A rate limiter that can be made to
+  exhaust memory is an amplifier, not a control.**
+- Three sweep triggers now, for three different reasons memory should be released: enough calls
+  (busy), over `max_keys` (flood), and a full window since the last sweep (**quiet** — a process
+  that saw a burst and then went idle must not hold the keys until a thousand more requests
+  arrive). `max_keys` defaults to 10 000.
+- Eviction orders by **last seen**, and a refusal counts as being seen. This is the security of it:
+  a refused request records no hit, so ordering by the recorded hits would evict precisely the
+  clients being blocked and hand each a fresh allowance. Found because a mutation that reversed the
+  order **survived** the first version of the test — the test had every key at one timestamp, so
+  the sort was a tie and either policy passed.
+- The guarantee is stated with its limit: a client that goes quiet long enough to become the
+  stalest key can still be evicted and its allowance restarts. That is inherent to a bounded map,
+  and the alternative is the unbounded one this replaced.
+
+### Fixed — the secret scanner did not recognise the credentials this platform issues
+
+- `exa gateway key create` mints virtual keys as `exa-` + 32 random characters. The scanner knew
+  AWS access keys, Slack tokens, Fernet keys and PEM private keys — **and not those**. So a virtual
+  key pasted into a prompt passed the guardrail untouched and went on to the model provider, the
+  semantic cache and the logs. Upstream provider keys (`sk-…`, `sk-ant-…`) and GitHub tokens were
+  missed for the same reason, on a platform whose job is proxying to those providers.
+- Three rules added: `examlops-virtual-key`, `provider-api-key`, `github-token`. The guardrail runs
+  the scanner on every input and output, so a credential in a prompt is now redacted rather than
+  forwarded.
+- **The virtual-key rule is deliberately strict.** A plain `exa-[\w-]{24,}` matched **462** strings
+  in the tracked tree — ordinary documentation slugs like
+  `exa-status-platform-snapshot-at-a-glance` — which would have turned the repository's own
+  `exa secrets scan` gate red everywhere. A real key is exactly 32 characters and, with probability
+  1 − 3e−8, mixes case and digits; the rule requires that shape. Verified against 1000 freshly
+  minted keys (0 missed) and the whole tracked tree (0 false positives), and the three CI scan
+  targets still report clean.
+- Test fixtures build the credentials **at runtime** rather than embedding literals, because a
+  fixture that looks like a credential is exactly what turns a secret scan red.
+- Corrects this repository's own documentation from the previous entry, which said API tokens were
+  "the D7 secret scanner's job … so a leaked credential is still caught". The scanner did run — it
+  just had no rule for the formats that matter here.
+
+### Fixed — IPv6 addresses and IBANs were not redacted, and "PII" was doing a lot of unstated work
+
+- The PII detectors redacted **IPv4** and not **IPv6**, which is an asymmetry in intent rather than
+  a policy: a deployment on IPv6 had its addresses stored in the clear while a v4 deployment did
+  not. **IBAN** is now detected too — this platform's users are European research centres.
+- IPv6 candidates are **confirmed** with `ipaddress.IPv6Address` before anything is replaced. A
+  pattern loose enough to catch every IPv6 form also matches MAC addresses (`00:1b:44:11:3a:b7`)
+  and timecodes (`01:02:03:04`), and redacting those as "ipv6" would put a wrong label on data that
+  is not an address. Detectors may now carry a validator; the regex decides where to look and the
+  validator decides whether it found anything.
+- One deliberate gap, documented rather than papered over: an address written with a **leading**
+  `::` (such as `::1`) is not matched, because matching it would also redact `abc::def` — valid C++
+  as well as a valid address — and prompts here carry code. Loopback identifies nobody.
+- `docs/guides/guardrails.md` now states the **actual** coverage. The guide called this regex set a
+  "fallback" to Presidio; Presidio appears in no manifest in this repository, so the fallback is
+  what every deployment runs. Names are the important absence — they need NER, which is exactly what
+  Presidio would bring — and API tokens are the D7 secret scanner's job, which the guardrail runs
+  separately.
+- `tests/unit/test_guardrails.py` pins all three lists: detected, left alone, and knowingly
+  undetected. The middle list fails if the validator is removed.
+
+### Fixed — a cross-tenant read the SQL guard was blind to, and the guard that missed it
+
+- `GET /api/challenger` called `list_challenger_configs()`, whose `tenant` parameter defaults to
+  `None` meaning **every tenant**. The previous guard scanned routers for raw `SELECT`s, so a route
+  reading the same rows through an `examlops.data` helper passed it without comment. A helper whose
+  default is "no filter" reads exactly like a helper with a safe default.
+- The route is scoped now, with a behavioural test that fails when the scoping is removed.
+- `tests/unit/test_dashboard_tenant_scoping.py` gained the matching check: it finds every
+  `examlops.data` helper whose `tenant` defaults to `None` (12 of them) and fails on a dashboard
+  call site that passes neither a tenant nor scopes the result.
+- Recorded but **not** claimed as a leak: two MCP tools (`list_slo_specs`, `cache_stats`) call the
+  same helpers without a tenant. The MCP server has no per-request principal, so there is no tenant
+  to scope *to*; whether it needs a server-configured tenant binding is a design question, and
+  saying more would be guessing at a surface this change did not study.
+
+### Found — two tenants cannot both own a per-model register, and the second silently destroys the first
+
+- `compliance_systems`, `fairness_config` and `challenger_config` each carry a `tenant` column and
+  are keyed `PRIMARY KEY(model)`. A model name is not unique across tenants and the writers look
+  rows up by model alone, so a second tenant declaring the same model name does not get its own row
+  **and does not get an error** — it overwrites the first tenant's row and reassigns the tenant to
+  itself. Demonstrated: centre A declares `JPCP` high-risk under the EU AI Act, centre B declares
+  its own `JPCP`, and A's declaration is gone. A cross-tenant read leaks; this destroys.
+- **Not fixed in this release.** The fix is identity `(model, tenant)` plus the helpers that look up
+  by model, which on an existing install is a table rebuild — a **breaking** migration that raises
+  `min_reader_format` and locks older releases out of the data. That is a release decision, so it
+  is tracked rather than slipped in.
+- `tests/unit/test_tenant_identity_keys.py` pins exactly which tables are affected, demonstrates
+  the overwrite so the cost is visible rather than inferred, and distinguishes them from
+  `agent_sessions`, `reasoning_traces` and `virtual_keys`, whose tenant-less keys are **fine**
+  because a session id, a request id and a key hash are surrogate identifiers that cannot collide.
+- `docs/guides/dashboard-auth-tenancy.md` carries the operator-facing warning: until it is fixed,
+  do not run more than one tenant against those three registers unless model names are globally
+  unique across tenants.
+
+### Fixed — every dashboard read of a tenant-scoped table is now scoped to the caller
+
+- The four reads left recorded by the previous entry's ratchet are fixed: `compliance_systems`
+  (EU-AI-Act register), `fairness_config`, `inference_gateway_config` and `scale_events`. The
+  ratchet's list is now empty.
+- Its anti-vacuity test no longer depends on a real offender existing: it points the scan at a
+  **planted** router, so the scan fails if it stops recognising unscoped SQL while the real tree
+  still looks clean. The first version asserted only that the scan "found something", which would
+  have had to be deleted the moment the last offender was fixed.
+- Not scoped, deliberately: `autoscale_config` has no `tenant` column, so filtering it would treat
+  every row as tenant `default` and hide it from everyone else. Scoping a table that is not
+  tenant-scoped is its own bug, and the route now says so.
+
+### Fixed — the dashboard's tenant filter had no callers, and three routes returned every tenant's rows
+
+- **The defect:** `capabilities.assert_tenant_access` and `scope_to_tenant` — the F15 R4
+  default-deny tenant scoping that `docs/guides/dashboard-auth-tenancy.md` described as enforced —
+  had **no callers at all**: 62 routers, zero uses. The control existed, was unit-tested, was
+  documented, and governed nothing.
+- **Why it was never wired in:** `tenant_visible` defaulted a missing tenant to `"default"` on the
+  *resource* but not on the *principal*, and routes receive the raw token payload, which for a
+  locally issued token carries no `tenant` claim. `None != "default"`, so the filter denied
+  everything — switching it on looked like it broke the page. Both sides now default the same way.
+- **What leaked:** `GET /api/slo` selected every row of `slo_specs` with no `WHERE` and bound the
+  principal to `_`, so every viewer of every tenant saw every other tenant's SLO definitions,
+  `sli_query` included — a Prometheus expression carrying that tenant's metric and label names.
+  `GET /api/secrets` did the same for secret **paths** (values were never exposed) and
+  `GET /api/gateway/keys` for virtual-key projects, budgets and spend. All three are now scoped to
+  the caller, with behavioural tests that fail when the scoping is removed.
+- **New ratchet** `tests/unit/test_dashboard_tenant_scoping.py`: a route that reads one of the 31
+  tenant-scoped tables without scoping it fails the build. Four reads are **not yet fixed** —
+  `compliance_systems`, `fairness_config`, `inference_gateway_config`, `scale_events` — and are
+  listed by name rather than left unknown; the count may only fall.
+- `tests/unit/test_tenant_isolation_conformance.py` claimed to seed "every tenant-scoped store"
+  while covering three of 31. It now says what it covers, and that it tests the **data layer** —
+  the layer above, where a route decides which tenant to ask for, is the one that failed.
+
+### Fixed — a backup that never left the host reported success
+
+- **The defect:** when off-site replication failed, the cause went to a log line and nothing else.
+  `run_cycle` returned the *local* bundle's status, `exa backup create --push` printed a warning
+  under a green tick, and both exited 0. So an instance whose replication had never once worked —
+  a wrong URI, a bucket nobody created, an expired credential — was indistinguishable from one
+  replicating every hour, and stayed that way until the host was gone. **A backup that exists only
+  on the machine it was taken from is not a disaster-recovery backup.**
+- Reproduced against a real MinIO: with the target bucket absent every push failed with
+  `NoSuchBucket`, nothing reached the store, and the cycle still ended `✓ One cycle complete`,
+  exit 0.
+- `BundleResult` now carries **`offsite`** (`requested`/`ok`/`error`/`uri`), the
+  `backup_schedule_run` and `bundle_created` audit events carry `push_error`, both commands name
+  where a copy went on success, and **both exit non-zero when a requested replication failed** —
+  `exa backup create --push` is what the documented systemd timer runs, and a timer's only signal
+  is the exit code. `--json` carries the same under an `offsite` key, still as exactly one
+  document.
+- The bundle's own `status` is deliberately untouched: it describes the bundle, and losing a good
+  local backup over a broken off-site target would be the worse failure.
+- Documented what nothing creates for you: `minio-init` provisions four buckets and **no backups
+  bucket**, on purpose — an "off-site" copy on the same MinIO as the data it protects is not
+  off-site.
+- Recorded an honest gap rather than papering over it: **nothing alerts when backups stop
+  working.** The sidecar is a CLI loop with no metrics endpoint, so there is no `BackupFailed`
+  rule among the alerts. The guide now names the two signals that do exist (the audit event, and
+  the non-zero exit) so an operator can build the check today.
+
+### Fixed — verifying a backup required permission to modify it
+
+- **The defect:** verification opened the snapshot with the platform's hardened connection, which
+  sets `journal_mode=WAL` — a write. So checking a backup needed write access to it, and the
+  shipped arrangement does not grant that: the Compose `backup` sidecar runs as **root** inside its
+  container, so every bundle it writes belongs to root, and the operator who later verifies one
+  got `attempt to write a readonly database` instead of a verdict. The same applies wherever
+  backups are meant to live — a read-only mount, WORM storage, an archive restored with its
+  ownership intact.
+- New `resilience.db.connect_snapshot()` opens a file the platform does not intend to change,
+  read-only and `immutable=1` — the latter because a snapshot carries WAL mode in its header and
+  SQLite would otherwise reach for the `-shm` side file, which is the write that actually failed.
+  **A verifier must leave what it verifies exactly as it found it.**
+- **Found by running the container nobody had ever started.** New drill
+  `tests/integration/test_backup_sidecar_live.py` (opt-in `EXAMLOPS_CHAOS_LIVE=1`, part of
+  `make chaos-drills` and the weekly workflow) builds the shipped sidecar image, runs one real
+  cycle, and reads what it wrote: the manifest must show the platform datastore captured (a bundle
+  of nothing but skipped tiers exits 0 too), the bundle must verify with the host's checksums, and
+  the database inside it must still carry its audit chain. The **RPO ≤ 1 h** objective had a
+  mechanism that no test had ever executed.
+- Note for anyone reproducing it: the bug only bites a snapshot on a *rollback* journal, because
+  `PRAGMA journal_mode=WAL` against a file that is already WAL writes nothing. The first version of
+  the regression test used a WAL snapshot and passed against the broken code.
+
+### Fixed — restoring artifacts failed on exactly the disaster it exists for
+
+- **The defect:** `restore_objects_tier` uploaded into a bucket that was no longer there and got a
+  raw boto3 `NoSuchBucket`. That is the state a lost object store leaves, and
+  `docs/guides/backup-restore.md` puts objects **first** in its recovery order, because model
+  artifacts must exist before the registry's references to them resolve — so the first step of a
+  documented full-disaster recovery ended in a stack trace. A restore now recreates a bucket the
+  disaster took (the backup recorded that it existed) and reports `bucket_created`.
+- **Why the suite missed it:** the in-memory S3 double's `upload_file` did
+  `self.data.setdefault(bucket, {})`, quietly creating the bucket — a double more forgiving than
+  the real thing, on the one path that only matters in a real disaster. The double now refuses an
+  unknown bucket exactly as MinIO does.
+- Each bucket reports its own outcome instead of the first failure ending the tier, and items now
+  carry **`ok`** — which is what `restore_bundle` aggregates into `failed`. Without it an objects
+  restore could not be reported as having failed at all, whatever happened to it.
+- **New drill** `tests/integration/test_objects_dr_roundtrip_live.py` (opt-in
+  `EXAMLOPS_CHAOS_LIVE=1`, part of `make chaos-drills` and the weekly workflow): starts its own
+  MinIO, writes artifacts, backs them up, **destroys the bucket**, restores, and compares each
+  object's **digest** — counting objects would pass over a restore of the right number of empty
+  files. It also lists past a 1000-key page (1050 objects), which the in-memory double never
+  truncates; pagination was already correct.
+- Corrected a stale count in the game-days guide: `make chaos-drills-kind` runs **four** cluster
+  drills, not three — the same page already said "all four pass locally".
+
+### Changed — an upgrade now reports what the data says, and a failed migration has a documented answer
+
+- **Verified, then pinned:** a migration that dies partway leaves **nothing** behind — the partial
+  write is rolled back, the stamp does not advance, a dead *breaking* step does not raise the
+  minimum-reader floor, and the migration stays pending so `exa upgrade apply` retries it. That was
+  already true on both SQLite and Postgres and **nothing tested it**, so the day someone gave the
+  migration loop an autocommitting connection it would have gone away in silence. Now pinned by
+  `test_a_migration_that_dies_partway_leaves_nothing_behind`, paired against a migration that
+  *succeeds* so it cannot pass over a mechanism unable to write at all.
+- `upgrade.apply()` used to return the literal `ok: True`. It is now derived from the data
+  afterwards, and the result carries **`pending_after`**. `applied` can legitimately be empty when
+  another replica won the race, so an empty list was never evidence of success on its own.
+- `exa upgrade apply` printed an empty `applied` as *none pending* — indistinguishable from an
+  instance that had nothing to migrate. When migrations remain outstanding it now says so, names
+  them, and states that the data was not left half-migrated.
+- New operator section: [If a migration fails](docs/guides/upgrade-and-compatibility.md) — the
+  question worth answering before running an upgrade against production data.
+
+### Fixed — the Postgres backup nobody had ever restored
+
+- **The gap:** the disaster-recovery round trip (seed → back up → destroy → restore → verify)
+  ran only on **SQLite**. On the Postgres engine, platform state lives in a `pg_dump` archive
+  restored by `pg_restore`, and every test covering that path was unit-level — it asserted the
+  argv, that the password never reaches `ps`, that the dump is scoped to the configured schema,
+  that a failure is reported rather than swallowed. All true, and none of it says the data comes
+  back. The enterprise restore path had never been exercised end to end.
+- **New drill** `tests/integration/test_postgres_dr_roundtrip_live.py` (opt-in
+  `EXAMLOPS_CHAOS_LIVE=1`, part of `make chaos-drills` and the weekly workflow): starts and removes
+  its own Postgres, seeds a chained audit log and a traffic split, takes a `postgres`-tier bundle,
+  `DROP SCHEMA … CASCADE`, restores, and asserts the rows **and the chain's head hash** are the
+  ones from before. A restore that put every row back while rewriting the log would pass a row
+  count and destroy the only property the audit log exists for. Skips without
+  `pg_dump`/`pg_restore` rather than passing green.
+- **The defect it found, now fixed:** `restore_bundle` cleared the cached "this schema is already
+  initialised" verdict after the *sqlite* tier and not after the *postgres* tier. Exactly one of
+  the two holds platform state at a time, so under the Postgres engine the clearing ran on the tier
+  that was empty and was skipped on the tier that had just been replaced — leaving the process
+  convinced a schema it had never looked at was ready, and skipping the additive DDL, the
+  data-format stamp and every online migration the restored data might need. The clearing now runs
+  after either tier.
+- `docs/guides/backup-restore.md` said the restore path "is exercised in CI so it can never rot";
+  that claim now says which engine it was true of, and links the drill that makes it true of both.
+
+### Removed — the UNIBO and SEANERGYS logos and the SeanerBUS page from the dashboard
+
+- The sidebar and the sign-in screen no longer show the University of Bologna and SEANERGYS
+  logos or the "SEANERGYS · EuroHPC-JU" caption. The two image files are deleted.
+- The SeanerBUS console is gone. That covers its nav entry, the `/platform/integrations` route
+  and the `/seanerbus` redirect, the SeanerBUS section of the Config page, the two SeanerBUS nodes
+  in the Overview architecture diagram, and the dashboard's `/api/seanerbus/*` router.
+- `/api/health` no longer reports `seanerbus` or `seanerbus_sim`, so `unmeasured` is now
+  `["slurm"]`. The dashboard no longer reads `SEANERBUS_BRIDGE_STATUS_URL` or
+  `PUBLIC_SEANERBUS_BRIDGE_URL`.
+- Not removed: the bridge and client in `platform/clients/`, `exa seanerbus`, the
+  `seanerbus-bridge` compose service and its Grafana dashboard, and the `seanerbus_*` keys that
+  `/api/config` accepts and exports.
+
+### Documented — the control plane can stay unready after a first Helm install (charts v0.54.0, v0.55.0)
+
+- **The race:** on a first install against an empty Postgres, every tier creates the platform
+  schema at once. The control plane can lose that race (`duplicate key value violates unique
+  constraint "pg_type_typname_nsp_index"`), never re-runs its startup check, and stays `0/1`.
+- **Reproduced** with the released v0.55.0 chart and images on kind: three of three fresh
+  installs failed this way when the images were already on the node. One
+  `kubectl rollout restart deployment/<release>-examlops-control-plane` fixed each.
+- **This is why `chart-e2e` has never passed:** 11 failed runs, 0 successful, because CI preloads
+  the images.
+- The workaround is in the chart README and in
+  [Enterprise installation](docs/guides/enterprise-installation.md). The fix is not yet in a
+  release.
+- The chart guards now allow an upstream image, such as an opt-in tier's proxy, as long as its
+  repository is overridable and it is pinned by digest. ExaMLOps images must still come from
+  `global.imageRegistry` and be ones the release publishes. The air-gapped guide says how to mirror
+  such an upstream image.
+
+### Fixed — control-plane retrains, canary splits and the approval gate now work end to end
+
+A code and live-stack audit (2026-09-10) found features recorded as integrated that did not work on
+the running stack. Fixed, each with a test that fails on the old code:
+
+- **Retrains could not dispatch.** The control plane targeted a Prefect deployment nothing created,
+  and whose flow would have refused its parameters. `exa pipeline deploy` now also registers and
+  serves `training_flow/examlops-dispatch`, the control plane defaults to it, and `GET /health`
+  reports its state (`dispatch`). A missing target answers 503 with the fix instead of a bare 404;
+  unknown `parameters` keys are rejected with 400 before anything is recorded.
+- **One refused retrain wedged a tenant forever.** A request refused at the admission cap left a
+  queued row that blocked every later request. Refusals now answer **429 with `Retry-After`** and
+  leave nothing behind; slots held by crashed dispatches are released when their lease expires.
+- **The dashboard and Skipper got 401 from the control plane.** They sent no credential after
+  `/models*` was put behind read scope. Both now authenticate; bundled README images reach the
+  browser through short-lived signed dashboard URLs. `exa cards` authenticates too, and
+  `exa approvals delete` now has a route (`DELETE /approvals/{id}`) that **retracts** an approval,
+  keeping the record. A new guard checks every consumer call against the control plane's contract.
+- **Canary and shadow configuration never reached serving.** Ray Serve now uses the shared platform
+  store, model names match case-insensitively, the CLI and Skipper push to the right route, and a
+  split applies to default-alias traffic without overriding a request pinned to another alias.
+- **A datastore problem failed bus inferences.** The SeanerBUS bridge now replies first and writes
+  drift / input telemetry in the background (bounded, counted, alerted). The per-request
+  `inference_served` audit row is gone.
+- **The backup sidecar backed up a file the control plane no longer writes.** It now follows the
+  control plane's store and engine.
+
+### Added — the serving snapshot: replicas serve what the control plane compiled (ADR 0127)
+
+Each Ray Serve replica used to build its own picture of what to serve. Every 60 s it scanned
+MLflow, reading a single page, so models past the first 100 were never served, then asked for
+every alias of every model. It loaded new versions by alias and read shadow targets from the
+database on a TTL. Now:
+
+- **One compiler** (`examlops.serving_snapshot`) turns a paginated MLflow read plus the traffic
+  and shadow tables into a snapshot with a SHA-256 content digest and a monotonic `generation`.
+  A generation is published only when the content changes, to `serving_snapshots` (with a
+  `serving.snapshot_published` event) and to the NATS KV bucket `examlops-serving` when the
+  backbone is NATS. A compile that cannot read MLflow fails rather than publishing a partial
+  view.
+- **The control plane projects it.** One replica, holding a lease, recompiles within a second of
+  any `serving.*` or `model.alias_changed` event, and every `CONTROL_PLANE_SNAPSHOT_SECONDS` (60)
+  to catch changes made directly in MLflow. Failures back off and keep the previous generation.
+- **Replicas serve it** (`RAY_SNAPSHOT_MODE=auto`). They pick up a new generation within 2 s,
+  load changed models **by version**, keep unchanged ones, take shadow targets (and the inference
+  router its traffic splits) from the snapshot,
+  refuse a snapshot whose digest does not match, and keep a last-known-good copy for restarts
+  while everything upstream is down. They report `ray_examlops_serving_snapshot_applied_generation`.
+  With no snapshot published they scan MLflow as before.
+- **`exa serve snapshot show|publish`**; control-plane `/health` → `runtime.serving_snapshot`;
+  replica `/health` → `snapshot`; alerts `ServingSnapshotLagging` and
+  `ServingSnapshotCompileFailing`. Guide: *Serving snapshot*.
+
+### Security — MLflow and Prefect can require authentication (plan P3.6)
+
+Anything on the network could register a model, move an alias or start a flow run. Now:
+
+- **MLflow:** `MLFLOW_AUTH=basic` starts its basic-auth app with an admin account you set. It
+  refuses to start without `MLFLOW_ADMIN_PASSWORD` rather than use MLflow's public default, and
+  keeps its user store on a volume. The image gains `mlflow[auth]`, without which that mode
+  cannot start.
+- **Prefect:** `PREFECT_API_AUTH_STRING` in `.env` turns authentication on at the server and
+  for every client. The server variable is exported only from a non-empty value: Prefect reads
+  `PREFECT_SERVER_API_AUTH_STRING=""` as "require an empty password" and would refuse every
+  client, and a guard test keeps it that way.
+- **Every caller sends the credential**: the SDKs natively, and the raw-HTTP callers through the
+  new `examlops.service_auth` (control-plane gateway and probe, snapshot compiler, dashboard
+  registry, pipelines and UI proxy, agent tools, `exa` CLI). It is sent only to the configured
+  servers. Opt-in: with nothing set, both servers behave exactly as before. Verified against the
+  real images: 401 for an anonymous call and for the bundled default password, 200 with the
+  platform's headers.
+
+### Security — segmented container networks (plan P3.5)
+
+`docker-compose.segmented.yml` is an opt-in overlay that replaces the flat Compose network with
+six zones: `db`, `objects`, `control`, `ops`, `notebooks` and `docker-api`. Each service joins only
+the zones of the services it talks to. A notebook, which runs arbitrary user code, reaches only
+MLflow, MinIO, Prefect, Ray Serve and the control plane. Only the dashboard reaches the Docker
+API, and the storage and Docker-API zones are internal. A guard derives every service-to-service
+dependency, from the Compose environment, the `.env` template, the monitoring configs, the
+notebook environment and runtime settings, and fails on any dependency the zoning would cut.
+
+### Security — each service holds only the control-plane action it performs (plan P3.2)
+
+Control-plane credentials had two scopes, `read` and `write`, and every service held `write`:
+the SeanerBUS bridge, which only requests drift retrains, could also approve a model into
+training or reconfigure the ModelZoo integration. There are now narrow action scopes
+(`retrain`, `approve`, `changes`, `admin`), and `write` still implies them all, so existing
+credentials are unchanged. Every mutating route requires `write` or its one action scope.
+Compose gives the bridge, autopilot, agent and dashboard their own token variables, so each can
+be issued its own principal and scopes; the control-plane guide has the recommended map. A bug
+this uncovered is fixed: the rate limiter demanded `write` itself, which would have refused
+every narrow credential.
+
+### Security — no service holds the object store's root credential (plan P3.4)
+
+MLflow, the dashboard, the backup sidecar and, through JupyterHub, every notebook all ran with
+`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`. With it, anything able to run code in one of them could
+rewrite every artifact, create users or delete the store. `minio-init` now provisions one
+least-privilege user per service: `mlflow-rw` (read-write on `mlflow-artifacts`), `dashboard-rw`
+(docs bucket and project storage), `backup-readonly` (read-only on all three buckets) and
+`notebook-rw` (artifacts and project storage). It also creates the dashboard bucket, so no
+service needs bucket-creation rights. Each service reads its own
+`MINIO_<SERVICE>_ACCESS_KEY`/`SECRET_KEY`, and falls back to root only while that pair is unset,
+so existing deployments are unaffected until an operator opts in. The script was run against a
+real MinIO and each user was tested allowed and denied. A guard fails if a new service takes the
+root credential.
+
+### Added — a replica restarts and serves with the control plane, database and MLflow all down
+
+- **Content-addressed artifact cache** (`RAY_ARTIFACT_CACHE`, plan P4.3). Each model version a
+  replica serves is fetched once, by version, into a local directory with a SHA-256 manifest. It
+  is re-checked on every use (a corrupted copy is refetched, never loaded) and evicted
+  least-recently-used beyond `RAY_ARTIFACT_CACHE_MAX_GB`. Signature verification runs against
+  the cached bytes. Compose keeps it on the serving snapshot's volume.
+- **Static stability, proven** (plan P4.1, ADR 0123). With the snapshot's last-known-good copy,
+  a replica started while the platform database, NATS, MLflow and the control plane are all
+  unreachable serves a real model and a real prediction from its own disk
+  (`tests/unit/test_serving_static_stability.py`, with a control run that comes up empty).
+
+### Added — the model server speaks Open Inference Protocol v2 (plan P4.5, ADR 0126)
+
+- Ray Serve serves every model over **OIP v2 REST** as well as `/predict`: `GET /v2`, `/v2/health/live`
+  and `/v2/health/ready`, model metadata and readiness (with or without `/versions/{v}`), and
+  `POST /v2/models/{name}[/versions/{v}]/infer`. KServe, Triton and MLServer clients and load tools
+  work unchanged, and the KServe manifests' `protocolVersion: v2` is now true of the Ray server.
+- Requests are one `[N, F]` tensor of rows or one tensor per feature column. Columns are named as in
+  the model's MLflow signature and matched by name, and batches are native. Width, names, shapes and
+  datatypes are checked against the signature **before** the model runs; a mismatch is a `400` with
+  `{"error": …}`. `parameters.alias` selects an alias, and the caller's `X-ExaMLOps-Budget-Ms` is
+  honoured.
+- Both protocols run on one execution path (`_run_model`): the same timeouts, metrics and shadow
+  mirroring. ADR 0126 (Partially implemented) records the contract and the gateway still to come.
+  Conformance suite `tests/unit/test_oip_v2.py` runs against a real MLflow model.
+
+### Added — a model's project is enforced at serve time (plan P4.9)
+
+With `EXAMLOPS_MULTITENANCY` on, the serving gateway refuses a request for a model that belongs to
+another project (ADR 0088). Virtual keys are bound to their project. A token needs a role in the
+model's project, from its own claims or from a project membership, and the project is also passed
+to the policy decision. Unscoped models stay open to every authenticated caller. Names match
+case-insensitively: an exact match would have left `jpcp` unscoped while it was assigned as `JPCP`.
+Routes that name no model are refused under multi-tenancy. An unreadable membership is refused,
+never opened (`EXAMLOPS_GATEWAY_SCOPE_CACHE_SECONDS` bounds the cache). Tests: 9 unit tests, and a
+live cross-project denial through real Envoy.
+
+### Added — a serving gateway in front of Ray Serve (plan P4.4, ADR 0126)
+
+- **Envoy 1.39.1** (pinned by digest, Compose profile `gateway`, port 18088) fronts inference. It
+  routes only OIP v2, the inference pipeline and `/predict`. Ray Serve's admin routes, metrics and
+  dashboard are not reachable through it, and Envoy's own admin interface is loopback-only.
+- **Every request needs a credential** (open: `GET /v2` and `/v2/health/*`): a platform virtual key
+  (`exa gateway key issue`, with tenant, project, model allow-list and budget), or an access token
+  from the data center's IdP, authorized for the new `serving.infer` action. The decision service
+  is `examlops.serving_gateway` (Envoy `ext_authz`, fails closed).
+- **The verified tenant travels upstream** as `X-ExaMLOps-Tenant` / `-Principal` / `-Project`,
+  overwriting any client-supplied copy.
+- **Limits:** a per-tenant quota across all gateway replicas (`EXAMLOPS_GATEWAY_TENANT_RPM`, 600/min
+  → `429`), a gateway-wide ceiling, an 8 MiB body limit (`413`), 35 s per attempt, at most two
+  retries within a 20 % retry budget, and a cap on open connections.
+- **Static stability:** a recently verified key keeps working through a datastore outage
+  (`EXAMLOPS_GATEWAY_KEY_CACHE_SECONDS`), and an unreachable quota counter never blocks a valid
+  credential.
+- Guide `docs/guides/serving-gateway.md`. Tests: decision logic (20), the Envoy config's security
+  rules (10), and a live run against real Envoy (9: anonymous `401`, spoofed tenant overwritten,
+  allow-list `403`, oversize `413`, admin routes `404`, over quota `429`).
+
+### Changed — every platform caller uses OIP v2; `/predict` is deprecated
+
+- The inference router, the bus bridge's vector handler, the Skipper agent's `predict` tool, the
+  dashboard's test inference, `exa serve batch submit` and the example client call
+  `/v2/models/{model}/infer` through the new `examlops.oip_client` (a feature dict or vector
+  becomes OIP input tensors, and the answer reads back as `prediction`, `model_version`, `alias`
+  and `run_id`). `/predict/{model}` still works and now answers with `Deprecation` and a `Link` to
+  its successor. `tests/unit/test_serving_callers_use_oip.py` fails on a new caller of `/predict`.
+- A request the model's signature refuses now reaches the pipeline's client as a `422`
+  `validation_error` naming the problem, instead of a `500` `inference_failed`. It is never retried.
+- Three callers that never worked, fixed by the move:
+  - the agent's `predict` tool sent a feature list that `/predict` refused on every call;
+  - the dashboard's test inference sent the chosen stage and version as query parameters
+    `/predict` never read;
+  - `exa serve batch submit --alias` reached the server for no row, because rows were posted
+    verbatim. A row's own alias or version still wins over `--alias`.
+
+### Fixed — `/predict` answered 500 on every model with a column signature
+
+`/predict` flattened the feature dict in its own order and gave MLflow an unnamed array, which a
+column-based signature refuses. Features now reach their columns by name, and a missing one is a
+`422` naming it. Found by the OIP v2 conformance suite.
+
+### Fixed — `POST /v1/retrain` answered 500 on every Postgres control plane
+
+The Postgres row type (`examlops.storage.pg.PgRow`) supported names and integer positions but not
+slices, and accepting a command reads `row[3:]`. On SQLite that works; on Postgres it raised
+`KeyError`. So every asynchronous retrain failed on a Postgres deployment, which since this release
+is every platform retrain, while the SQLite suite stayed green. `PgRow` now slices exactly like
+`sqlite3.Row`. Found by running two control-plane replicas against a live Postgres.
+
+### Fixed — the serving snapshot and traffic splits were wrong on Postgres
+
+Running the whole unit suite against Postgres (`EXAMLOPS_DB_BACKEND=postgres`) found two more
+places where the Postgres port behaved differently from SQLite:
+
+- **Every serving snapshot was generation 0.** The port's `lastrowid` read only a column called
+  `id`. SQLite returns the table's integer primary key whatever it is called, and
+  `serving_snapshots` keys on `generation`. The port now returns the single integer primary key
+  when there is no `id` (`examlops.storage.pg`). A live Postgres test covers it.
+- **A traffic-split change kept its old `updated_at`.** SQLite's `INSERT OR REPLACE` re-inserts the
+  row with a fresh default, but the Postgres translation updates only the listed columns.
+  `set_traffic_rules` now sets the timestamp explicitly.
+
+### Fixed — two racing retrain submissions both dispatched
+
+`POST /v1/retrain` checked "is a retrain of this model and dataset already in progress?" in one
+transaction and inserted the command in the next. Two submissions arriving together, through two
+replicas or two threads of one, both passed the check and both dispatched. The check now runs
+inside the insert's lock. A test forces the interleaving on SQLite and on Postgres, and both
+fail without the fix.
+
+### Changed — the control plane can say when it is safe to run more than one replica (plan P5.1)
+
+- **Runtime settings are shared and audited.** `PUT /v1/modelzoo/config` (poll interval,
+  auto-retrain) changed an in-memory dict, so the change reached only the replica that received
+  it and was not audited. The settings now live in the control plane's state store
+  (`control_plane_settings`), every replica re-reads them within
+  `CONTROL_PLANE_SETTINGS_TTL_SECONDS` (5 s), and each change is an audit event. An unreadable store
+  keeps the last values read, never silently reverting to the defaults.
+- **`runtime.horizontal_scaling_safe` is computed**, not a constant `false`. Its two permanent
+  "blockers" were not blockers: a per-replica circuit breaker is the usual design, and a retry of
+  a key-less synchronous retrain is a new request on one replica as on three. Both are now
+  `horizontal_scaling_notes`. With Postgres state, a running relay and a real broker, the list of
+  blockers is empty.
+- `tests/integration/test_postgres_backend_live.py` runs two control-plane instances on one
+  Postgres: a settings change through one reaches the other, and racing submissions create one
+  command. The Helm default stays at one replica until failover has been exercised on a cluster.
+
+### Added — game days: one command runs the chaos drills, and a guide to reading them
+
+`make chaos-drills` builds the two images from the tree and runs all three drills — the datastore
+outage, the event backbone outage and the serving overload — each printing what it measured. One
+drill failing no longer hides the others: each keeps its own status and the sum is the exit code.
+
+[Game days](docs/guides/game-days.md) is the operator-facing half: what each drill breaks, what must
+hold, the numbers a healthy run produces, what a specific failure means, and how to run the same
+failures against a staging installation — the announcement, the abort condition decided in advance,
+one dependency at a time, and a short record template. It ends with the gaps, so a green run is not
+read as more than it is: no partial network partitions, no Kubernetes-level drills for the serving
+plane, and no drills for the dashboard, MLflow or Prefect.
+
+### Added — the platform now reports the training run it orphaned
+
+The split-brain drill found that a command can be given up on while a dispatch that was merely slow
+is still in flight: when it lands, Prefect runs the job the platform has already written off, and
+until now the only way to discover that was to go and look.
+
+Burying a command now asks Prefect, read-only, whether a flow run exists for the command's own
+idempotency key — `POST /flow_runs/filter`, not a second `create_flow_run`, which would *create* the
+run it is asking about. When there is one it is named in the command's `last_error`
+(`a Prefect flow run exists for this command: <id>`), logged at warning level, and counted by
+`examlops_control_plane_dead_commands_with_run_total`, which raises
+`ControlPlaneDeadCommandLeftARun`.
+
+Three things the tests pin, because each is a way this could do harm rather than good: the lookup
+uses the command's own key (what Prefect deduplicates on), **a burial never depends on Prefect
+answering** — Prefect being unreachable is usually *why* the command died — and not knowing is
+recorded as not knowing rather than as "no run". Each has a mutant that kills exactly one of them.
+
+That last property is also why the check cannot live only at the burial, which the drill showed by
+failing: the replica giving up is the one that cannot reach Prefect, so its own lookup timed out and
+the orphan stayed invisible. The reconcile sweep on **any** replica now asks about recently buried
+commands as well — once per replica, within `CONTROL_PLANE_ORPHAN_CHECK_WINDOW_SECONDS` (15 minutes,
+`0` to turn it off) — so a healthy replica asks on the cut-off one's behalf.
+
+The runbook says what to do with the finding, and the order matters: look at the run first, do not
+resubmit while it is running (a resubmission is a new command with a new key, so nothing
+deduplicates it), then fix the replica that could not reach Prefect.
+
+Verified end to end by the partition drill, where the buried command's `last_error` now reads
+`502: Prefect unreachable within the dispatch deadline: timed out; a Prefect flow run exists for
+this command: 6cad227a-…`. It took four live runs, and every one of them found a flaw in the
+*approach* rather than in the platform, which is worth recording:
+
+- checking only at the burial cannot work — the replica giving up is the one that cannot reach
+  Prefect (hence the sweep, on any replica);
+- the drill's Prefect stand-in had no `/flow_runs/filter`, so the platform asked, got a 404 and
+  recorded "unknown" — correctly, which is why that property has its own test;
+- "ask once per replica" defeated a signal that by definition arrives late (hence
+  `CONTROL_PLANE_ORPHAN_RECHECK_SECONDS`);
+- and the sweep's `LIKE '%…%'` died on Postgres — psycopg reads a literal `%` in a parameterised
+  statement as a placeholder — silently, every cycle, because the worker swallows a bad cycle. It is
+  the only such `LIKE` the platform had; the marker is matched in Python now, and the command tests
+  run against a real Postgres as well as SQLite, which is what would have caught it first.
+
+### Added — an ejected model server now pages someone
+
+The gateway can eject a model server that stops answering, which is the point — and also why nobody
+would otherwise notice that inference is being served by fewer pods than the deployment has. Two
+alerts close that gap:
+
+| Alert | Fires when |
+|---|---|
+| `ServingEndpointsUnhealthy` (warning) | Some endpoints are healthy and some are not, for 5 minutes |
+| `ServingNoHealthyEndpoints` (critical) | None are, for 2 minutes — while requests still go out, because Envoy's panic threshold keeps a lone unhealthy endpoint in service, so **this alert is the signal, not the error rate** |
+
+Both read `envoy_cluster_membership_healthy` against `_total`, and the ejection drill now reads the
+same two numbers back: `healthy 1 / total 2` about eight seconds after an endpoint was wedged, and
+`2 / 2` nine seconds after it recovered. The alert is grounded in a measurement rather than a guess
+at metric names — the failure the repo has hit before, where a rule watched a series that never
+existed.
+
+Three promtool cases go with them: a partial ejection fires the warning and not the critical, losing
+everything fires the critical and *not* the warning (different pages for whoever is woken), and a
+gateway whose upstream name does not resolve yet — no endpoints at all — pages nobody.
+
+A guard caught the one mistake worth catching here: `ServingNoHealthyEndpoints` compares a metric to
+zero, and `tests/unit/test_absent_is_not_zero.py` requires such a rule to survive the series
+*disappearing* rather than going quiet. It is exempted with the reason rather than given an
+`absent()` arm — Envoy publishes those gauges every scrape, so their absence means the gateway is
+not scraped (`ServingGatewayDown` covers that), and an `absent()` arm would fire forever on every
+site that does not deploy the optional gateway.
+
+`docs/runbooks/serving.md` gains both sections, including what to do when the ejected pod answers
+`/ready` by hand (the network between the gateway and that pod) versus when it does not (the model
+server's own problem), and the reminder that ejection protects callers from a sick pod without
+replacing the capacity you are missing.
+
+### Added — the reliability documentation is now checked against the drills that back it
+
+Ten iterations of drills left their documentation spread across a guide, a table, several component
+pages and the runbooks — grown a section at a time, which is also how such a set rots. An audit found
+that the **control-plane failover drill had no section in the game-days guide** at all: it runs in
+`make chaos-drills-kind` and has a row in the testing table, but the operator-facing page never said
+the platform is held to a replica crashing mid-dispatch. It has one now, with the numbers from a run
+on the current tree: 154 of 154 accepted retrains succeeded through two kills, 155 dispatch calls for
+154 commands (the one duplicate deduplicated by its key), longest gap between accepted submissions
+3.3 s.
+
+`tests/unit/test_chaos_drills_are_documented.py` keeps it that way, and takes the Makefile as the
+definition: **every drill the chaos targets run** must have a row in the testing guide and a section
+in the game-days guide, and every `docs/…` path a drill names in its own text must exist. The two
+chart tests that run nearby are exempted by name and reason rather than by being forgotten.
+
+The game-days guide also opens with a one-page table now — what fails, what callers see, and what
+makes that true — with every row linking to the drill that measured it and the page that explains it.
+
+### Added — a split-brain drill: a control-plane replica that is cut off but still alive
+
+The cluster failover drill kills replicas, which is the easy failure — the replica is gone and its
+work is unambiguously abandoned. `tests/integration/test_control_plane_partition_kind_live.py`
+(`EXAMLOPS_KIND_PARTITION_LIVE=1`, about three minutes) does the dangerous one: three replicas, a
+real Postgres, and a Prefect stand-in that **holds** one replica's dispatches, so that replica is
+alive, still owns the command, and cannot finish it.
+
+**What held.** However many dispatches of one command are in flight — ten, in the measured run —
+Prefect starts **exactly one run**, because every dispatch carries the command's own idempotency key.
+That is the property the whole claim-and-takeover design rests on, and it is now measured under the
+only failure that can put two live dispatches in flight at once. The command also reaches a terminal
+state rather than hanging in `dispatching`, and no replica needed restarting.
+
+**What it found.** The cut-off replica **keeps** the command: it is healthy and renews its claim, so
+no other replica takes it over, and it spends all five attempts itself (10 dispatch attempts over
+116 s) until the command is `dead` — even though two healthy replicas could have run it. And because
+the held dispatch lands afterwards, Prefect starts the run anyway: the platform records the work as
+dead while a training job for it is running, with nothing pointing at it.
+
+The drill pins that behaviour with numbers rather than changing retry or lease semantics, because
+whether a partitioned replica should keep its claim (safe, and the work dies) or hand it back (the
+work gets done, and the idempotency key is what makes that safe) is a design decision.
+`docs/runbooks/control-plane.md` now tells an operator to look for an orphaned run *before*
+resubmitting a dead command, and how — a resubmission is a new command with a new key, so it would
+train twice.
+
+### Fixed — a column migration made every Postgres install unbootable
+
+`ALTER TABLE … ADD COLUMN` carries a column type exactly as `CREATE TABLE` does, and the Postgres
+translation layer was applying its type map only to `CREATE TABLE`. Nothing showed until a migration
+declared a type Postgres does not have: `_COLUMN_MIGRATIONS` gained
+`project_budgets.alerted_at DATETIME`, and from then on **every process that opened a Postgres
+datastore died in its first `init_db()`** —
+
+```
+psycopg.errors.UndefinedObject: type "datetime" does not exist
+LINE 1: ALTER TABLE project_budgets ADD COLUMN alerted_at DATETIME
+```
+
+— so the control plane crash-looped at startup. A Postgres install was not degraded; it was down.
+Found by a Kubernetes drill whose chart install would not come up, and reproduced in one container.
+
+The quieter half of the same bug: a column added by a migration was `int4`/`float4` rather than the
+`bigint`/`double precision` the schema means everywhere else, so an added counter had a 2.1-billion
+ceiling its `CREATE TABLE` sibling does not.
+
+`tests/unit/test_storage_pg_translate.py` now translates **every entry in the real
+`_COLUMN_MIGRATIONS` table** and requires a type Postgres has, so the next migration with a SQLite-ism
+fails in the unit suite rather than in a production startup.
+
+The size of it, measured by running the same set of test files both ways against a real Postgres:
+**87 errors without the fix** — nothing could open the datastore at all — against 16 failures with
+it, all of them pre-existing Postgres-parity issues in other areas.
+
+### Verified — all four cluster drills pass, and a third run settles the toleration question
+
+The remaining two kind drills now have run too, so the set is complete: **27 tests across four
+throwaway clusters, about 30 minutes of cluster time**, every cluster deleted afterwards.
+
+**Node loss produced the measurement that matters.** A third independent pair confirms the claim this
+project retracted: the lost pod left the Service after **137.1 s** (band: 132–139 s), and with
+`tolerationSeconds: 20` the drill lost **117 requests against 110** with the default — the short
+toleration was *worse*. Five measurements, no effect in either direction. The guide now says so
+plainly, and says why it matters: the **first** run of this drill suggested a seventeen-fold
+improvement, and that claim reached three pages before two further runs showed it was noise.
+
+The same run re-confirmed what the gateway is worth: **129.5 s** of errors straight at the Service
+against a **10 s** window behind the gateway, 9 requests lost.
+
+**Control-plane failover**: 144 accepted commands, 146 dispatch calls (the duplicates deduplicated by
+their idempotency key), two replicas SIGKILLed mid-dispatch, longest gap between accepted submissions
+3.0 s.
+
+Both tables now state ranges across runs rather than one run's counts, and two places that called the
+cluster drills "untested" — the game-days guide and the weekly workflow's own header — now say what is
+actually true: the drills are known good, and what remains untested is whether a *hosted runner* has
+the memory and time for them.
+
+### Verified — the cluster drills still hold, on a real three-replica cluster
+
+The kind drills are opt-in and had never been run against this tree. Two of the four now have, and
+both pass: **13 tests, ~12 minutes**, each on its own throwaway cluster which it then deleted.
+
+The **control-plane partition** drill reproduces iteration 63's work end to end: ten dispatches of one
+command, **exactly one Prefect run** (the idempotency key holds), the cut-off replica keeping its claim
+— the behaviour still awaiting an owner decision — and the platform naming the run it orphaned:
+
+```
+502: Prefect unreachable within the dispatch deadline: timed out;
+a Prefect flow run exists for this command: eac84da0-e2a3-41c1-b415-597f8fce6ec0
+```
+
+The **serving pod-churn** drill reproduces every documented property, including the headline one: a
+scale-up with no readiness probe lost **2 014 requests**, and the same scale-up with the probe lost
+**none**, the pod becoming useful 33 seconds after it appeared — the same 33 s as the previous run.
+
+Its numbers in [game days](docs/guides/game-days.md) were single-point counts from one run, so they
+are now ranges across both, with the note that the *proportion* is what to read: the probe-less loss
+is not a handful of requests but roughly **one in five** of everything sent during the scale-up.
+
+### Added — an alert can no longer watch a metric nothing emits
+
+`promtool` proves a rule parses; the scrape checks prove the *job* exists. Neither notices a
+misspelt or removed **metric name**, and an expression that can never match a series is a
+permanently silent alarm — which on a dashboard is indistinguishable from a system with nothing
+wrong. All 58 rules are now held to the metrics the code actually declares.
+
+The guard understands the three transformations that sit between a declaration and a stored series,
+because all three are real rather than sloppiness: Ray Serve namespaces a deployment's metrics with
+`ray_`; a histogram named `x_seconds` yields `x_seconds_bucket`, `_count` and `_sum`; and a recording
+rule in the same file defines a series nothing exports directly. Metrics that **other** software
+emits (Envoy's `ext_authz` and rate-limiter counters, vLLM's time-to-first-token, Prometheus' own
+`up`) are allow-listed individually, each named with what emits it, so an entry cannot quietly become
+an excuse for a typo in ours.
+
+**The first version of this guard was vacuous, and a mutant caught it.** It scanned `platform/` for
+metric names — a directory that contains `alert_rules.yml` itself, so every name in the rules was
+trivially "found" and the check passed for any string at all. A one-letter typo sailed through it.
+The corpus was narrowed to Python only, and both mutants now behave: the typo fails while naming the
+alert that would have gone silent (`ControlPlaneDeadCommandLeftARun`), and widening the corpus back
+makes it pass again — which is the proof that the vacuity was the cause rather than a guess at it.
+
+Four other surfaces were checked this iteration and found clean, recorded so the ground is not
+re-covered: the Helm chart has no value no template uses and sets no variable nothing reads; the A2A
+agent card advertises exactly the 48 registered MCP tools; and the dashboard's is the only
+`BaseSettings` class in the tree, so yesterday's blind spot has no second instance.
+
+### Fixed — 21 environment variables the dashboard reads and nothing documented
+
+A `pydantic-settings` class maps a field named `public_ray_serve_url` to the variable
+`PUBLIC_RAY_SERVE_URL` **implicitly, by name**. No literal is ever written — so the guard that
+requires every variable the code reads to be documented could not see a single one of them, and
+twenty-one went undocumented, including the **MinIO credential the dashboard uses** and the limits on
+what an editor can upload (`DASHBOARD_MAX_IMAGE_BYTES`, `DASHBOARD_IMAGE_URL_TTL_SECONDS`).
+
+All are now in the reference, with two subtleties an operator needs: the dashboard's own names for
+`DATAPLANE_URL` and `SLURM_MODE` carry **no `EXAMLOPS_` prefix** — Compose feeds them from the
+prefixed variables, so setting the dashboard's environment directly requires the unprefixed name.
+
+`tests/unit/test_env_vars_are_documented.py` now reads settings classes as *declarations* rather than
+searching for strings, so the blind spot is closed; the mutant (a new settings field) is caught by
+name.
+
+One genuine phantom removed: `EXAMLOPS_VLLM_LAUNCHER` promised to force a launcher and nothing in the
+tree read it. Setting it did nothing, silently — the documentation equivalent of a fallback you cannot
+distinguish from working.
+
+**The search for it is worth recording.** Five successive instruments answered "how many documented
+variables does nothing read?" with 39, 29, 7, 5 and finally 1, and each was wrong for a different
+reason: `git grep` ignores untracked files (most in-flight work in this tree); a file-glob list missed
+file types; backticked capitals include enum *values* (`NO_PERMISSIONS`); pages name things in human
+words; and settings classes consume variables without ever naming them. The docs were in far better
+shape than any intermediate number suggested — and the one real gap was found by reading a class, not
+by grepping for a string.
+
+### Added — four services the stack runs and the page listing services did not mention
+
+*Services and their jobs* (`docs/explore/services.md`) is where an operator goes to find out what is
+running and why. Four of the stack's services were not on it, and the omissions were not harmless
+ones:
+
+- **NATS JetStream** — the event backbone every drift, promotion and snapshot event travels through
+  (ADR 0124), with its own outage drill;
+- **the serving-gateway authorization service** — which decides whether an inference request is
+  allowed, fails closed when it cannot tell, and serves already-verified keys from cache while the
+  datastore is away;
+- **the autopilot follower** — which reacts to drift without polling, and deliberately runs beside
+  the control plane rather than inside it;
+- **Postgres role provisioning** — the one-shot step that gives each service its own role and
+  database, so MLflow cannot reach Prefect's data.
+
+A component that decides access, or carries every event, missing from the page that lists components
+is the kind of gap found at 3 a.m. Each now has a section in the page's own format, with facts taken
+from the Compose definitions and the code.
+
+New guard `tests/unit/test_every_service_is_described.py` holds the page to the Compose file, which is
+the definition of what runs. Names are paired through an **explicit map** rather than a string search:
+the page uses human headings ("MinIO bucket init" for `minio-init`), and searching for Compose names
+claimed four gaps where there were three — the map makes each pairing a decision rather than an
+accident of wording. Services that need no section of their own (the monitoring stack, the Marquez
+deployment's helpers) are listed with the reason, and a second test fails if a mapping or an exemption
+outlives the service it names — which it already caught once, for a service in a different Compose
+file.
+
+### Fixed — the testing guide's first line was wrong by a factor of 2.3
+
+"The unit suite is **2781 tests**" — it is 6411. The dashboard's "453/453" is 665, "127 tables" is
+142, the onboarding guide's "3388 tests" is 6411, and an explore page's "about 130 tables" is about
+140. All corrected against counts measured for the purpose.
+
+These are not decoration. The testing guide's whole argument — run everything quickly rather than
+selecting affected tests — rests on how long the suite takes, and a reader who checks that number and
+finds it wrong has no reason to trust the argument either. The page had been edited several times in
+the same week without anyone noticing, because **a stale number reads exactly like a fresh one**.
+
+The opening now states only what was measured: 6411 tests, 217 s across this host's cores on
+2026-09-13, and no serial figure at all rather than one scaled from the old suite size.
+
+New guard `tests/unit/test_documented_counts_are_current.py` recomputes the load-bearing counts and
+compares them with what the guides claim. It is a **drift check, not a pin** — 20 % tolerance,
+because a guard that fails on every test added is a guard somebody deletes, and a third test asserts
+the tolerance is never tightened into one. The mutant (restoring "2781") fails with the arithmetic:
+*"says 2,781 tests; there are 6,414 — 57 % off."*
+
+Not corrected, because it could not be verified here: the CI guide's count for the agent suite. That
+suite needs its own dependencies (`langgraph`, `respx`), which are deliberately not in the root
+environment — 22 collection errors from the wrong venv are not a defect, and a number I cannot
+measure is one I will not "fix".
+
+### Added — one guide for honest degradation, and a guard that documentation names real files
+
+**[Honest degradation](docs/guides/honest-degradation.md)** collects into one page the defect class
+that produced six fixes in a week: a fallback that cannot be distinguished from the ordinary case.
+The audit card that verified nothing, the signer whose failure looked like policy, the provider
+substitution nobody was told about, the gateway's vanished routes, the misdiagnosing connection
+probe, the wall that could not tell "not yet" from "cannot", the console that reported six zeros.
+
+It states the rules — a zero is a claim and a dash is the absence of one; separate "not yet" from
+"cannot"; degrade quietly only for the cause you documented; a gate carries the reason in its verdict
+— names the tests that enforce each, and ends with the method that actually finds these: **execute
+the degraded path and read what the user is shown**, because measuring this class by pattern-matching
+the source produced three different wrong answers in one sitting.
+
+It also records the surfaces checked and found **honest**, so the ground is not re-covered: every
+`exa` read command against a dead datastore (exit 2, a stderr warning naming the address, no stdout),
+the documented exit-code gates, `exa status`, the agent's tools, the frontend's swallowing `catch`es,
+and the five consoles that render a *Partial data* pill.
+
+**And a new guard: a repository path named in the documentation must exist.** `mkdocs --strict`
+validates links between pages; a path to a *file* is just text to it, so a guide can keep citing the
+test that backs its claim long after it was renamed — and a citation is what makes a claim credible.
+It found **20 stale references across 13 pages** on its first run:
+
+- a whole **tutorial for a demo deleted in June** (`demoanomaly-e2e-demo`), naming five files that no
+  longer exist — removed, along with its nav entry;
+- a control-plane section documenting a **dataplane simulator that is not in the tree**: not the file,
+  not its `POST /trigger-retrain` endpoint, not the `CLIENT_SIM_DRIFT_THRESHOLD` it referenced. A
+  reader following it would curl a port that answers nothing — removed;
+- eighteen paths left behind by the ADR-0094 move of use-case content out of `pipelines/`, plus three
+  renamed ADRs and specs — corrected.
+
+### Fixed — the Next-Gen console reported six zeros when it could not reach the platform
+
+A count of zero is a claim: *nothing is configured*. On a completely failed load this page rendered
+`0 Federated runs · 0 Device pools · 0 Placements · 0 Autoscale configs · 0 Distributed runs ·
+0 Feature views` — six assertions it had not earned, from an operator's point of view
+indistinguishable from a genuinely idle platform.
+
+It now shows a dash per tile and says why: *"Couldn't load the Next-Gen summary … The figures below
+are unknown, not zero."* That is the rule the NOC wall already followed, applied where it was
+missing.
+
+**Found by rendering, not by grepping.** Three attempts to measure this class by pattern-matching the
+source gave 27, then 3, then 1 — each wrong, because pages express the same intent in different words
+(`{error && …}`, `"Couldn't load"`, `"Platform Ops unavailable"`). Mounting each candidate page with a
+failing fetch and reading what the user is shown settled it in one pass. The other two candidates were
+honest: PlatformOps names the error, and Preferences reads browser-local settings that never failed.
+
+Two tests and a mutant: restoring the zeros fails the test that asks for dashes.
+
+### Fixed — the NOC wall could not tell "not reported yet" from "source unavailable"
+
+On a wall display read from across a room, silence means quiet. The kiosk view already degraded
+missing figures to a dash rather than a zero — a zero would be a claim ("no alerts") where a dash is
+the absence of one — but both states carried the same caption: **"Awaiting data"**. One of them
+resolves itself; the other is someone's job.
+
+The BFF already names the sources it could not reach in `_partial`, and the wall was dropping that
+list on the floor. It now passes it through: a source the aggregate could not reach reads
+`inbox source unavailable`, and a header badge names every degraded source in wall-sized type, so an
+operator sees it without walking up to the screen. The carbon slide keeps its operational-only
+caveat in every state (ADR 0112 R-ee).
+
+Five tests, one mutant: collapsing the two captions back into one fails the pair that tell them
+apart.
+
+Also checked and found honest, recorded so the ground is not re-covered: every swallowing `catch` in
+the frontend carries its reason (abort-on-cleanup, "observability must never break the UX"); the
+Governance, FinOps, Facility, MLOps and Alerts consoles all render a "Partial data" pill; and the
+four pages that do not — Overview, Scaling, ModelDetail, SelfObs — never receive `_partial`, because
+none of them reads a BFF-aggregated endpoint.
+
+### Added — a ratchet so a silent degradation cannot be added again
+
+Three defects in one week had the same shape and none was a crash: a governance digest that verified
+nothing, a signer whose failure looked like a deliberate policy, and a provider fallback that
+replaced a site's own promotion gate without a word. In each the fallback was *right* and the
+silence was the defect.
+
+`tests/unit/test_degradations_are_visible.py` now holds the line: a blanket `except Exception` inside
+a function whose docstring promises a degradation must either **say something** — log it, or return
+the cause to the caller — or **carry its reason** on the `except` line. Being quiet is allowed when
+it is argued: two sites on the serving request path stay silent because a log line per inference
+would drown the outage that caused it, and they now say so.
+
+It is a ratchet rather than a hard zero, because a guard that demanded every site at once is a guard
+someone switches off. The count went **8 → 4** in the writing of it; the four that remain are
+low-consequence and each needs a judgement rather than a sweep.
+
+Two more silent fallbacks fixed on the way:
+
+- **the gateway's endpoint registry.** A registry it cannot read leaves the route table alone, which
+  is correct — but the visible symptom was a configured model answering "unknown model", with no
+  hint that the registry rather than the configuration had failed. It says so now.
+- **`exa connection test`.** A connection whose secret could not be resolved was probed anyway, so
+  the operator saw S3 refusing the request and concluded their credentials were wrong. A probe whose
+  whole job is diagnosis must not misdiagnose; it now reports the resolution failure and says the
+  endpoint was never contacted.
+
+**The guard's own first mutant survived**, and that was the more useful result: mutating a module
+into *invalid* Python made the scan skip it silently, so a file it could not read counted as a file
+with no problems. Unparseable files now fail the scan loudly. The valid mutant — making the gateway
+silent again — fails the ratchet as it should.
+
+### Fixed — a site's configured provider could fail and be replaced by the default, silently
+
+The same defect as the entry below, in the layer that decides *which calculation runs*. Every
+provider resolver — `drift`, `promotion`, `placement`, `carbon`, `cost` — falls back to the built-in
+default when a configured provider cannot be resolved or raises while computing. That fallback is
+right: a broken plugin must not stop a cost report or block a promotion.
+
+It was **silent**, and indistinguishable from the ordinary case of having configured no provider at
+all. A site that had deliberately installed a stricter promotion gate, its own placement score or a
+different carbon coefficient received the platform's answer instead, with nothing anywhere to say
+which one it was. The promotion resolver's docstring promised it "never silently breaks" — it did not
+break, it silently *substituted*, which is a policy change nobody was told about.
+
+All five now report through `providers.loader.degraded_to_default()`, which names the provider and
+the cause and says plainly that this is not the same as configuring none.
+
+**Promotion goes further, because it is a gate rather than a calculation.** The cause is appended to
+the verdict's own reason, so the promotion record reads
+
+```
+0.0420 < 0.05 [built-in threshold used: configured provider failed — ValueError: coefficient table is empty]
+```
+
+and whoever reviews that decision can see the configured gate was not the one that ran, without going
+to the logs.
+
+Six tests, two mutants: removing the annotation fails the "the verdict says it fell back" test, and
+silencing the reporter fails the per-resolver tests. Twenty-nine blanket catches inside degradation
+promises were triaged to get here — eleven already logged and needed only their reason comment, and
+these five were the ones that changed a site's configured behaviour without a word.
+
+### Fixed — a broken signer was indistinguishable from a deliberate policy
+
+Two surfaces sign an identity and record the result: the fine-tuning adapter registry
+(`exa finetune`) and reproducibility bundles. Both wrapped the signer in `except Exception` and
+returned `(None, None)` — the same value, in the same column, that means *"this site configured no
+signing key"*.
+
+So a malformed key, an unreachable secret store or a bug in the signer produced a record that reads
+as a deliberate choice, permanently, because nothing anywhere said otherwise. The supply-chain
+module already raises a dedicated `SigningKeyMissing` for the one cause that *is* a choice; the
+blanket catch threw that distinction away.
+
+Both now share `examlops.supplychain.sign_or_explain()`, which degrades quietly **only** for a
+missing key and logs anything else with the subject and the cause, saying explicitly that it is not
+the same as having no key. The caller still succeeds either way — a signing fault should not cost
+someone their fine-tuning run — but it can no longer pass unnoticed. Putting it in one place is
+deliberate: the defect existed twice because an `except Exception` had been copied, and a shared
+helper cannot be fixed in one caller and left broken in the other.
+
+Five tests pin both directions, and two mutants confirm them: restoring the blanket catch fails the
+"a failure says so" test, and warning on the no-key path fails the "a choice stays quiet" test — a
+guard that cried wolf on the documented case would train people to ignore it.
+
+Found by scanning for functions whose docstring promises a degradation while their `except` is
+broader than the documented cause. Of 849 blanket catches in the platform, 237 carry a reason
+comment; 30 sit inside a degradation promise without one, and these two were the ones handling
+security-relevant material. The rest are recorded for later rather than swept.
+
+### Fixed — the `LIKE`-pattern guard could not see two of the four ways to write the defect
+
+The guard that keeps a literal `%` out of parameterised SQL — the one protecting against the defect
+that meant **no cost or carbon lineage was ever recorded on a Postgres install** — read the source
+line by line. Probed with the shapes it claims to cover, it missed half of them:
+
+| Written as | Before | Now |
+|---|---|---|
+| `"… job LIKE 'train:%' AND id=?"` | caught | caught |
+| `"… job LIKE "` / `"'train:%' AND id=?"` | **missed** | caught |
+| `f"… job LIKE '{pattern}'"` | **missed** | caught |
+| `"… job ILIKE 'train:%'"` | caught | caught |
+
+The split form is not hypothetical: at this repo's 100-character limit the formatter produces it
+whenever the statement is long enough, which is most of them. Python merges adjacent string literals
+at parse time, so the guard now reads the **AST** — the statement as the interpreter sees it — and
+also renders f-strings, where the `%` arrives by interpolation and the value is unbound besides.
+
+Reading the AST removed the old prose heuristics as a side effect: comments are not in the tree at
+all, and docstrings are skipped by identity, so the guard can quote the broken pattern while
+explaining it — as its own docstring does.
+
+No live defect: the only two sites the line reader could not see are in the SQLite backup tier,
+which is the documented exemption. Verified by re-introducing the original lineage defect in the
+split spelling — the guard catches it now and did not before. Each shape has its own test.
+
+### Fixed — the connection-per-iteration guard was blind to half the ways you write one
+
+It matched `with get_db() as conn:` and nothing else, so `conn = get_db()` — the commonest
+alternative — walked straight past it. Two sites in the control plane had been invisible since the
+guard was written. It now matches both spellings.
+
+Both turned out to be **correct**, and are exempted with their reasons: `_get_db` retries the open
+itself, where a fresh connection per attempt is the entire point, and the reconciler gives each run
+its own transaction so one failure cannot roll back the runs before it — on the control plane's own
+SQLite store, where a connection is nearly free and the batch is bounded by a `LIMIT`.
+
+Exemptions now carry **how many** sites a file may have, so a new one in an already-exempted file
+still fails rather than inheriting somebody else's justification. Verified with two mutants: adding a
+site to an exempted file fails the count, and restoring the blind spot fails the liveness check.
+
+Also checked and found clean this iteration, recorded so nobody re-runs them: the other three
+Governance cards derive every verdict from counted evidence (only the audit card was fabricating);
+no service reads a table that does not exist in the schema it belongs to; and all 159 documentation
+pages are reachable from the nav or another page.
+
+### Fixed — the governance page showed a tamper-evidence digest nothing else could reproduce
+
+The Governance console's *Audit integrity* card computed its **own** hash chain over five columns of
+every audit event and published the result as `headDigest`. Its docstring explained why:
+*"`audit_events` stores no per-row hash, so we compute a deterministic chain"* — true when the page
+was written, and false since the platform started storing `prev_hash` and `hash` on every event.
+
+Three consequences, none visible from the page:
+
+- the digest was a **parallel** one. An operator copying it as an external anchor — which is exactly
+  what the guide told them to do — was anchoring a number `exa audit verify` has never computed;
+- `verified: True` was returned with the comment *"recomputation is self-consistent by
+  construction"*. It was: a recomputation always agrees with itself. Nothing was verified;
+- it read **every row of a table that grows forever** on each render, building a dict per event to
+  return the last twenty. **139 ms at 100 000 events, against 1.9 ms now** — and the old cost grows
+  with the log while the new one does not.
+
+The card now reports the log's own chain: `headDigest` is the stored hash of the newest chained
+event, `count` and `unchained` say how many events exist and how many carry no hash (counted, never
+hidden — every dashboard-written event was unchained once), and `verified` is joined by
+`verifiedScope`, which names what was actually checked. New `examlops.data.audit.verify_tail()`
+recomputes the newest links in constant time; full verification remains `exa audit verify`, which
+reads the log end to end and names the first broken link.
+
+**A mutant caught the tests before the tests caught the mutant.** With the fix in place, hard-coding
+`verified = True` still passed every new assertion — they checked the *shape* of verification and
+never a broken chain, which is the same vacuity the old code had. There is now a test that inserts a
+chained event whose hash does not follow from the head (an `INSERT`, because the append-only triggers
+correctly refuse an `UPDATE` or `DELETE`) and requires `verified` to be `False`. It kills that mutant,
+and a second one that fabricates the digest.
+
+If you copied a digest from this page before 2026-09-13, copy it again — the value has changed, and
+the new one is the audit log's own.
+
+### Fixed — the dashboard's drift panels issued a query per model
+
+The same shape as the entry below, one level down: both drift routes reused their connection but ran
+**two queries per model** — one for its window of snapshots, one for its baseline. Counted through
+the route: **21 statements for 10 models, 101 for 50**. On SQLite that is invisible, which is why it
+survived; on Postgres every statement is a network round trip, so a 50-model deployment paid 100 of
+them to render one panel.
+
+**The obvious fix is right on one engine and wrong on the other**, which only a measurement at
+realistic size shows. Over 250 000 snapshots across 50 models, three runs each:
+
+| | one statement per model | one windowed statement |
+|---|---|---|
+| SQLite | **47 ms** | 129 ms |
+| Postgres | 134–148 ms | **70 ms** |
+
+A windowed `ROW_NUMBER() OVER (PARTITION BY model …)` must rank every row in the table before
+keeping the newest few, while a per-model query walks the `(model, ts)` index and stops after its
+window. On SQLite, where a statement is an in-process call, the per-model form is **2.7× faster**;
+on Postgres the 50 round trips cost more than the ranking and the single statement is **2× faster**.
+
+So the routes dispatch on the engine, with both numbers recorded beside the code. Both queries are
+portable — this is a cost decision, never a dialect one, and the SQL either branch sends is the same
+SQLite-shaped SQL the translation layer handles everywhere else. A union of indexed per-model limits
+was measured too and was worst of the three on Postgres (233 ms), so it was not used.
+
+The guard is **behavioural**, because N+1 is a shape no linter can judge — a loop over six fixed
+tables is fine, a loop over every model is not. It measures each route at 5 models and at 50 and
+asserts what is right for the configured engine: a constant statement count on Postgres, and on
+SQLite a count growing by no more than one read per model (which still catches a second N+1 layered
+on top). Both branches assert the route returned the rows the test seeded, so neither can pass by
+measuring a route that quietly returned nothing — these routes swallow exceptions to degrade rather
+than 500, which is exactly how that could happen.
+
+### Fixed — a drift report opened 101 database connections for 50 models
+
+`corruption.input_drift_rows()` — what `exa drift input status` and the dashboard's input-drift view
+render — opened a connection **per model** for its snapshots, and `get_input_baseline()` opened
+another per model for its baseline. Measured against a local Postgres with 50 models: **101
+connections, 24 ms**. Sharing one connection for the report: **2 connections, 11 ms**, identical
+output. The agent's copy of the same report (`platform_ops.py`) had it too.
+
+The saving grows with every millisecond of network distance — the measurement above is against a
+server on the same host, which is the *smallest* that gap ever gets. On SQLite the same code is
+nearly free, which is why it survived review and why no test noticed: every assertion still passed,
+only slower.
+
+`get_input_baseline(model, conn=…)` now accepts a connection to reuse, following the pattern the
+platform already uses for helpers a loop may call.
+
+New guard `tests/unit/test_no_connection_per_iteration.py` — an AST walk, not a regex — fails on any
+new `with get_db()` inside a loop across the CLI package, the services, serving and pipelines. Two
+sites are exempted with their reason, and both would be *defects* if hoisted: `lifecycle/upgrade.py`
+gives each migration its own transaction so a failure cannot roll back the ones before it, and
+`telemetry_anchor.py` releases its connection before writing an audit event, because holding one
+across a nested open is how a small pool deadlocks. A companion test fails if an exemption stops
+describing a real loop. Documented under
+[connection pooling](docs/guides/postgres-backend.md#connection-pooling).
+
+### Changed — a guard that scans nothing can no longer pass
+
+Most repository guards assert a **negative**: no module imports the monolith, no SQL inlines a
+`LIKE` pattern, no caller bypasses `/v1`, no alert threshold is unreachable. Over an empty scan that
+is the strongest possible pass — zero offenders found, green — and it is indistinguishable from
+total compliance. `test_platform_db_coupling_ratchet.py` was caught in exactly that state once, with
+its root pointing at a directory that no longer existed.
+
+`test_guard_paths_are_not_stale.py` already closes the half where the *root* has gone. The other
+half is the **pattern**: a root that still exists while `*.py`, `*.md` or `docker-compose*.yml`
+stops matching after a rename. Twelve guards now scan through
+`tests/unit/_guard_deps.scan_files(root, pattern)`, which asserts it matched something and names the
+root and pattern when it did not — so the check is inherited by construction rather than remembered,
+and no detector of assertion *style* is needed (that kind of detector is itself the thing that stops
+matching without telling anyone).
+
+Verified both ways: removing the assertion from `scan_files` fails its own test, and pointing a
+migrated guard's root at a directory that does not exist now **fails** where the same mutation used
+to pass silently.
+
+### Fixed — one unstaged deletion failed five guards and hid two real findings behind them
+
+`git ls-files --cached` lists the **index**, which still holds a file deleted in the working tree
+whose deletion has not been staged — ` D` in `git status`, and an ordinary state while someone is
+removing something. Two guards then read every path they were given and died with
+`FileNotFoundError` from inside `pathlib`: five failing tests across three guards, none of which had
+anything to say about the deletion, and all of them reading as broken tests rather than as work in
+progress.
+
+The cost was not the noise. While those failures stood they **masked two environment variables the
+code reads and nothing documented** — the guard that would have said so was one of the five:
+
+- `EXAMLOPS_HPC_WORKDIR` now has a row in [the reference](docs/reference/env-vars.md). It is where an
+  adapter keeps its own job files, as `<it>/<kind>`; a cluster wants it on a filesystem the compute
+  nodes can see, and the mock scheduler's historical default wrote generated scripts and pickles
+  *inside the checkout*. It is distinct from `EXAMLOPS_JOB_SCRIPT_DIR`, which holds the scripts.
+- `PYTEST_XDIST_WORKER` is classified as the test runner's own variable rather than documented as a
+  platform knob, with the reason in the guard: it exists only inside a test run.
+
+The enumeration is now one shared function, `tests/unit/_guard_deps.tracked_and_new_files()`, which
+skips paths that are gone (a file with no content leaks nothing and documents nothing) and asserts
+that it found any files at all — an enumerator that returns nothing makes every guard built on it
+pass by checking nothing. `tests/unit/test_guard_file_enumeration.py` holds both properties, driving
+the deleted-path case through a throwaway repository rather than by removing a file in a tree other
+people are working in. Verified by re-introducing the defect: the same five tests fail again.
+
+Also dropped: two exemptions in the localhost-port guard that named a deleted router and a setting
+that no longer mentions `localhost:8003` — which is what that guard's own failure message asks for.
+And [the testing guide](docs/guides/testing.md) gained *Guards that read the repository*, stating the
+two rules this class of test lives by: enumerate through that function, and make a missing subject
+loud rather than green.
+
+### Changed — the drills' numbers are ranges now, and every one was re-measured
+
+The whole Docker drill set was run against this tree — 18 tests, all green: the datastore outage
+(unready in 2.03 s, writes refused with 503, ready again 0.02 s after Postgres accepted), the event
+backbone (retrains still 202 with the broker gone, health `degraded`, readyz 200, 14 of 14 events
+drained after recovery), the overload load test (bounded p50 163 ms / p99 364 ms against unbounded
+6.3 s / 14.1 s — a 38.8× ratio, 729 served and 2871 shed, no dropped connections), and gateway
+ejection (a black hole ejected after 8.4 s, membership 1/2 while ejected and 2/2 after, back in use
+11.5 s later, a lone unhealthy endpoint still served).
+
+Five numbers the guides quoted as single values had drifted — Postgres took 1.8 s to accept rather
+than the 9–24 s recorded before, the black hole cost 10 of 20 requests rather than 13, the bounded
+p99 was 364 ms rather than 312. Nothing regressed; a timing measurement on a developer host simply
+is not a constant. They are now stated as **ranges across the runs that produced them**, and
+[game days](docs/guides/game-days.md) gained a section saying which column is a promise: *"Must
+hold"* is asserted by the drill and its failure is a defect; *"Typical measurement"* is evidence, and
+what to read from it is the shape — a bounded queue's p99 being tens of times lower than an unbounded
+one's, not that it is 312 ms.
+
+That distinction is there because it was got wrong once, and the section says so: one node-loss run
+suggested `tolerationSeconds: 20` cut a lost node's cost seventeenfold, two more runs put it inside
+the noise, and the claim had to be retracted from three pages.
+
+### Added — the chaos drills run every week, not only when someone remembers
+
+`.github/workflows/chaos-drills.yml` runs the Docker drill set every Saturday and keeps each run's
+log as a 90-day artifact — on a passing run too, because a drill's output is a measurement and one
+measurement is only readable next to the last one.
+
+A reliability property rots in a way nothing else in the suite can see. A retry budget, a queue
+bound, an outlier-detection threshold or a readiness probe can all stop doing their job while every
+unit test stays green, because unit tests run against a healthy stack. Only a drill notices, and
+until now the drills ran only when someone typed `make chaos-drills`.
+
+It is deliberately a **report, not a gate** — outside `ci-ok`, the single check branch protection
+requires. The drills take tens of minutes and build two large images, so they cannot sit on a pull
+request; and they measure *timing* on a shared runner, where a gate that reddens for a slow
+neighbour would train everyone to re-run it. The cluster drills are opt-in from the Actions tab
+(each loads a 1.9 GB image into every node of a throwaway multi-node cluster; locally they must run
+in the foreground because a background run gets killed for low memory, and whether a hosted runner
+can carry them is untested — so a failure there is a finding about the runner until reproduced on a
+laptop).
+
+`tests/unit/test_chaos_drills_are_documented.py` now holds four places to one drill list: the
+Makefile defines the set, **every chaos target in it must be invoked by that workflow**, every drill
+must have a row in the testing guide and a section in the game-days guide, and every `docs/…` path a
+drill names must exist.
+
+### Fixed — the testing guide still carried a retracted measurement
+
+The node-loss row said a shorter `unreachable` toleration "measurably shortens" a lost node's black
+hole. That claim was retracted when the second and third runs contradicted the first (132–139 s with
+it, 133–136 s without — and in one pair the short toleration was 3.5 s *slower*), and the correction
+reached [the Kubernetes guide](docs/guides/serving-on-kubernetes.md) and the CHANGELOG but not this
+row. What ends the black hole is EndpointSlice removal, not the pod's deletion.
+
+### Changed — the Postgres parity suite runs in parallel, so it can be a gate
+
+`make test-postgres` ran single-process because the per-test isolation empties *the* schema and
+eight xdist workers sharing one truncate each other's rows mid-test. That cost about nine minutes
+per measurement, which is why this engine's parity was checked by hand and rarely — the same
+argument [the testing guide](docs/guides/testing.md) already makes for the SQLite suite: a gate
+nobody waits for is not a gate.
+
+Each worker now takes **its own schema** before it opens a connection (`exa_test` → `exa_test_gw3`,
+via `examlops.storage.testing.scope_schema_to_this_worker`, called from `tests/conftest.py` at
+import). A serial run keeps exactly the schema it was given, and SQLite is untouched.
+`JOBS=0` still forces serial. Eight tests cover the contract, including the properties whose
+absence is invisible in a green run — two workers never share a schema, and an unnamed schema does
+not fall back to `public`.
+
+Connections are the limit that bites next: `-n auto` is 24 workers on the machine this was measured
+on, each with a pool, each sibling schema with another, and a further pool inside every subprocess a
+CLI test spawns. Against the stock `max_connections=100` a run fills with
+`FATAL: sorry, too many clients already` — 149 errors that look like a platform fault and are a
+harness limit. So a worker's pool is capped at 2 (it runs one test at a time), and the throwaway
+container starts with `-c max_connections=300`. **Result: 4–5 minutes instead of ~9, with the whole
+suite green.**
+
+**The parity gap is closed.** The unit suite on Postgres 16 now fails exactly the tests it fails on
+SQLite and no others — 6323 passed, 38 skipped, each skip naming its reason. The remaining failures
+in both runs are other in-flight work, not this engine.
+
+### Fixed — a `LIKE` pattern written into the statement is a broken placeholder on Postgres
+
+psycopg parses the statement for placeholders whenever parameters are passed, so `LIKE 'train:%'`
+is not a pattern to it — it is a malformed placeholder:
+
+```
+psycopg.errors.ProgrammingError: only '%s', '%b', '%t' are allowed as placeholders, got '%''
+```
+
+Found while chasing something else, and it had already cost two features on every Postgres install.
+Both were silent because their callers treat bookkeeping as best-effort:
+
+- **No cost or carbon lineage was ever recorded on a Postgres install.**
+  `lineage_run_for_mlflow_run` matched `job LIKE 'train:%'`, so `attach_run_cost` logged a warning
+  and returned `False` — for every run, forever. On SQLite the same code worked, which is why the
+  feature looked shipped.
+- The agent's platform-ops error listing (`action LIKE '%fail%'`) raised rather than answering.
+
+Two more call sites were latent: they pass no parameters *today*, which is the only reason they run,
+and adding one would have broken them. All four now bind the pattern (`LIKE ?` with `'train:%'` as a
+value), which is correct on both engines — doubling to `%%` is not an alternative, because that is a
+literal `%%` to SQLite. `tests/unit/test_sql_has_no_literal_percent.py` fails the build on the next
+one; its single exemption is the SQLite backup tier, which reads `sqlite_master` in its own file and
+never meets psycopg. Documented in [the Postgres guide](docs/guides/postgres-backend.md).
+
+### Fixed — the Postgres suite was reporting failures that were the tests' own
+
+Closing the Postgres-parity gap meant separating real defects from tests that can only ask their
+question on SQLite. Everything below is a test-side fix; the two product defects it uncovered are
+the entries above and the column-migration one.
+
+- **A `sys.path` insert leaked out of one test and shadowed an installed package** for every test
+  that followed it in the process, producing **15 false failures** in the serial run (the parallel
+  run distributes them and hides it). It now uses `monkeypatch.syspath_prepend`, and an autouse
+  fixture in `tests/unit/conftest.py` restores `sys.path` after every test, so the next leak cannot
+  reach another test at all.
+- **Three "an older datastore gains the column" tests** hand-build a table in the shape an earlier
+  release left it, then let `init_db(force=True)` migrate it. On Postgres the schema is shared by the
+  whole process, so the `CREATE TABLE` hit the bootstrap's own table
+  (`psycopg.errors.DuplicateTable`) and the test failed before it could ask anything. New shared
+  helper `examlops.storage.testing.datastore_before_a_migration()` gives them a datastore where just
+  those tables are absent, on either engine — so the column migrations are now exercised **on the
+  engine whose translation layer they broke**.
+- **The guard against a test opening the checkout's own SQLite stores** was driven through
+  `PLATFORM_DB`, which Postgres ignores, so on that engine it silently stopped testing the hook. It
+  now asks the hook directly (it holds on both engines — the agent's memory, its review store and
+  MLflow are SQLite whatever the platform datastore is) and the `PLATFORM_DB` seam is a separate
+  test that **skips with its reason** on Postgres rather than passing vacuously.
+
+### Added — end-to-end proof that the gateway turns a lost node into a blip
+
+The ejection change was measured against Envoy and two stub endpoints. The node-loss drill now
+measures it against the whole thing: the real gateway reading the committed configuration, the real
+authorization service, two real model servers behind a **headless** Service, and a worker node
+stopped outright — on the same cluster, minutes apart from the same measurement taken straight at
+the Service.
+
+| Caller | What the lost node cost, over two runs |
+|---|---|
+| Straight at the Kubernetes Service | failures for **118-127 s** |
+| Behind the gateway, headless Service | **5-10 requests** of about 32 000, inside **0.1-10 s** — clean `503`s, p99 143 ms |
+
+That is the argument for the gateway in one row, and it is now a test rather than a claim. The wide
+end of the window is the health check's own detection time (two probes, five seconds apart); the
+tenth of a second in the other run was luck about when the probe landed, and the guide says so
+rather than quoting it.
+
+Two things the drill found by being wrong first, both recorded in it:
+
+- its first run measured a working **rate limiter**, not availability: eight concurrent callers send
+  about 400 requests a second and the per-tenant quota is 600 a *minute*, so the gateway answered
+  600 × `200` and then `429` — correctly. The drill now turns the quota off and says why, and points
+  at the test that does cover it;
+- a node loss produced one `500` among thousands of transport errors, which is documented behaviour
+  (a request caught on a replica as it dies gets a 500 from Ray's proxy). The assertion that *no*
+  HTTP status may appear was too strong; it now requires transport errors to dominate and records
+  the mix, because the real claim is that the platform is not the source of the errors.
+
+### Fixed — the gateway kept sending inference to a model server that had stopped answering
+
+The node-loss drill showed that Kubernetes needs about two minutes to stop routing to a pod whose
+node is gone, and that a client-side retry cannot cover it (the retry goes through the same Service
+and can land on the same dead address). The serving gateway was the piece that could have noticed,
+and it had nothing to notice with: no active health check, no outlier detection.
+
+`platform/infra/docker-compose/gateway/envoy.yaml` (and its byte-identical chart copy) now give the
+model-server cluster a health check — `GET /ready` every 5 s, 2 s timeout, ejected after two failures
+— plus outlier detection on both the REST and gRPC clusters, with `max_ejection_percent: 50` and
+`split_external_local_origin_errors` so a *hang* counts as a failure at all.
+
+Measured by the new `tests/integration/test_serving_gateway_ejection_live.py`
+(`EXAMLOPS_GATEWAY_LIVE=1`, about two minutes, Docker only), which wedges one of two endpoints so it
+accepts connections and never answers:
+
+- with the health checks stripped out — the configuration as it was — **13 of 20 requests timed
+  out**, each costing the caller its whole deadline;
+- with them, the endpoint is ejected after **8.4 s** and the following 60 requests are all served;
+- it returns on its own **9.4 s** after it recovers, with no restart;
+- and a **lone** unhealthy endpoint is still used rather than answering "no healthy upstream" —
+  Envoy's panic threshold, checked by its own test, because this change must not take a
+  single-container deployment out of service while its model loads.
+
+For the gateway to eject a *pod* rather than a Service, it has to resolve one endpoint per pod: the
+guides now say to point `gateway.upstream.host` at a **headless** Service. The gRPC cluster gets
+outlier detection only — `/ready` is HTTP/1 on the REST port and the model server does not serve
+`grpc.health.v1` — so a gRPC caller should carry a deadline.
+
+`tests/unit/test_serving_gateway_config.py` holds the probe path, the interval, the threshold and the
+ejection cap, so none of it can quietly disappear; the existing 16 live gateway tests still pass.
+
+### Added — a node-loss drill: losing a machine black-holes inference for minutes, by default
+
+`tests/integration/test_serving_node_loss_kind_live.py` (`EXAMLOPS_KIND_NODE_LOSS_LIVE=1`) builds a
+three-node kind cluster, spreads the model server one replica per worker, pins the callers and MLflow
+to the control-plane node so they survive, and then loses a worker twice over — once by draining it,
+once by stopping it outright.
+
+**The drain is the easy case.** Pods are evicted, so each is a graceful deletion and costs what the
+pod-churn drill already measured: the keep-alive connections pinned to the evicted pod and nothing
+else — 2 to 6 requests out of tens of thousands, depending on how many were pinned there.
+
+**Losing the node outright is the case to plan for.** Nothing tells the cluster; it is inferred from
+missing heartbeats, and until then **the pod stays `Ready` in the API** — the kubelet that would say
+otherwise went with the node. So the Service keeps routing its share of inference to an address that
+answers nothing, and those requests do not fail fast, they **hang**:
+
+- it cost **2151 of 4967** requests in one run and 670 of 7167 in another: a *share*, not an outage —
+  the surviving replica answered everything routed to it, and once the lost pod was gone, 0 of
+  11 643 at p99 118 ms;
+- *how* it failed is not fixed, and the drill records rather than asserts it: either at once (p99
+  154 ms) or by hanging for the caller's whole timeout (p99 10 s), depending on whether the dead
+  node's packets are refused or silently dropped. Every failure was a transport error — the model
+  server itself never answered one;
+- failures kept appearing past two minutes in every run, ended — with nobody intervening — by the
+  EndpointSlice dropping the dead pod. Not by its deletion: **a pod on an unreachable node is never
+  deleted**, because the kubelet that would confirm it went with the node, so it stays `Terminating`
+  until the node returns (the drill waited ten minutes for a deletion that cannot happen before
+  measuring the right thing instead).
+
+How much it costs is **not a stable number** — the same default configuration cost 121, 146, 670 and
+2151 requests across four runs — so the drill does not compare request counts at all. It times the
+mechanism: how long the dead node's pod keeps its place in the Service.
+
+That measurement produced a **negative result worth keeping**, because it contradicts the fix everyone
+reaches for first, including this changelog two revisions ago. Shortening
+`node.kubernetes.io/unreachable` from 300 s to 20 s does **not** shorten the traffic loss: across four
+measurements the pod left the Service after 132-139 s with the default and 133-136 s with the short
+toleration — noise, and once 3.5 s slower. The toleration governs when the pod is *marked for deletion*, and so when a replacement
+is scheduled — not when the Service stops choosing it. Earlier drafts of this entry claimed a 17-fold
+reduction in requests lost; that was a single-run comparison inside 20-fold noise, and it is gone.
+
+A client-side retry does not fix this, and the guide says so: the retry is routed by the same Service
+and can land on the dead address again, after the caller has already waited out one timeout. The
+answers are a shorter `node.kubernetes.io/unreachable` toleration (now in the recommended manifest),
+capacity for one node's worth of loss, and ejection at the proxy — which needs the gateway pointed at
+a **headless** Service so Envoy resolves one endpoint per pod instead of a single ClusterIP it can
+never eject. The shipped Envoy configuration is unchanged: adding active health checks or outlier
+detection to it is a live-traffic change, and it gets a drill of its own before it gets shipped.
+
+The drill also measures the scheduling decision underneath. `whenUnsatisfiable: ScheduleAnyway`
+puts a lost node's replica on the surviving node (two ready endpoints after a drain);
+`DoNotSchedule` cannot satisfy itself on a cluster with as many nodes as replicas, so the
+replacement stays `Pending` and the deployment serves at half capacity (one `Pending` pod, one ready
+endpoint) until a node returns. Both are deployed side by side, so this is a measurement rather than
+a preference.
+
+It also surfaced a quieter trap: **Kubernetes never rebalances a Deployment.** A spread constraint
+applies when a pod is scheduled and never again, so after one drain both replicas sat on the
+surviving worker and stayed there with every check green — a two-replica service in that state is
+not highly available at all, and the next node loss is a total outage. The guide says how to notice
+and correct it; the drill re-spreads and asserts that two nodes are really serving before it stops
+one.
+
+Two harness rules came out of getting this wrong: a victim node must be chosen from pods the Service
+is *actually* serving from (a rollout's terminating pod is still `Running`, and stopping its node
+measures a node loss that cost nothing), and the premise — two ready endpoints, on two nodes — is
+asserted before the node is stopped, so a zero means something.
+
+`make chaos-drills-kind` runs the three cluster drills (control-plane failover, serving pod churn,
+serving node loss) the way `make chaos-drills` runs the three Docker ones. The kind harness both
+serving drills share now lives in `tests/integration/_kind_serving.py`.
+
+### Added — a Kubernetes drill for the serving plane, and the deployment guide it measures
+
+The serving plane had no cluster-level drill, which `docs/guides/game-days.md` listed as a gap.
+`tests/integration/test_serving_kind_drill_live.py` (`EXAMLOPS_KIND_SERVING_LIVE=1`) closes it: a
+throwaway kind cluster with a real MLflow, a real registered model, and the model server deployed
+**twice** — once with the settings [the new guide](docs/guides/serving-on-kubernetes.md)
+recommends, once with Kubernetes' defaults — while eight callers ask for predictions through the
+Service and pods are deleted, upgraded, killed and added.
+
+What it measured, and what the guide now says because of it:
+
+- **A pod with no readiness probe is sent inference before its model is loaded.** One scale-up cost
+  it **2069 of 20 790** requests; the same scale-up with the probe cost **0 of 20 732**, and the new
+  pod was serving 33 s after `kubectl scale`. This is the setting people leave out, because the
+  container starts in a second and the model takes half a minute.
+- **A Service balances connections, not requests.** A pod leaving the endpoints stops new
+  connections, not established ones, and the server stops Ray Serve as soon as SIGTERM arrives — so
+  a caller holding keep-alive connections loses whatever they carried at that instant: 6 of 17 321
+  on a graceful deletion, 5 of 22 788 across a rolling upgrade, 6 of 15 724 on a pod killed
+  outright, each in a single instant. A caller that opens a connection per request lost **0 of
+  14 745**, and one retry made every one of those cases **0**.
+- That retry is what the serving gateway already does, so the number that matters for anyone behind
+  it is zero. `tests/unit/test_serving_gateway_config.py` now holds every inference route to
+  retrying `reset` and `connect-failure`, because losing that silently makes a rolling upgrade of
+  the model server visible to every client.
+
+`docs/guides/serving-on-kubernetes.md` is the operator-facing half: the Deployment, what each
+setting is worth with the measurement beside it, why an HPA must not react in seconds when a
+replica takes 33 s to be useful, and the `/dev/shm` volume Ray needs.
+
+Three of the drill's own measurement bugs are recorded in its comments, because each made it report
+success while proving nothing: counting `codes[200]` when JSON keys are strings, sending 20 requests
+a second at a 6 ms service time (so a killed pod usually had nothing in flight), and measuring a new
+pod with a keep-alive client, which never opens a connection to a pod that joined after it started.
+
+### Fixed — an unreachable event broker hid itself for minutes, and used up every event's retries
+
+The backbone drill now also kills the **datastore and the broker together** and brings them back one
+at a time (tests 4–6). Its first run found two defects in how the relay handles a broker that is
+simply not there:
+
+- **It paid the client's timeout once per queued event.** Six events took 36 seconds for one relay
+  cycle, and at the default batch of 100 it would be over eight minutes. `/health` reports the last
+  *completed* cycle, so for all of that time it said `ok` with the outbox filling up — the exact
+  condition the backbone alerting exists to catch.
+- **It spent the retry budget on the outage.** `EXAMLOPS_EVENT_MAX_ATTEMPTS` exists to stop an event
+  a broker *refuses*; charging it for an absent broker meant a five-cycle outage stranded every
+  queued event as poison, permanently.
+
+A publish failure is now classified. A refusal is unchanged: that row is marked failed, charged an
+attempt, and the batch continues. An unreachable broker ends the batch, returns every row still in
+it to the queue with no attempt charged, and is reported as `deferred` + `unavailable` in the relay
+result — which `/health` turns into `event backbone unavailable (…); N event(s) waiting in the
+outbox`. Publishers classify their own failures (`is_unavailable`), so `nats-py`'s own error types
+decide rather than a guess at its wording; the generic fallback is deliberately narrow.
+
+Measured on the drill after the fix: the outage is visible in about **10 seconds** instead of never
+within the window, no event becomes poison, and the whole drill runs in 50 s rather than 104 s.
+
+Two smaller things the same run exposed: `exa events relay --loop` would have spun forever on a
+deferred batch (it stops and says the backbone is unavailable), and a failure with no message —
+which is what `concurrent.futures` raises on a timeout — was reported as `unavailable: ""`, a falsy
+value the control plane read as "nothing wrong". Every publish failure now carries at least its
+exception class (`examlops.events.describe`), and the health check keys off presence, not truth.
+
+`examlops_event_relay_events_total{outcome}` gains `deferred`, kept apart from `failed` so an
+outage does not read as "the broker rejected 300 events".
+
+### Added — an overload drill measures what load shedding is worth (plan P5)
+
+`tests/integration/test_serving_overload_drill_live.py` (`EXAMLOPS_CHAOS_LIVE=1`) puts 600 requests
+a second at a real Ray Serve model server with one replica — about ten times what it can finish —
+first with `RAY_MAX_QUEUED_REQUESTS=4`, then unbounded, and holds the serving plane to what
+`docs/components/ray-serve.md` promises. It found no defect; it puts numbers on the knob:
+
+| | bounded at 4 | unbounded |
+|---|---|---|
+| Answers | 744 predictions, 2856 shed (503) | every request answered |
+| p50 / p99 of a prediction | 175 ms / 312 ms | 6.0 s / 16.0 s |
+
+No 500 and no dropped connection in either run, a request with a spent budget was refused 504
+without running the model, and both servers were serving again in about 18 ms once the burst
+stopped. The numbers are now in the load-shedding section of the model-server page.
+
+The drill's first run used 60 requests a second, which one replica absorbed without shedding: it
+proved nothing, and now says so in its own comment. It also does not drive the inference pipeline,
+whose shed answer (`Retry-After: 1`) is a pure mapping already covered by
+`tests/unit/test_serving_budgets.py` and would otherwise need the use-case model's feature contract.
+
+### Fixed — the event backbone was unusable in the shipped image, and a bus outage emptied the rotation (plan P5, ADR 0124)
+
+A second chaos drill (`tests/integration/test_backbone_outage_drill_live.py`, `EXAMLOPS_CHAOS_LIVE=1`)
+kills NATS under a real control plane. Its first run found three defects, each of which hid the next.
+
+- **The control-plane image had no `nats-py`.** It installed the `coordination`, `postgres` and
+  `oidc` extras but not `events`, so `EXAMLOPS_EVENT_PUBLISHER=nats` could not publish at all:
+  every relay cycle logged `needs the 'nats-py' package` and events stayed in the outbox. The image
+  now installs the extra, and `tests/unit/test_control_plane_image_extras.py` makes the rule
+  mechanical: every extra the backend code tells an operator to install must be one the image
+  installs. (The backbone itself is new in this release, so no published image was affected.)
+- **A publisher problem took every replica out of rotation.** Readiness failed on *any* failing
+  startup check, so a missing dependency (and, once detected, a broker outage) answered `/readyz`
+  503 although the API served perfectly. Readiness now depends on what a request needs — the
+  datastore, the credential, the coordinator, the approval store, an enabled poller — and the
+  publisher, the registry warning and identity federation leave the replica in rotation while
+  `/health` still reports them and still alerts.
+- **A dead broker looked healthy.** The publisher check only constructed the publisher, and the
+  checks never re-ran on a replica that started healthy. The check now asks the broker (a bounded
+  connect within `EXAMLOPS_NATS_TIMEOUT`), and the probes re-run the checks while the relay cannot
+  publish — evidence that arrives within a second. A failing relay also makes `/health` `degraded`.
+
+What the drill now measures: retrains are accepted throughout the outage (`202`), the backlog is
+visible in `examlops_event_outbox_pending`, `/health` is `degraded` and names the failure, `/readyz`
+stays `200`, and when the broker returns the outbox drains in about 2 s with **every published row
+matching exactly one message in the stream** — counted in the store and in the broker, not assumed.
+Reverting the readiness change fails the drill (503 during the outage).
+
+- `platform/services/control_plane/tests/test_readiness_scope.py` (14 tests) pins which failures
+  take a replica out of rotation and which do not, and that a failing relay drives the recheck.
+- Docs: [what makes a replica unready](docs/components/control-plane.md#health-and-readiness), the
+  `EventOutboxStalled` runbook, and the chaos-drill table in the testing guide.
+
+### Fixed — a datastore outage no longer makes the control plane stop answering (plan P5)
+
+A new chaos drill (`tests/integration/test_datastore_outage_drill_live.py`, `EXAMLOPS_CHAOS_LIVE=1`)
+kills Postgres under a real control plane and a real gateway authorization service, holds the
+outage, starts it again, and measures each promise in the docs. Its first run found that **the
+control plane stopped answering altogether**: `/readyz` hung past 40 seconds instead of reporting
+503, so probes timed out, and every worker waiting on the dead store meant no request was answered
+at all.
+
+Nothing bounded the failure. A connection carried no timeouts, so a query whose server had vanished
+waited on kernel retransmission — a killed container sends no reset — and a checkout waited out the
+driver's 30-second budget.
+
+- **Every connection is bounded**: `connect_timeout`, keepalives and `tcp_user_timeout`
+  (`EXAMLOPS_POSTGRES_TCP_TIMEOUT_MS`, 10 s). A DSN naming any of them keeps its own value.
+- **A checkout waits `EXAMLOPS_POSTGRES_POOL_TIMEOUT`** (2 s), not 30, so it fits inside a probe.
+- **The first failure is remembered** for `EXAMLOPS_POSTGRES_UNREACHABLE_TTL` (5 s), so the calls
+  during an outage fail in microseconds without touching the network, and the memory expires so
+  recovery needs no restart.
+- **A failed pool is discarded**, so the next call reconnects at once instead of sitting out the
+  driver's exponential backoff.
+- **The chart's probes** get an explicit 3 s timeout, and liveness stays on `/livez`, which touches
+  nothing: a datastore outage must never restart the replicas that recover on their own.
+
+Measured by the drill, before → after: readiness reports 503 in **2.0 s** instead of hanging past 40;
+a retrain during the outage is refused **503** naming the store; a virtual key the gateway had
+verified keeps working while an unseen key is refused 503; the control plane is ready again **0.03 s**
+after Postgres accepts connections, down from 16 s, with no container restarted. Postgres' own crash
+recovery (9–24 s in these runs) dominates the rest.
+
+- `tests/unit/test_postgres_outage_fast_fail.py` (19 tests) pins each bound without a server; four
+  mutants (no `tcp_user_timeout`, the 30 s budget back, no memory of the failure, the dead pool kept)
+  each fail it.
+- The parity suites still pass: the live Postgres backend suite (22) and the control-plane suite (283).
+- `docs/guides/testing.md` now lists the platform's chaos drills and what each one breaks.
+
+### Added — gRPC through the serving gateway, and over the mutual-TLS hop (ADR 0126)
+
+The serving gateway now routes the Open Inference Protocol's gRPC service,
+`/inference.GRPCInferenceService/…`, on its one port (`:18088`: HTTP/1.1 and cleartext HTTP/2) to
+the model server's gRPC port.
+
+- **The same controls as REST.** A gRPC request passes the same ceiling, body limit, authorization
+  and tenant quota. The client's deadline is honoured and capped at 35 s, and retries on
+  `UNAVAILABLE` stay within the retry budget.
+- **What authorization decides.**
+  - `ServerLive`, `ServerReady` and `ServerMetadata` are open, like REST's health paths.
+  - Everything else needs a credential, sent as `authorization` metadata.
+  - Refusals arrive as gRPC codes (`UNAUTHENTICATED`, `PERMISSION_DENIED`), and other gRPC services
+    get `UNIMPLEMENTED`.
+  - The gateway still never reads a body, so gRPC cannot be checked against a key's model allow-list
+    or a model's project. Such keys, and multi-tenant installs, get a refusal that points to REST.
+- **Under the workload-identity overlay** the gateway carries gRPC over the same mutual TLS 1.3
+  hop, over HTTP/2. `serving-mtls` routes it to the model server's loopback `:8081`. The model
+  server's gRPC front end passes the verified identity (`x-examlops-tenant`, `-principal`,
+  `-project`, `x-forwarded-client-cert`) on to the REST implementation, as REST receives it.
+- **Helm.** New `gateway.upstream.grpcPort` (8081), and the gateway's NetworkPolicy egress allows it.
+  The chart's Envoy config stays byte-identical to Compose's.
+- **Verified live.**
+  - Against the real Envoy and authorization service: gRPC health open, `UNAUTHENTICATED` without a
+    key, refused under multi-tenancy, `UNIMPLEMENTED` for other services.
+  - Through a real SPIRE and the mTLS hop: a gRPC `ModelInfer` reached the model server's side with
+    the verified tenant (not the one the client claimed) and a client certificate naming the gateway.
+  - Removing the gateway's gRPC route fails three tests.
+  - Offering only `http/1.1` in `serving-mtls`'s ALPN did not break gRPC: the listener's codec
+    recognises HTTP/2 by its preface, so the ALPN list is negotiation, not a requirement.
+
+### Added — the model server speaks the Open Inference Protocol v2 over gRPC (ADR 0126)
+
+`inference.GRPCInferenceService` on port `8081` (host `18081`): `ServerLive`, `ServerReady`,
+`ModelReady`, `ServerMetadata`, `ModelMetadata` and `ModelInfer`. KServe, Triton and MLServer gRPC
+clients work unchanged. The service definition is the protocol's own `.proto`, shipped verbatim in
+`serving/oip_grpc/`, with stubs generated by grpcio-tools 1.80.0.
+
+- **One implementation.** Each RPC is answered by the model server's REST implementation over
+  loopback. Validation against the MLflow signature, errors, version and alias, the caller's budget,
+  metrics and shadow mirroring are REST's, and cannot drift.
+- **What gRPC adds.** Typed and raw tensors (little-endian, length-prefixed `BYTES`, `FP16` raw
+  only), the gRPC deadline as `X-ExaMLOps-Budget-Ms`, and REST statuses mapped to the protocol's
+  codes (`INVALID_ARGUMENT`, `NOT_FOUND`, `RESOURCE_EXHAUSTED`, `UNAVAILABLE`, `DEADLINE_EXCEEDED`,
+  `INTERNAL`). Model names must be plain names, so `../reload` never reaches another route.
+- **Safe to run.** `RAY_SERVE_GRPC_PORT` (`0` turns it off) and `RAY_SERVE_GRPC_MAX_MESSAGE_MB` (8).
+  If the gRPC server cannot start, the model server logs it and keeps serving REST. It binds
+  `RAY_SERVE_HOST`, so under the workload-identity overlay it is loopback-only like REST. The overlay
+  does not publish it.
+- **Not yet:** the serving gateway does not route gRPC.
+- **Verified.**
+  - `tests/unit/test_oip_grpc.py` (55 tests) holds the stubs to the proto and to the field numbers
+    clients depend on, every conversion and mapping, and the name check. It runs a real gRPC client
+    end to end against the REST implementation with a real MLflow model. Three mutants fail it.
+  - Live, an image built from this tree answered `grpcurl` with predictions identical to REST from a
+    model registered in a real MLflow, and a 1 ms deadline gave `DEADLINE_EXCEEDED`.
+  - At 20-way concurrency on one replica, gRPC and REST ran at the same rate (about 380 requests per
+    second, median 50 ms).
+
+### Added — `exa` sends a serving credential, so it works through the serving gateway
+
+New config key `serving_token` (or `EXAMLOPS_SERVING_TOKEN`), a secret: a serving-gateway virtual
+key or an IdP access token. With `ray_serve` pointed at the gateway, `exa serve batch submit`,
+`exa serve loadtest`, `exa predict` and `exa serve infer-check` send it as `Authorization: Bearer`.
+Under the workload-identity overlay the gateway is the host's only way to the model server, and
+these commands had no way to authenticate there.
+
+- **Scoped.** It goes only on requests under the configured `ray_serve` URL, never to the control
+  plane, MLflow, Prefect or a `loadtest --url` elsewhere. A request that already carries a credential
+  (the serving admin token of `exa serve reload`) keeps its own. `exa serve loadtest` uses it when
+  `EXAMLOPS_LOADTEST_TOKEN` is unset.
+- **Verified.**
+  - `tests/integration/test_serving_gateway_live.py` runs the real `exa serve loadtest` against the
+    real Envoy and authorization service: every request 200 with the key, 401 without.
+  - `tests/unit/test_cli_serving_token.py` (15 tests) pins the scope, including look-alike hosts
+    and ports, the client, batch, the loadtest fallback, and the setting's redaction in `exa env`.
+    Three mutants fail it.
+
+### Added — every hop to the model server is mutual TLS, and its plaintext port is closed (ADR 0125 phase 3)
+
+With the workload-identity overlay (`-f docker-compose.identity.yml`), every call to the model
+server now carries the caller's SPIFFE identity over mutual TLS 1.3, not only the gateway's.
+
+- **Egress sidecars.** The control plane, the dashboard, the agent and the SeanerBUS bridge each
+  get a `serving-egress-<caller>` Envoy (`identity/serving-egress-envoy.yaml`) in their own network
+  namespace, labelled with the caller's identity. The caller's `RAY_SERVE_URL` becomes
+  `http://127.0.0.1:8001`. It keeps speaking plain HTTP to its own loopback, and the sidecar carries
+  the call to `ray-serving:8443` with the caller's X.509-SVID, rotated over SDS. No caller code
+  changed.
+- **The model server listens on loopback only.** New `RAY_SERVE_HOST` (default `0.0.0.0`); the
+  overlay sets `127.0.0.1` and stops publishing `18001`. `serving-mtls` (no longer tied to the
+  `gateway` profile) is the one way in. It accepts the gateway, the control plane, the dashboard,
+  the agent and the bridge, and refuses other valid identities of the trust domain at the
+  handshake.
+- **Admin routes need an admin caller.** `POST /reload`, `/reload/{model}` and
+  `/infer-pipeline/traffic-rules/{model}` answer `403` from `serving-mtls` unless the caller is the
+  control plane, the dashboard or the agent. The admin token is still checked behind that. Paths
+  are made canonical first (`//reload`, `/./reload`, `/RELOAD` refused; `/%2Freload` rejected with
+  `400`).
+- **Fixed before release — the overlay's Envoys could not start.** With `cap_drop: ALL`, the Envoy
+  image's entrypoint, started as root, cannot `chown` its log output and exits. `serving-mtls`
+  therefore never ran under Compose, which the phase 2 live test missed because it started Envoy
+  unhardened. Every Envoy in the overlay now runs as uid 101. The live test takes each container's
+  user, read-only root and capabilities from the overlay itself.
+- **What changes for operators:** inference from the host, notebooks and other tools goes through
+  the serving gateway (`:18088`) with a virtual key. `exa serve` commands run from the dashboard's
+  CLI console. Promotions reach the model server through the serving snapshot, not the host
+  runner's reload webhook.
+- **Verified.**
+  - `tests/integration/test_serving_gateway_mtls_live.py` passes 9/9 against a real SPIRE. The
+    dashboard infers and reloads under its own identity. The bridge infers but every spelling of
+    an admin route is refused. A sidecar carrying `…/autopilot` gets nothing through.
+  - Four mutants (no admin rule, no slash merging, no `user`, the bridge left off the allow-list)
+    each fail it.
+  - `tests/unit/test_serving_gateway_mtls.py` holds the wiring:
+    - every direct caller of `ray-serving:8001` in the base stack has a sidecar;
+    - the allow-list is exactly the callers and the gateway;
+    - every admin route of the model server is behind the rule;
+    - one TLS policy for every hop.
+  - The released ray-serving image, with only the bind change, passes its healthcheck on loopback,
+    and another container cannot connect to 8001; with the default it can.
+
+### Added — the release publishes the workload-identity setup image
+
+`ghcr.io/mskazemi/examlops-spire-init:<version>` is now built, scanned, signed and attested with
+the other release images. It is the one-shot setup of the Compose identity overlay: node PKI and
+SPIRE registrations. A pull-only install no longer has to build it. Set
+`EXAMLOPS_IMAGE_PREFIX=ghcr.io/mskazemi/examlops` and `EXAMLOPS_IMAGE_TAG=<version>`, as for every
+other platform image, and run `up --no-build`.
+
+- **Verified** against a local registry standing in for GHCR: with every local copy removed, the
+  shipped `identity/compose.yml` pulled the image by that prefix and tag, both one-shots exited 0,
+  and SPIRE came up.
+- **Scan:** the image passes the release scan (no fixable CRITICAL). The three HIGH findings are
+  in SPIRE's own 1.15.3 binary, as in the upstream image.
+
+### Added — the Helm chart ships the platform's alert rules
+
+`metrics.prometheusRule.enabled` renders a PrometheusRule. Until now a Kubernetes install had the
+metrics but none of the alerts.
+
+- **The same rules.** They come from `files/alert_rules.yml`, byte-identical to Compose's
+  `alert_rules.yml` (promtool-checked and -tested in CI), runbook links included.
+- **The groups that fit the install:** the control plane always, the gateway with the gateway, and
+  any group a site names in `extraGroups`. An unknown name fails the render.
+- **Fixed on the way: the rules would have matched nothing.** They select jobs by Compose's names
+  (`control_plane`, `gateway`, `gateway_authz`), and a Prometheus Operator job is the Service's name
+  by default. So `ControlPlaneDown` (`up{job="control_plane"} == 0`) could never have fired. Every
+  Service now carries `examlops.io/job` and every ServiceMonitor uses it as its `jobLabel`. A test
+  holds every job a rendered rule selects to one a rendered ServiceMonitor produces. Queries on the
+  old job name (`<release>-examlops-control-plane`) now use `control_plane`.
+- **New ServiceMonitor:** one for the gateway's authorization tier, the source of
+  `ServingGatewayCredentialStoreUnavailable`.
+- **Validation:** CI validates the PrometheusRule and ServiceMonitors against the Prometheus
+  Operator's CRD schemas, vendored in `platform/infra/helm/schemas/` with their provenance
+  (23 resources valid).
+- **Tests:** `tests/unit/test_helm_prometheus_rules.py` (9, mutation-checked).
+- **Keeping the copies in step:** after changing Compose's `alert_rules.yml` or
+  `gateway/envoy.yaml`, copy it into `platform/infra/helm/examlops/files/`. The guards fail with
+  that command until you do.
+
+### Added — the Helm chart runs the serving gateway (plan P4.11, ADR 0126)
+
+`gateway.enabled` deploys what Compose's `gateway` profile runs: Envoy, the one front door to the
+model server, and the authorization service `examlops.serving_gateway`.
+
+- **Envoy's configuration** is `files/gateway-envoy.yaml`, byte-identical to Compose's
+  `gateway/envoy.yaml`. A unit test fails on any difference. Only the model server's address
+  (`gateway.upstream`) and the authorization service's are substituted, and a change rolls the
+  pods.
+- **Hardening:** two replicas and a PodDisruptionBudget per tier, and the chart's non-root,
+  read-only pod security (Envoy without hot restart, TCP probes, since admin stays on loopback).
+- **Extras:** an optional ingress host (`gateway.ingress.host`), NetworkPolicy tiers (clients
+  through the ingress controller; only the gateway may call authorization) and a ServiceMonitor
+  for Envoy's statistics.
+- **Validation:** the values schema stays closed, and CI's kubeconform renders the gateway too
+  (29 resources valid).
+- **Tests:** `tests/unit/test_helm_gateway.py` (9, mutation-checked).
+  `tests/integration/test_helm_gateway_kind_live.py` (`EXAMLOPS_KIND_GATEWAY_LIVE=1`) runs it in
+  kind:
+    - both tiers become Ready under that security;
+    - a virtual key issued into the platform datastore reaches the stand-in model server, which
+      receives the verified tenant rather than the client's claim;
+    - anonymous requests get 401, and admin routes are not served.
+- **ADR 0126** is now short of Accepted only for gRPC.
+
+### Fixed — an outage or a lost replica counted as a worse model
+
+The inference pipeline answered every failure as HTTP 500 `inference_failed`, and the bus bridge
+fed each one to the drift tracker: the model server being unreachable after the router's retries,
+a replica dying with the request on it, a timeout. So an outage looked like drift and could fire a
+retrain.
+
+- **`cause`.** The pipeline's `inference_failed` answers now carry one of:
+    - `model`: the model server answered this request with an error, the model failed on it;
+    - `timeout`: the model server's own deadline ran out;
+    - `transport`: no answer after retries;
+    - `replica_lost`: including a second loss, which used to be labelled the model's own 500;
+    - `protocol`: a success that is not an inference answer;
+    - `pipeline`: the router itself failed.
+
+  One helper builds every such answer.
+- **The bridge counts only `model`**, or an answer without a cause from an older pipeline. The
+  dataplane's stream ingress will follow the same rule.
+- **`oip_client.result` refuses an answer without `outputs`.** Read leniently, such an answer came
+  back as `prediction: []`, a success nobody could tell from a real prediction. The pipeline now
+  reports it as `protocol`. The dashboard answers 502, `exa batch` records that row's error, and the
+  agent's tool reports it, where the first two used to crash.
+
+### Fixed — a replica that died holding more than five requests failed the rest
+
+The inference router's retry budget (`INFERENCE_RETRY_MAX_TOKENS`) was 10 tokens, and retries stop
+below half, so only about five failures in a burst were retried. A replica that dies fails every
+request it holds at once, and the live failover test lost one of 320 whenever the dying replica held
+more than five. The default is now 100: a burst of about 50 retries, while a sustained outage still
+earns only about one retry per ten successes. The failover test was also vacuous two runs in three:
+with eight requests per batch, Ray could put them all on the surviving replica and the kill caught
+nothing. It now sends twenty, and its failure message lists what the router saw. Three runs out of
+three pass.
+
+- `tests/unit/test_serving_budgets.py` +9 (every cause, including a read timeout, the budget's
+  burst and its sustained rate; mutation-checked). `tests/unit/test_seanerbus_bridge.py` +7 (which
+  causes reach the drift tracker). `tests/unit/test_oip_v2.py` +4.
+
+### Security — the serving gateway reaches the model server over mutual TLS (ADR 0125 phase 2)
+
+With the workload-identity overlay and the `gateway` profile, the gateway's hop to the model server
+is mutual TLS 1.3 with SPIFFE identities:
+
+- **`gateway/envoy-mtls.yaml`** is `gateway/envoy.yaml` with the upstream cluster changed. The
+  gateway presents its X.509-SVID and accepts only a certificate from the trust domain's CA naming
+  `…/ray-serving`.
+- **A new `serving-mtls` Envoy** in ray-serving's network namespace presents `…/ray-serving`,
+  requires the gateway's certificate, forwards over loopback, and names the caller in
+  `x-forwarded-client-cert` (replacing a client's own).
+- **Certificates** come from the SPIRE agent over Envoy SDS, by container label, and rotate without
+  a restart. SPIRE's `default` and `ROOTCA` SDS names keep the trust domain out of the files.
+  `gateway` and `ray-serving` join `SPIFFE_WORKLOADS`.
+- **Guard:** `tests/unit/test_serving_gateway_mtls.py` (11, mutation-checked) holds
+  `envoy-mtls.yaml` identical to `envoy.yaml` apart from the upstream cluster, and pins the TLS
+  version, the SDS names, the peer patterns and the overlay wiring.
+- **Live test:** `tests/integration/test_serving_gateway_mtls_live.py` (`EXAMLOPS_SPIRE_LIVE=1`)
+  runs the shipped files against a real SPIRE and a loopback-only stand-in model server. The
+  request gets through and the model server learns it came from the gateway. The gateway still
+  refuses anonymous callers. At the TLS port, no certificate and a valid `…/dashboard` certificate
+  are refused, and the gateway's is accepted.
+- **Found by that test:** an Envoy upstream TLS context's default maximum is TLS 1.2, so a 1.3
+  minimum alone left no version (`NO_SUPPORTED_VERSIONS_ENABLED`). Both files pin both bounds.
+- **Not closed yet:** `ray-serving:8001` still answers plaintext for its other callers (bridge,
+  dashboard, agent) until phase 3.
+
+### Fixed — a replica that crashed mid-dispatch stranded its retrains, and blocked their model for good
+
+A control-plane replica claims a queued `/v1` retrain for a lease, dispatches it to Prefect, and
+records the result. If the replica died between claim and record, the command stayed
+`dispatching` forever. The background worker only looked at `pending` and `failed` commands, and
+nothing else ever reclaimed it. Every later retrain of that model × dataset was then refused with
+409 "already in progress", with no end.
+
+- **Takeover.** The worker now also takes commands whose claim lease has run out. It dispatches
+  them again with the same Prefect idempotency key, so a run the crashed replica did create is
+  returned rather than doubled.
+- **Burial.** A command that has taken down its dispatcher `CONTROL_PLANE_COMMAND_MAX_ATTEMPTS`
+  times is buried, not handed to the next replica.
+- **Synchronous commands** are still never retried in the background. An abandoned one becomes
+  `failed`, so it stops blocking its pair, and the caller's retry with the same key picks it up.
+- **`CONTROL_PLANE_COMMAND_LEASE_SECONDS` defaults to 60, was 300.** A dispatch ends within
+  `CONTROL_PLANE_DISPATCH_BUDGET_SECONDS` (8), and 300 made a crashed replica's retrains wait five
+  minutes.
+- **Found by a new failover drill,**
+  `tests/integration/test_control_plane_failover_kind_live.py` (`EXAMLOPS_KIND_FAILOVER_LIVE=1`).
+  Three chart replicas on Postgres in kind, retrains submitted without pause, and twice the
+  replica that is mid-dispatch is SIGKILLed.
+    - Before the fix: two commands stuck in `dispatching`.
+    - After it: 141 accepted, 141 succeeded, one flow run each. Two crashed dispatches were taken
+      over with their original key. The longest gap between accepted submissions was 3.7 s.
+  Its earlier versions were vacuous until the drill required evidence of a takeover: a deleted
+  pod shuts down gracefully and finishes its dispatch, and an instant Prefect leaves nothing in
+  flight to lose.
+- `tests/test_command_durability.py` +3 (takeover, burial, synchronous release), mutation-checked.
+
+### Fixed — `exa status` reported an older control plane as unreachable
+
+The CLI reads `/v1/status`. A control plane from before the `/v1` API answers it with 404, and
+`exa status`, the SDK's `status()` and the MCP `platform_status` tool all took that to mean
+"unreachable", for example during a rolling upgrade that updates clients first.
+`examlops.sdk.control_plane_status()` now falls back to `/status` on a 404, and only on a 404; the generated `control_plane_api` client stays as generated.
+Verified against the running pre-`/v1` control plane on the dev node.
+
+### Security — workload identities on Kubernetes: the chart consumes the cluster's SPIRE (ADR 0125)
+
+The chart gains `workloadIdentity`, off by default. SPIRE stays cluster infrastructure, installed
+once with SPIRE's hardened charts, like Postgres and NATS. For each tier it deploys (control plane,
+dashboard, and the agent and autopilot follower when enabled), the chart adds:
+
+- **A `ClusterSPIFFEID`** that selects only that tier's pods, by `app.kubernetes.io/{name,instance,
+  component}` in the release namespace. It names them
+  `spiffe://<trust domain>/ns/<namespace>/<release>-examlops/<tier>`, and is not a fallback, so it
+  wins over SPIRE's per-service-account default.
+- **A `spiffe-helper` sidecar** that reaches the Workload API through the SPIFFE CSI driver: no
+  hostPath, the tier's own non-root user, a read-only root and no capabilities. It selects its
+  tier's SVID by `hint` and keeps it in a memory volume that the tier mounts read-only
+  (`CONTROL_PLANE_TOKEN_FILE`); the control plane's sidecar keeps the trust bundle.
+- **The control plane's SPIFFE ID → principal map**, rendered for exactly the deployed callers from
+  the same template that names the IDs. The defaults are each tier's static-credential principal
+  and scopes.
+
+Details:
+
+- **`clusterSPIFFEID.className` defaults to `spire-mgmt-spire`**, the class of the documented
+  hardened install. spire-controller-manager ignores other classes silently: no status, no entry,
+  no token. The first kind run of the live test failed exactly that way with an empty class.
+- **Validated like the rest of the chart:**
+    - the values schema is closed, with scopes limited to the control plane's own;
+    - the render fails without a trust domain;
+    - CI's kubeconform checks the `ClusterSPIFFEID`s against a strict schema generated from
+      SPIRE's CRD (`platform/infra/helm/schemas/`), so a misspelt field fails the build.
+- **SPIRE 1.15.3 and spiffe-helper 0.11.0**, the current releases, in both Compose and the chart.
+  The Compose live tests pass on them (8).
+- **Tests:**
+    - `tests/unit/test_helm_workload_identity.py` (12, mutation-checked);
+    - `tests/integration/test_helm_workload_identity_kind_live.py`
+      (`EXAMLOPS_KIND_SPIRE_LIVE=1`): SPIRE's hardened charts and this chart in a throwaway kind
+      cluster, with a control-plane image built from the tree. The dashboard's sidecar gets its
+      SPIFFE ID's token. The real control plane accepts it with only the mapped scopes (`read`: an
+      admin change is refused) and counts a `workload` authentication. A pod of another release
+      with the same labels gets no tier identity.
+
+### Security — SPIRE on Docker Compose: each service calls the control plane with a five-minute identity (ADR 0125)
+
+Phase 1 needed a SPIRE deployment nobody had. Now `docker-compose.identity.yml` provides one: add
+`-f docker-compose.identity.yml` and each service that calls the control plane (dashboard, agent,
+autopilot follower, bus bridge) gets a JWT-SVID. SPIRE issues it to the service's container by
+label and renews it on its own. Guide: `docs/guides/workload-identity.md`.
+
+- **What runs** (`identity/compose.yml`, included by the overlay):
+    - `spire-pki` and `spire-register` one-shots (a small image with openssl and the SPIRE CLI;
+      the SPIRE images have no shell);
+    - the SPIRE server with disk-backed keys;
+    - an agent that attests its node with an `x509pop` certificate. Unlike a single-use join
+      token, the certificate survives restarts, and the agent verifies the server's CA instead of
+      bootstrapping insecurely;
+    - the agent's Docker workload attestor, reading a read-only, container-inspection-only API
+      proxy on a network no other service joins;
+    - one `spiffe-helper` per service, with no network, no capabilities and a read-only root.
+  Every image is pinned by digest, and nothing publishes a port.
+- **How the services use it.** Each service reads its token through `CONTROL_PLANE_TOKEN_FILE`
+  from a volume it mounts read-only. The control plane verifies the token against the bundle its
+  own helper keeps, and maps each SPIFFE ID to the principal and scopes that service's static
+  credential had, so commands and the audit name the same service either way. Nothing waits on
+  SPIRE: until a file exists, the static credential is sent.
+- **Which credential was used is now visible.** The new
+  `control_plane_authentications_total{principal, method}` counts `static` / `legacy` /
+  `workload` / `federated`, starting at 0 for every configured principal. Retrain, approval and
+  cancellation audit events record `credential`, plus `spiffe_id` for a workload. A service whose
+  `static` count has stopped growing can lose its secret. This is the migration signal ADR 0125
+  promised and the control plane did not have. A queued `/v1` retrain carries its submitter's
+  credential to the worker that dispatches it, stored beside the request rather than in its
+  idempotency hash, so a retry with another credential of the same service is still the same
+  command.
+- **Fixed on the way:**
+    - `examlops.workload_identity` reads the bundle set spiffe-helper writes,
+      `{trust domain: base64(JWKS)}`, taking only its own trust domain's keys; a federated
+      domain's key never verifies a local SVID.
+    - With capabilities dropped, root cannot rewrite a read-only file, so helpers write their
+      files `0644`, not `0444`. The live test caught the helper failing at the first renewal.
+- **Tests:**
+    - `tests/unit/test_compose_identity.py` (9, mutation-checked) keeps the label, registration,
+      mapping, volume and profile of every service in agreement, and SPIRE isolated and pinned.
+    - `tests/integration/test_spire_compose_attestation_live.py` (`EXAMLOPS_SPIRE_LIVE=1`, 6
+      passed) runs the shipped file. It checks the token verifies end to end, a non-root reader,
+      a container without a label (nothing issued), idempotent re-runs, and renewal across a
+      server and agent restart.
+    - The control-plane tests cover the counter and the audit fields.
+
+### Changed — MLflow runs two server workers under a 4g limit in the dev Compose
+
+MLflow 3.16 holds about 0.85 GiB per server worker. With the old 2g limit and its default four
+workers, it was OOM-killed on every start once the image moved to 3.16. It now runs
+`--workers ${MLFLOW_WORKERS:-2}` under `MLFLOW_MEM_LIMIT` (default `4g`). Two workers measured
+1.7 GiB. Basic auth (`MLFLOW_AUTH=basic`) was re-verified on the 3.16 image: anonymous and
+default-password requests get 401, the platform's credentials 200.
+
+### Security — services can prove who they are with SPIFFE workload identities (ADR 0125, phase 1)
+
+A static credential lives until someone changes it, and whoever holds a copy *is* that service.
+The control plane now also accepts a **JWT-SVID**, a token a service's SPIRE agent issues to it
+for one audience and a few minutes. The new `examlops.workload_identity` checks it: the signature
+against the trust bundle (re-read when the file changes, so SPIRE can rotate keys), asymmetric
+algorithms only (never `none` or HMAC), the audience, the expiry, and the trust domain. The control
+plane then gives the SPIFFE ID the principal, tenant and scopes mapped to it in
+`CONTROL_PLANE_WORKLOAD_IDENTITIES_JSON`. An SVID that fails, or names an unmapped workload, is
+refused and never handed to identity federation. Static credentials keep working alongside.
+
+- **Tests:** unit tests cover every rule, including the HMAC key-confusion attack.
+  `tests/integration/test_workload_identity_spire_live.py` runs a real SPIRE 1.14.1 server and
+  agent and has the control plane accept the SVID the agent issues.
+- **Services send it too.** The CLI and the autopilot follower, the bus bridge, the dashboard and
+  the agent send the credential in `CONTROL_PLANE_TOKEN_FILE` when it is set. They read it on every
+  call, so SPIRE's `spiffe-helper` can rewrite the short-lived SVID in place. A missing or empty
+  file falls back to the static credential. The file is deliberately not cached: a cache keyed on
+  modification time and size would miss a same-length token written within one timestamp tick.
+- **Design record:** ADR 0125, which the serving-plane ADR 0123 already cited, is now written. The
+  next phases are SPIRE in Compose and Helm, and mutual TLS.
+- **Also updated:** ADR 0124 (event backbone) is Accepted, now that the Helm chart wires it; ADR
+  0123 records the serving gateway as built.
+
+### Added — the Helm chart runs the event backbone and its followers (ADR 0124)
+
+- **`events.publisher` (`log` | `nats`) and `events.natsUrl`** reach every tier through the shared
+  ConfigMap.
+- **Fixed:** `controlPlane.env` set `EXAMLOPS_EVENT_PUBLISHER: log`, and a container `env` entry
+  overrides the ConfigMap. So no setting could have moved the control plane off `log`; it is
+  removed from the defaults.
+- **`events.followers.autopilot` and `.skipperWatch`** deploy the two durable consumers Compose runs
+  under its `events` profile:
+  - one replica each, with no overlap during a rollout;
+  - no Service, and the same pod and container hardening as every tier (uid 10001, read-only root
+    filesystem, `HOME=/tmp`);
+  - the autopilot sends `AUTOPILOT_CONTROL_PLANE_TOKEN` when the Secret has it.
+- **Network isolation:** with `networkPolicy.enabled`, each follower is its own tier, with no
+  ingress, egress by port to NATS and the datastore, and, for the autopilot, the control plane. The
+  control plane and the dashboard may reach NATS (4222) only with the `nats` publisher.
+- **Refused at render:** `publisher: nats` without `natsUrl`, and a follower enabled without the
+  `nats` publisher.
+- **Schema:** it covers every new value, and unknown keys are refused.
+- `tests/unit/test_helm_events.py` renders the chart and checks each of these. The security
+workflow's kubeconform gate checked only the default render, which leaves every optional tier
+out. It now also validates a render with network policies, the upgrade hook and both followers on.
+
+### Security — the shared legacy control-plane token can be retired (plan P3.2)
+
+`CONTROL_PLANE_TOKEN` carries `read` and `write`, which is every action, however narrowly the
+per-service credentials are scoped, and every service falls back to it. It was a master key
+that could not be switched off. `CONTROL_PLANE_LEGACY_TOKEN` now retires it in steps:
+- `on`: the default, as before.
+- `warn`: accepted, and each use is counted in `control_plane_legacy_token_uses_total` while the
+  log names the caller at most once a minute.
+- `off`: refused with `403` while every other credential keeps working. A value that is none of
+  the three counts as `off`, and the startup check fails.
+
+`/health` reports the mode. `platform/services/control_plane/tests/test_legacy_token.py` covers
+each mode, the refusal, and the typo.
+
+### Added — the audit log can stream to a SIEM, verifiably (plan P2.4b)
+
+With `EXAMLOPS_AUDIT_STREAM=1`, every audit event is also published on the event backbone as
+`audit.recorded`. It is enqueued in the same transaction as the audit row, so it exists exactly
+when the row does. The event carries the fields the hash chain covers, exactly as stored.
+`examlops.data.audit.verify_audit_stream` lets the receiver check the run itself: an edited event
+fails its own hash, and a deleted or reordered one breaks the link to its neighbour. It is off by
+default, because it doubles audit writes and the `log` publisher would copy details into the logs.
+`tests/unit/test_audit_stream.py` covers streaming, verification (edit and gap) and rollback with
+the audit row; it passes on Postgres too.
+
+### Added — drift status changes are events; the autopilot scores drift like everything else (plan P2.4b)
+
+- **`drift.status_changed`.** The control plane scores every model's prediction drift every
+  `CONTROL_PLANE_DRIFT_EVAL_SECONDS` (60) and announces a change of status once. The event carries
+  the previous status, the new one and the z-score. A change into WARNING or CRITICAL also emits
+  `alert.drift`, a topic the event contract declared that nothing ever sent. The last status per
+  model is kept in `drift_status_state` and compared under a write lock, in the same transaction
+  as the events, so two control-plane replicas never both announce the same change.
+- **Fixed: the autopilot scored drift with its own copy of the computation.** It used a
+  50-prediction window where `exa drift status` and `exa drift trigger` use 100, and fixed
+  2.0/3.0 thresholds that ignored a site's configured drift provider. So the same model could be
+  CRITICAL to one and OK to the other, and the component that retrains with no human decided on
+  a different rule. Everything now uses `examlops.drift_status`.
+- New alert **`DriftEvaluationFailing`**, with a runbook section, and two metrics:
+  `examlops_drift_evaluation_errors_total` and `examlops_drift_status_changes_total{status}`.
+- Tests:
+  - `tests/unit/test_drift_status.py` covers each case, including four evaluators at once
+    announcing a change once. Without the lock they announce it four times.
+  - It also passes on Postgres.
+  - The rule tests replay a failing evaluator, and a single failure that must not alert.
+
+### Added — `exa serve loadtest`: open-loop load tests with SLO verdicts (plan P5)
+
+`exa serve benchmark` sends one request after another, which measures a server nobody is loading.
+`exa serve loadtest MODEL` sends requests at a fixed rate for a fixed time, whatever the server
+does, and times each request from when it was due. So an overloaded server shows the queue its
+callers wait in, not its service time: a tester that waits for each answer ("coordinated
+omission") cannot show that.
+- **Report:** sent, succeeded, failed, shed (`429`/`503`), dropped (the client fell behind, which
+  invalidates the run), and p50/p90/p95/p99/max latency.
+- **SLO gate:** exits 1 when `--p99-ms` or `--max-error-rate` is breached, so it can gate a CI
+  deploy.
+- **Request:** built from the model's `/v2` metadata, or taken from `--body`.
+- **Credential:** a gateway key is read from `EXAMLOPS_LOADTEST_TOKEN`.
+
+The Ray Serve guide shows how to find capacity with it and size `RAY_MAX_QUEUED_REQUESTS`.
+`tests/unit/test_loadtest.py` includes a server with half the offered capacity: the reported p99
+is the queue (over 400 ms), and a closed-loop version of the tester reports the 20 ms service time
+instead.
+
+### Added — the inference router's retries are visible and alerted
+
+The router retries transport failures, a shedding server and a replica lost mid-request, within a
+retry budget, and until now none of that reached Prometheus. A replica dying or the budget running
+out showed only in Ray's logs.
+
+- New Ray counters: `ray_examlops_router_requests_total{model_name, outcome}` (one per routed
+  request, by how it ended) and `ray_examlops_router_retries_total{reason}` (`transport`,
+  `overloaded`, `replica_lost`, or `budget_spent` for a retry the budget refused).
+- New alerts, each with a runbook section: **`InferenceRetryBudgetSpent`** and
+  **`InferenceReplicasLost`**. Ray counters cannot start at 0, so both use the two-arm form that
+  sees a first event; `alert_rules_test.yml` replays that, and a loss that is old enough not to
+  alert.
+- The live failover test now also checks that the killed replica shows as `replica_lost` retries
+  on Ray's metrics port.
+
+### Security — each service can have its own Postgres role (plan P3.4)
+
+MLflow, Prefect and the dashboard all logged in to Postgres as the superuser, and the dashboard
+kept its tables inside MLflow's database: any one of them, compromised, could read or drop the
+others' data, the model registry included. Set a service's `*_DB_USER` and `*_DB_PASSWORD` (and
+`DASHBOARD_DB_NAME=dashboard`), and the new one-shot `postgres-init` Compose service makes it the
+owner of its own database, including the tables the superuser created before, and takes away
+everyone else's right to connect. It runs before those services start and is idempotent, so
+`up` rotates a changed password. Ownership moves object by object, because `REASSIGN OWNED` would
+also hand over the other services' databases. A service without a role keeps the superuser, so
+nothing changes until an operator opts in. The guide documents how to move an existing
+dashboard's tables to its own database.
+The backup sidecar follows `DASHBOARD_DB_NAME`, and a database listed twice is now dumped once.
+
+`tests/integration/test_postgres_service_roles_live.py` (`EXAMLOPS_POSTGRES_ROLES_LIVE=1`) runs this
+against the platform's Postgres image:
+
+- On real MLflow and Prefect schemas first migrated by the superuser, both run their own migrations
+  and write as their roles, and fail to without the ownership transfer.
+- No role can connect to another's database, and passwords rotate.
+- The documented move is replayed step by step.
+
+`tests/unit/test_compose_postgres_roles.py` keeps Compose and the guide's table list honest.
+
+### Fixed — processes opening a new SQLite platform database together failed
+
+A control-plane test that submits two retrains at once failed about one run in ten: one request
+answered `503` ("Shared rate limiter unavailable"). Two processes, or two request threads, that
+first open a new `platform.db` together hit two races:
+
+- **The column migrations** check `PRAGMA table_info` and then `ALTER TABLE … ADD COLUMN`. On
+  SQLite these were two autocommit statements, so two openers could both see a column missing, and
+  the second failed with `duplicate column name`. They now run under SQLite's write lock. Postgres
+  was already serialised by an advisory lock.
+- **Switching a new file to WAL** needs an exclusive lock, and SQLite refuses it with "database is
+  locked" without calling the busy handler. So every opener but one failed at once, before the
+  busy timeout was even set. `examlops.resilience.db` now sets the timeout first and retries the
+  switch within it.
+- **Threads of one process** ran the bootstrap concurrently, and one could meet the schema the other
+  was changing ("database schema has changed"). The bootstrap now runs under a per-process lock;
+  a thread that waited finds the database initialised. (A first version of this fix left the lock
+  out when the control-plane test passed without it; the thread-level test then failed 3 runs in
+  15. With the lock, 0 in 30.)
+- **Processes** can hit the same error, which no in-process lock prevents: a statement fails when
+  another process commits DDL between its preparation and its execution. Every statement of the
+  schema script is `IF NOT EXISTS`, so the bootstrap now runs the script again on that error, up to
+  eight times. Under load the process-level test failed 2 runs in 18 without this, and 0 in 36 with
+  it.
+
+`tests/unit/test_schema_bootstrap_race.py` opens new databases from six processes and from eight
+threads at once. Before the fixes it failed on every run.
+
+### Fixed — alerts that missed the first event; alert rules are tested in CI
+
+- **A labeled counter's first event was invisible.** A series first exported at 1 has no earlier
+  sample, and `increase()` or `rate()` over it is 0. So the first dead control-plane command never
+  raised `ControlPlaneCommandDead`, and a replica's first failed reload never raised
+  `RayServeReloadFailures`. The control plane now exports every `(kind, outcome)` command series at
+  0 from the start, as does `gateway-authz` for every decision status. A Ray counter cannot be
+  created at 0, so `RayServeReloadFailures` gained a second arm that catches a failure series that
+  did not exist 15 minutes ago. The alert's summary also named a `model_name` label the counter
+  does not have; it names the replica now.
+- **`alert_rules_test.yml`** replays input series through the rules with `promtool test rules`:
+  these cases, the missing-metrics case, and quiet cases next to firing ones. `make alerts-check`
+  runs it with the Prometheus image the platform deploys (the target used a different version).
+  GitHub CI gained an **`alert rules`** job, required by `ci-ok`: nothing checked the rules there
+  since the GitLab pipeline went. `tests/unit/test_alert_rule_tests.py` fails if a case names an
+  alert that no longer exists, since a test expecting no alert then passes by testing nothing.
+- The gateway alerts print request rates as `0.27 requests/s`, not `266.7m requests/s`.
+
+### Fixed — Ray Serve exported none of its metrics with tracing off, the default
+
+- Ray 2.55 records every metric through the OpenTelemetry SDK, including its own `ray_serve_*`
+  series and the platform's `ray_examlops_*` ones. `OTEL_SDK_DISABLED=true`, the platform's
+  switch for turning tracing off and the default in Compose and Helm, disables that SDK. The model
+  server's metrics port then served only process statistics. So every serving alert, the
+  error-budget alerts and the Grafana serving panels were blind, and `RayServeNoModelsLoaded` fired
+  permanently on a healthy install. The model server now removes a true value before starting
+  Ray. Tracing stays off, since an unset variable already means off to the platform.
+  `tests/integration/test_serving_metrics_live.py` (`EXAMLOPS_RAY_LIVE=1`) shows the platform's
+  metric reaching the port under the default switch; with the fix removed, only process
+  statistics do. A running install picks it up when `ray-serving` is rebuilt.
+- **Gauges are republished.** With metrics back on, `ray_examlops_models_loaded` still appeared
+  once and vanished. Ray clears a gauge's value each time it is collected, and replicas set their
+  gauges only at load time, so `RayServeNoModelsLoaded` kept firing through its `absent()` arm,
+  `ServingSnapshotLagging` had no applied generation, and the served-version gauge existed only
+  under traffic. Each replica now republishes its gauges from its own state every
+  `RAY_GAUGE_REFRESH_SECONDS` (5). The live test pins the Ray behaviour, and fails if a gauge set
+  once starts being kept.
+- New alert **`RayServeMetricsMissing`**: Ray Serve is scraped, but the platform's series are
+  absent. `RayServeTargetDown` cannot see this case, because the scrape itself succeeds.
+- The Ray Serve metrics reference now lists the names Prometheus actually shows (`ray_`
+  prefix), the real labels (the predict counter has no `version` label), and the four metrics it
+  left out.
+
+### Changed — opt-in services are found by DNS; the serving gateway is monitored
+
+- **No permanently firing alerts for services a site does not run.** `vllm` (GPU profile) and
+  `seanerbus_bridge` (profile `seanerbus`) were static scrape targets, so on a host without them
+  `TargetDown`, `VLLMEndpointDown` and `SeanerBUSBridgeDown` fired forever. Services behind a
+  Compose profile are now found with `dns_sd_configs`, and a service that has never run has no
+  target. One that stops after running stays a target reported down, so its alert still fires.
+  `tests/integration/test_prometheus_optional_targets_live.py` (`EXAMLOPS_PROMETHEUS_LIVE=1`) shows
+  both on the platform's own Prometheus image.
+- **The serving gateway is scraped**: Envoy's statistics (`gateway:9902/stats/prometheus`) and the
+  authorization decisions (`gateway-authz:8090`). There is a new alert group, `examlops-gateway`:
+  `ServingGatewayDown`, `ServingGatewayAuthorizationFailing`,
+  `ServingGatewayCredentialStoreUnavailable`, `ServingGatewayHighErrorRate` and
+  `ServingGatewayAtCeiling`, each with a runbook section. The metric names come from the real
+  Envoy. The gateway live test now stops the authorization service, and checks that requests are
+  refused with `503` and counted in the metric the alert reads.
+- **Fixed:** under the segmented-networks overlay `gateway-authz` was not on `ops`, so Prometheus
+  could not reach it. The segmentation guard missed this because it read Prometheus targets as
+  `host:port` text, which a DNS-discovery entry does not contain; the guard now reads those entries
+  too.
+
+### Changed — serving survives losing a replica; Ray autoscaling actually applies its target (plan P4.8)
+
+- **A request whose replica died is retried once.** When a model-server replica dies with
+  requests on it, Ray's proxy answers those requests with a plain-text `500`, and the inference
+  router did not retry a `500`. It now retries this case once, within the deadline and the retry
+  budget; the model server's own errors are JSON, so they are still not retried. Not twice: the
+  request may be what killed the replica.
+- **The inference pipeline runs two replicas of each stage** (`INFERENCE_PIPELINE_REPLICAS`,
+  default 2, was 1). With one, restarting any stage took the whole pipeline down.
+- **The model server can autoscale** between `RAY_NUM_REPLICAS` and `RAY_AUTOSCALE_MAX_REPLICAS`
+  (`RAY_AUTOSCALE_TARGET_ONGOING`, `_UPSCALE_DELAY_S`, `_DOWNSCALE_DELAY_S`). Unset, it keeps a
+  fixed replica count, as before.
+- **Fixed: every autoscale policy ran with Ray's default target.** `examlops.autoscale` wrote the
+  target as `target_num_ongoing_requests_per_replica`, a key Ray no longer reads and silently
+  ignores, so `exa serve autoscale` policies scaled at Ray's default of 2 in-flight requests per
+  replica. It now writes `target_ongoing_requests`, and the scale-to-zero idle time as
+  `downscale_to_zero_delay_s`. A test passes the output through Ray's own `AutoscalingConfig`.
+- `tests/integration/test_serving_replica_failover_live.py` (`EXAMLOPS_RAY_LIVE=1`) kills one of
+  two replicas of a private local Ray cluster while requests are in flight on it: 320 of 320
+  requests succeed, and 4 fail with the router's retry removed. The first version of this test
+  sent requests too short to be in flight at the kill, so it passed on Ray's own rerouting alone;
+  the test now fails if the kill caught no request.
+
+### Added — a runbook for every alert, and the platform SLOs written down (plan P5)
+
+- **Runbooks** (`docs/runbooks/`, in the site navigation): one section for each of the 45 shipped
+  alerts, each giving meaning, impact, check and fix, on pages for serving, the control plane,
+  the event backbone, the bus bridge, the dataplane, the monitoring stack and LLM endpoints. Every
+  rule in `alert_rules.yml` now carries a `runbook_url` annotation that Alertmanager shows in the
+  notification. None of the 42 existing rules had one. `tests/unit/test_alert_runbooks.py` fails on
+  an alert without a runbook, a link to a missing section, a section no alert links to, and a
+  page missing from the navigation.
+- **Platform SLOs** (`docs/runbooks/index.md`): the objectives the alerts already encoded, stated
+  in one table: prediction availability 99.5 % over 30 days with fast- and slow-burn alerts, p99
+  latency, model availability, snapshot currency, control-plane uptime, retrain dispatch success,
+  event freshness and approval age. Also the severity policy.
+
+### Fixed — two retrain alerts could not fire
+
+- `RetrainDurationP99High` fires above 300 s, but `examlops_retrain_duration_seconds` had no bucket
+  above 10 s. `histogram_quantile()` never reports more than the largest finite bucket, so the
+  alert was unreachable from the day it was written. The buckets now go to 600 s.
+  `tests/unit/test_alert_thresholds_are_reachable.py` checks every latency alert's threshold
+  against the buckets its histogram defines.
+- Since the platform's retrains moved to `POST /v1/retrain`, only the deprecated synchronous route
+  recorded `examlops_retrain_requests_total` and the duration histogram. So `HighRetrainErrorRate`
+  and `RetrainDurationP99High` no longer saw the platform's own retrains. The command workers now
+  record each dispatch's outcome and duration, and `/v1` counts a refused duplicate as `dedup`.
+
+### Security — models are signed with Ed25519 at registration and verified before serving (plan P4.10)
+
+- **An asymmetric signature.** `examlops.supplychain` signs with an Ed25519 key pair
+  (`EXAMLOPS_SIGNING_PRIVATE_KEY_FILE`, from `openssl genpkey -algorithm ed25519`). Serving holds
+  only public keys (`EXAMLOPS_SIGNING_PUBLIC_KEYS`, one line, or `EXAMLOPS_SIGNING_PUBLIC_KEYS_FILE`),
+  so a replica can check a signature and cannot make one. Under the HMAC scheme, every verifier
+  held the signing secret. Several trusted keys make rotation possible: each row records its
+  key id.
+- **What is signed.** The statement binds the model, the **version** and a canonical manifest
+  digest (relative path, size and SHA-256 of every file). The legacy digest ran file names and
+  bytes together, so `a`+`bc` collided with `ab`+`c` and moving a file inside the bundle went
+  unnoticed. It signed the digest alone, so a signature could be reused on another version that
+  pointed at the same bytes (a rollback). Legacy `hmac-sha256` rows still verify.
+- **Signed at registration.** The training pipeline signs each version it registers, over the
+  artifacts exactly as the serving plane downloads them (`EXAMLOPS_SIGN_AT_REGISTRATION`: `auto`
+  default, `required`, `off`). `exa models sign|verify <model> <version>` now works on the
+  registered version without `--path`, and `sign` prints the public key serving needs.
+- **Verified from the snapshot.** The serving snapshot carries each version's signature record,
+  and a replica verifies the bytes it loads against it, even with the database unreachable.
+- **`EXAMLOPS_SERVING_VERIFY` now defaults to `warn`** (was `off`): every load is verified and a
+  failure audited, never refused. Move to `enforce` with the steps in the supply-chain guide.
+- The supply-chain guide described a Sigstore "production" signer that was never built; it now
+  documents the schemes that exist. ADR 0013 moves from Proposed to Partially implemented.
+
+### Fixed — a service secret with a trailing newline refused the correct bearer
+
+`examlops.credentials.is_usable_secret` strips a configured secret before judging it, but
+`bearer_matches` compared against the raw value. A secret read from a file or an environment
+variable ending in a newline was accepted as configured, then refused the correct token with 403
+(Ray Serve's admin routes, and the dataplane service's inlined copy). Both now strip. An empty
+token never matches, even an empty secret.
+
+### Fixed — `exa pipeline hpo start` could not start anything
+
+It posted `{"model", "dataset", "hpo_trials"}` to the control plane, which requires `model_name` and
+`dataset_name` and answered 422 every time. Its tests mocked the HTTP call, so none of them saw
+it. It now sends the control plane's retrain contract, and the test pins the body. The command
+also states what it does: it records the study (trial budget, metric) and dispatches one baseline
+training run. The training flow does not search, so an external optimiser reports each trial with
+`exa pipeline hpo record`.
+
+### Changed — the platform's own components call the control plane at `/v1` (plan P1.6)
+
+- The MCP tools, the SDK (`examlops.sdk` status), `exa production` and the evaluation grounding
+  check, the dashboard (model registry, READMEs and images, approvals, pipeline launch) and the
+  Skipper agent's approval, model-zoo, registry, training and platform tools now use the `/v1`
+  twins of the deprecated paths. Every one of those twins runs the same handler as the legacy path,
+  so only the URL changed; errors now arrive as RFC 9457 problem documents, which keep the `detail`
+  string these callers read. The dashboard's test fake serves `/v1` only, and
+  `tests/unit/test_control_plane_callers_use_v1.py` fails if a platform caller builds a deprecated
+  path again.
+- **Retrains go through the command API too** (plan P1.6c). The eleven callers of the deprecated
+  synchronous `POST /retrain` (`exa retrain`, `exa drift trigger` ×2, `exa autopilot`,
+  `exa pipeline hpo start`, `exa production deploy`, the MCP `trigger_retrain` tool, the agent's
+  retrain and drift tools, the bus bridge ×2) now submit through `POST /v1/retrain` and wait
+  for the dispatch with the new `examlops.retrain_command`. Dispatched in time, they report the
+  `flow_run_id` as before. If the retrain is still queued, they report it accepted with a
+  `command_id` instead of failing, because the control plane still dispatches it. Before, a
+  Prefect outage failed every one of these calls. `EXAMLOPS_RETRAIN_WAIT_SECONDS` (30 s) bounds
+  the wait; the automated loops wait at most 5 s. The guard now forbids `POST /retrain` as well.
+- **Upgrade order:** upgrade the control plane before the dashboard, agent or CLI. An older
+  control plane answers `/v1` with 404.
+
+### Added — inference requests carry one deadline, and overload is shed instead of queued (plan P4.6)
+
+- **One deadline per request.** The inference pipeline fixes a request's deadline at the ingress
+  (`X-ExaMLOps-Budget-Ms`, or `INFERENCE_DEADLINE_SECONDS` = 30 s) and every hop spends from it.
+  The router's per-attempt timeout is what is left, not 10 s per attempt; the model server runs
+  the model under the smaller of `RAY_PREDICT_TIMEOUT` and the budget, and answers 504 without
+  running the model at all when the budget ran out in a queue. Before, a request could outlive its
+  client by a minute (three 10 s router attempts, then a 30 s predict). A budget-limited timeout
+  no longer counts as a hung predict thread, so a tight client budget cannot recycle a healthy pool.
+- **Retries cannot become a storm.** The router retries only transport errors and 503, only while
+  the deadline has room, and only while a gRPC-style retry budget allows
+  (`INFERENCE_RETRY_MAX_TOKENS`/`INFERENCE_RETRY_TOKEN_RATIO`). 504 is no longer retried.
+- **Load shedding.** `RAY_MAX_QUEUED_REQUESTS` and `INFERENCE_MAX_QUEUED_REQUESTS` bound the queue
+  at each caller; past it Ray Serve answers 503 at once (the pipeline adds `Retry-After: 1`). Both
+  default to unbounded; the sizing rule is in the Ray Serve component guide ("Overload, deadlines
+  and load shedding"). The pipeline now maps `overloaded` → 503 and `deadline_exceeded` → 504
+  instead of 500.
+- **The error-rate alerts and the Grafana SLO panels count the same failures.** The new
+  `status="deadline_exceeded"` joins `error` and `timeout` in the four error-rate/burn alerts. The
+  ten Grafana error-rate, SLO-compliance and burn-rate panels selected `status="error"` only, so a
+  replica timing out on every request showed 100 % SLO compliance while the burn alert fired; they
+  now use the alerts' selector, and `test_error_alerts_see_every_failure.py` holds panels to it.
+
+### Added — an event backbone: NATS JetStream and CloudEvents (ADR 0124)
+
+Events the platform emitted went to the process log and were forgotten: the `nats` publisher was a
+stub and nothing consumed anything. Now:
+
+- **`EXAMLOPS_EVENT_PUBLISHER=nats`** publishes the outbox to NATS JetStream (stream
+  `EXAMLOPS_EVENTS`, subjects `examlops.events.<topic>`), idempotently: `Nats-Msg-Id` is the outbox
+  id, so a relay retry is one stream message, not two.
+- **Every event is a CloudEvents 1.0 envelope** (`id`, `type io.examlops.<topic>`, RFC 3339 `time`,
+  tenant, actor and `traceparent`), on every publisher.
+- **Durable consumers** (`examlops.events.consumer.EventConsumer`): acknowledge after handling,
+  skip redeliveries through a new `event_inbox` table, retry with backoff, and park a poison event on
+  `examlops.dlq.<consumer>` instead of stalling.
+- **`exa events tail`** shows recent events or a consumer's dead letters; a `nats` Compose service
+  (profile `events`); optional extra `examlops[events]`. Guide: *Event backbone*.
+- **Serving changes and promotions are published, not just written.** `serving.traffic_changed`
+  and `serving.shadow_changed` commit in the same transaction as the traffic split or shadow
+  target (the helper every surface uses). `model.alias_changed` is enqueued by all eight places
+  that move an MLflow alias — promote, rollback, production rollback, autopilot, the training
+  flow, the agent and the dashboard — right after MLflow accepts the move. A guard test fails
+  when new code moves an alias silently. `enqueue_event` and `events.publish` take `actor` and
+  `tenant`, which feed the CloudEvents envelope.
+- **The backbone reports its own health.** The control plane's `/metrics` gains outbox pending,
+  poison and oldest-pending-age gauges (read from the store on each scrape), relay outcome
+  counters, and, with the NATS publisher, per-consumer lag and dead-letter gauges read from
+  JetStream (`CONTROL_PLANE_EVENT_BACKBONE_STATS_SECONDS`). A failed read keeps the last values
+  rather than reporting zero. Five new alerts: `EventOutboxStalled`, `EventOutboxPoison`,
+  `EventRelayFailing`, `EventConsumerLagging` and `EventDeadLettered`. `exa events stats` shows
+  the oldest pending age and, on NATS, each consumer's lag and dead letters; `/health` reports
+  `outbox.oldest_pending_age_seconds`.
+- **An event continues the trace of the request that produced it.** The envelope's `traceparent`
+  was read when the relay published the event, so it named the relay's span or nothing. It is
+  now stored in the outbox row inside the producing transaction (new `event_outbox.traceparent`
+  column, added in place). `EventConsumer` runs each handler in a `CONSUMER` span parented on it.
+- **The dashboard's live stream carries the whole platform.** With the NATS backbone, every
+  dashboard replica relays the platform's events onto `GET /api/v1/stream`: a retrain the
+  control plane saw fail, a promotion from the CLI, a traffic split set on another replica.
+  Before, the stream carried only this process's own clicks. The relay is a broadcast watch
+  (`JetStream.watch`, an ephemeral ordered consumer), maps topics onto the stream's channels
+  (`retrain.run_failed` → `job.retrain_run_failed`), keeps tenants apart, and hands events from
+  the NATS thread to the dashboard's loop. `hello` reports `platform_events`;
+  `DASHBOARD_BACKBONE=off` disables it. The dashboard image gains `nats-py`.
+- **`exa autopilot follow`** considers a retrained model for promotion the moment its training
+  run completes. It is a durable consumer of `retrain.run_completed` that runs that model's
+  autopilot cycle, so every gate applies. It does nothing while the kill switch is off, and
+  redelivers rather than drops when another cycle holds the lease. Previously the candidate
+  waited for the next scheduled cycle.
+- **skipper-watch alerts on a failed training run when it fails.** With the backbone, the watch
+  daemon also consumes `retrain.*` and raises `alert.retrain` for a run that ends FAILED,
+  CRASHED or MISSING, once per run, through its usual outbox, audit and episodic-memory
+  fan-out. Previously a failed run surfaced only through dispatch-side alerts, or when someone
+  looked. Compose gains two consumer services in the `events` profile, `autopilot-follower` and
+  `skipper-watch`; the watch daemon was not deployed anywhere before.
+- **Event payloads have a published contract** (`examlops.events.schemas`). Every topic the
+  platform publishes has a JSON Schema for its `data`, its envelope names that schema in
+  `dataschema`, and the committed `event-contract.json` is the snapshot. A test fails on any
+  change that could break an existing consumer: a dropped topic, a removed or no-longer-required
+  field, a widened type or a new enum value. Every control-plane test also validates the events
+  it emits.
+- **Fixed — a replica booting against an empty Postgres could stay unready forever.**
+  Replicas (control plane, dashboard, agent) bootstrapping the schema at the same moment raced
+  `CREATE TABLE IF NOT EXISTS`, and the loser failed with a duplicate key on `pg_type`. The
+  bootstrap now takes a transaction-scoped advisory lock (`schema`), and so does the control
+  plane's own table DDL (`tests/integration/test_postgres_backend_live.py` boots six control-plane
+  instances at once on an emptied schema; without the lock the losers fail). The control
+  plane's startup checks ran once and never again, so that one transient failure answered
+  `/readyz` 503 for the life of the pod. Failed checks are now re-evaluated by the probes, at most
+  every `CONTROL_PLANE_STARTUP_RECHECK_SECONDS`.
+
+### Added — asynchronous control-plane commands and a versioned `/v1` API
+
+- **Every operator route has a `/v1` path** (plan P1.6): `/v1/status`, `/v1/models[...]`,
+  `/v1/runs/{flow_run_id}`, `/v1/approvals` with `/{model_id}/approve|reject` and
+  `/{approval_id}` (DELETE), `/v1/changes`, `/v1/modelzoo/*` and `/v1/admin/reload`. Each is the
+  legacy route's own handler registered at a second path, so authentication and behaviour
+  cannot drift; errors under `/v1` are problem documents. The legacy paths keep working and
+  answer with `Deprecation: @1789084800` and `Link: <…>; rel="successor-version"` (RFC 9745,
+  RFC 8288). They carry no `Sunset` header, because no removal date has been set. Probes,
+  `/metrics` and the webhooks stay unversioned.
+- **A generated `/v1` client, `examlops.control_plane_api`.** It has one function per operation,
+  generated from `api-contract.json` by `platform/ci/gen_cp_client.py`, and is regenerated by
+  `make openapi-export`. A test fails while it is stale. The approvals, modelzoo, run-status,
+  reload, cards and status commands now call `/v1` through it, instead of hand-building URLs
+  (which also fixes an unescaped model name in `exa approvals approve`).
+
+- **`POST /v1/retrain`** accepts a retrain as a durable command and answers **202** with
+  `Location: /v1/commands/{id}`; a worker pool in the control plane dispatches it with retries,
+  exponential backoff and a bounded attempt count (`dead` after `CONTROL_PLANE_COMMAND_MAX_ATTEMPTS`),
+  under the same admission caps (a full cap now means *wait*, not *fail*). `GET /v1/commands[/{id}]`
+  (tenant-scoped, keyset-paginated) and `DELETE /v1/commands/{id}` (cancel, audited) complete it.
+  Errors on `/v1` are RFC 9457 problem documents; the legacy routes are unchanged.
+- CLI: **`exa retrain --async`** and a new **`exa commands list|show|cancel`** group.
+- **Runs are followed to completion.** The command workers poll each dispatched flow run
+  (`CONTROL_PLANE_RECONCILE_SECONDS`) and record its state as `run_state`; a run reaching
+  `COMPLETED`/`FAILED`/`CANCELLED`/`CRASHED` (or `MISSING`) publishes one `retrain.run_<state>`
+  event. `/v1/retrain` refuses a second retrain of a model × dataset that is still queued or training.
+- **Every retrain door is idempotent and governed.** `/retrain` accepts the standard
+  `Idempotency-Key` header; Skipper's retrain tools send one per call, so their transport retries
+  cannot start a second run. The dashboard's **Run pipeline** button now queues through the control
+  plane — it used to call Prefect directly, against a deployment name that did not exist and with a
+  parameter the flow rejects, under its own per-process cooldown.
+- Alerts `ControlPlaneCommandDead` and `ControlPlaneCommandBacklog`; metrics
+  `control_plane_command_outcomes_total` and `control_plane_command_queue_depth`.
+
+### Changed — the control plane no longer serialises the whole cluster
+
+- On Postgres, each write domain — audit chain, outbox, admission, approvals, coordination,
+  ModelZoo events — now takes **its own advisory lock** instead of one platform-wide lock, so
+  unrelated writes stop queueing behind each other (proven on a live Postgres: different domains
+  run concurrently; the audit chain stays a single valid chain under concurrent writers).
+- The control plane runs its schema DDL once per database instead of on every connection, and its
+  process-wide DB lock is gone (correctness comes from the scoped transactions and conditional
+  updates).
+- Calls to Prefect use a pooled, traced HTTP client and share **one deadline per dispatch**
+  (`CONTROL_PLANE_DISPATCH_BUDGET_SECONDS`, 8 s): the old retry loop could hold a request for over a
+  minute after its caller had given up. A 4xx is never retried; a POST only when it is idempotent.
+
+### Added — a governed approval gate and a locked-down serving plane
+
+- **Separation of duties:** the principal that files a change cannot approve it
+  (`CONTROL_PLANE_SEPARATION_OF_DUTIES`; the shared legacy token is exempt and `/health` says so).
+- **Audited decisions:** approval requests, approvals, rejections, retractions and dispatched
+  retrains are written to the hash-chained audit log in the same transaction as the decision.
+  Rejections are now also outbox events.
+- **Webhooks** are idempotent on the commit (a redelivery does nothing twice) and size-capped.
+- **Serving admin routes** (`/reload`, `/infer-pipeline/traffic-rules/…`) require
+  `RAY_SERVE_ADMIN_TOKEN` (new CLI config key `ray_serve_admin_token`); inference routes are
+  unchanged. The Ray dashboard is published on loopback only. Serving can use a read-only MinIO
+  credential (`MINIO_SERVING_ACCESS_KEY`), verify artifacts before loading
+  (`EXAMLOPS_SERVING_VERIFY`), and MLflow no longer accepts any `Host` or origin.
+- **Skipper** refuses every request with 503 when it is reachable beyond loopback without an API
+  key (`AGENT_ALLOW_UNAUTHENTICATED` is the development opt-out).
+- New page: [Control plane and serving plane](docs/architecture/control-and-serving-planes.md).
+  ADR 0123 (proposed) records the separation.
+
+### Fixed — `make typecheck` was red at HEAD
+
+- `dashboard/backend/facility.py` declared `_shared_set_state` and then re-bound it with
+  `import … as` (mypy `no-redef`). `make gate` did not catch it: its typecheck step runs only the
+  ratcheted `typecheck-cli`, while `make typecheck` (what CI runs) also covers `platform/services/`.
 
 ## [0.59.1] - 2026-09-12
 

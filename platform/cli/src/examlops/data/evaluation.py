@@ -62,7 +62,12 @@ def get_gate_reports(model: str, limit: int = 20) -> list[dict[str, Any]]:
     init_db()
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM gate_reports WHERE model=? ORDER BY ts DESC LIMIT ?", (model, limit)
+            # `, id DESC` like `list_perf_estimates` below and the dashboard's `eval_gate_state`:
+            # two gate reports can land in one second (a promote and an autopilot cycle, a CI
+            # matrix), and this list is read newest-first — the MCP `gate_reports` tool hands it
+            # to an agent, which takes the first entry as the standing verdict.
+            "SELECT * FROM gate_reports WHERE model=? ORDER BY ts DESC, id DESC LIMIT ?",
+            (model, limit),
         ).fetchall()
     out = []
     for r in rows:

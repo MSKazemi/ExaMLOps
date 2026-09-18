@@ -14,7 +14,7 @@ import os
 
 import audit_write
 from auth import require_role
-from capabilities import AUTOPILOT_MANAGE, can, deny_reason
+from capabilities import AUTOPILOT_MANAGE, can, deny_reason, require_capability
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -105,12 +105,26 @@ async def _set_enabled(value: str, action: str, principal: dict) -> dict:
 
 
 @router.post("/enable")
-async def enable(principal: dict = Depends(_admin)) -> dict:
+async def enable(
+    principal: dict = Depends(_admin),
+    # Also through the enforcing dependency, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the admin dependency, never in place of it: `require_capability` admits
+    # operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(AUTOPILOT_MANAGE)),
+) -> dict:
     """Enable the autopilot kill-switch (admin; audited). Mirrors ``exa autopilot enable``."""
     return await _set_enabled("1", "autopilot_enabled", principal)
 
 
 @router.post("/disable")
-async def disable(principal: dict = Depends(_admin)) -> dict:
+async def disable(
+    principal: dict = Depends(_admin),
+    # Also through the enforcing dependency, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the admin dependency, never in place of it: `require_capability` admits
+    # operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(AUTOPILOT_MANAGE)),
+) -> dict:
     """Disable the autopilot kill-switch (admin; audited). Mirrors ``exa autopilot disable``."""
     return await _set_enabled("0", "autopilot_disabled", principal)

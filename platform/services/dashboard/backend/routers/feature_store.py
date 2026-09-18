@@ -11,7 +11,7 @@ import json
 
 import audit_write
 from auth import require_role
-from capabilities import FEATURE_MANAGE, can, deny_reason
+from capabilities import FEATURE_MANAGE, can, deny_reason, require_capability
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
@@ -74,6 +74,11 @@ async def list_views(_=Depends(_viewer)) -> list[dict]:
 async def apply_view(
     payload: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(FEATURE_MANAGE)),
 ) -> dict:
     """Register/patch a feature view (admin; audited).
 

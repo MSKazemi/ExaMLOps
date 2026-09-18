@@ -48,7 +48,7 @@ policy / `platform.db` / hosted model, the agent still works.
 | **Unified capability surface** | The `examlops.mcp` registry (single source of truth for Skipper, `exa mcp serve`, and the A2A card) covers drift, serving, SLO/fairness, FinOps, gateway, eval, lineage + grounded help. `exa mcp capabilities` lists it grouped by use case. | `examlops/mcp/tools.py` | 0099/0100 |
 | **Self-instrumentation** | Each turn's tool calls record to `agent_sessions`/`agent_tool_calls` (`tool_success_rate` is real) + an in-loop circuit-breaker aborts runaway turns. | `instrument.py` | 0103 |
 | **Layered write-safety** | Gated, **tiered** MCP writes (A=autopilot-OK, B=confirm, C=human-only); every mutating tool gets exposure + HITL `interrupt()` + policy + audit; tier-C is never bound to the agent. | `mcp_bridge.py`, `memory_eval.py` | 0102 |
-| **Proactive monitoring** | `skipper-watch` — an LLM-free daemon that raises drift/cost alerts to the events outbox + audit + episodic memory. `python -m skipper.watch --once\|--daemon`. | `watch.py`, `baselines.py` | 0104 |
+| **Proactive monitoring** | `skipper-watch` — an LLM-free daemon that raises drift/cost alerts to the events outbox + audit + episodic memory. `python -m skipper.watch --once\|--daemon\|--follow`. With the NATS event backbone it also raises `alert.retrain` the moment a training run fails, crashes or goes missing — once per run (`--follow` runs only that part; `AGENT_WATCH_EVENTS=false` turns it off). Compose runs it as the `skipper-watch` service under the `events` profile. | `watch.py`, `baselines.py` | 0104, 0124 |
 | **Self-improving memory** | Consolidation promotes recurring incidents → review-gated candidate procedures; reinforcement deprecates procedures that use failing tools. `python -m skipper.consolidate`. | `consolidate.py`, `reinforce.py` | 0106 |
 | **7-tier memory** | Working · experience · **knowledge/docs-RAG** · **monitoring/baseline** · **outcome** · **consolidation** · **tenant scoping** (see [Long-Term Memory](#long-term-memory-phase-25)). | `memory.py`, `knowledge.py`, `scoping.py` | 0101/0104/0105 |
 
@@ -318,6 +318,23 @@ tool or tools from the active specialist's scoped set.
 | **docs/knowledge** | `search_docs`, `read_doc`, `list_docs`, `get_howto` | Search the repo's `docs/` directory, read a specific doc file, list all available docs, or look up a how-to answer grounded in the documentation. `search_docs` takes a whole question: the literal phrase is tried first, and on a miss the query degrades to its terms (stop-words dropped, hyphenated compounds split), ranked by how many distinct terms each file matches. |
 | **platform_ops** | `compare_model_versions`, `get_model_lineage`, `get_drift_status`, `get_input_drift_status`, `query_audit_log`, `set_traffic_split`, `promote_model`, `trigger_auto_retrain`, `validate_model_serving`, `get_platform_summary`, `diagnose_platform` | Operational observability and lifecycle control (Phase 19/21/22). Compare metric/param deltas between versions; trace the pipeline→dataset→model lineage; read prediction-drift and input-embedding-drift status (CRITICAL/WARNING/OK); query the platform audit log; set per-alias traffic percentages; metric-gate a promotion; fire drift-based auto-retrains (cooldown-aware); smoke-test a model against a latency SLA; and produce a quick `get_platform_summary` or a full prioritized `diagnose_platform` report. `set_traffic_split`, `promote_model`, and `trigger_auto_retrain` are write tools requiring confirmation. |
 
+### Every model is read over its own window
+
+`get_drift_status`, `trigger_auto_retrain` and `diagnose_platform` all answer from recent
+prediction snapshots, and each reads **one window per model** — that model's newest 100
+predictions — rather than a single window across the whole platform.
+
+The distinction decides whether a low-traffic model is watched at all. A shared window is filled by
+whichever models predict most often, so a model that serves a few requests a day falls out of it
+entirely and is reported as having *no snapshots*. That is the one answer which silently removes a
+model from the closed loop: `trigger_auto_retrain` skips it as missing data, and `diagnose_platform`
+reports no drift, while the model sits well past its threshold. Per-model windows mean a model's
+volume relative to its neighbours never decides whether it is looked at — matching what
+`exa drift status` and the dashboard's drift console have always done.
+
+"No snapshots" is still reported, and now means only what it says: that model has never recorded a
+prediction.
+
 ## Direct Developer REPL Commands
 
 These commands belong to the lower-level `make skipper` REPL. The first-party `exa chat` commands
@@ -421,7 +438,7 @@ whose only correct answers are `exa serve check` / `exa serve infer-check`.
 - **`AGENT_KNOWLEDGE_K`** (default `10`) — how many chunks `search_knowledge` retrieves. The
   answer chunk ranks **7th**; at the former hard-coded `k=5` the agent never saw it and replied
   with the three plausible commands ranked above it (`exa serve models`,
-  `exa pipeline validate-model`, `exa infer predict`). Raising it took the serving category from
+  `exa pipeline validate-model`, `exa predict`). Raising it took the serving category from
   3/4 to 4/4 and `exa eval operator-qa` from 29/30 to **30/30**.
 - **The embedding backend has to actually be running.** `search_knowledge` degrades to the
   ripgrep docs tool whenever embeddings or the vector store are unavailable, and that degradation
@@ -550,6 +567,31 @@ conversation history, memory governance, and WebSocket tools. The server default
 deliberate network exposure should use TLS. The built-in browser exchanges a key for an HttpOnly,
 same-site session cookie.
 
+### A credential map that is only partly applied says so
+
+Entries in `AGENT_API_KEYS_JSON` are validated individually, and a bad one is refused rather than
+guessed at: a non-string value, an empty value, and an empty principal name are each ignored. That
+is deliberate — the alternative is authorizing something the operator did not write — and a map
+that does not parse at all leaves authentication **on**, so a broken file can never open the agent
+up.
+
+What that costs is diagnosability, and since 2026-09-14 the platform pays it back rather than
+leaving you to guess:
+
+- every refused entry is logged once at `WARNING`, naming the principal and the reason
+  (`principal 'bob' was ignored: its value is int, not a string`);
+- `GET /healthz` answers `{"status": "degraded", "credential_config_problems": N}` instead of
+  `ok`, so a monitor sees it without anyone reading a log;
+- `skipper.auth.credential_config_problems()` returns the same reasons in-process.
+
+**Credential material never appears in any of them,** and `/healthz` reports only a *count* — which
+principals a centre provisions is not something an unauthenticated endpoint should disclose. The
+named reasons are in the log, which is already a trusted surface.
+
+This matters because the failure is per-principal. Provision five principals with one bad value and
+four of them work: the service starts, answers, and looks healthy, while the fifth's `401`s are
+indistinguishable from a wrong token. Nothing used to say which had happened.
+
 ## Environment Variables
 
 | Variable | Default | Purpose |
@@ -566,7 +608,7 @@ same-site session cookie.
 | `AGENT_OLLAMA_NUM_CTX` | `16384` | Context window sent to Ollama as `num_ctx`. Ollama's 4096 default truncates the ~5k-token specialist prompts from the front (system prompt lost, turns hit the graph timeout). `0` leaves the server default. |
 | `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`skipper.server`). |
 | `AGENT_API_KEY` | unset | Legacy single credential protecting the agent HTTP surface; maps to the `primary` principal. |
-| `AGENT_API_KEYS_JSON` | unset | Principal-to-credential JSON map. Verified principal and tenant scope conversations and remote memory administration. |
+| `AGENT_API_KEYS_JSON` | unset | Principal-to-credential JSON map. Verified principal and tenant scope conversations and remote memory administration. A malformed entry is refused per principal, logged at `WARNING`, and counted on `GET /healthz` — see [above](#a-credential-map-that-is-only-partly-applied-says-so). |
 | `AGENT_DB` | `./agent_memory.db` | Path to the SQLite file used by the LangGraph `SqliteSaver` checkpointer for persistent conversation threads. |
 | `AGENT_DOCS_ROOT` | `<repo>/docs` | Root directory the docs tools (`search_docs`, `read_doc`, `list_docs`, `get_howto`) search. Defaults to the `docs/` folder at repo root. |
 | `MLFLOW_TRACKING_URI` | `http://localhost:15000` | Shared with the rest of the stack — controls where registry tools query MLflow. |

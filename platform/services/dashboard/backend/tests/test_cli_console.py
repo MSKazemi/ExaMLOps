@@ -643,3 +643,38 @@ async def test_the_api_serves_a_running_commands_output_so_far(
     finally:
         await client.post(f"/api/v1/cli/runs/{run_id}/cancel", headers=h)
         await fresh_runner.wait(run_id, timeout=20)
+
+
+async def test_a_truncated_workspace_listing_says_so(client, platform_db, fresh_runner):
+    """The listing stops at 2000 files and used to say nothing about the rest.
+
+    A workspace with more files than that returned a full-looking list, so an operator looking for
+    the output a command had just written could conclude it was never produced. The cap is right —
+    the endpoint must not stream an unbounded tree — but a truncated answer has to admit it is one.
+    """
+    import cli_runner
+
+    root = cli_runner.workspace_root()
+    root.mkdir(parents=True, exist_ok=True)
+    for i in range(2100):
+        (root / f"f{i:05d}.txt").write_bytes(b"x")
+
+    h = await _token(client, ADMIN_PW)
+    body = (await client.get("/api/v1/cli/workspace", headers=h)).json()
+    assert len(body["files"]) == 2000
+    assert body.get("truncated") is True, f"a truncated listing did not say so: {body.keys()}"
+
+
+async def test_a_complete_workspace_listing_is_not_marked_truncated(
+    client, platform_db, fresh_runner
+):
+    """Anti-vacuity: the flag must follow the listing, not always be set."""
+    import cli_runner
+
+    root = cli_runner.workspace_root()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "one.txt").write_bytes(b"x")
+
+    h = await _token(client, ADMIN_PW)
+    body = (await client.get("/api/v1/cli/workspace", headers=h)).json()
+    assert body.get("truncated") is False

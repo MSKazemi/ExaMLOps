@@ -54,6 +54,25 @@ jobs:
       - name: Install MkDocs
         run: python -m pip install --quiet -r platform/ci/requirements-docs.txt
 
+      # The site serves mermaid and KaTeX itself (docs/overrides/docs_assets_hook.py), so the
+      # build needs both pinned packages and stops without them rather than letting the published
+      # page fetch them from a CDN in every reader's browser. This is the job that publishes that
+      # page: leaving the packages out of it took the Pages deploy down while CI's own docs job,
+      # which had them, stayed green.
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            platform/ci/mermaid/package-lock.json
+            platform/ci/katex/package-lock.json
+
+      - name: Install the pinned front-end assets
+        run: |
+          npm ci --prefix platform/ci/mermaid
+          npm ci --prefix platform/ci/katex
+
       # Same flags as the CI job: a broken link, a broken anchor or a page missing
       # from the nav stops the deploy instead of reaching a reader.
       - name: Build (strict)

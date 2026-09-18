@@ -290,18 +290,18 @@ def _audit_refusal(
     reason: str,
     failing: list[str],
 ) -> None:
-    try:
-        from examlops.data.audit import write_audit_event
+    # The refusal stands whether or not it is audited — but an Art. 12 required event that never
+    # lands is invisible to both the hash chain and the coverage report, so the loss is logged and
+    # counted rather than swallowed. See `audit.audit_best_effort`.
+    from examlops.data.audit import audit_best_effort
 
-        write_audit_event(
-            source,
-            actor,
-            action,
-            target,
-            {"version": str(version), "reason": reason, "failing_metrics": failing},
-        )
-    except Exception:  # noqa: BLE001 - the refusal stands whether or not it is audited
-        pass
+    audit_best_effort(
+        source,
+        actor,
+        action,
+        target,
+        {"version": str(version), "reason": reason, "failing_metrics": failing},
+    )
 
 
 # ── ADR 0111 — no uncalibrated judge may gate ─────────────────────────────────

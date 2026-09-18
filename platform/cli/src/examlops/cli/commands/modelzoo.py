@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import typer
 
+from examlops import control_plane_api
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 
@@ -32,9 +33,10 @@ _EXAMPLES_ADOPT = (
 def status():
     """Show ModelZoo freshness for every registered model."""
     cfg = load_config()
-    url = f"{cfg.control_plane_url}/modelzoo/status"
     try:
-        data = _client.get(url, token=cfg.control_plane_token)
+        data = control_plane_api.modelzoo_status(
+            base=cfg.control_plane_url, token=cfg.control_plane_token
+        )
     except _client.ClientError as e:
         _output.error(str(e))
         return
@@ -71,9 +73,10 @@ def status():
 def events(limit: int = typer.Option(10, "--limit", "-n", help="Number of events to show")):
     """Show recent ModelZoo push events."""
     cfg = load_config()
-    url = f"{cfg.control_plane_url}/modelzoo/events?limit={limit}"
     try:
-        data = _client.get(url, token=cfg.control_plane_token)
+        data = control_plane_api.modelzoo_events(
+            limit=limit, base=cfg.control_plane_url, token=cfg.control_plane_token
+        )
     except _client.ClientError as e:
         _output.error(str(e))
         return
@@ -108,9 +111,10 @@ def events(limit: int = typer.Option(10, "--limit", "-n", help="Number of events
 def sync():
     """Manually trigger one ModelZoo poll cycle."""
     cfg = load_config()
-    url = f"{cfg.control_plane_url}/modelzoo/sync"
     try:
-        data = _client.post(url, {}, token=cfg.control_plane_token, timeout=30.0)
+        data = control_plane_api.modelzoo_sync(
+            timeout=30.0, base=cfg.control_plane_url, token=cfg.control_plane_token
+        )
     except _client.ClientError as e:
         _output.error(str(e))
         return
@@ -134,9 +138,10 @@ def sync():
 def show_config():
     """Show ModelZoo integration configuration."""
     cfg = load_config()
-    url = f"{cfg.control_plane_url}/modelzoo/config"
     try:
-        data = _client.get(url, token=cfg.control_plane_token)
+        data = control_plane_api.modelzoo_config(
+            base=cfg.control_plane_url, token=cfg.control_plane_token
+        )
     except _client.ClientError as e:
         _output.error(str(e))
         return
@@ -169,9 +174,10 @@ def set_config(
     else:
         _output.error(f"Unknown config key {key!r}. Supported: auto_retrain, poll_interval_seconds")
         raise typer.Exit(1)
-    url = f"{cfg.control_plane_url}/modelzoo/config"
     try:
-        data = _client.put(url, payload, token=cfg.control_plane_token)
+        data = control_plane_api.set_modelzoo_config(
+            body=payload, base=cfg.control_plane_url, token=cfg.control_plane_token
+        )
     except _client.ClientError as e:
         _output.error(str(e))
         return

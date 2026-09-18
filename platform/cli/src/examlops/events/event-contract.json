@@ -1,0 +1,814 @@
+{
+  "alert.cost": {
+    "$id": "urn:examlops:event-schema:alert.cost",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "detail": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "severity": {
+        "enum": [
+          "info",
+          "warn",
+          "critical"
+        ],
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "threshold": {
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "value": {
+        "type": [
+          "number",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "detail",
+      "kind",
+      "severity",
+      "target"
+    ],
+    "title": "alert.cost",
+    "type": "object"
+  },
+  "alert.drift": {
+    "$id": "urn:examlops:event-schema:alert.drift",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "detail": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "severity": {
+        "enum": [
+          "info",
+          "warn",
+          "critical"
+        ],
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "threshold": {
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "value": {
+        "type": [
+          "number",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "detail",
+      "kind",
+      "severity",
+      "target"
+    ],
+    "title": "alert.drift",
+    "type": "object"
+  },
+  "alert.retrain": {
+    "$id": "urn:examlops:event-schema:alert.retrain",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "detail": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "severity": {
+        "enum": [
+          "info",
+          "warn",
+          "critical"
+        ],
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "threshold": {
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "value": {
+        "type": [
+          "number",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "detail",
+      "kind",
+      "severity",
+      "target"
+    ],
+    "title": "alert.retrain",
+    "type": "object"
+  },
+  "approval.approved": {
+    "$id": "urn:examlops:event-schema:approval.approved",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "actor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "approval_id": {
+        "type": "string"
+      },
+      "command_key": {
+        "type": "string"
+      },
+      "flow_run_id": {
+        "type": "string"
+      },
+      "model_id": {
+        "type": "string"
+      },
+      "tenant": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "approval_id",
+      "flow_run_id",
+      "model_id"
+    ],
+    "title": "approval.approved",
+    "type": "object"
+  },
+  "approval.rejected": {
+    "$id": "urn:examlops:event-schema:approval.rejected",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "actor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "approval_id": {
+        "type": "string"
+      },
+      "model_id": {
+        "type": "string"
+      },
+      "reason": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tenant": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "approval_id",
+      "model_id",
+      "reason"
+    ],
+    "title": "approval.rejected",
+    "type": "object"
+  },
+  "approval.retracted": {
+    "$id": "urn:examlops:event-schema:approval.retracted",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "actor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "approval_id": {
+        "type": "string"
+      },
+      "model_id": {
+        "type": "string"
+      },
+      "tenant": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "approval_id",
+      "model_id"
+    ],
+    "title": "approval.retracted",
+    "type": "object"
+  },
+  "audit.recorded": {
+    "$id": "urn:examlops:event-schema:audit.recorded",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "action": {
+        "type": "string"
+      },
+      "actor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "correlation": {
+        "type": "object"
+      },
+      "details": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "hash": {
+        "type": "string"
+      },
+      "id": {
+        "type": "integer"
+      },
+      "prev_hash": {
+        "type": "string"
+      },
+      "source": {
+        "type": "string"
+      },
+      "target": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tenant": {
+        "type": "string"
+      },
+      "ts": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "action",
+      "hash",
+      "id",
+      "prev_hash",
+      "source",
+      "tenant",
+      "ts"
+    ],
+    "title": "audit.recorded",
+    "type": "object"
+  },
+  "autopilot.cycle_complete": {
+    "$id": "urn:examlops:event-schema:autopilot.cycle_complete",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "dry_run": {
+        "type": "boolean"
+      },
+      "model_filter": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "promotions": {
+        "type": "integer"
+      },
+      "retrains": {
+        "type": "integer"
+      },
+      "run_id": {
+        "type": [
+          "integer",
+          "string"
+        ]
+      }
+    },
+    "required": [
+      "dry_run",
+      "model_filter",
+      "promotions",
+      "retrains",
+      "run_id"
+    ],
+    "title": "autopilot.cycle_complete",
+    "type": "object"
+  },
+  "drift.status_changed": {
+    "$id": "urn:examlops:event-schema:drift.status_changed",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "baseline_mean": {
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "live_mean": {
+        "type": "number"
+      },
+      "model": {
+        "type": "string"
+      },
+      "n_snapshots": {
+        "type": "integer"
+      },
+      "previous": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "status": {
+        "type": "string"
+      },
+      "z_score": {
+        "type": "number"
+      }
+    },
+    "required": [
+      "model",
+      "status",
+      "z_score"
+    ],
+    "title": "drift.status_changed",
+    "type": "object"
+  },
+  "model.alias_changed": {
+    "$id": "urn:examlops:event-schema:model.alias_changed",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "alias": {
+        "type": "string"
+      },
+      "model": {
+        "type": "string"
+      },
+      "model_key": {
+        "type": "string"
+      },
+      "previous_version": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "removed": {
+        "type": "boolean"
+      },
+      "version": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "via": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "alias",
+      "model",
+      "model_key",
+      "previous_version",
+      "removed",
+      "version",
+      "via"
+    ],
+    "title": "model.alias_changed",
+    "type": "object"
+  },
+  "modelzoo.retrain_scheduled": {
+    "$id": "urn:examlops:event-schema:modelzoo.retrain_scheduled",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "actor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "command_key": {
+        "type": "string"
+      },
+      "commit_sha": {
+        "type": "string"
+      },
+      "flow_run_id": {
+        "type": "string"
+      },
+      "model_id": {
+        "type": "string"
+      },
+      "tenant": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "commit_sha",
+      "flow_run_id",
+      "model_id"
+    ],
+    "title": "modelzoo.retrain_scheduled",
+    "type": "object"
+  },
+  "retrain.run_cancelled": {
+    "$id": "urn:examlops:event-schema:retrain.run_cancelled",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "actor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "command_key": {
+        "type": "string"
+      },
+      "dataset_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "flow_run_id": {
+        "type": "string"
+      },
+      "model_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "run_state": {
+        "const": "CANCELLED",
+        "type": "string"
+      },
+      "tenant": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "command_key",
+      "dataset_name",
+      "flow_run_id",
+      "model_name",
+      "run_state"
+    ],
+    "title": "retrain.run_cancelled",
+    "type": "object"
+  },
+  "retrain.run_completed": {
+    "$id": "urn:examlops:event-schema:retrain.run_completed",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "actor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "command_key": {
+        "type": "string"
+      },
+      "dataset_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "flow_run_id": {
+        "type": "string"
+      },
+      "model_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "run_state": {
+        "const": "COMPLETED",
+        "type": "string"
+      },
+      "tenant": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "command_key",
+      "dataset_name",
+      "flow_run_id",
+      "model_name",
+      "run_state"
+    ],
+    "title": "retrain.run_completed",
+    "type": "object"
+  },
+  "retrain.run_crashed": {
+    "$id": "urn:examlops:event-schema:retrain.run_crashed",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "actor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "command_key": {
+        "type": "string"
+      },
+      "dataset_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "flow_run_id": {
+        "type": "string"
+      },
+      "model_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "run_state": {
+        "const": "CRASHED",
+        "type": "string"
+      },
+      "tenant": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "command_key",
+      "dataset_name",
+      "flow_run_id",
+      "model_name",
+      "run_state"
+    ],
+    "title": "retrain.run_crashed",
+    "type": "object"
+  },
+  "retrain.run_failed": {
+    "$id": "urn:examlops:event-schema:retrain.run_failed",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "actor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "command_key": {
+        "type": "string"
+      },
+      "dataset_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "flow_run_id": {
+        "type": "string"
+      },
+      "model_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "run_state": {
+        "const": "FAILED",
+        "type": "string"
+      },
+      "tenant": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "command_key",
+      "dataset_name",
+      "flow_run_id",
+      "model_name",
+      "run_state"
+    ],
+    "title": "retrain.run_failed",
+    "type": "object"
+  },
+  "retrain.run_missing": {
+    "$id": "urn:examlops:event-schema:retrain.run_missing",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "actor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "command_key": {
+        "type": "string"
+      },
+      "dataset_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "flow_run_id": {
+        "type": "string"
+      },
+      "model_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "run_state": {
+        "const": "MISSING",
+        "type": "string"
+      },
+      "tenant": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "command_key",
+      "dataset_name",
+      "flow_run_id",
+      "model_name",
+      "run_state"
+    ],
+    "title": "retrain.run_missing",
+    "type": "object"
+  },
+  "retrain.scheduled": {
+    "$id": "urn:examlops:event-schema:retrain.scheduled",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "actor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "command_key": {
+        "type": "string"
+      },
+      "dataset_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "flow_run_id": {
+        "type": "string"
+      },
+      "model_name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tenant": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "dataset_name",
+      "flow_run_id",
+      "model_name"
+    ],
+    "title": "retrain.scheduled",
+    "type": "object"
+  },
+  "serving.shadow_changed": {
+    "$id": "urn:examlops:event-schema:serving.shadow_changed",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "model": {
+        "type": "string"
+      },
+      "model_key": {
+        "type": "string"
+      },
+      "shadow_alias": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "enabled",
+      "model",
+      "model_key",
+      "shadow_alias"
+    ],
+    "title": "serving.shadow_changed",
+    "type": "object"
+  },
+  "serving.snapshot_published": {
+    "$id": "urn:examlops:event-schema:serving.snapshot_published",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "digest": {
+        "type": "string"
+      },
+      "generation": {
+        "type": "integer"
+      },
+      "models": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "digest",
+      "generation",
+      "models"
+    ],
+    "title": "serving.snapshot_published",
+    "type": "object"
+  },
+  "serving.traffic_changed": {
+    "$id": "urn:examlops:event-schema:serving.traffic_changed",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "model": {
+        "type": "string"
+      },
+      "model_key": {
+        "type": "string"
+      },
+      "rules": {
+        "additionalProperties": {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "number"
+        },
+        "type": "object"
+      }
+    },
+    "required": [
+      "model",
+      "model_key",
+      "rules"
+    ],
+    "title": "serving.traffic_changed",
+    "type": "object"
+  }
+}

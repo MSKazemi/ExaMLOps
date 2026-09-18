@@ -16,10 +16,13 @@ ADR 0130/0131, Plan 2 batch S1 task A6 (ruling R11 / E15). Three entry points:
   touch a pack-owned row (fix round 1, finding 1).
 
 Tenancy — ruling R11: a stream in project ``P`` may bind model ``M`` only if ``P`` is one of the
-projects ``M`` belongs to; a stream in the unscoped/default project (stored as ``""``, displayed
-``_global`` — the same convention :mod:`examlops.dataplane.store` and
-``examlops.dataplane.service.auth`` already use for ``project or "_global"``) may only bind a model
-that has **no** project membership at all. ``examlops.serving_gateway._project_of`` (untracked,
+projects ``M`` belongs to. A pack model that declares no ``project:`` of its own takes the project
+it is *assigned* to (:func:`_pack_project`, live finding D6) — one project means that project, none
+means unscoped, and more than one is an error naming the model. A stream in the unscoped/default
+project (stored as ``""``, displayed ``_global`` — the same convention
+:mod:`examlops.dataplane.store` and ``examlops.dataplane.service.auth`` already use for
+``project or "_global"``) may only bind a model that has **no** project membership at all.
+``examlops.serving_gateway._project_of`` (untracked,
 owned by another session working on the bridge/gateway) does the equivalent single-project,
 case-insensitive lookup; this module duplicates that query — rather than importing the untracked
 module, which Plan 2 batch S1 must not do (HEAD-only imports) — and widens it to the *set* of a
@@ -93,7 +96,7 @@ from typing import Any
 import yaml
 
 from examlops.data import get_db, init_db
-from examlops.data.audit import write_audit_event
+from examlops.data.audit import audit_best_effort, write_audit_event
 from examlops.data.dataplane import (
     STREAM_STATES,
     get_stream,
@@ -259,6 +262,35 @@ def _projects_of_model(model: str) -> set[str]:
     return {str(r["project"]) for r in rows}
 
 
+def _pack_project(raw: Any, model: str) -> str:
+    """The project a pack model's streams belong to — its YAML ``project:`` key when it has one,
+    otherwise the project the model is actually *assigned to* (live finding D6).
+
+    The guide says a stream's project comes from the model YAML's top-level ``project:``. On a real
+    site no pack model carried that key while all of them were assigned to projects in the
+    datastore, so R11 refused every pack-declared stream — the only way to define a stream in this
+    release — and the refusal was reported but never logged. The membership is the same source R11
+    checks against, so reading it here can never contradict the check that follows.
+
+    * exactly one project: that project;
+    * none: the unscoped default (``_global``), which is what an unassigned model has always meant;
+    * more than one: a ``SpecError`` naming the model and **never the projects** (R11's rule that a
+      refusal reveals no project the caller may not already know), so the operator sets ``project:``
+      in the model YAML and says which one they meant.
+    """
+    if raw is not None:
+        return normalize_project(raw)
+    projects = sorted(_projects_of_model(model))
+    if not projects:
+        return GLOBAL_PROJECT
+    if len(projects) > 1:
+        raise SpecError(
+            f"model {model!r} belongs to more than one project; set a top-level 'project:' in its "
+            "model YAML to say which one its streams belong to"
+        )
+    return normalize_project(projects[0])
+
+
 def _check_tenancy(project: str, model: str) -> None:
     """Ruling R11. Raises SpecError without naming which other project (if any) owns the model."""
     projects = _projects_of_model(model)
@@ -399,6 +431,15 @@ def _binding_from_entry(
     )
 
 
+def _declares_legacy_shim(model_yaml: dict[str, Any]) -> bool:
+    """Whether the legacy ``seanerbus_uuid`` shim would derive a binding from this model YAML.
+
+    The one predicate :func:`_legacy_binding` and :func:`sync_pack_streams` share, so "does this
+    model declare anything?" cannot drift from "does the shim produce a binding?".
+    """
+    return _truthy(os.getenv(_LEGACY_ENV)) and bool(model_yaml.get("seanerbus_uuid"))
+
+
 def _legacy_binding(
     model_yaml: dict[str, Any], *, project: str, model: str, origin: str = "pack"
 ) -> StreamBinding | None:
@@ -407,11 +448,9 @@ def _legacy_binding(
     ``model`` is trusted to already be ASCII-validated (every caller validates it before this is
     reached), so the derived name ``f"{model}-seanerbus"`` needs no separate validation.
     """
-    if not _truthy(os.getenv(_LEGACY_ENV)):
+    if not _declares_legacy_shim(model_yaml):
         return None
-    uuid = model_yaml.get("seanerbus_uuid")
-    if not uuid:
-        return None
+    uuid = model_yaml["seanerbus_uuid"]
     return StreamBinding(
         project=project,
         name=f"{model}-seanerbus",
@@ -509,6 +548,26 @@ def _sync_one_binding(
             )
 
 
+def _log_sync_errors(errors: list[Any]) -> None:
+    """One WARNING per entry error (live finding D6).
+
+    ``report["errors"]`` was the only record of a refused pack entry, and nothing read it: an
+    operator whose stream never appeared saw nothing at all in the log. Each line carries the file,
+    the entry position and the message — which is templated by ``_binding_from_entry`` and the
+    tenancy check to name fields and types, never an entry's values.
+    """
+    for err in errors:
+        if isinstance(err, dict):
+            log.warning(
+                "sync_pack_streams: %s entry %s refused: %s",
+                err.get("file"),
+                err.get("entry"),
+                err.get("message"),
+            )
+        else:  # never produced here, but a log line beats dropping an error on the floor
+            log.warning("sync_pack_streams: an entry was refused")
+
+
 def sync_pack_streams(*, actor: str | None = None) -> dict[str, list[Any]]:
     """Scan the active pack's model YAMLs and upsert every declared stream (``origin="pack"``).
 
@@ -559,6 +618,21 @@ def sync_pack_streams(*, actor: str | None = None) -> dict[str, list[Any]]:
     ``{"file": ..., "entry": <index, "seanerbus_uuid", or None>, "message": ...}`` and suppresses
     the removal sweep for this run (see above).
 
+    **The project a pack stream lands in (live finding D6).** A model YAML's own top-level
+    ``project:`` when it has one; otherwise the project the model is assigned to in the datastore
+    (:func:`_pack_project`) — exactly one, or unscoped when it belongs to none, or an error when it
+    belongs to several. Nothing else changes: R11 still checks the result against the same
+    membership, so a YAML naming a project the model does not belong to is refused as before.
+    Resolution is **lazy**: it happens only for a model that declares a stream (or the legacy
+    shim). A model in several projects that declares nothing is not an error — it has no project
+    to get wrong, and making it one would suppress the removal sweep for the whole pack on every
+    sync (re-review).
+
+    **What is logged.** Every entry in ``report["errors"]`` gets one WARNING
+    (:func:`_log_sync_errors`), and a run where the removal sweep did not run says so and why.
+    Before that, a refused entry was recorded and nothing more: an operator's stream simply never
+    appeared, with an empty log.
+
     Returns ``{"synced": [...], "disabled": [...], "enabled": [...], "conflicts": [...],
     "errors": [...]}`` — the first four hold ``"project/name"`` labels (``_global`` for the
     unscoped project).
@@ -601,9 +675,6 @@ def sync_pack_streams(*, actor: str | None = None) -> dict[str, list[Any]]:
         try:
             model = str(raw["name"])
             validate_name(model, "model")
-            project = normalize_project(raw.get("project"))
-            if project:
-                validate_name(project, "project")
             inference = raw.get("inference")
             if inference is None:
                 inference = {}
@@ -612,6 +683,16 @@ def sync_pack_streams(*, actor: str | None = None) -> dict[str, list[Any]]:
             raw_streams = inference.get("streams") or []
             if not isinstance(raw_streams, list):
                 raise SpecError(f"model {model!r}: 'inference.streams' must be a list")
+            # Resolve the project only for a model that declares something (re-review): reading it
+            # for every YAML made a stream-less model assigned to several projects an error — and
+            # any error suppresses the removal sweep for the WHOLE pack, on every sync, which is
+            # exactly the failure D6 was raised about. A model that declares no stream has no
+            # project to get wrong.
+            project = GLOBAL_PROJECT
+            if raw_streams or _declares_legacy_shim(raw):
+                project = _pack_project(raw.get("project"), model)
+                if project:
+                    validate_name(project, "project")
         except SpecError as exc:
             report["errors"].append({"file": path.name, "entry": None, "message": str(exc)})
             continue
@@ -634,14 +715,9 @@ def sync_pack_streams(*, actor: str | None = None) -> dict[str, list[Any]]:
             except Exception as exc:  # noqa: BLE001 - fix round 2, I5: the WHOLE per-entry body,
                 # upsert included, is isolated here — never str(exc): an exception this module did
                 # not itself raise (a DB-layer error, say) may embed the entry's own values.
+                # Logged once, with every other entry error, by `_log_sync_errors` below.
                 report["errors"].append(
                     {"file": path.name, "entry": idx, "message": f"unexpected {type(exc).__name__}"}
-                )
-                log.warning(
-                    "sync_pack_streams: %s entry %d raised an unexpected %s",
-                    path.name,
-                    idx,
-                    type(exc).__name__,
                 )
 
         try:
@@ -661,13 +737,20 @@ def sync_pack_streams(*, actor: str | None = None) -> dict[str, list[Any]]:
                     "message": f"unexpected {type(exc).__name__}",
                 }
             )
-            log.warning(
-                "sync_pack_streams: %s legacy shim raised an unexpected %s",
-                path.name,
-                type(exc).__name__,
-            )
 
+    _log_sync_errors(report["errors"])
     sweep_ok = md_is_dir and bool(yaml_paths) and not report["errors"]
+    if not sweep_ok:
+        # Why nothing was swept, in the log rather than only in the returned report: the sweep is
+        # what disables a stream whose YAML entry was removed, and "my removal did not take" is
+        # otherwise indistinguishable from "the sweep is broken".
+        log.log(
+            logging.WARNING if report["errors"] else logging.INFO,
+            "sync_pack_streams: the pack-removal sweep did not run (%s)",
+            f"{len(report['errors'])} entry error(s)"
+            if report["errors"]
+            else ("the pack models dir is missing" if not md_is_dir else "no model YAML files"),
+        )
     if sweep_ok:
         for row in list_streams():
             if row["origin"] != "pack" or row["state"] == "disabled":
@@ -686,7 +769,7 @@ def sync_pack_streams(*, actor: str | None = None) -> dict[str, list[Any]]:
                 reason=reason,
             ):
                 report["disabled"].append(label)
-                write_audit_event(
+                audit_best_effort(
                     "dataplane",
                     actor,
                     "dataplane_stream_disabled",

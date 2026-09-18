@@ -1,0 +1,152 @@
+# The model server's side of every mutual TLS hop to it (ADR 0125 phases 2 and 3).
+#
+#   gateway          ══▶ ┐
+#   control plane    ══▶ │ ray-serving:8443 ─ this Envoy (in ray-serving's network namespace)
+#   dashboard, agent ══▶ │                    ─▶ 127.0.0.1:8001
+#   SeanerBUS bridge ══▶ ┘                    (gRPC: /inference.GRPCInferenceService/ → :8081)
+#
+# Under docker-compose.identity.yml the model server listens on loopback only, so this port is the
+# one way in. It proves it is the model server with its X.509-SVID (…/ray-serving) and accepts a
+# client certificate from this trust domain only if it names one of the callers above: the gateway
+# directly, the others through their egress sidecars (identity/serving-egress-envoy.yaml). The
+# admin routes (reload, traffic rules) also need an admin caller: the control plane, the dashboard
+# or the agent. The gateway and the bridge only infer. The admin token the model server checks
+# still applies; this adds who may try.
+# The verified caller is passed on in x-forwarded-client-cert, overwriting any a client sent.
+# Certificates come from the SPIRE agent over Envoy SDS and rotate without a restart. Run by
+# docker-compose.identity.yml as `serving-mtls`; tests/unit/test_serving_gateway_mtls.py and
+# tests/integration/test_serving_gateway_mtls_live.py.
+
+# SDS needs a node identity to ask under; the SPIRE agent identifies the workload by its
+# process, not by this name.
+node: {id: serving-mtls, cluster: examlops}
+
+static_resources:
+  listeners:
+    - name: serving_mtls
+      address:
+        socket_address: {address: 0.0.0.0, port_value: 8443}
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              require_client_certificate: true
+              common_tls_context:
+                # Offered so a client negotiates HTTP/2 (the gateway's gRPC hop) or HTTP/1.1 (REST) by
+                # ALPN. The listener's automatic codec also recognises HTTP/2 without it: a live run
+                # with only http/1.1 offered still carried gRPC.
+                alpn_protocols: [h2, http/1.1]
+                # Both bounds: an upstream context's default maximum is TLS 1.2, so a minimum of 1.3 alone
+                # leaves no version at all (NO_SUPPORTED_VERSIONS_ENABLED; the live test found it).
+                tls_params: {tls_minimum_protocol_version: TLSv1_3, tls_maximum_protocol_version: TLSv1_3}
+                tls_certificate_sds_secret_configs:
+                  - name: default
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services: [{envoy_grpc: {cluster_name: spire_agent}}]
+                combined_validation_context:
+                  default_validation_context:
+                    match_typed_subject_alt_names:
+                      - san_type: URI
+                        matcher:
+                          safe_regex:
+                            regex: "^spiffe://[^/]+/(gateway|control-plane|dashboard|skipper|seanerbus-bridge)$"
+                  validation_context_sds_secret_config:
+                    name: ROOTCA
+                    sds_config:
+                      resource_api_version: V3
+                      api_config_source:
+                        api_type: GRPC
+                        transport_api_version: V3
+                        grpc_services: [{envoy_grpc: {cluster_name: spire_agent}}]
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: serving_mtls
+                # The admin rule below matches on the path, so the path is made canonical first:
+                # `//reload`, `/./reload` and `/%2Freload` cannot slip past it.
+                normalize_path: true
+                merge_slashes: true
+                path_with_escaped_slashes_action: REJECT_REQUEST
+                forward_client_cert_details: SANITIZE_SET
+                set_current_client_cert_details: {uri: true}
+                route_config:
+                  name: serving
+                  virtual_hosts:
+                    - name: serving
+                      domains: ["*"]
+                      routes:
+                        # The model server's gRPC service (the gateway's gRPC hop).
+                        - match: {prefix: "/inference.GRPCInferenceService/", grpc: {}}
+                          route: {cluster: ray_serving_grpc_local, timeout: 0s}
+                        # The gateway's route timeouts and retries govern; this hop adds none.
+                        - match: {prefix: "/"}
+                          route: {cluster: ray_serving_local, timeout: 0s}
+                http_filters:
+                  # Admin routes need an admin caller. Denied requests get 403 before the model
+                  # server sees them.
+                  - name: envoy.filters.http.rbac
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
+                      rules:
+                        action: DENY
+                        policies:
+                          admin-routes-need-an-admin-caller:
+                            permissions:
+                              - or_rules:
+                                  rules:
+                                    - url_path: {path: {prefix: "/reload", ignore_case: true}}
+                                    - url_path: {path: {prefix: "/infer-pipeline/traffic-rules/", ignore_case: true}}
+                            principals:
+                              - not_id:
+                                  authenticated:
+                                    principal_name:
+                                      safe_regex: {regex: "^spiffe://[^/]+/(control-plane|dashboard|skipper)$"}
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: ray_serving_local
+      type: STATIC
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: ray_serving_local
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: {address: 127.0.0.1, port_value: 8001}
+    - name: ray_serving_grpc_local
+      type: STATIC
+      connect_timeout: 1s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: {http2_protocol_options: {}}
+      load_assignment:
+        cluster_name: ray_serving_grpc_local
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: {address: 127.0.0.1, port_value: 8081}
+    - name: spire_agent
+      type: STATIC
+      connect_timeout: 1s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: {http2_protocol_options: {}}
+      load_assignment:
+        cluster_name: spire_agent
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    pipe: {path: /run/spire/sockets/agent.sock}

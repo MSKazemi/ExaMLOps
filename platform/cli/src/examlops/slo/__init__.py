@@ -93,6 +93,55 @@ def _slug(*parts: str) -> str:
     return ":".join(p.replace(" ", "_").replace("-", "_") for p in parts if p)
 
 
+#: A counter term in a PromQL expression: the metric name, and its label matcher if it has one.
+_COUNTER_TERM = re.compile(r"\b([a-z][a-z0-9_]*(?:_total|_count))\b(\s*\{[^}]*\})?")
+
+
+def diluting_denominator(query: str) -> str | None:
+    """Warn when an SLI divides a *filtered* numerator by the **whole** counter.
+
+    Every label value outside the numerator then sits in the denominator and lowers the measured
+    rate, so unrelated traffic can hold a burn-rate alert below its threshold during an incident.
+    The platform made this mistake four times in its own alert rules — refused requests diluting a
+    serving error rate, throttled requests diluting a retrain error rate — which is why an operator
+    writing their own PromQL is told about it.
+
+    Returns a human-readable warning, or ``None`` when nothing about the shape is suspicious.
+
+    **Deliberately a warning, not a refusal.** "What share of all requests were X" is a legitimate
+    SLI and looks identical; only the author knows which was meant. This says the thing out loud
+    and names the fix.
+    """
+    if not query or "/" not in query:
+        return None
+    numerator, _, denominator = query.partition("/")
+    suspect: list[tuple[str, str]] = []
+    for metric, matcher in _COUNTER_TERM.findall(denominator):
+        if matcher and matcher.strip():
+            continue  # the denominator names its values
+        for num_metric, num_matcher in _COUNTER_TERM.findall(numerator):
+            if num_metric == metric and num_matcher and num_matcher.strip():
+                labels = (
+                    ", ".join(sorted(set(re.findall(r"(\w+)\s*=~?", num_matcher)))) or "a label"
+                )
+                suspect.append((metric, labels))
+                break
+    if not suspect:
+        return None
+    parts = [
+        f"`{metric}` is filtered on {labels} in the numerator but taken whole in the denominator"
+        for metric, labels in suspect
+    ]
+    return (
+        "this SLI may dilute itself: "
+        + "; ".join(parts)
+        + ". Every other label value then sits in the denominator and lowers the measured rate, so "
+        "unrelated traffic can hold a burn-rate alert below its threshold. Name the values the "
+        'denominator should count (e.g. `{status=~"ok|error"}`), or ignore this if a share of '
+        "total is what you meant."
+    )
+
+
 def generate_rules(slo_spec: dict[str, Any]) -> PrometheusRules:
     """Generate promtool-valid recording + multi-window burn-rate rules (R2/R3).
 
@@ -715,8 +764,24 @@ def ingest_slis(model: str, *, tenant: str = "default") -> list[dict[str, Any]]:
     return out
 
 
-def apply_spec(spec: dict[str, Any]) -> None:
-    """Persist one SLO spec (versioned, per-tenant) (R1/R7)."""
+def apply_spec(spec: dict[str, Any]) -> list[str]:
+    """Persist one SLO spec (versioned, per-tenant) (R1/R7). Returns advisory warnings.
+
+    **The one place an SLI query is judged.** Three surfaces write specs — `exa slo set`,
+    `exa slo apply` (a file of them) and the dashboard's `POST /api/slo` — and wiring the check into
+    one of them left the other two silent. Judging here means a fourth surface inherits it, and each
+    caller only has to decide how to *present* the result: the CLI prints it, the dashboard returns
+    it in the response body.
+
+    The warnings are advisory, never a refusal — see :func:`diluting_denominator` for why. The spec
+    is written either way, so a caller that ignores the return value still behaves correctly; it
+    just says nothing, which `test_no_caller_of_apply_spec_discards_its_verdict` prevents.
+    """
+    warnings: list[str] = []
+    if (spec.get("sli_source") or "prometheus") == "prometheus":
+        dilution = diluting_denominator(spec.get("sli_query") or "")
+        if dilution:
+            warnings.append(dilution)
     platform_db.upsert_slo_spec(
         spec["model"],
         spec["name"],
@@ -728,6 +793,7 @@ def apply_spec(spec: dict[str, Any]) -> None:
         higher_is_better=bool(spec.get("higher_is_better", True)),
         gate_promotion=bool(spec.get("gate_promotion", False)),
     )
+    return warnings
 
 
 def load_specs(path: str) -> list[dict[str, Any]]:

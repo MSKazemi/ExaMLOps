@@ -94,7 +94,18 @@ def drain(dispatch: Callable[[dict[str, Any]], Any], *, max_items: int = 1000) -
     return {"dispatched": done, "failed": failed}
 
 
-def stats() -> dict[str, int]:
+def stats() -> dict[str, Any]:
+    """Queue depth by state, plus ``oldest_queued_age_s``.
+
+    **The value space is mixed and that matters to callers.** Five keys are counts; the sixth is a
+    duration in seconds, and it is ``None`` when nothing is queued. A consumer that summed
+    ``stats().values()`` to get "how many items" therefore raised on an empty queue and, once
+    something was waiting, added seconds to an item count — which is exactly what happened to the
+    dashboard's admission endpoint. Sum by name, or read `oldest_queued_age_s` separately.
+
+    The annotation said ``dict[str, int]`` until 2026-09-14, which mypy could not catch because the
+    helper it delegates to returns ``dict[str, Any]``.
+    """
     from examlops.data import init_db
     from examlops.data.admission import admission_stats
 

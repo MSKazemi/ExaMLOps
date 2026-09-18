@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 
 from auth import require_role
+from capabilities import scope_to_tenant, tenant_sql_filter
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Depends
 
@@ -102,14 +103,31 @@ async def burst_events(limit: int = 50, _=Depends(_viewer)) -> list[dict]:
 # ── E5 autoscaling & scale-to-zero ───────────────────────────────────────────
 @router.get("/autoscale/config")
 async def autoscale_config(_=Depends(_viewer)) -> list[dict]:
-    """Per-model autoscaling policies."""
+    """Per-model autoscaling policies.
+
+    Deliberately **not** tenant-scoped: `autoscale_config` carries no `tenant` column, and
+    filtering it would treat every row as tenant `default` and hide them from everyone else.
+    """
     return _query("SELECT * FROM autoscale_config ORDER BY model")
 
 
 @router.get("/autoscale/events")
-async def scale_events(limit: int = 50, _=Depends(_viewer)) -> list[dict]:
-    """Recent scale up/down/to-zero events."""
-    return _query("SELECT * FROM scale_events ORDER BY id DESC LIMIT ?", (limit,))
+async def scale_events(limit: int = 50, principal: dict = Depends(_viewer)) -> list[dict]:
+    """Recent scale up/down/to-zero events, scoped to the caller's tenant (F15 R4).
+
+    The tenant predicate is in the SQL because the query is limited: taking the newest `limit`
+    rows across every tenant and filtering afterwards showed a caller fewer of their own events
+    than exist — none at all, once another tenant had `limit` newer ones. `scope_to_tenant` stays
+    on the result: the predicate narrows the query, the filter is the check.
+    """
+    where, params = tenant_sql_filter(principal)
+    return scope_to_tenant(
+        principal,
+        _query(
+            f"SELECT * FROM scale_events WHERE {where} ORDER BY id DESC LIMIT ?",
+            (*params, limit),
+        ),
+    )
 
 
 # ── E6 distributed & fault-tolerant training ─────────────────────────────────
@@ -121,9 +139,11 @@ async def distributed_runs(_=Depends(_viewer)) -> list[dict]:
 
 # ── E4 inference gateway & KV routing ────────────────────────────────────────
 @router.get("/gateway/config")
-async def gateway_config(_=Depends(_viewer)) -> list[dict]:
-    """Per-model inference-routing config (round-robin / cache-aware)."""
-    return _query("SELECT * FROM inference_gateway_config ORDER BY model, tenant")
+async def gateway_config(principal: dict = Depends(_viewer)) -> list[dict]:
+    """Per-model inference-routing config (round-robin / cache-aware), scoped to the caller."""
+    return scope_to_tenant(
+        principal, _query("SELECT * FROM inference_gateway_config ORDER BY model, tenant")
+    )
 
 
 # ── A3 feature store ─────────────────────────────────────────────────────────

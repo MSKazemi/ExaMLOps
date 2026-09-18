@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { ChevronDown, Zap, LogOut, Sun, Moon, MoonStar, Menu, X } from 'lucide-react'
-import uniboLogo from '@/assets/unibo.png'
-import seanergysLogo from '@/assets/seanergys.jpg'
 import { getRole, signOut } from '@/lib/auth'
 import { useCapabilities } from '@/lib/capabilities'
 import { useTheme, type Theme } from '@/lib/theme'
@@ -189,11 +187,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
               <X className="size-4" aria-hidden="true" />
             </button>
           </div>
-          <div className="flex items-center gap-2.5 px-0.5">
-            <img src={uniboLogo} alt="University of Bologna" className="h-7 w-7 object-contain opacity-75" />
-            <div className="h-4 w-px bg-border" />
-            <img src={seanergysLogo} alt="SEANERGYS" className="h-6 object-contain max-w-[90px] opacity-75" />
-          </div>
         </div>
 
         <nav className="flex-1 p-2.5 space-y-1 overflow-y-auto" aria-label="Primary">
@@ -304,9 +297,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
               </button>
             </div>
           )}
-          <p className="text-[10px] text-muted-foreground/50 tracking-wide">
-            SEANERGYS · EuroHPC-JU
-          </p>
         </div>
       </aside>
 

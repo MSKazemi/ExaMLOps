@@ -9,10 +9,12 @@ from pathlib import Path
 
 import typer
 
+from examlops import oip_client
 from examlops.cli import _output
 from examlops.cli._config import load_config
 from examlops.data import get_db, init_db
 from examlops.data.audit import write_audit_event
+from examlops.service_auth import headers_for
 
 _CREATE_BATCH_JOBS = """
 CREATE TABLE IF NOT EXISTS batch_jobs (
@@ -112,7 +114,11 @@ def batch_submit(
         raise typer.Exit(1)
 
     cfg = load_config()
-    predict_url = f"{cfg.ray_serve_url}/predict/{model}"
+    base_url = cfg.ray_serve_url.rstrip("/")
+    # A serving-gateway key when `ray_serve` is the gateway (exa config set serving_token).
+    serving_auth = headers_for(
+        base_url, serving_base=cfg.ray_serve_url, serving_token=cfg.serving_token
+    )
 
     results: list[dict] = []
     n_success = 0
@@ -121,20 +127,31 @@ def batch_submit(
 
     with _output.spinner(f"Running batch inference for {model} ({n_total} inputs)…"):
         for i, row in enumerate(rows):
-            body = json.dumps(row).encode()
+            # Each row is a legacy /predict body ({"features": …, "alias"?, "version"?}) or a bare
+            # feature dict; it is sent over Open Inference Protocol v2 (ADR 0126). --alias applies
+            # unless the row names its own alias or version (rows used to be sent verbatim, so
+            # --alias reached the server for no row at all).
+            features = row.get("features", row) if isinstance(row, dict) else row
+            row_version = row.get("version") if isinstance(row, dict) else None
+            row_alias = (row.get("alias") if isinstance(row, dict) else None) or alias
+            body = json.dumps(
+                oip_client.features_request(features, alias=None if row_version else row_alias)
+            ).encode()
             req = urllib.request.Request(
-                predict_url,
+                base_url + oip_client.infer_path(model, row_version),
                 data=body,
                 method="POST",
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", **serving_auth},
             )
             try:
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     resp_data = json.loads(resp.read())
-                prediction = resp_data.get("prediction", resp_data)
+                prediction = oip_client.result(resp_data)["prediction"]
                 results.append({"index": i, "prediction": prediction, "error": None})
                 n_success += 1
-            except urllib.error.URLError as exc:
+            except (urllib.error.URLError, ValueError) as exc:
+                # ValueError: an answer that is not an inference answer. One bad row is that row's
+                # error, not the end of the batch.
                 results.append({"index": i, "prediction": None, "error": str(exc)})
                 n_errors += 1
 

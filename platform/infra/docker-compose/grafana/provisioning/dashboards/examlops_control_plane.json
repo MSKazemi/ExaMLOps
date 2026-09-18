@@ -86,7 +86,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "clamp_max(sum(increase(examlops_retrain_requests_total{outcome=\"success\"}[24h])) / clamp_min(sum(increase(examlops_retrain_requests_total[24h])), 1) * 100, 100)",
+          "expr": "clamp_max(sum(increase(examlops_retrain_requests_total{outcome=\"success\"}[24h])) / clamp_min(sum(increase(examlops_retrain_requests_total{outcome=~\"success|error\"}[24h])), 1) * 100, 100)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -193,7 +193,9 @@
       "targets": [
         {"expr": "rate(examlops_retrain_requests_total{outcome=\"success\"}[5m])", "legendFormat": "success – {{model_name}}", "refId": "A"},
         {"expr": "rate(examlops_retrain_requests_total{outcome=\"error\"}[5m])",   "legendFormat": "error – {{model_name}}",   "refId": "B"},
-        {"expr": "rate(examlops_retrain_requests_total{outcome=\"dedup\"}[5m])",   "legendFormat": "dedup – {{model_name}}",   "refId": "C"}
+        {"expr": "rate(examlops_retrain_requests_total{outcome=\"dedup\"}[5m])",   "legendFormat": "dedup – {{model_name}}",   "refId": "C"},
+        {"expr": "rate(examlops_retrain_requests_total{outcome=\"throttled\"}[5m])",   "legendFormat": "throttled – {{model_name}}",   "refId": "D"},
+        {"expr": "rate(examlops_retrain_requests_total{outcome=\"dispatched_unrecorded\"}[5m])",   "legendFormat": "dispatched, unrecorded – {{model_name}}",   "refId": "E"}
       ],
       "options": {
         "tooltip": {"mode": "multi", "sort": "desc"},

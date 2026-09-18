@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .providers import Provider, ProviderMeta, register_provider
-from .providers.loader import resolve_provider
+from .providers.loader import degraded_to_default, resolve_provider
 
 DOMAIN = "promotion"
 
@@ -87,13 +87,18 @@ def resolve_promotion_eval_fn(override: str | None = None):
     Precedence (via :func:`resolve_provider`): ``override`` → ``EXAMLOPS_PROMOTION_PROVIDER``
     env → ``providers.yaml`` ``promotion:`` block → built-in ``threshold`` default.
 
-    A resolution/compute failure degrades to the built-in threshold logic so promotion
-    never silently breaks (graceful-degradation invariant).
+    A resolution or compute failure degrades to the built-in threshold logic, so a broken provider
+    cannot block promotion — but it **says so**. Silently substituting the platform's default for a
+    gate a site configured deliberately is not graceful degradation, it is a policy change nobody
+    was told about; the fallback reason carries the cause so the promotion record shows it too.
     """
     register_builtins()
+    failure: str | None = None
     try:
         provider = resolve_provider(DOMAIN, override=override, group=DOMAIN)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - a broken provider must not block promotion
+        degraded_to_default(DOMAIN, exc, configured=override)
+        failure = f"{type(exc).__name__}: {exc}"
         provider = None
 
     def _eval(metric_val: float, threshold: float, operator: str) -> tuple[bool, str]:
@@ -102,13 +107,15 @@ def resolve_promotion_eval_fn(override: str | None = None):
             "threshold": threshold,
             "operator": operator,
         }
+        nonlocal failure
         try:
             if provider is not None:
                 out = provider.compute(inputs)
                 return bool(out["passes"]), str(out["reason"])
-        except Exception:
-            pass
-        # Graceful degradation: inline threshold logic
+        except Exception as exc:  # noqa: BLE001 - a broken provider must not block promotion
+            degraded_to_default(DOMAIN, exc, configured=getattr(provider, "name", None))
+            failure = f"{type(exc).__name__}: {exc}"
+        # Degradation: the built-in threshold logic, and the reason says it was a fallback
         op_fn = _OPS.get(operator, lambda v, t: False)
         passes = bool(op_fn(metric_val, threshold))
         op_sym = "<" if operator in ("lt", "lte") else ">"
@@ -117,6 +124,10 @@ def resolve_promotion_eval_fn(override: str | None = None):
             if passes
             else f"{metric_val:.4f} not {op_sym} {threshold}"
         )
+        if failure:
+            # The verdict is the platform's, not this site's. Whoever reads the promotion record
+            # has to be able to see that without going to the logs.
+            reason = f"{reason} [built-in threshold used: configured provider failed — {failure}]"
         return passes, reason
 
     return _eval

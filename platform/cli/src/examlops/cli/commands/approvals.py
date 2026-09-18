@@ -4,11 +4,12 @@ import os
 
 import typer
 
+from examlops import control_plane_api
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.cli._provenance import audit_details, reason_option
 from examlops.data import init_db
-from examlops.data.audit import write_audit_event
+from examlops.data.audit import audit_best_effort
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -37,11 +38,12 @@ def list_approvals(
 ) -> None:
     """List model change approvals."""
     cfg = load_config()
-    url = f"{cfg.control_plane_url}/approvals"
-    if not all:
-        url += "?status=pending"
     try:
-        rows_raw = _client.get(url, token=cfg.control_plane_token)
+        rows_raw = control_plane_api.list_approvals(
+            status=None if all else "pending",
+            base=cfg.control_plane_url,
+            token=cfg.control_plane_token,
+        )
     except _client.ClientError as e:
         _output.error(
             f"Failed to list approvals: {e}", hint="Is the control plane running? exa status"
@@ -90,10 +92,8 @@ def approve(
     cfg = load_config()
     with _output.spinner(f"Approving {model} and scheduling training…"):
         try:
-            result = _client.post(
-                f"{cfg.control_plane_url}/approve/{model}",
-                {},
-                token=cfg.control_plane_token,
+            result = control_plane_api.approve(
+                model, base=cfg.control_plane_url, token=cfg.control_plane_token
             )
         except _client.ClientError as e:
             _output.error(f"Failed to approve {model}: {e}")
@@ -101,15 +101,15 @@ def approve(
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
     try:
         init_db()
-        write_audit_event(
-            "cli",
-            actor,
-            "model_approved",
-            model,
-            audit_details({"flow_run_id": result.get("flow_run_id")}, reason),
-        )
-    except Exception:
+    except Exception:  # noqa: BLE001 - `audit_best_effort` reports the write it then cannot make
         pass
+    audit_best_effort(
+        "cli",
+        actor,
+        "model_approved",
+        model,
+        audit_details({"flow_run_id": result.get("flow_run_id")}, reason),
+    )
     _output.ok(f"Approved {model}")
     _output.print_record(
         {
@@ -144,9 +144,10 @@ def reject(
         return
     cfg = load_config()
     try:
-        result = _client.post(
-            f"{cfg.control_plane_url}/reject/{model}",
-            {"reason": reason or ""},
+        result = control_plane_api.reject(
+            model,
+            body={"reason": reason or ""},
+            base=cfg.control_plane_url,
             token=cfg.control_plane_token,
         )
     except _client.ClientError as e:
@@ -155,9 +156,9 @@ def reject(
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
     try:
         init_db()
-        write_audit_event("cli", actor, "model_rejected", model, {"reason": reason or ""})
-    except Exception:
+    except Exception:  # noqa: BLE001 - `audit_best_effort` reports the write it then cannot make
         pass
+    audit_best_effort("cli", actor, "model_rejected", model, {"reason": reason or ""})
     _output.ok(f"Rejected {model}" + (f" — reason: {reason}" if reason else ""))
     if _output.json_mode:
         _output.print_json(result)
@@ -165,21 +166,23 @@ def reject(
 
 @app.command("delete", epilog=_EXAMPLES_DELETE)
 def delete(
-    approval_id: str = typer.Argument(..., help="Approval UUID to delete"),
+    approval_id: str = typer.Argument(..., help="Approval UUID to retract"),
 ) -> None:
-    """Delete a pending approval by its UUID (retract a stale or duplicate entry)."""
-    if not _output.confirm(f"Delete approval [bold]{approval_id[:8]}…[/bold]?"):
+    """Retract a pending approval by its UUID (a stale or duplicate entry).
+
+    The approval is kept in the history, marked `retracted` with who and when; nothing is erased.
+    """
+    if not _output.confirm(f"Retract approval [bold]{approval_id[:8]}…[/bold]?"):
         _output.info("Cancelled.")
         return
     cfg = load_config()
     try:
-        result = _client.delete(
-            f"{cfg.control_plane_url}/approvals/{approval_id}",
-            token=cfg.control_plane_token,
+        result = control_plane_api.retract_approval(
+            approval_id, base=cfg.control_plane_url, token=cfg.control_plane_token
         )
     except _client.ClientError as e:
-        _output.error(f"Failed to delete approval: {e}")
+        _output.error(f"Failed to retract approval: {e}")
         return
-    _output.ok(f"Deleted approval {approval_id[:8]}…")
+    _output.ok(f"Retracted approval {approval_id[:8]}… (kept in the history as `retracted`)")
     if _output.json_mode:
         _output.print_json(result)

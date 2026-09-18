@@ -26,7 +26,10 @@ import {
  * gaps. Admins save a version into the same store `exa compliance declare` rests on.
  */
 export function Compliance() {
-  const { data: systems = [] } = useComplianceSystems()
+  // `error` matters as much as `data` here: an unread register must never be drawn as an empty
+  // one. The backend answers 503 rather than `[]` when the query fails (see `readfail.readable`),
+  // and defaulting to `[]` would put the same false all-clear back one layer up.
+  const { data: systems = [], error: systemsError } = useComplianceSystems()
   const [picked, setPicked] = useState<string | null>(null)
   const model = picked ?? systems[0]?.model ?? null
 
@@ -73,6 +76,11 @@ export function Compliance() {
         </div>
         {model ? (
           <TechnicalFilePanel model={model} />
+        ) : systemsError ? (
+          <EmptyState
+            title="The register could not be read"
+            description="No technical file can be selected until the system register loads — this is not a statement that no system is registered."
+          />
         ) : (
           <EmptyState
             title="No systems in the register"
@@ -199,7 +207,9 @@ function Art12Panel({ model }: { model: string }) {
 }
 
 function VersionsPanel({ model }: { model: string }) {
-  const { data: versions = [] } = useTechnicalFileVersions(model)
+  // `error` as well as `data`: "no saved version yet" is a statement about this model's
+  // regulatory record, and a failed read must not be allowed to make it.
+  const { data: versions = [], error: versionsError } = useTechnicalFileVersions(model)
   const save = useSaveTechnicalFile()
   return (
     <div className="space-y-2">
@@ -219,7 +229,11 @@ function VersionsPanel({ model }: { model: string }) {
         )}
       </div>
       {save.isError && <StatusPill status="error" label="Save failed" />}
-      {versions.length === 0 ? (
+      {versionsError ? (
+        <p className="text-sm" style={{ color: 'var(--error-text)' }}>
+          The saved versions could not be read — this is not a statement that none exist.
+        </p>
+      ) : versions.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No saved version yet. A declaration of conformity rests on a saved version with no gaps.
         </p>

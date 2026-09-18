@@ -90,14 +90,31 @@ class PlatformStatus:
 
 
 # ── operations ──────────────────────────────────────────────────────────────────────────────────
+def control_plane_status(base: str, token: str) -> Any:
+    """``GET /v1/status``, or ``/status`` on a control plane that predates the ``/v1`` API.
+
+    During a rolling upgrade the CLI can be newer than the control plane. Only a missing route
+    (404) falls back; any other answer is the control plane's answer. Kept here, not in the
+    generated ``control_plane_api``, which is rewritten from the contract.
+    """
+    from examlops import control_plane_api
+    from examlops.cli import _client
+
+    try:
+        return control_plane_api.status(base=base, token=token)
+    except _client.ClientError as exc:
+        if exc.status != 404:
+            raise
+        return _client.get(f"{base.rstrip('/')}/status", token=token)
+
+
 def status() -> PlatformStatus:
     """Return a typed platform snapshot (service health, pending approvals, production models)."""
-    from examlops.cli import _client
     from examlops.cli._config import load_config
 
     cfg = load_config()
     try:
-        data = _client.get(f"{cfg.control_plane_url}/status", token=cfg.control_plane_token)
+        data = control_plane_status(cfg.control_plane_url, cfg.control_plane_token or "")
     except Exception:
         # Any transport failure (ClientError, socket reset, timeout) → degrade to "unreachable"
         # rather than raising into callers (graceful-degradation invariant, ADR 0076).
@@ -151,11 +168,21 @@ def _production_models(cfg, data: dict[str, Any], services: dict[str, ServiceHea
         # the same answer.
         return None
     try:
-        registry = _client.get(f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/search")
+        # Every page: this list is filtered to the models carrying a lifecycle alias, so reading
+        # one page would report a model that IS in production as not being in production.
+        # `PagingError` lands in the same `except` as a transport failure, and `None` here means
+        # "unknown" — the honest answer when the registry could not be read completely.
+        from examlops.mlflow_paging import all_items
+
+        models = all_items(
+            _client.get,
+            f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/search",
+            "registered_models",
+        )
     except Exception:
         return None
     out: list[dict[str, Any]] = []
-    for m in registry.get("registered_models") or []:
+    for m in models:
         aliases = {a.get("alias"): a.get("version") for a in (m.get("aliases") or [])}
         if "Production" not in aliases and "Staging" not in aliases:
             continue

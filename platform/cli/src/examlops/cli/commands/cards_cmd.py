@@ -9,6 +9,7 @@ from pathlib import Path
 
 import typer
 
+from examlops import control_plane_api
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.data import get_db, init_db
@@ -134,7 +135,10 @@ def _build_markdown(model: str, meta: dict, mlflow_data: dict) -> str:
         f"{versions_section}\n\n"
         f"## Usage\n\n"
         f"```bash\n"
-        f"curl -X POST http://localhost:18001/predict/{model} -d '{{\"embedding\": [...]}}'\n"
+        f"curl -X POST http://localhost:18001/v2/models/{model}/infer "
+        f"-H 'Content-Type: application/json' "
+        f'-d \'{{"inputs": [{{"name": "embedding", "shape": [1, 384], '
+        f'"datatype": "FP64", "data": [...]}}]}}\'\n'
         f"```\n"
     )
 
@@ -153,9 +157,11 @@ def generate(
 
     # Fetch metadata from control plane
     meta: dict = {}
-    meta_url = f"{cfg.control_plane_url}/models/{urllib.parse.quote(model)}/meta"
     try:
-        meta = _client.get(meta_url)
+        # `/v1/models/{name}/meta` needs a read-scoped credential (plan P0.3 / finding B3).
+        meta = control_plane_api.model_meta(
+            model, base=cfg.control_plane_url, token=cfg.control_plane_token
+        )
     except _client.ClientError as exc:
         _output.error(
             f"Control plane unreachable or model not found: {exc}",

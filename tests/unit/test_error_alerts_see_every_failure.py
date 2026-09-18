@@ -84,8 +84,14 @@ def _selected_statuses() -> dict[str, set[str]]:
             name = rule.get("alert")
             if name not in _ERROR_RATE_ALERTS:
                 continue
+            # The NUMERATOR only. These expressions are `bad / valid > threshold`, and since
+            # 2026-09-14 the denominator names its statuses too (so client faults cannot dilute
+            # the rate — `test_sli_counts_only_valid_events.py`). Reading the whole expression
+            # made `success` and `not_found` look like things the alert counts as errors, which
+            # is the opposite of what both halves of this file assert.
+            numerator = rule.get("expr", "").partition("/")[0]
             values: set[str] = set()
-            for op, body in selector.findall(rule.get("expr", "")):
+            for op, body in selector.findall(numerator):
                 values |= set(body.split("|")) if op == "=~" else {body}
             out[name] = values
     return out
@@ -120,6 +126,49 @@ def test_a_timeout_counts_as_a_server_failure():
     """The specific regression: a hung model returning 504s must burn error budget."""
     for alert, values in _selected_statuses().items():
         assert "timeout" in values, f"{alert} does not count timeouts as failures"
+
+
+def test_a_request_that_ran_out_of_deadline_counts_as_a_server_failure():
+    """A 504 the replica returns because a queued request's budget expired is the overload
+    signal itself (plan P4.6) — it must burn error budget, not vanish from it."""
+    for alert, values in _selected_statuses().items():
+        assert "deadline_exceeded" in values, f"{alert} does not count expired deadlines"
+
+
+#: Statuses that mean the caller was wrong, not the service. Shared definition with
+#: `test_sli_counts_only_valid_events.py`, which keeps them out of both halves of the SLI.
+_CLIENT_FAULT = frozenset({"invalid", "not_found"})
+
+_DASHBOARDS = _ROOT / "platform" / "infra" / "docker-compose" / "grafana" / "provisioning"
+
+
+def test_error_rate_panels_count_what_the_alerts_count():
+    """A Grafana SLO panel showing 100 % compliance while the burn alert fires is the same defect
+    seen from the other side: every panel that selects failures selects the alerts' set."""
+    alerted = set.intersection(*_selected_statuses().values())
+    selector = re.compile(re.escape(_METRIC) + r'\{status(=~|=)\\?"([^"\\]*)\\?"\}')
+    seen = 0
+    for board in (_DASHBOARDS / "dashboards").glob("*.json"):
+        for op, body in selector.findall(board.read_text(encoding="utf-8")):
+            values = set(body.split("|")) if op == "=~" else {body}
+            # A selector naming `success` is not a failure selector: it is either the success
+            # series itself or, since 2026-09-14, an SLI *denominator* naming the valid events
+            # (`success|error|timeout|deadline_exceeded`) so that client faults cannot dilute the
+            # rate. Comparing either against the alerts' failure set is a category error.
+            if "success" in values:
+                continue
+            # Nor is a selector made up ENTIRELY of client faults: a panel showing requests the
+            # service correctly refused is not claiming to show server failures. `<=` and not an
+            # intersection on purpose — a selector that MIXES them (`error|invalid`) is exactly the
+            # defect `test_client_errors_stay_out_of_the_server_error_rate` exists for, and must
+            # still be compared.
+            if values <= _CLIENT_FAULT:
+                continue
+            seen += 1
+            assert values == alerted, (
+                f"{board.name} selects {sorted(values)}, alerts {sorted(alerted)}"
+            )
+    assert seen >= 5, "the dashboard scan found no failure panels; it is stale"
 
 
 def test_client_errors_stay_out_of_the_server_error_rate():

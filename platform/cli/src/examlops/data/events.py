@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from datetime import UTC, datetime
 from typing import Any
 
 from examlops.platform_db import _immediate_write, get_db, init_db, install_write_retry, write_retry
@@ -18,6 +19,7 @@ __all__ = [
     "claim_outbox_batch",
     "mark_event_published",
     "mark_event_failed",
+    "outbox_oldest_pending_age",
     "outbox_stats",
     "create_federated_run",
     "get_federated_run",
@@ -43,26 +45,36 @@ __all__ = [
 
 
 def enqueue_event(
-    topic: str, payload: dict[str, Any], *, conn: sqlite3.Connection | None = None
+    topic: str,
+    payload: dict[str, Any],
+    *,
+    conn: sqlite3.Connection | None = None,
+    actor: str | None = None,
+    tenant: str | None = None,
 ) -> int:
     """Append an event to the transactional outbox (Phase 1 item 1.3); returns its row id.
 
     Pass an open ``conn`` to enqueue inside an existing transaction so the event and the domain
     write commit atomically (the whole point of an outbox — no lost or phantom events). Without
-    ``conn`` it opens its own hardened transaction.
+    ``conn`` it opens its own hardened transaction. ``actor``/``tenant`` travel into the event's
+    CloudEvents envelope (ADR 0124); unset they keep the table defaults.
     """
+    from examlops.events.envelope import current_traceparent  # noqa: PLC0415
+
     payload_json = json.dumps(payload, default=str)
+    sql = "INSERT INTO event_outbox (topic, payload, actor, tenant, traceparent) VALUES (?,?,?,?,?)"
+    # Captured here, inside the request that made the change — not at relay time, when the only
+    # span around is the relay's own and a consumer would continue the wrong trace (plan P2.5).
+    params = (topic, payload_json, actor or "system", tenant or "default", current_traceparent())
     if conn is not None:
-        cur = conn.execute(
-            "INSERT INTO event_outbox (topic, payload) VALUES (?,?)", (topic, payload_json)
-        )
+        cur = conn.execute(sql, params)
         return int(cur.lastrowid or 0)
+
+    init_db()
 
     def _insert() -> int:
         with get_db() as c:
-            cur = c.execute(
-                "INSERT INTO event_outbox (topic, payload) VALUES (?,?)", (topic, payload_json)
-            )
+            cur = c.execute(sql, params)
             return int(cur.lastrowid or 0)
 
     return write_retry(_insert)
@@ -90,9 +102,10 @@ def claim_outbox_batch(
         raise ValueError("max_attempts must be greater than zero")
 
     def _claim() -> list[dict[str, Any]]:
-        with _immediate_write() as conn:
+        with _immediate_write("outbox") as conn:
             rows = conn.execute(
-                "SELECT id, topic, payload, attempts FROM event_outbox "
+                "SELECT id, topic, payload, attempts, created_at, actor, tenant, traceparent "
+                "FROM event_outbox "
                 "WHERE published_at IS NULL "
                 "  AND attempts < ? "
                 "  AND (claimed_at IS NULL "
@@ -138,6 +151,30 @@ def mark_event_failed(event_id: int, error: str) -> None:
     write_retry(_mark)
 
 
+def defer_outbox_claim(event_ids: list[int], error: str) -> None:
+    """Return claimed rows to the queue **without spending an attempt** (the broker is absent).
+
+    ``attempts`` is the poison budget: it exists to stop an event the broker rejects and always
+    will. A transport outage rejects nothing, so charging it there strands the whole backlog as
+    poison after a few cycles — the backbone chaos drill's combined-failure section is what found
+    it. The claim is cleared so the rows are relayed as soon as the broker answers again.
+    """
+    if not event_ids:
+        return
+
+    def _defer() -> None:
+        with get_db() as conn:
+            conn.execute(
+                f"UPDATE event_outbox "
+                f"   SET claimed_at = NULL, last_error = ?, "
+                f"       attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END "
+                f" WHERE published_at IS NULL AND id IN ({','.join('?' * len(event_ids))})",
+                (error[:500], *event_ids),
+            )
+
+    write_retry(_defer)
+
+
 def outbox_stats(*, max_attempts: int | None = None) -> dict[str, int]:
     """Counts for monitoring the relay: pending vs published vs poison (attempts exhausted)."""
     if max_attempts is None:
@@ -160,6 +197,27 @@ def outbox_stats(*, max_attempts: int | None = None) -> dict[str, int]:
         "published": row["published"] or 0,
         "poison": row["poison"] or 0,
     }
+
+
+def outbox_oldest_pending_age() -> float | None:
+    """Seconds the oldest unpublished event has waited, or ``None`` when nothing is pending.
+
+    Kept out of :func:`outbox_stats` on purpose: that dict is counts, and callers sum it.
+    A count cannot tell a relay that is keeping up from one that stopped an hour ago; this can.
+    """
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT MIN(created_at) FROM event_outbox WHERE published_at IS NULL"
+        ).fetchone()
+    oldest = row[0] if row else None
+    if oldest is None:
+        return None
+    if isinstance(oldest, datetime):
+        created = oldest if oldest.tzinfo else oldest.replace(tzinfo=UTC)
+    else:
+        created = datetime.fromisoformat(str(oldest).replace(" ", "T"))
+        created = created if created.tzinfo else created.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - created).total_seconds())
 
 
 def create_federated_run(
@@ -272,9 +330,13 @@ def lineage_run_for_mlflow_run(mlflow_run_id: str) -> dict[str, Any] | None:
     init_db()
     with get_db() as conn:
         row = conn.execute(
+            # The pattern is a *parameter*, not part of the statement: psycopg reads a literal
+            # `%` in a parameterised query as a placeholder, so `LIKE 'train:%'` raised
+            # "only '%s', '%b', '%t' are allowed as placeholders" on every Postgres install — and
+            # `attach_run_cost` swallows it, so cost and carbon lineage was silently never recorded.
             "SELECT run_id, job, model FROM lineage_events "
-            "WHERE mlflow_run_id=? AND job LIKE 'train:%' ORDER BY id DESC LIMIT 1",
-            (mlflow_run_id,),
+            "WHERE mlflow_run_id=? AND job LIKE ? ORDER BY id DESC LIMIT 1",
+            (mlflow_run_id, "train:%"),
         ).fetchone()
     return dict(row) if row else None
 
@@ -571,4 +633,26 @@ def structured_output_stats() -> dict[str, int]:
     return stats
 
 
+def inbox_seen(consumer: str, event_id: str) -> bool:
+    """True when ``consumer`` has already handled ``event_id`` (ADR 0124 consumer inbox)."""
+    init_db()  # schema-once; a consumer may be the first thing a process touches
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM event_inbox WHERE consumer=? AND event_id=?", (consumer, event_id)
+        ).fetchone()
+    return row is not None
+
+
+def inbox_record(consumer: str, event_id: str) -> bool:
+    """Record that ``consumer`` handled ``event_id``; False when it was already recorded."""
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO event_inbox (consumer, event_id) VALUES (?, ?)",
+            (consumer, event_id),
+        )
+        return bool(cur.rowcount)
+
+
+# Wrap every mutating helper above (including the inbox writer) with write_retry (item 0.4).
 install_write_retry(__name__)

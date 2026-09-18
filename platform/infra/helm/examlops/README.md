@@ -15,6 +15,7 @@
 | dashboard | Deployment + Service | `dashboard.replicaCount` (2) | PDB minAvailable 1 |
 | agent | Deployment + Service | 2 replicas by default; optional CPU HPA | PDB minAvailable 1, topology spread |
 | ingress | Ingress (TLS) | — | terminates TLS; dashboard owns `/api`, explicit machine paths reach the control plane |
+| gateway, gateway-authz (optional) | Deployment + Service each | `gateway.replicaCount` / `gateway.authz.replicaCount` (2) | PDB minAvailable 1, topology spread; see [Serving gateway](#serving-gateway-adr-0126-opt-in) |
 
 Every pod is **non-root, read-only-rootfs, all caps dropped, no privilege escalation**
 (`podSecurityContext`/`containerSecurityContext`), spread across nodes (`topologySpreadConstraints`),
@@ -61,7 +62,8 @@ Persistent state is provided by managed services referenced via `values.yaml`:
   retrain locks, and singleton poller ownership, and its relay publishes the transactional outbox
   through the selected publisher. For cross-host operation select Redis + Redis Streams instead of
   the chart's dependency-free `db`/`log` defaults. Keep the HPA disabled until the remaining
-  process-local controls and failover behavior are resolved and tested. NATS/Kafka are placeholders.
+  process-local controls and failover behavior are resolved and tested.
+- **NATS JetStream (events):** see [Event backbone](#event-backbone-adr-0124) below.
 
 ## Site modules and data upgrades (ADR 0128)
 
@@ -155,23 +157,27 @@ helm install examlops oci://ghcr.io/mskazemi/charts/examlops --version X.Y.Z \
 See [Releases](https://mskazemi.com/ExaMLOps/guides/release-process/) for verifying the chart and images with
 `cosign verify` / `gh attestation verify`.
 
-**Known issue in the published charts (v0.54.0 through v0.56.0): the control plane can stay unready
-after a first install.**
+**Fixed in the working tree — the control plane no longer stays unready after a first install.**
 - **Cause:** on a first install against an empty Postgres, every tier creates the platform schema
-  at the same moment, and the control plane can lose that race.
-- **Symptoms:** its log shows `Startup check FAILED — coordinator: duplicate key value violates
-  unique constraint "pg_type_typname_nsp_index"`, it never runs the check again, and it stays
-  `0/1`. `helm install --wait` times out.
-- **Workaround:** restart it once. By then the schema exists:
-
-    ```bash
-    kubectl -n examlops rollout restart deployment/examlops-examlops-control-plane   # <release>-examlops-control-plane
-    ```
-
-- **Measured on v0.55.0 on kind:** three fresh installs with the images already on the node all
-  failed this way, and one restart fixed each. When the images are still being pulled, the tiers
-  start at different times and the install succeeded.
-- **Fix:** not yet in a release.
+  at the same moment, and the control plane can lose that race. Its log shows `Startup check
+  FAILED — coordinator: duplicate key value violates unique constraint
+  "pg_type_typname_nsp_index"`.
+- **What made it fatal** was not losing the race — the table exists a second later — but that the
+  startup checks ran **once at boot and never again**, so one unlucky moment pinned the replica
+  NotReady for its whole life and `helm install --wait` timed out.
+- **The fix:** a failing check is re-evaluated by the probes themselves, rate-limited to one
+  battery every `CONTROL_PLANE_STARTUP_RECHECK_SECONDS` (default 10). Checks that passed are not
+  re-run, so a probe stays cheap. The pod therefore becomes `1/1` on its own, within about ten
+  seconds, with no restart.
+- **Losing the race is still logged**, and that is deliberate: a first install that recovers by
+  itself should still leave evidence that the tiers collided.
+- **Pinned by** `tests/test_startup_recheck.py` — including that **`/readyz`** itself flips 503 →
+  200, which is the endpoint the chart's `readinessProbe` calls and therefore the only place the
+  recovery is visible to Kubernetes.
+- **Measured on v0.55.0 on kind before the fix:** three fresh installs with the images already on
+  the node all hung this way, and one `kubectl rollout restart` fixed each. If you are running a
+  published chart from **v0.54.0–v0.56.0**, that restart is still the workaround — the fix is in the
+  working tree, not yet in a release.
 
 ## Values are validated
 
@@ -180,6 +186,99 @@ chart owns rejects unknown keys, so `--set controlPlane.replicaCont=2` fails wit
 key named instead of being silently ignored; ports, pull policies, replica counts and the trailing
 slash on `global.imageRegistry` are checked too. Add a value → add it to the schema in the same
 change, or `helm lint` fails.
+
+## Event backbone (ADR 0124)
+
+Every platform change is written to a transactional outbox with the change itself. With
+`events.publisher: log` (the default) the control plane's relay only logs those events, and nothing
+consumes them. With `nats` it publishes them to NATS JetStream, where the dashboard's live stream
+and the followers below read them. NATS is external, like Postgres:
+
+```yaml
+events:
+  publisher: nats
+  natsUrl: nats://nats.messaging:4222   # a JetStream-enabled NATS server
+  followers:
+    autopilot: {enabled: true}      # `exa autopilot follow`: a model's autopilot cycle when its training run completes
+    skipperWatch: {enabled: true}   # `python -m skipper.watch --daemon`: alert.retrain when a run fails
+```
+
+- The publisher and `EXAMLOPS_NATS_URL` reach every tier through the shared ConfigMap.
+  `controlPlane.env` no longer sets the publisher: a container `env` entry overrides the
+  ConfigMap, so it would have kept the control plane on `log` whatever `events` said.
+- Each follower is a Deployment with one replica, with no overlap during a rollout, because a second
+  pod would share the durable consumer's work. It has no Service and the same pod and container
+  hardening as every tier, with `HOME=/tmp` on the read-only root filesystem.
+- The autopilot follower sends the control plane `AUTOPILOT_CONTROL_PLANE_TOKEN` from the
+  control-plane Secret when that key exists. Give it only the `retrain` scope in
+  `CONTROL_PLANE_CREDENTIALS_JSON`. When the key is absent, it uses the Secret's shared token.
+- The render fails for `publisher: nats` without `natsUrl`, and for a follower enabled without the
+  `nats` publisher, which would deploy a pod that nothing can ever reach.
+
+## Serving gateway (ADR 0126, opt-in)
+
+`gateway.enabled` deploys the serving gateway, as Compose's `gateway` profile does. It has two
+tiers: Envoy, the one front door to the model server, and the authorization service
+(`examlops.serving_gateway`, control-plane image) that checks virtual keys and IdP tokens and sets
+the verified tenant.
+
+- **One Envoy configuration.** `files/gateway-envoy.yaml` is byte-identical to Compose's
+  `gateway/envoy.yaml` (tests/unit/test_helm_gateway.py). Only the model server's addresses
+  (`gateway.upstream.host`, its REST `port` and its gRPC `grpcPort`, 8081) and the authorization
+  service's are substituted, and a change rolls the Envoy pods. The gateway serves the Open Inference
+  Protocol over REST and gRPC on its one port.
+- **Resilience and hardening.** Two replicas and a PodDisruptionBudget per tier, the chart's pod
+  and container security, Envoy with `--disable-hot-restart`, and TCP probes.
+- **Optional extras:**
+    - its own ingress host (`gateway.ingress.host`) on the chart's Ingress and certificate;
+    - NetworkPolicy tiers: clients through the ingress controller; only the gateway may call the
+      authorization tier;
+    - a ServiceMonitor for Envoy's statistics.
+- **Tested in kind:** `tests/integration/test_helm_gateway_kind_live.py`.
+
+## Workload identities (ADR 0125, opt-in)
+
+Each tier can prove who it is to the control plane with a five-minute JWT-SVID from SPIRE, with its
+static credential as the fallback. SPIRE is cluster infrastructure, like Postgres: install it once
+with SPIRE's hardened charts, which bring the server, the node agents, the SPIFFE CSI driver and
+spire-controller-manager:
+
+```bash
+helm upgrade --install -n spire-mgmt --create-namespace spire-crds spire-crds \
+  --repo https://spiffe.github.io/helm-charts-hardened/
+helm upgrade --install -n spire-mgmt spire spire \
+  --repo https://spiffe.github.io/helm-charts-hardened/ \
+  --set global.spire.namespaces.create=true --set global.spire.trustDomain=example.org
+```
+
+Then:
+
+```yaml
+workloadIdentity:
+  enabled: true
+  trustDomain: example.org   # the SPIRE server's
+```
+
+- **One `ClusterSPIFFEID` per tier** (control plane, dashboard, the agent and the autopilot follower
+  when enabled). Each selects its own pods by `app.kubernetes.io/{name,instance,component}` in the
+  release namespace, and names them
+  `spiffe://<trustDomain>/ns/<namespace>/<release>-examlops/<tier>`. They are not `fallback`, so
+  they win over SPIRE's default per-service-account identity. With
+  `clusterSPIFFEID.create: false`, register the same IDs another way.
+- **A `spiffe-helper` sidecar in each of those pods** reaches the Workload API through the CSI
+  driver: no hostPath, same user, read-only root and dropped capabilities as the tier. It keeps
+  the tier's token in a memory volume that the tier mounts read-only and reads through
+  `CONTROL_PLANE_TOKEN_FILE`; the control plane's helper keeps the trust bundle.
+- **The control plane's map of who may do what** (`CONTROL_PLANE_WORKLOAD_IDENTITIES_JSON`) is
+  rendered from `workloadIdentity.callers` for exactly the tiers this release deploys, from the
+  same template that names the IDs. The defaults give each tier the principal and scopes its
+  static credential has.
+- The render fails when `enabled` has no `trustDomain`. CI validates the `ClusterSPIFFEID`s
+  against a strict schema generated from SPIRE's CRD
+  (`platform/infra/helm/schemas/spire.spiffe.io/`).
+- Retire each static secret when its principal's `static` count in
+  `control_plane_authentications_total` stops growing. See
+  [Workload identity](../../../../docs/guides/workload-identity.md).
 
 ## Network isolation (opt-in)
 
@@ -191,6 +290,12 @@ and egress) and allows exactly these flows:
 | **control-plane** | ✓ | ✓ | ✓ | ✓ (`/metrics`) |
 | **dashboard** | ✓ | | | |
 | **agent** | | ✓ | | |
+| **autopilot-follower**, **skipper-watch** | | | | |
+
+The autopilot follower also reaches the control plane, and the control plane accepts it. With
+`events.publisher: nats`, the control plane and the dashboard may reach NATS on 4222. The
+followers' own external ports are `networkPolicy.egressPorts.autopilotFollower` (NATS, Postgres,
+MLflow, S3) and `.skipperWatch` (NATS, Postgres).
 
 Every tier may resolve DNS, and reach the services this chart does not deploy on the ports in
 `networkPolicy.egressPorts.<tier>` (Postgres 5432, Redis 6379, Prefect 4200, MLflow 5000, S3 9000,
@@ -203,12 +308,33 @@ Job is not caught by them.
 
 ## Metrics (Prometheus Operator)
 
-`metrics.serviceMonitor.enabled: true` renders a ServiceMonitor for the control plane — the only
-tier that serves `/metrics`. Add the label your Prometheus selects on
+`metrics.serviceMonitor.enabled: true` renders a ServiceMonitor for the control plane (the only
+application tier that serves `/metrics`) and, with the gateway, one each for Envoy's statistics
+and the authorization tier. Add the label your Prometheus selects on
 (`metrics.serviceMonitor.labels: {release: kube-prometheus-stack}`). Without the
 `monitoring.coreos.com/v1` CRDs the render fails with that instruction instead of producing an
 object the API server rejects. `tests/unit/test_helm_network_and_schema.py` renders all of the above
 with the pinned helm.
+
+**Alert rules.** `metrics.prometheusRule.enabled: true` renders the platform's alert rules as a
+PrometheusRule:
+
+- **Compose's rules, verbatim.** They come from `files/alert_rules.yml`, byte-identical to Compose's
+  `alert_rules.yml`, which promtool checks and unit-tests in CI. Every rule links to its runbook.
+- **The groups for what the chart deploys:** `examlops-control-plane` always, `examlops-gateway`
+  with the gateway. Add others by name (`metrics.prometheusRule.extraGroups: [examlops-serving]`)
+  for services your Prometheus scrapes itself under the same job names. An unknown name fails the
+  render.
+- **Job names match Compose's.** The rules select jobs such as `control_plane`, `gateway` and
+  `gateway_authz`. With the Prometheus Operator a job is otherwise the Service's name, and those
+  rules would match nothing and never fire. So each Service carries `examlops.io/job`, each
+  ServiceMonitor uses it as its `jobLabel`, and `tests/unit/test_helm_prometheus_rules.py` checks
+  that every job a rendered rule selects is one a rendered ServiceMonitor produces. A dashboard or
+  query that used `job="<release>-examlops-control-plane"` now reads `job="control_plane"`.
+- **Selector label.** Add the label your Prometheus' `ruleSelector` matches under
+  `metrics.prometheusRule.labels`.
+- **Strict validation.** CI validates the PrometheusRule and ServiceMonitors against the Prometheus
+  Operator's CRD schemas (vendored in `platform/infra/helm/schemas/`).
 
 **Tracing.** Every image runs under `opentelemetry-instrument`. Export is off by default
 (`OTEL_SDK_DISABLED=true`, the compose default) so no pod retries a collector that does not exist;

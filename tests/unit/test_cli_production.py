@@ -124,10 +124,15 @@ def test_production_deploy_execute_runs_pipeline_retrain_reload_and_verify(tmp_p
     posts: list[tuple[str, dict]] = []
     history_path = tmp_path / "history.jsonl"
 
-    def fake_post(url: str, body: dict, token: str = ""):
+    def fake_post(url: str, body: dict, token: str = "", **_kw):
         posts.append((url, body))
-        if url.endswith("/retrain"):
-            return {"flow_run_id": f"flow-{body['model_name']}"}
+        if url.endswith("/v1/retrain"):  # the command API (plan P1.6c), answered dispatched
+            return {
+                "command_id": f"v1:retrain:{body['model_name']}",
+                "state": "succeeded",
+                "result": {"flow_run_id": f"flow-{body['model_name']}"},
+                "status_url": "/v1/commands/x",
+            }
         if url.endswith("/reload"):
             return {"count": 2}
         raise AssertionError(f"unexpected POST URL: {url}")
@@ -146,7 +151,7 @@ def test_production_deploy_execute_runs_pipeline_retrain_reload_and_verify(tmp_p
     deploy_cmd = mock_run.call_args[0][0]
     assert "deploy.py" in " ".join(deploy_cmd)
     assert "--env" in deploy_cmd and "prod" in deploy_cmd
-    assert any(url.endswith("/retrain") and body["model_name"] == "MACK" for url, body in posts)
+    assert any(url.endswith("/v1/retrain") and body["model_name"] == "MACK" for url, body in posts)
     assert any(url.endswith("/reload") for url, _ in posts)
 
     records = [json.loads(line) for line in history_path.read_text().splitlines()]
@@ -155,7 +160,14 @@ def test_production_deploy_execute_runs_pipeline_retrain_reload_and_verify(tmp_p
     assert record["deploy_id"].startswith("deploy-")
     assert record["status"] == "success"
     assert record["models"] == ["MACK"]
-    assert record["retrain_results"] == [{"model": "MACK", "flow_run_id": "flow-MACK"}]
+    assert record["retrain_results"] == [
+        {
+            "model": "MACK",
+            "flow_run_id": "flow-MACK",
+            "command_id": "v1:retrain:MACK",
+            "state": "succeeded",
+        }
+    ]
     assert record["verification_status"] == "pass"
     assert record["started_at"] <= record["ended_at"]
 
@@ -237,8 +249,8 @@ def test_production_deploy_status_shows_one_record_as_json(tmp_path):
 def test_production_deploy_execute_records_failed_retrain_as_failed_history(tmp_path):
     history_path = tmp_path / "history.jsonl"
 
-    def fake_post(url: str, body: dict, token: str = ""):
-        if url.endswith("/retrain"):
+    def fake_post(url: str, body: dict, token: str = "", **_kw):
+        if url.endswith("/v1/retrain"):
             raise production._client.ClientError("boom")
         raise AssertionError(f"unexpected POST URL: {url}")
 

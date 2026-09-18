@@ -20,10 +20,38 @@ services:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mlops -d mlflow"]
+      # Over TCP, not the socket: on a fresh volume the image first runs a socket-only init
+      # server, which a socket probe calls healthy while dependents' TCP connects are refused.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U mlops -d mlflow"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # Per-service Postgres roles (plan P3.4): MLflow, Prefect and the dashboard each log in as their
+  # own role, own their own database and cannot connect to another's. Opt-in per service: set its
+  # *_DB_USER and *_DB_PASSWORD. Unset, it keeps using the superuser, as before. Idempotent, so
+  # every `up` converges roles and rotates changed passwords; see docs/guides/production-hardening.md.
+  postgres-init:
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-postgres:${EXAMLOPS_IMAGE_TAG:-latest}
+    container_name: examlops-postgres-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["sh", "/provision.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: mlops
+      PGPASSWORD: ${POSTGRES_PASSWORD:-mlops}
+      MLFLOW_DB_USER: ${MLFLOW_DB_USER:-mlops}
+      MLFLOW_DB_PASSWORD: ${MLFLOW_DB_PASSWORD:-}
+      PREFECT_DB_USER: ${PREFECT_DB_USER:-mlops}
+      PREFECT_DB_PASSWORD: ${PREFECT_DB_PASSWORD:-}
+      DASHBOARD_DB_USER: ${DASHBOARD_DB_USER:-mlops}
+      DASHBOARD_DB_PASSWORD: ${DASHBOARD_DB_PASSWORD:-}
+      DASHBOARD_DB_NAME: ${DASHBOARD_DB_NAME:-mlflow}
+    volumes:
+      - ./postgres-init/provision.sh:/provision.sh:ro
+    restart: "no"
 
   # ── MinIO — S3-compatible object store for MLflow artifacts ───────────────────
   # Dev credentials: minioadmin / minioadmin  (override via .env or env vars)
@@ -66,9 +94,12 @@ services:
         mc mb --ignore-existing local/mlflow-artifacts &&
         mc mb --ignore-existing local/$${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects} &&
         mc mb --ignore-existing local/$${EXAMLOPS_DATA_BUCKET:-examlops-data} &&
-        echo '[minio-init] buckets mlflow-artifacts + project storage + dataplane data ready.' &&
+        mc mb --ignore-existing local/dashboard-model-docs &&
+        echo '[minio-init] buckets mlflow-artifacts + project storage + dataplane data + dashboard docs ready.' &&
+        P="$${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects}" &&
         D="$${EXAMLOPS_DATA_BUCKET:-examlops-data}" &&
         RW='"s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListBucket","s3:GetBucketLocation","s3:ListMultipartUploadParts","s3:AbortMultipartUpload"' &&
+        RO='"s3:GetObject","s3:ListBucket","s3:GetBucketLocation"' &&
         grant() {
           if [ -n "$$2" ] && [ -n "$$3" ]; then
             printf '%s' "{\"Version\":\"2012-10-17\",\"Statement\":[$$4]}" > "/tmp/$$1.json" &&
@@ -80,12 +111,41 @@ services:
             echo "[minio-init] no key for $$1: that service falls back to the root credential.";
           fi;
         } &&
-        grant dataplane-rw "$${MINIO_DATAPLANE_ACCESS_KEY}" "$${MINIO_DATAPLANE_SECRET_KEY}" "{\"Effect\":\"Allow\",\"Action\":[$$RW],\"Resource\":[\"arn:aws:s3:::$$D\",\"arn:aws:s3:::$$D/*\"]}"
+        grant mlflow-rw "$${MINIO_MLFLOW_ACCESS_KEY}" "$${MINIO_MLFLOW_SECRET_KEY}" "{\"Effect\":\"Allow\",\"Action\":[$$RW],\"Resource\":[\"arn:aws:s3:::mlflow-artifacts\",\"arn:aws:s3:::mlflow-artifacts/*\"]}" &&
+        grant dashboard-rw "$${MINIO_DASHBOARD_ACCESS_KEY}" "$${MINIO_DASHBOARD_SECRET_KEY}" "{\"Effect\":\"Allow\",\"Action\":[$$RW],\"Resource\":[\"arn:aws:s3:::dashboard-model-docs\",\"arn:aws:s3:::dashboard-model-docs/*\",\"arn:aws:s3:::$$P\",\"arn:aws:s3:::$$P/*\"]}" &&
+        grant backup-readonly "$${MINIO_BACKUP_ACCESS_KEY}" "$${MINIO_BACKUP_SECRET_KEY}" "{\"Effect\":\"Allow\",\"Action\":[$$RO],\"Resource\":[\"arn:aws:s3:::mlflow-artifacts\",\"arn:aws:s3:::mlflow-artifacts/*\",\"arn:aws:s3:::dashboard-model-docs\",\"arn:aws:s3:::dashboard-model-docs/*\",\"arn:aws:s3:::$$P\",\"arn:aws:s3:::$$P/*\",\"arn:aws:s3:::$$D\",\"arn:aws:s3:::$$D/*\"]}" &&
+        grant notebook-rw "$${MINIO_NOTEBOOK_ACCESS_KEY}" "$${MINIO_NOTEBOOK_SECRET_KEY}" "{\"Effect\":\"Allow\",\"Action\":[$$RW],\"Resource\":[\"arn:aws:s3:::mlflow-artifacts\",\"arn:aws:s3:::mlflow-artifacts/*\",\"arn:aws:s3:::$$P\",\"arn:aws:s3:::$$P/*\"]}" &&
+        grant dataplane-rw "$${MINIO_DATAPLANE_ACCESS_KEY}" "$${MINIO_DATAPLANE_SECRET_KEY}" "{\"Effect\":\"Allow\",\"Action\":[$$RW],\"Resource\":[\"arn:aws:s3:::$$D\",\"arn:aws:s3:::$$D/*\"]}" &&
+        if [ -n "$${MINIO_SERVING_ACCESS_KEY}" ] && [ -n "$${MINIO_SERVING_SECRET_KEY}" ]; then
+          printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:ListBucket","s3:GetBucketLocation"],"Resource":["arn:aws:s3:::mlflow-artifacts","arn:aws:s3:::mlflow-artifacts/*"]}]}' > /tmp/serving-readonly.json &&
+          mc admin policy create local serving-readonly /tmp/serving-readonly.json &&
+          mc admin user add local "$${MINIO_SERVING_ACCESS_KEY}" "$${MINIO_SERVING_SECRET_KEY}" &&
+          { mc admin policy attach local serving-readonly --user "$${MINIO_SERVING_ACCESS_KEY}" 2>/dev/null || true; } &&
+          echo '[minio-init] read-only serving credential ready.';
+        else
+          echo '[minio-init] MINIO_SERVING_ACCESS_KEY unset: ray-serving falls back to the root credential.';
+        fi
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
       EXAMLOPS_PROJECTS_BUCKET: ${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects}
       EXAMLOPS_DATA_BUCKET: ${EXAMLOPS_DATA_BUCKET:-examlops-data}
+      # Optional least-privilege credential for Ray Serve (plan P0.6 / finding S4): read-only on
+      # mlflow-artifacts. Serving only ever downloads models; with the root credential, anyone able
+      # to make it load a file could also rewrite every artifact in the store.
+      MINIO_SERVING_ACCESS_KEY: ${MINIO_SERVING_ACCESS_KEY:-}
+      MINIO_SERVING_SECRET_KEY: ${MINIO_SERVING_SECRET_KEY:-}
+      # One least-privilege credential per service (plan P3.4). Each is created only when set; a
+      # service whose key is unset falls back to the root credential, so nothing breaks before an
+      # operator opts in — but only minio and this container need root.
+      MINIO_MLFLOW_ACCESS_KEY: ${MINIO_MLFLOW_ACCESS_KEY:-}
+      MINIO_MLFLOW_SECRET_KEY: ${MINIO_MLFLOW_SECRET_KEY:-}
+      MINIO_DASHBOARD_ACCESS_KEY: ${MINIO_DASHBOARD_ACCESS_KEY:-}
+      MINIO_DASHBOARD_SECRET_KEY: ${MINIO_DASHBOARD_SECRET_KEY:-}
+      MINIO_BACKUP_ACCESS_KEY: ${MINIO_BACKUP_ACCESS_KEY:-}
+      MINIO_BACKUP_SECRET_KEY: ${MINIO_BACKUP_SECRET_KEY:-}
+      MINIO_NOTEBOOK_ACCESS_KEY: ${MINIO_NOTEBOOK_ACCESS_KEY:-}
+      MINIO_NOTEBOOK_SECRET_KEY: ${MINIO_NOTEBOOK_SECRET_KEY:-}
       MINIO_DATAPLANE_ACCESS_KEY: ${MINIO_DATAPLANE_ACCESS_KEY:-}
       MINIO_DATAPLANE_SECRET_KEY: ${MINIO_DATAPLANE_SECRET_KEY:-}
     restart: "no"
@@ -97,20 +157,48 @@ services:
       network: host
     image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-mlflow:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-mlflow
-    mem_limit: ${MLFLOW_MEM_LIMIT:-2g}
-    command: >
-      mlflow server
-      --backend-store-uri postgresql://mlops:${POSTGRES_PASSWORD:-mlops}@postgres/mlflow
-      --default-artifact-root s3://mlflow-artifacts/
-      --artifacts-destination s3://mlflow-artifacts/
-      --host 0.0.0.0
-      --port 5000
-      --allowed-hosts "*"
-      --cors-allowed-origins "*"
+    # MLflow 3.16 holds ~0.85 GiB per server worker: the old 2g limit with its default 4 workers
+    # was OOM-killed on every start. Two workers measured 1.7 GiB resident.
+    mem_limit: ${MLFLOW_MEM_LIMIT:-4g}
+    # Authentication is opt-in (plan P3.6): MLFLOW_AUTH=basic serves MLflow's basic-auth app with
+    # the admin credential given here — never the bundled default (admin / password1234) — and
+    # keeps its user store on the mlflow_auth volume. Unset, this runs exactly the plain server.
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        AUTH_ARGS=""
+        if [ "$${MLFLOW_AUTH:-}" = "basic" ]; then
+          if [ -z "$${MLFLOW_ADMIN_PASSWORD:-}" ]; then
+            echo "MLFLOW_AUTH=basic needs MLFLOW_ADMIN_PASSWORD (the bundled default is public)" >&2
+            exit 1
+          fi
+          printf '[mlflow]\ndefault_permission = %s\ndatabase_uri = sqlite:////mlflow-auth/basic_auth.db\nadmin_username = %s\nadmin_password = %s\nauthorization_function = mlflow.server.auth:authenticate_request_basic_auth\n' \
+            "$${MLFLOW_DEFAULT_PERMISSION:-READ}" "$${MLFLOW_ADMIN_USERNAME:-admin}" "$${MLFLOW_ADMIN_PASSWORD}" > /mlflow-auth/basic_auth.ini
+          export MLFLOW_AUTH_CONFIG_PATH=/mlflow-auth/basic_auth.ini
+          AUTH_ARGS="--app-name basic-auth"
+        fi
+        exec mlflow server \
+          --backend-store-uri postgresql://${MLFLOW_DB_USER:-mlops}:${MLFLOW_DB_PASSWORD:-${POSTGRES_PASSWORD:-mlops}}@postgres/mlflow \
+          --default-artifact-root s3://mlflow-artifacts/ \
+          --artifacts-destination s3://mlflow-artifacts/ \
+          --host 0.0.0.0 \
+          --port 5000 \
+          --workers ${MLFLOW_WORKERS:-2} \
+          --allowed-hosts "${MLFLOW_ALLOWED_HOSTS:-mlflow,mlflow:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*,${PUBLIC_HOST:-localhost},${PUBLIC_HOST:-localhost}:*}" \
+          --cors-allowed-origins "${MLFLOW_CORS_ALLOWED_ORIGINS:-http://localhost:18099,http://127.0.0.1:18099,http://${PUBLIC_HOST:-localhost}:18099}" \
+          $$AUTH_ARGS
     environment:
+      MLFLOW_AUTH: ${MLFLOW_AUTH:-}
+      MLFLOW_ADMIN_USERNAME: ${MLFLOW_ADMIN_USERNAME:-admin}
+      MLFLOW_ADMIN_PASSWORD: ${MLFLOW_ADMIN_PASSWORD:-}
+      MLFLOW_DEFAULT_PERMISSION: ${MLFLOW_DEFAULT_PERMISSION:-READ}
+      MLFLOW_FLASK_SERVER_SECRET_KEY: ${MLFLOW_FLASK_SERVER_SECRET_KEY:-}
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # Read-write on mlflow-artifacts only (plan P3.4); the root credential until one is set.
+      AWS_ACCESS_KEY_ID: ${MINIO_MLFLOW_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_MLFLOW_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
     env_file:
       - path: .env
         required: true
@@ -119,8 +207,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       minio-init:
         condition: service_completed_successfully
+    volumes:
+      - mlflow_auth:/mlflow-auth
     ports:
       - "15000:5000"
     restart: unless-stopped
@@ -137,19 +229,30 @@ services:
     image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-orchestrator:${EXAMLOPS_IMAGE_TAG:-latest}
     container_name: examlops-orchestrator
     mem_limit: ${ORCHESTRATOR_MEM_LIMIT:-2g}
-    command: prefect server start --host 0.0.0.0
+    # Authentication is opt-in (plan P3.6). PREFECT_SERVER_API_AUTH_STRING is exported only when a
+    # value is set: Prefect treats the variable being present — even empty — as "auth on with an
+    # empty password", which would refuse every client. Clients send PREFECT_API_AUTH_STRING.
+    command:
+      - sh
+      - -c
+      - |
+        if [ -n "$${PREFECT_AUTH_STRING:-}" ]; then
+          export PREFECT_SERVER_API_AUTH_STRING="$${PREFECT_AUTH_STRING}"
+        fi
+        exec prefect server start --host 0.0.0.0
     environment:
+      PREFECT_AUTH_STRING: ${PREFECT_API_AUTH_STRING:-}
       PREFECT_UI_API_URL: /api
       PREFECT_SERVER_ANALYTICS_ENABLED: "false"
       # Persist Prefect metadata in Postgres (shares the postgres_data volume)
       # instead of the default ephemeral SQLite inside the container.
-      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://mlops:${POSTGRES_PASSWORD:-mlops}@postgres/prefect
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${PREFECT_DB_USER:-mlops}:${PREFECT_DB_PASSWORD:-${POSTGRES_PASSWORD:-mlops}}@postgres/prefect
     ports:
       - "14200:4200"
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')\""]
       interval: 10s
@@ -167,11 +270,14 @@ services:
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # The read-only serving credential minio-init provisions (plan P0.6); the root credential
+      # only when it is not configured.
+      AWS_ACCESS_KEY_ID: ${MINIO_SERVING_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SERVING_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
       MODEL_STAGE: Production
       RAY_NUM_REPLICAS: "1"
       RAY_SERVE_PORT: "8001"
+      RAY_SERVE_GRPC_PORT: "8081"   # Open Inference Protocol v2 over gRPC (ADR 0126); 0 = off
       RAY_METRICS_EXPORT_PORT: "8080"
       RAY_PROMETHEUS_HOST: http://prometheus:9090
       RAY_GRAFANA_HOST: http://grafana:3000
@@ -179,6 +285,37 @@ services:
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       OTEL_SERVICE_NAME: ray-serving
+      # The same shared platform state as the CLI, dashboard, bridge and control plane (plan P0.4 /
+      # finding B4). Without these the router and the shadow reader opened a container-local
+      # /app/platform.db that no writer ever touched, so `exa serve traffic` / `exa serve shadow`
+      # and the dashboard's traffic page configured nothing the replicas could see.
+      PLATFORM_DB: /state/platform.db
+      # ADR 0128: /state is this instance's data root (site.toml, usecase/, config/).
+      EXAMLOPS_DATA_DIR: /state
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
+      # Bearer for /reload and /infer-pipeline/traffic-rules (plan P0.6). Unset closes those
+      # admin routes; inference is unaffected and alias moves still reload on the 60 s poll.
+      RAY_SERVE_ADMIN_TOKEN: ${RAY_SERVE_ADMIN_TOKEN:-}
+      # Verify-before-load: off | warn (default: check and audit, never block) | enforce. Versions
+      # are signed with Ed25519 at registration (plan P4.10); serving holds only the public keys
+      # (`exa models sign` prints the signer's). EXAMLOPS_SIGNING_KEY is the legacy HMAC secret,
+      # needed here only to verify versions signed before Ed25519 — leave it unset otherwise.
+      EXAMLOPS_SERVING_VERIFY: ${EXAMLOPS_SERVING_VERIFY:-warn}
+      EXAMLOPS_SIGNING_PUBLIC_KEYS: ${EXAMLOPS_SIGNING_PUBLIC_KEYS:-}
+      EXAMLOPS_SIGNING_KEY: ${EXAMLOPS_SIGNING_KEY:-}
+      # Serving snapshot (ADR 0127): serve what the control plane compiled instead of each replica
+      # polling MLflow. The last-known-good copy lives on its own volume, so a restart while the
+      # control plane and the database are down still serves the last configuration.
+      RAY_SNAPSHOT_MODE: ${RAY_SNAPSHOT_MODE:-auto}
+      RAY_SNAPSHOT_CACHE: /var/lib/examlops-serving/snapshot.json
+      # Content-addressed copies of the model versions served (plan P4.3): with the snapshot, what
+      # lets this container restart and serve while MLflow is down. LRU-bounded.
+      RAY_ARTIFACT_CACHE: /var/lib/examlops-serving/artifacts
+      RAY_ARTIFACT_CACHE_MAX_GB: ${RAY_ARTIFACT_CACHE_MAX_GB:-20}
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-../../..}:/state:rw
+      - ray_serving_snapshot:/var/lib/examlops-serving
     env_file:
       - path: .env
         required: true
@@ -186,7 +323,11 @@ services:
         required: false
     ports:
       - "18001:8001"   # Ray Serve HTTP
-      - "18265:8265"   # Ray dashboard
+      - "18081:8081"   # Open Inference Protocol v2, gRPC
+      # Loopback only (plan P0.6 / finding S2): the Ray dashboard's Jobs API runs arbitrary code
+      # and has no authentication. Reach it through an SSH tunnel; the dashboard's proxy uses the
+      # in-network address and is unaffected.
+      - "127.0.0.1:18265:8265"   # Ray dashboard
       - "18080:8080"   # Prometheus metrics (Ray)
     shm_size: '2gb'
     mem_limit: ${RAY_MEM_LIMIT:-6g}
@@ -237,7 +378,7 @@ services:
       # Allowed-hosts scoping (item 0.8): "*"=dev; set a comma-separated allow-list in prod.
       CONTROL_PLANE_ALLOWED_HOSTS: ${CONTROL_PLANE_ALLOWED_HOSTS:-*}
       PREFECT_API_URL: http://orchestrator:4200/api
-      PREFECT_DEPLOYMENT_NAME: ${PREFECT_DEPLOYMENT_NAME:-examlops_scheduled_training/nightly}
+      PREFECT_DEPLOYMENT_NAME: ${PREFECT_DEPLOYMENT_NAME:-training_flow/examlops-dispatch}
       MODELZOO_WEBHOOK_SECRET: ${MODELZOO_WEBHOOK_SECRET:-}
       MODELZOO_AUTO_RETRAIN: ${MODELZOO_AUTO_RETRAIN:-false}
       MODELZOO_POLL_SECONDS: ${MODELZOO_POLL_SECONDS:-300}
@@ -246,6 +387,8 @@ services:
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
       GITLAB_PROJECT_ID: ${GITLAB_PROJECT_ID:-}
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      # The serving-snapshot projector (ADR 0127): full recompile interval; 0 turns it off.
+      CONTROL_PLANE_SNAPSHOT_SECONDS: ${CONTROL_PLANE_SNAPSHOT_SECONDS:-60}
       RAY_SERVE_URL: http://ray-serving:8001
       DASHBOARD_URL: http://dashboard:8099
       # ADR 0094: point the registry resolver at the baked use-case pack (this container has no
@@ -390,7 +533,9 @@ services:
       RAY_SERVE_URL: http://ray-serving:8001
       PROMETHEUS_URL: http://prometheus:9090
       CONTROL_PLANE_URL: http://control-plane:8002
-      CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN:-}
+      # Its own credential (plan P3.2 — agent: read + retrain); the shared token until one is issued.
+      CONTROL_PLANE_TOKEN: ${AGENT_CONTROL_PLANE_TOKEN:-${CONTROL_PLANE_TOKEN:-}}
+      RAY_SERVE_ADMIN_TOKEN: ${RAY_SERVE_ADMIN_TOKEN:-}  # reload / traffic push (plan P0.6)
       DASHBOARD_URL: http://dashboard:8099
       DASHBOARD_ADMIN_PASSWORD: ${DASHBOARD_ADMIN_PASSWORD:-}
       # ONE shared platform DB across the stack (X1): /data/platform.db was a private volume
@@ -399,6 +544,8 @@ services:
       # ADR 0128: /state is this instance's data root (site.toml, usecase/, config/).
       EXAMLOPS_DATA_DIR: /state
       EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      # Also publish every audit event as audit.recorded (docs/guides/audit-trail.md).
+      EXAMLOPS_AUDIT_STREAM: ${EXAMLOPS_AUDIT_STREAM:-}
       EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
       AGENT_DB: /data/agent_memory.db
       AGENT_MEMORY_DB: /data/skipper_memory.db
@@ -734,7 +881,8 @@ services:
       EXAMLOPS_OPENLINEAGE_URL: ${EXAMLOPS_OPENLINEAGE_URL:-}
       MINIO_URL: http://minio:9000
       PUBLIC_MINIO_CONSOLE_URL: http://${PUBLIC_HOST:-localhost}:19001
-      DATABASE_URL: postgresql+asyncpg://mlops:${POSTGRES_PASSWORD:-mlops}@postgres/mlflow
+      # Its own role and database once DASHBOARD_DB_USER / _PASSWORD / _NAME are set (plan P3.4).
+      DATABASE_URL: postgresql+asyncpg://${DASHBOARD_DB_USER:-mlops}:${DASHBOARD_DB_PASSWORD:-${POSTGRES_PASSWORD:-mlops}}@postgres/${DASHBOARD_DB_NAME:-mlflow}
       DASHBOARD_VIEWER_PASSWORD: ${DASHBOARD_VIEWER_PASSWORD:?must be set in .env}
       DASHBOARD_ADMIN_PASSWORD:  ${DASHBOARD_ADMIN_PASSWORD:?must be set in .env}
       # Organisation SSO (ADR 0120) — see docs/guides/identity-federation.md.
@@ -747,12 +895,17 @@ services:
       DASHBOARD_SECRET_KEY:      ${DASHBOARD_SECRET_KEY:?must be set in .env}
       DASHBOARD_PORT: "8099"
       CONTROL_PLANE_URL: http://control-plane:8002
+      # Bearer for the control plane's read routes (/models*, bundled images) when the Config
+      # page's encrypted `control_plane_token` secret is unset (plan P0.3). Never sent to browsers.
+      # Its own credential (plan P3.2 — dashboard: acts for signed-in users); the shared token until one is issued.
+      CONTROL_PLANE_TOKEN: ${DASHBOARD_CONTROL_PLANE_TOKEN:-${CONTROL_PLANE_TOKEN:-}}
       AGENT_URL: http://agent:18004
       DASHBOARD_AGENT_API_KEY: ${DASHBOARD_AGENT_API_KEY:-}
       AGENT_API_KEY: ${AGENT_API_KEY:-}
       PUBLIC_CONTROL_PLANE_URL: http://${PUBLIC_HOST:-localhost}:18002
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # Read-write on its docs bucket and project storage only (plan P3.4).
+      MINIO_ACCESS_KEY: ${MINIO_DASHBOARD_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      MINIO_SECRET_KEY: ${MINIO_DASHBOARD_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
       DASHBOARD_MINIO_BUCKET: dashboard-model-docs
       GRAFANA_LOKI_EXPLORE_URL: http://${PUBLIC_HOST:-localhost}:13000/explore
       EXAMLOPS_REPO_URL: ${EXAMLOPS_REPO_URL:-}
@@ -767,8 +920,6 @@ services:
       OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
       OTEL_SERVICE_NAME: dashboard
-      SEANERBUS_BRIDGE_STATUS_URL: http://seanerbus-bridge:8003
-      PUBLIC_SEANERBUS_BRIDGE_URL: http://${PUBLIC_HOST:-localhost}:18003
       LOKI_URL: http://loki:3100
       PUBLIC_LOKI_URL: http://${PUBLIC_HOST:-localhost}:13100
       EXAMLOPS_DATAPLANE_URL: http://dataplane:8010
@@ -783,6 +934,8 @@ services:
       # Datastore engine pass-through (X2): docs/guides/postgres-backend.md says these must
       # reach EVERY state-touching process, or that process silently stays on SQLite.
       EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      # Also publish every audit event as audit.recorded (docs/guides/audit-trail.md).
+      EXAMLOPS_AUDIT_STREAM: ${EXAMLOPS_AUDIT_STREAM:-}
       EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
       # Point the /documents docs router (routers/docs.py) at the bind-mounted repo so the
       # Documents page serves the live README.md + docs/** during dev. Takes precedence over the
@@ -814,8 +967,8 @@ services:
     ports:
       - "18099:8099"
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       control-plane:
         condition: service_healthy
       agent:
@@ -855,8 +1008,10 @@ services:
       - jupyter_hub_data:/data
     environment:
       DOCKER_NETWORK_NAME: examlops_default
-      MINIO_ROOT_USER:     ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # What every spawned notebook gets (plan P3.4): read-write on mlflow-artifacts and project
+      # storage, not the root credential — a notebook runs arbitrary user code.
+      MINIO_NOTEBOOK_ACCESS_KEY: ${MINIO_NOTEBOOK_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      MINIO_NOTEBOOK_SECRET_KEY: ${MINIO_NOTEBOOK_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
       # Host path of the platform repo — bind-mounted into each spawned notebook (read-only) so a
       # notebook can `import examlops` for plugin/provider management (ADR 0074); the .providers
       # subdir is mounted read-write so authored plugins are shared with the CLI/dashboard.
@@ -903,7 +1058,8 @@ services:
       SEANERBUS_VECTOR_UUID: "${SEANERBUS_VECTOR_UUID:-}"
       RAY_SERVE_URL: "http://ray-serving:8001"
       CONTROL_PLANE_URL: "http://control-plane:8002"
-      CONTROL_PLANE_TOKEN: "${CONTROL_PLANE_TOKEN:-}"
+      # Its own credential (plan P3.2 — bridge: `retrain` only); the shared token until one is issued.
+      CONTROL_PLANE_TOKEN: "${SEANERBUS_BRIDGE_CONTROL_PLANE_TOKEN:-${CONTROL_PLANE_TOKEN:-}}"
       SEANERBUS_DEFAULT_MODEL: "${SEANERBUS_DEFAULT_MODEL:-JPCP}"
       SEANERBUS_DEFAULT_ALIAS: "${SEANERBUS_DEFAULT_ALIAS:-Production}"
       MODELS_YAML_DIR: "/app/usecases/seanergy/models"
@@ -964,16 +1120,25 @@ services:
       PLATFORM_DB: /state/platform.db
       # ADR 0128: /state is this instance's data root (site.toml, usecase/, config/).
       EXAMLOPS_DATA_DIR: /state
-      CONTROL_PLANE_DB: /data/approvals.db
+      # Follow the control plane: its state lives in the shared store (CONTROL_PLANE_DB, else
+      # PLATFORM_DB), or in Postgres when that engine is selected (plan P0.9 / finding B6). The
+      # old hard-coded /data/approvals.db is a file the control plane stopped writing.
+      CONTROL_PLANE_DB: ${CONTROL_PLANE_DB:-/state/platform.db}
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      # Also publish every audit event as audit.recorded (docs/guides/audit-trail.md).
+      EXAMLOPS_AUDIT_STREAM: ${EXAMLOPS_AUDIT_STREAM:-}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
       # Postgres tier (mlflow + prefect metadata) — reaches the postgres service over the network.
       PGHOST: postgres
       POSTGRES_USER: ${POSTGRES_USER:-mlops}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mlops}
-      EXAMLOPS_BACKUP_PG_DBS: ${EXAMLOPS_BACKUP_PG_DBS:-mlflow,prefect}
-      # Object tier (MinIO buckets) — same creds/endpoint as the rest of the stack.
+      # The dashboard's database too once it has its own (a repeated name is dumped once).
+      EXAMLOPS_BACKUP_PG_DBS: ${EXAMLOPS_BACKUP_PG_DBS:-mlflow,prefect,${DASHBOARD_DB_NAME:-mlflow}}
+      # Object tier (MinIO buckets). Read-only on the buckets it snapshots (plan P3.4): a backup
+      # never needs to write them, and a restore is an operator's action, not the sidecar's.
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      AWS_ACCESS_KEY_ID: ${MINIO_BACKUP_ACCESS_KEY:-${MINIO_ROOT_USER:-minioadmin}}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_BACKUP_SECRET_KEY:-${MINIO_ROOT_PASSWORD:-minioadmin}}
       EXAMLOPS_PROJECTS_BUCKET: ${EXAMLOPS_PROJECTS_BUCKET:-examlops-projects}
     volumes:
       - ${EXAMLOPS_HOST_REPO:-../../..}:/repo:rw
@@ -985,6 +1150,135 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+    restart: unless-stopped
+
+  # ── NATS JetStream — the event backbone (ADR 0124) ──────────────────────────
+  # Opt-in with `docker compose --profile events up -d nats`, then point the relays at it:
+  # EXAMLOPS_EVENT_PUBLISHER=nats and EXAMLOPS_NATS_URL=nats://nats:4222 (in .env). Loopback-published
+  # for `exa events tail` from the host; the monitoring endpoint (8222) stays inside the network.
+  nats:
+    image: nats:2.14.6-alpine
+    container_name: examlops-nats
+    profiles: [events]
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "127.0.0.1:14222:4222"
+    volumes:
+      - nats_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8222/healthz?js-enabled-only=true"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Event consumers (ADR 0124): react to platform events instead of polling ─────────────────
+  # With `nats`, behind the `events` profile. Both are durable consumers — run more copies and they
+  # share the work; a copy that was down resumes where it stopped. Set EXAMLOPS_EVENT_PUBLISHER=nats
+  # in .env too, so the control plane relays its events onto the backbone these read.
+  autopilot-follower:
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-control-plane:${EXAMLOPS_IMAGE_TAG:-latest}
+    container_name: examlops-autopilot-follower
+    profiles: [events]
+    # A finished retrain gets its model's autopilot cycle at once (every gate applies; nothing
+    # happens while the autopilot kill-switch is off).
+    command: ["exa", "autopilot", "follow"]
+    environment:
+      EXAMLOPS_NATS_URL: nats://nats:4222
+      EXAMLOPS_ACTOR: autopilot
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      CONTROL_PLANE_URL: http://control-plane:8002
+      # Its own credential (plan P3.2 — autopilot: read + retrain); the shared token until one is issued.
+      CONTROL_PLANE_TOKEN: ${AUTOPILOT_CONTROL_PLANE_TOKEN:-${CONTROL_PLANE_TOKEN:-}}
+      EXAMLOPS_USECASE_DIR: ${EXAMLOPS_USECASE_DIR:-/app/usecases/seanergy}
+      PLATFORM_DB: /state/platform.db
+      EXAMLOPS_DATA_DIR: /state
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
+    env_file:
+      - path: .env
+        required: true
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-../../..}:/state:rw
+    depends_on:
+      nats:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    restart: unless-stopped
+
+  skipper-watch:
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-agent:${EXAMLOPS_IMAGE_TAG:-latest}
+    container_name: examlops-skipper-watch
+    profiles: [events]
+    # Drift and cost on a timer (AGENT_WATCH_INTERVAL_S), and an alert the moment a training run
+    # fails, crashes or goes missing (retrain.* on the backbone). LLM-free.
+    working_dir: /app/platform/services/agent
+    command: ["python", "-m", "skipper.watch", "--daemon"]
+    environment:
+      EXAMLOPS_NATS_URL: nats://nats:4222
+      EXAMLOPS_ACTOR: skipper-watch
+      PLATFORM_DB: /state/platform.db
+      EXAMLOPS_DATA_DIR: /state
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
+    env_file:
+      - path: .env
+        required: true
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-../../..}:/state:rw
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Serving gateway (plan P4.4, ADR 0126) ──────────────────────────────────────
+  # Envoy in front of the serving plane: credential (virtual key or IdP token) → per-tenant quota →
+  # body limit → ray-serving, with timeouts and a retry budget. Only inference is routed; admin
+  # routes stay internal. Opt in with `docker compose --profile gateway up -d`. See
+  # docs/guides/serving-gateway.md.
+  gateway-authz:
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-control-plane:${EXAMLOPS_IMAGE_TAG:-latest}
+    container_name: examlops-gateway-authz
+    profiles: [gateway]
+    command: ["uvicorn", "--factory", "examlops.serving_gateway:create_app",
+              "--host", "0.0.0.0", "--port", "8090"]
+    environment:
+      EXAMLOPS_ACTOR: serving-gateway
+      PLATFORM_DB: /state/platform.db
+      EXAMLOPS_DATA_DIR: /state
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
+      EXAMLOPS_GATEWAY_TENANT_RPM: ${EXAMLOPS_GATEWAY_TENANT_RPM:-600}
+      EXAMLOPS_GATEWAY_KEY_CACHE_SECONDS: ${EXAMLOPS_GATEWAY_KEY_CACHE_SECONDS:-60}
+    env_file:
+      - path: .env
+        required: true
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-../../..}:/state:rw
+    restart: unless-stopped
+    healthcheck:
+      # /readyz, not /healthz: compose has one health signal and `depends_on: service_healthy`
+      # should wait for a gateway that can actually authorize, not merely one that is listening.
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8090/readyz')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  gateway:
+    image: envoyproxy/envoy:v1.39.1@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4
+    container_name: examlops-gateway
+    profiles: [gateway]
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
+    volumes:
+      - ./gateway/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "18088:8080"   # the serving gateway; Envoy's admin interface is loopback-only in-container
+    depends_on:
+      gateway-authz:
+        condition: service_healthy
+      ray-serving:
+        condition: service_started
     restart: unless-stopped
 
   # ── vLLM OpenAI-compatible server (Track V / ADR 0107) ──────────────────────
@@ -1057,6 +1351,9 @@ volumes:
   agent_data:
   backups_data:
   dashboard_cli_data:
+  nats_data:
+  ray_serving_snapshot:
+  mlflow_auth:
   dataplane_stage:
   kafka_data:
   marquez_db_data:

@@ -61,3 +61,58 @@ examlops.io/tenant: {{ .Values.global.tenant | quote }}
 securityContext:
 {{ toYaml .Values.podSecurityContext | indent 2 }}
 {{- end -}}
+
+{{/* Workload identity (ADR 0125). The one place a tier's SPIFFE ID is written: the ClusterSPIFFEID
+     that registers it and the control plane's map of who may do what are both built from here, so
+     they cannot name different IDs. Namespace and release keep two installs in one cluster apart. */}}
+{{- define "examlops.spiffeID" -}}
+{{- printf "spiffe://%s/ns/%s/%s/%s" .root.Values.workloadIdentity.trustDomain .root.Release.Namespace (include "examlops.fullname" .root) .component -}}
+{{- end -}}
+
+{{/* The tiers that call the control plane and are deployed by this release, in a stable order. */}}
+{{- define "examlops.spiffeCallers" -}}
+{{- $callers := list "dashboard" -}}
+{{- if .Values.agent.enabled }}{{ $callers = append $callers "agent" }}{{ end -}}
+{{- if ((.Values.events | default dict).followers | default dict).autopilot | default dict | dig "enabled" false }}{{ $callers = append $callers "autopilot-follower" }}{{ end -}}
+{{- toJson $callers -}}
+{{- end -}}
+
+{{/* SPIFFE ID → principal, tenant and scopes, for the control plane. */}}
+{{- define "examlops.workloadIdentityMap" -}}
+{{- $root := . -}}
+{{- $map := dict -}}
+{{- range $component := include "examlops.spiffeCallers" $root | fromJsonArray -}}
+{{- $caller := index $root.Values.workloadIdentity.callers $component -}}
+{{- $_ := set $map (include "examlops.spiffeID" (dict "root" $root "component" $component)) (dict "principal" $caller.principal "tenant" $root.Values.global.tenant "scopes" $caller.scopes) -}}
+{{- end -}}
+{{- toJson $map -}}
+{{- end -}}
+
+{{/* The spiffe-helper sidecar: keeps the tier's JWT-SVID (or, for the control plane, the trust
+     bundle) in the spiffe-svid memory volume, rewritten before it expires. */}}
+{{- define "examlops.spiffeHelperContainer" -}}
+{{- $h := .root.Values.workloadIdentity.helper -}}
+- name: spiffe-helper
+  image: {{ printf "%s:%s" $h.image.repository $h.image.tag }}{{ with $h.image.digest }}@{{ . }}{{ end }}
+  imagePullPolicy: {{ $h.image.pullPolicy }}
+  args: ["-config", "/etc/spiffe-helper/{{ .component }}.conf"]
+  securityContext:
+    {{- toYaml .root.Values.containerSecurityContext | nindent 4 }}
+  resources:
+    {{- toYaml $h.resources | nindent 4 }}
+  volumeMounts:
+    - {name: spiffe-workload-api, mountPath: /spiffe-workload-api, readOnly: true}
+    - {name: spiffe-svid, mountPath: /run/spire/svid}
+    - {name: spiffe-helper-config, mountPath: /etc/spiffe-helper, readOnly: true}
+{{- end -}}
+
+{{/* The volumes the helper needs. The Workload API comes through the SPIFFE CSI driver, not a
+     hostPath; the SVID never touches disk. */}}
+{{- define "examlops.spiffeVolumes" -}}
+- name: spiffe-workload-api
+  csi: {driver: {{ .Values.workloadIdentity.csiDriver }}, readOnly: true}
+- name: spiffe-svid
+  emptyDir: {medium: Memory, sizeLimit: 1Mi}
+- name: spiffe-helper-config
+  configMap: {name: {{ include "examlops.fullname" . }}-spiffe-helper}
+{{- end -}}

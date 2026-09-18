@@ -1,9 +1,18 @@
 """Cross-tenant isolation conformance (enterprise-readiness Phase 2, item 2.6).
 
 The security guarantee: a query scoped to one tenant must NEVER return another tenant's rows.
-This is the conformance test the roadmap asks for — it seeds two tenants into every tenant-scoped
-store and proves tenant A can neither read nor list tenant B's data. A regression that widens a
-`WHERE tenant=?` clause (or drops it) fails here loudly.
+
+**Read what this covers before trusting it.** It proves the guarantee for the three stores named
+below — secrets, SLO specs, policy bundles — by seeding two tenants and asserting each list is
+single-tenant. It used to say it seeded "every tenant-scoped store"; there are **31** tables with a
+`tenant` column, so that claim was wrong by an order of magnitude, and it was the kind of wrong that
+stops anyone looking. It did stop someone looking: the dashboard's own tenant filter turned out to
+have no callers at all, and `GET /api/slo` was returning every tenant's SLO definitions to every
+viewer (`tests/unit/test_dashboard_tenant_scoping.py`, which ratchets that surface).
+
+What this file covers is the **data layer** — the helpers that take a `tenant` argument. The layer
+above it, where a route must decide *which* tenant to ask for, is the one that failed, and no
+amount of conformance down here would have caught it.
 """
 
 from __future__ import annotations

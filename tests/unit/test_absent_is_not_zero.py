@@ -162,7 +162,20 @@ _PROMQL_WORDS = {
 #                          emits 0 instead). So the whole series being absent means "not a
 #                          registered source", not "outage" — a catalog-wide outage is what
 #                          `dataplane_catalog_up` (and `DataplaneCatalogUnavailable`) is for.
-_EXEMPT_METRICS = {"dataplane_catalog_up", "dataplane_source_up"}
+#   envoy_cluster_membership_healthy / _total
+#                          Envoy publishes both for every configured cluster on every scrape, so
+#                          they are missing only when Envoy is not scraped — which is
+#                          `ServingGatewayDown` (`up{job=~"gateway|gateway_authz"} == 0`), the same
+#                          argument the guard already makes for `up` itself. An `absent()` arm here
+#                          would fire on every site that does not deploy the gateway at all (it is
+#                          opt-in, behind a Compose profile and `gateway.enabled`), and a rule that
+#                          fires forever on a healthy platform is how alerting gets switched off.
+_EXEMPT_METRICS = {
+    "dataplane_catalog_up",
+    "dataplane_source_up",
+    "envoy_cluster_membership_healthy",
+    "envoy_cluster_membership_total",
+}
 
 
 def test_every_equality_alert_can_still_see_an_absent_series():

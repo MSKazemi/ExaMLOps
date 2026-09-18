@@ -331,3 +331,114 @@ async def test_many_entitlements_do_not_blow_the_session_cookie(client, center):
     assert len(session) < 3500, len(session)
     me = await client.get("/api/auth/me", headers={"Cookie": f"__Host-examlops_session={session}"})
     assert me.status_code == 200 and me.json()["role"] == "operator"
+
+
+async def test_step_up_covers_the_challenger_promote_door_too(client, monkeypatch):
+    """Same authority, same gate — `/api/challenger/{model}/promote` promotes to production.
+
+    `model.promote` is a step-up capability, and the challenger router said so in its own module
+    docstring: it reuses `model.promote` "which is a step-up capability … rather than inventing a
+    third name". It reused the capability *name* and checked it with a bare `can()`, which never
+    reaches `iam_gate.enforce` — where both RFC 9470 step-up and the federated centre's PDP veto
+    live. So with step-up enforced, `/api/models/…/alias` demanded re-authentication (the test
+    above) while this door to the same action did not.
+    """
+    from tests.conftest import ADMIN_PW
+
+    token = (await client.post("/api/auth/login", json={"password": ADMIN_PW})).json()["token"]
+    monkeypatch.setenv("EXAMLOPS_IAM_STEP_UP", "enforce")
+    monkeypatch.setenv("EXAMLOPS_IAM_STEP_UP_MAX_AGE", "0")
+    import time
+
+    time.sleep(1.1)
+    resp = await client.post(
+        "/api/challenger/JPCP/promote", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 401, f"promotion ran without step-up: {resp.status_code}"
+    assert "insufficient_user_authentication" in resp.headers.get("www-authenticate", "")
+
+
+async def test_the_pdp_is_asked_about_traffic_manage_not_only_api_write(client, center):
+    """A centre policy written in capability terms must reach the routes that use that capability.
+
+    Two PDP questions exist at different granularities: `require_role` asks `api.read`/`api.write`
+    for every authenticated route, and `require_capability` asks about the **named capability**. A
+    centre that forbids `traffic.manage` — the vocabulary ADR 0120's own example uses — had no way
+    to stop an A/B start, because that route checked the capability with a bare `can()` and the PDP
+    only ever saw `api.write`.
+    """
+    idp, pdp, write = center
+    pdp.policy = lambda req: req["action"]["name"] not in {"traffic.manage"}
+    write(authorization={"mode": "both", "pdp": {"type": "authzen", "url": pdp.url}})
+    *_, cb = await _sso_login(client, idp, groups=["mlops-admins"])
+    cookie = f"__Host-examlops_session={_cookies(cb)['__Host-examlops_session']['value']}"
+
+    vetoed = await client.post(
+        "/api/v1/traffic/ab/start",
+        json={"model": "JPCP", "champion": "1", "challenger": "2"},
+        headers={"Cookie": cookie, "X-ExaMLOps-CSRF": "1"},
+    )
+    assert vetoed.status_code == 403, f"the centre's veto did not reach this route: {vetoed.text}"
+    assert "traffic.manage" in {body["action"]["name"] for _, body in pdp.requests}
+
+
+async def test_the_pdp_veto_reaches_a_converted_router(client, center):
+    """A second capability, on one of the 42 routes converted in the same batch.
+
+    The traffic test above proves the mechanism; this proves the batch. `secrets.manage` governs
+    writing a secret, and a centre that forbids it must be able to stop the write — which it could
+    not while the route checked the capability with a bare `can()` and the PDP saw only `api.write`.
+    """
+    idp, pdp, write = center
+    pdp.policy = lambda req: req["action"]["name"] not in {"secrets.manage"}
+    write(authorization={"mode": "both", "pdp": {"type": "authzen", "url": pdp.url}})
+    *_, cb = await _sso_login(client, idp, groups=["mlops-admins"])
+    cookie = f"__Host-examlops_session={_cookies(cb)['__Host-examlops_session']['value']}"
+
+    vetoed = await client.post(
+        "/api/secrets",
+        json={"path": "prod/token", "value": "whatever"},
+        headers={"Cookie": cookie, "X-ExaMLOps-CSRF": "1"},
+    )
+    assert vetoed.status_code == 403, f"the centre's veto did not reach this route: {vetoed.text}"
+    assert "secrets.manage" in {body["action"]["name"] for _, body in pdp.requests}
+
+
+async def test_the_pdp_sees_the_cli_capability_the_command_actually_needs(client, center):
+    """The console's capability is per request, and the centre's policy has to see the real one.
+
+    `cli.py` cannot name its capability in a route-level dependency: `cli.run` or `cli.write` is
+    chosen from the tier of the `exa` command inside the request, and that is only known after the
+    argv is built. So it calls `iam_gate.enforce` itself once the answer exists. Before that, a
+    federated caller's centre saw only the coarse `api.write` for `/api/v1/cli/runs`, whatever
+    command was in the body — a centre could not permit read-only `exa` use while forbidding the
+    mutating kind, which is the whole point of having two capabilities.
+    """
+    idp, pdp, write = center
+    pdp.policy = lambda req: req["action"]["name"] not in {"cli.write"}
+    write(authorization={"mode": "both", "pdp": {"type": "authzen", "url": pdp.url}})
+    *_, cb = await _sso_login(client, idp, groups=["mlops-admins"])
+    cookie = f"__Host-examlops_session={_cookies(cb)['__Host-examlops_session']['value']}"
+    headers = {"Cookie": cookie, "X-ExaMLOps-CSRF": "1"}
+
+    # A read-tier command: the centre permits `cli.run`, so this is not refused by policy.
+    allowed = await client.post(
+        "/api/v1/cli/runs", json={"command": "status", "args": {}}, headers=headers
+    )
+    assert allowed.status_code != 403, f"a permitted read was refused: {allowed.text}"
+    assert "cli.run" in {body["action"]["name"] for _, body in pdp.requests}
+
+
+async def test_the_pdp_can_forbid_only_the_mutating_half_of_the_cli_console(client, center):
+    """The other side of the same policy: `cli.write` refused, and the refusal is the centre's."""
+    idp, pdp, write = center
+    pdp.policy = lambda req: req["action"]["name"] not in {"cli.write"}
+    write(authorization={"mode": "both", "pdp": {"type": "authzen", "url": pdp.url}})
+    *_, cb = await _sso_login(client, idp, groups=["mlops-admins"])
+    cookie = f"__Host-examlops_session={_cookies(cb)['__Host-examlops_session']['value']}"
+
+    vetoed = await client.get(
+        "/api/v1/cli/workspace", headers={"Cookie": cookie, "X-ExaMLOps-CSRF": "1"}
+    )
+    assert vetoed.status_code == 403, f"the centre's veto did not reach this route: {vetoed.text}"
+    assert "cli.write" in {body["action"]["name"] for _, body in pdp.requests}

@@ -200,7 +200,11 @@ function BurstsSection() {
  * not been exercised.
  */
 export function NextGen() {
-  const { data: summary, isLoading } = useNextGenSummary()
+  const { data: summary, isLoading, error } = useNextGenSummary()
+  // A zero here is a claim — "no device pools are configured". When the summary could not be read
+  // we have not earned that claim, so every tile shows a dash instead and the page says why. Same
+  // rule the NOC wall follows: a dash is the absence of a number, a zero is an assertion about one.
+  const kpi = (n: number | undefined) => (error ? '—' : (n ?? 0))
 
   return (
     <div className="p-6 space-y-8 max-w-5xl mx-auto">
@@ -215,6 +219,13 @@ export function NextGen() {
         </p>
       </div>
 
+      {error && (
+        <EmptyState
+          title="Couldn't load the Next-Gen summary"
+          description={`The platform state endpoint is unreachable (${String(error)}). The figures below are unknown, not zero.`}
+        />
+      )}
+
       {isLoading ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3" aria-label="Loading summary">
           {Array.from({ length: 6 }).map((_, i) => (
@@ -223,12 +234,12 @@ export function NextGen() {
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          <KpiTile label="Federated runs" value={summary?.federated_runs ?? 0} icon={Users} />
-          <KpiTile label="Device pools" value={summary?.device_pools ?? 0} icon={Cpu} />
-          <KpiTile label="Placements" value={summary?.placements ?? 0} icon={Network} />
-          <KpiTile label="Autoscale configs" value={summary?.autoscale_configs ?? 0} />
-          <KpiTile label="Distributed runs" value={summary?.distributed_runs ?? 0} />
-          <KpiTile label="Feature views" value={summary?.feature_views ?? 0} />
+          <KpiTile label="Federated runs" value={kpi(summary?.federated_runs)} icon={Users} />
+          <KpiTile label="Device pools" value={kpi(summary?.device_pools)} icon={Cpu} />
+          <KpiTile label="Placements" value={kpi(summary?.placements)} icon={Network} />
+          <KpiTile label="Autoscale configs" value={kpi(summary?.autoscale_configs)} />
+          <KpiTile label="Distributed runs" value={kpi(summary?.distributed_runs)} />
+          <KpiTile label="Feature views" value={kpi(summary?.feature_views)} />
         </div>
       )}
 

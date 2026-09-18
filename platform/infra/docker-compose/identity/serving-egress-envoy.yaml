@@ -1,0 +1,100 @@
+# A caller's side of its mutual TLS hop to the model server (ADR 0125 phase 3).
+#
+#   caller ──▶ 127.0.0.1:8001 ─ this Envoy (in the caller's network namespace) ══▶ ray-serving:8443
+#
+# One file for every caller: the control plane, the dashboard, the agent and the SeanerBUS bridge
+# each run it as a sidecar in their own network namespace (docker-compose.identity.yml,
+# `serving-egress-<caller>`). The caller keeps speaking plain HTTP to what it takes for the model
+# server, now 127.0.0.1:8001, and needs no certificate handling of its own. The sidecar carries the
+# caller's identity label, so the SPIRE agent issues it the caller's X.509-SVID, which it presents
+# to the model server's Envoy (identity/serving-mtls-envoy.yaml). That Envoy decides which caller
+# may do what. Certificates come from the SPIRE agent over SDS and rotate without a restart.
+# tests/unit/test_serving_gateway_mtls.py and tests/integration/test_serving_gateway_mtls_live.py.
+
+# SDS needs a node identity to ask under; the SPIRE agent identifies the workload by its
+# process, not by this name.
+node: {id: serving-egress, cluster: examlops}
+
+static_resources:
+  listeners:
+    - name: serving_egress
+      # Loopback only: the caller's namespace is the one thing that can reach it.
+      address:
+        socket_address: {address: 127.0.0.1, port_value: 8001}
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: serving_egress
+                route_config:
+                  name: serving
+                  virtual_hosts:
+                    - name: serving
+                      domains: ["*"]
+                      routes:
+                        # The caller's own timeouts and retries govern; this hop adds none.
+                        - match: {prefix: "/"}
+                          route: {cluster: ray_serving, timeout: 0s}
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: ray_serving
+      type: STRICT_DNS
+      connect_timeout: 2s
+      load_assignment:
+        cluster_name: ray_serving
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: {address: ray-serving, port_value: 8443}
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          common_tls_context:
+            # Both bounds: an upstream context's default maximum is TLS 1.2, so a minimum of 1.3 alone
+            # leaves no version at all (NO_SUPPORTED_VERSIONS_ENABLED; the live test found it).
+            tls_params: {tls_minimum_protocol_version: TLSv1_3, tls_maximum_protocol_version: TLSv1_3}
+            tls_certificate_sds_secret_configs:
+              - name: default
+                sds_config:
+                  resource_api_version: V3
+                  api_config_source:
+                    api_type: GRPC
+                    transport_api_version: V3
+                    grpc_services: [{envoy_grpc: {cluster_name: spire_agent}}]
+            combined_validation_context:
+              # The model server must prove it is the model server: a certificate from this trust
+              # domain's CA naming …/ray-serving. Any other workload of the domain is refused.
+              default_validation_context:
+                match_typed_subject_alt_names:
+                  - san_type: URI
+                    matcher: {safe_regex: {regex: "^spiffe://[^/]+/ray-serving$"}}
+              validation_context_sds_secret_config:
+                name: ROOTCA
+                sds_config:
+                  resource_api_version: V3
+                  api_config_source:
+                    api_type: GRPC
+                    transport_api_version: V3
+                    grpc_services: [{envoy_grpc: {cluster_name: spire_agent}}]
+    # The SPIRE agent's Workload API socket, which also serves Envoy SDS (gRPC over HTTP/2).
+    - name: spire_agent
+      type: STATIC
+      connect_timeout: 1s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: {http2_protocol_options: {}}
+      load_assignment:
+        cluster_name: spire_agent
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    pipe: {path: /run/spire/sockets/agent.sock}

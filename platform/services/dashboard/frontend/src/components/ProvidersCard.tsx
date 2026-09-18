@@ -109,7 +109,10 @@ export function ProviderEditor({
 }
 
 export function ProvidersCard({ project, admin }: { project: string; admin: boolean }) {
-  const { data = [], isLoading } = useProviders(project)
+  // `error` as well as `data`: "no authored providers" is a claim about which Python
+  // computes this project's cost, carbon and drift numbers, and a failed read must not
+  // make it — an authored provider may be active and governing every figure shown.
+  const { data = [], isLoading, error } = useProviders(project)
   const activate = useActivateProvider(project)
   const del = useDeleteProvider(project)
   const [editing, setEditing] = useState<{ domain: string; name: string; code: string } | undefined>(undefined)
@@ -139,6 +142,11 @@ export function ProvidersCard({ project, admin }: { project: string; admin: bool
         </p>
         {isLoading ? (
           <p className="text-sm text-muted-foreground italic">Loading providers…</p>
+        ) : error ? (
+          <p className="text-sm" style={{ color: 'var(--error-text)' }}>
+            The authored providers could not be read — this is not a statement that none are
+            active. Check with <span className="font-mono">exa providers list</span>.
+          </p>
         ) : data.length === 0 ? (
           <p className="text-sm text-muted-foreground italic">No authored providers yet. Click "New provider" to write one.</p>
         ) : (

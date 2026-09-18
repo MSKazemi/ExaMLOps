@@ -30,6 +30,7 @@ enough for an HPC login node:
 | `examlops[postgres]` | the Postgres datastore engine |
 | `examlops[backup]` | object-store tier of whole-platform backup |
 | `examlops[coordination]` | Redis cross-host locks and rate limits |
+| `examlops[events]` | NATS JetStream event backbone (the default `log` publisher needs nothing) |
 | `examlops[vector]` | pgvector vector store, independent of where platform state lives |
 | `examlops[fairness]` | Fairlearn's `MetricFrame` for fairness slice metrics (a pure-Python fallback computes the same numbers without it) |
 | `examlops[synth]` | synthetic dataset generation |

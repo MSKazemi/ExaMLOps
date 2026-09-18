@@ -494,51 +494,54 @@ def input_drift_rows(model_filter: str | None = None, *, window: int = INPUT_WIN
             models_list = [r["model"] for r in rows]
 
     results = []
-    for model in models_list:
-        with get_db() as conn:
+    # One connection for every model, not one per model: this loop opened 101 connections for 50
+    # models (a pool checkout and a round trip each on Postgres), and the rows it reads are a
+    # report — nothing here needs a transaction of its own.
+    with get_db() as conn:
+        for model in models_list:
             snap_rows = conn.execute(
                 "SELECT emb_norm, emb_mean, emb_std FROM input_snapshots WHERE model=? "
                 "ORDER BY ts DESC LIMIT ?",
                 (model, window),
             ).fetchall()
-        if not snap_rows:
-            continue
-        norms = [r["emb_norm"] for r in snap_rows]
-        means = [r["emb_mean"] for r in snap_rows]
-        stds = [r["emb_std"] for r in snap_rows]
-        live = {
-            "norm_mean": sum(norms) / len(norms),
-            "mean_mean": sum(means) / len(means),
-            "std_mean": sum(stds) / len(stds),
-        }
-        baseline = get_input_baseline(model)
-        if baseline is None:
-            status = "OK (no baseline)"
-            max_z = 0.0
-        else:
-            zs = []
-            for metric in ("norm_mean", "mean_mean", "std_mean"):
-                bstd = baseline.get(f"{metric}_std", 0.0)
-                if bstd > 0:
-                    zs.append(abs(live[metric] - baseline[metric]) / bstd)
-            max_z = max(zs) if zs else 0.0
-            if max_z >= 3.0:
-                status = "CRITICAL"
-            elif max_z >= 2.0:
-                status = "WARNING"
-            else:
-                status = "OK"
-        results.append(
-            {
-                "model": model,
-                "live_norm_mean": round(live["norm_mean"], 3),
-                "live_emb_mean": round(live["mean_mean"], 4),
-                "live_emb_std": round(live["std_mean"], 4),
-                "max_z": round(max_z, 2),
-                "status": status,
-                "n_snapshots": len(snap_rows),
+            if not snap_rows:
+                continue
+            norms = [r["emb_norm"] for r in snap_rows]
+            means = [r["emb_mean"] for r in snap_rows]
+            stds = [r["emb_std"] for r in snap_rows]
+            live = {
+                "norm_mean": sum(norms) / len(norms),
+                "mean_mean": sum(means) / len(means),
+                "std_mean": sum(stds) / len(stds),
             }
-        )
+            baseline = get_input_baseline(model, conn=conn)
+            if baseline is None:
+                status = "OK (no baseline)"
+                max_z = 0.0
+            else:
+                zs = []
+                for metric in ("norm_mean", "mean_mean", "std_mean"):
+                    bstd = baseline.get(f"{metric}_std", 0.0)
+                    if bstd > 0:
+                        zs.append(abs(live[metric] - baseline[metric]) / bstd)
+                max_z = max(zs) if zs else 0.0
+                if max_z >= 3.0:
+                    status = "CRITICAL"
+                elif max_z >= 2.0:
+                    status = "WARNING"
+                else:
+                    status = "OK"
+            results.append(
+                {
+                    "model": model,
+                    "live_norm_mean": round(live["norm_mean"], 3),
+                    "live_emb_mean": round(live["mean_mean"], 4),
+                    "live_emb_std": round(live["std_mean"], 4),
+                    "max_z": round(max_z, 2),
+                    "status": status,
+                    "n_snapshots": len(snap_rows),
+                }
+            )
     return results
 
 

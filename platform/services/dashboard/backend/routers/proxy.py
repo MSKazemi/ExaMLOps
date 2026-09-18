@@ -57,9 +57,25 @@ async def inject_control_plane_bearer(headers: dict[str, str], db: AsyncSession)
     return headers
 
 
+async def inject_mlflow_auth(headers: dict[str, str], db: AsyncSession) -> dict[str, str]:
+    """MLflow's basic-auth / token when the server requires it (plan P3.6); the role gate above
+    already decided whether this dashboard user may make the request at all."""
+    from examlops.service_auth import mlflow_headers
+
+    return {**headers, **mlflow_headers()}
+
+
+async def inject_prefect_auth(headers: dict[str, str], db: AsyncSession) -> dict[str, str]:
+    from examlops.service_auth import prefect_headers
+
+    return {**headers, **prefect_headers()}
+
+
 INJECTORS: dict[str, Injector] = {
     "grafana": inject_grafana_bearer,
     "control_plane": inject_control_plane_bearer,
+    "mlflow": inject_mlflow_auth,
+    "prefect": inject_prefect_auth,
     # MinIO intentionally absent — see spec §10.
 }
 

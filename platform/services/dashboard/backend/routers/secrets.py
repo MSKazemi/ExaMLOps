@@ -13,7 +13,7 @@ from __future__ import annotations
 import sqlite3
 
 from auth import require_role
-from capabilities import SECRETS_MANAGE, can, deny_reason
+from capabilities import SECRETS_MANAGE, can, deny_reason, require_capability, scope_to_tenant
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
@@ -46,8 +46,13 @@ def _examlops_secrets():
 
 
 @router.get("")
-async def list_secrets(_=Depends(_viewer)) -> list[dict]:
-    """Secret METADATA only — never the value (path/tenant/version/updated_by/updated_at)."""
+async def list_secrets(principal: dict = Depends(_viewer)) -> list[dict]:
+    """Secret METADATA only — never the value (path/tenant/version/updated_by/updated_at).
+
+    Scoped to the caller's tenant (F15 R4): the paths a tenant stores secrets under, and who
+    last changed them, are that tenant's business. The value was never exposed here; the
+    path list was, to everyone.
+    """
     try:
         conn = connect(_db_path())
         try:
@@ -57,7 +62,7 @@ async def list_secrets(_=Depends(_viewer)) -> list[dict]:
             ).fetchall()
             conn.close()
             # `hasValue` is always true for a stored row; the plaintext is intentionally absent.
-            return [{**dict(r), "hasValue": True} for r in rows]
+            return scope_to_tenant(principal, [{**dict(r), "hasValue": True} for r in rows])
         finally:
             conn.close()
     except sqlite3.OperationalError as exc:
@@ -76,6 +81,11 @@ async def list_secrets(_=Depends(_viewer)) -> list[dict]:
 async def set_secret(
     payload: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(SECRETS_MANAGE)),
 ) -> dict:
     """Set/update a secret's value (admin; audited). The value is write-only — never echoed back.
 

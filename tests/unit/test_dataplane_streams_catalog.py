@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -729,6 +730,42 @@ def test_sync_pack_streams_disables_removed_entry_and_audits(pack):
     assert report2["disabled"] == []
 
 
+def test_a_sweep_audit_loss_is_counted_and_the_disable_still_stands(pack, monkeypatch):
+    """An audit outage must not un-do the sweep, and must not hide itself either (P8.77).
+
+    ``sync_pack_streams`` writes its disable through ``audit_best_effort``: the stream is disabled
+    whether or not the record lands, so a blinking audit datastore cannot leave a removed stream
+    live. The loss is then counted, because the hash chain proves integrity over the rows that
+    exist and can never show a row that was never appended. The counter is process-global, so this
+    test resets it on both sides; without that the count leaks between tests under ``-n auto``.
+    """
+    from examlops.data import audit as audit_mod
+
+    audit_mod.reset_dropped_audit_events()
+    try:
+        _write_model(
+            pack, "JPCP", inference={"streams": [{"name": "http-in", "connector": "http"}]}
+        )
+        bindings.sync_pack_streams(actor="ci")
+
+        def boom(*_a: Any, **_k: Any) -> None:
+            raise RuntimeError("audit datastore unavailable")
+
+        monkeypatch.setattr(audit_mod, "write_audit_event", boom)
+        _write_model(pack, "JPCP", inference={"streams": []})
+        report = bindings.sync_pack_streams(actor="ci")
+
+        # The operation the operator asked for survived the audit outage.
+        assert report["disabled"] == ["_global/http-in"]
+        row = catalog.get_stream("http-in", "")
+        assert row["state"] == "disabled"
+        assert row["state_reason"] == "removed_from_pack"
+        # And the platform can tell that a record is missing for this window.
+        assert audit_mod.dropped_audit_events().get("dataplane_stream_disabled") == 1
+    finally:
+        audit_mod.reset_dropped_audit_events()
+
+
 def test_sync_pack_streams_readded_entry_is_reenabled_and_audited(pack):
     _write_model(pack, "JPCP", inference={"streams": [{"name": "http-in", "connector": "http"}]})
     bindings.sync_pack_streams(actor="ci")
@@ -898,15 +935,126 @@ def test_sync_pack_streams_never_touches_api_origin_stream(pack):
 
 
 def test_sync_pack_streams_enforces_tenancy(pack):
+    """A YAML that names a project its model does not belong to is refused (R11), and the refusal
+    never says which project does own it."""
+    create_project("research")
+    create_project("other")
+    _assign_model("research", "JPCP")
+    _write_model(
+        pack,
+        "JPCP",
+        project="other",
+        inference={"streams": [{"name": "http-in", "connector": "http"}]},
+    )
+    report = bindings.sync_pack_streams(actor="ci")
+    assert report["synced"] == []
+    assert report["errors"] and "JPCP" in report["errors"][0]["message"]
+    assert "research" not in report["errors"][0]["message"]
+    assert catalog.get_stream("http-in", "other") is None
+
+
+# ── the project a pack stream lands in (live finding D6) ────────────────────
+
+
+def test_a_pack_model_with_no_project_key_takes_the_project_it_is_assigned_to(pack):
+    """Live finding D6: on a real site no pack model carries a top-level ``project:`` while every
+    model IS assigned to a project, so R11 refused every pack-declared stream — the only way to
+    define one in this release — and the refusal was recorded but never logged."""
     create_project("research")
     _assign_model("research", "JPCP")
-    # The pack model has NO `project:` key -> resolves to the unscoped default, but JPCP is
-    # scoped to "research" -> ruling R11 refuses it; sync must record an error, not raise.
+    _write_model(pack, "JPCP", inference={"streams": [{"name": "http-in", "connector": "http"}]})
+    report = bindings.sync_pack_streams(actor="ci")
+    assert report["errors"] == [] and report["synced"] == ["research/http-in"]
+    row = catalog.get_stream("http-in", "research")
+    assert row is not None and row["model"] == "JPCP" and row["origin"] == "pack"
+    assert catalog.get_stream("http-in", "") is None  # not the unscoped default
+
+
+def test_a_pack_model_assigned_to_no_project_stays_unscoped(pack):
+    _write_model(pack, "JPCP", inference={"streams": [{"name": "http-in", "connector": "http"}]})
+    report = bindings.sync_pack_streams(actor="ci")
+    assert report["errors"] == [] and report["synced"] == ["_global/http-in"]
+    assert catalog.get_stream("http-in", "")["project"] == ""
+
+
+def test_a_pack_model_in_several_projects_is_an_error_naming_the_model_only(pack):
+    """More than one candidate is not a guess to make: the operator says which, in the YAML. The
+    message names the model and never the projects (R11's no-leak rule)."""
+    for project in ("research", "ops"):
+        create_project(project)
+        _assign_model(project, "JPCP")
     _write_model(pack, "JPCP", inference={"streams": [{"name": "http-in", "connector": "http"}]})
     report = bindings.sync_pack_streams(actor="ci")
     assert report["synced"] == []
-    assert report["errors"]
-    assert catalog.get_stream("http-in", "") is None
+    message = report["errors"][0]["message"]
+    assert "JPCP" in message and "project:" in message
+    assert "research" not in message and "ops" not in message
+    assert catalog.get_stream("http-in", "research") is None
+
+    # …and naming one in the YAML resolves it.
+    _write_model(
+        pack,
+        "JPCP",
+        project="ops",
+        inference={"streams": [{"name": "http-in", "connector": "http"}]},
+    )
+    assert bindings.sync_pack_streams(actor="ci")["synced"] == ["ops/http-in"]
+
+
+def test_a_stream_less_model_in_several_projects_is_not_an_error(pack, caplog):
+    """Re-review regression: the project was resolved for every model YAML, before its
+    ``inference.streams`` was read. A model assigned to several projects — a supported
+    configuration, ``project_models``' PK is ``(project, model)`` — therefore errored even when it
+    declared no stream at all, and any error suppresses the pack-removal sweep for the WHOLE pack,
+    on every sync. That is the failure D6 was raised about, reached from a YAML declaring nothing.
+    """
+    create_project("research")
+    _assign_model("research", "JPCP")
+    for project in ("p1", "p2"):
+        create_project(project)
+        _assign_model(project, "OTHER")
+    _write_model(pack, "JPCP", inference={"streams": [{"name": "http-in", "connector": "http"}]})
+    _write_model(pack, "OTHER", inference={"streams": []})  # declares nothing at all
+
+    with caplog.at_level(logging.WARNING, logger="examlops.dataplane.streams.bindings"):
+        report = bindings.sync_pack_streams(actor="ci")
+    assert report["errors"] == [] and report["synced"] == ["research/http-in"]
+    assert "sweep did not run" not in caplog.text
+
+    # …and the sweep still works: remove the entry and it is disabled, as it could not be while
+    # the stream-less model kept reporting an error.
+    _write_model(pack, "JPCP", inference={"streams": []})
+    report2 = bindings.sync_pack_streams(actor="ci")
+    assert report2["errors"] == [] and report2["disabled"] == ["research/http-in"]
+    assert catalog.get_stream("http-in", "research")["state"] == "disabled"
+
+
+def test_sync_errors_are_logged_and_a_suppressed_sweep_says_so(pack, caplog):
+    """Live finding D6: ``report["errors"]`` was the only record of a refused entry and nothing
+    read it, so an operator whose stream never appeared had an empty log to go on."""
+    _write_model(
+        pack,
+        "JPCP",
+        inference={
+            "streams": [
+                {"name": "good", "connector": "http"},
+                {"name": "bad-state", "connector": "http", "state": "Enabled"},
+            ]
+        },
+    )
+    with caplog.at_level(logging.WARNING, logger="examlops.dataplane.streams.bindings"):
+        report = bindings.sync_pack_streams(actor="ci")
+    assert len(report["errors"]) == 1
+    assert "jpcp.yaml entry 1 refused" in caplog.text
+    assert "invalid state 'Enabled'" in caplog.text
+    assert "the pack-removal sweep did not run (1 entry error(s))" in caplog.text
+
+
+def test_a_clean_sync_says_nothing_about_a_suppressed_sweep(pack, caplog):
+    _write_model(pack, "JPCP", inference={"streams": [{"name": "good", "connector": "http"}]})
+    with caplog.at_level(logging.INFO, logger="examlops.dataplane.streams.bindings"):
+        assert bindings.sync_pack_streams(actor="ci")["errors"] == []
+    assert "sweep did not run" not in caplog.text
 
 
 # ── per-entry robustness (fix round 1, finding 5) ───────────────────────────
@@ -964,8 +1112,19 @@ def test_sync_pack_streams_error_message_has_no_yaml_snippet(pack):
 
 
 def test_sync_pack_streams_isolates_non_str_project(pack):
-    """`project: 123` used to raise an uncaught AttributeError in `_normalize_project`."""
-    _write_model(pack, "BADPROJECT", project=123, inference={"streams": []})
+    """`project: 123` used to raise an uncaught AttributeError in `_normalize_project`.
+
+    The bad model declares a stream: since the re-review, a model's project is resolved only when
+    it declares one, so a malformed `project:` on a model that declares nothing is never read (and
+    must not cost the pack its removal sweep) — see
+    `test_a_stream_less_model_in_several_projects_is_not_an_error`.
+    """
+    _write_model(
+        pack,
+        "BADPROJECT",
+        project=123,
+        inference={"streams": [{"name": "bad", "connector": "http"}]},
+    )
     _write_model(pack, "GOOD", inference={"streams": [{"name": "good", "connector": "http"}]})
     report = bindings.sync_pack_streams(actor="ci")
     assert report["synced"] == ["_global/good"]
@@ -1116,3 +1275,47 @@ def test_yaml_streams_and_normalizer_agree(monkeypatch, legacy_env):
     via_normalizer = normalize_inference_streams(cfg)
 
     assert via_bindings == via_normalizer
+
+
+# ── the column migration itself (live finding D1) ───────────────────────────
+
+
+def test_a_stream_table_created_before_state_reason_gains_it_on_the_next_init_db():
+    """Live finding D1, reproduced: ``state_reason`` was added to the ``dataplane_streams`` DDL
+    after the table already existed on a running instance. ``init_db`` only creates *missing*
+    tables, so the column never arrived and every state change — pause, resume, disable, and the
+    pack-removal sweep — failed with ``no such column: state_reason``: a 500 with a traceback, on
+    the only route that can pause a live stream.
+
+    The old shape is built by dropping the column from a current database rather than by copying
+    the DDL, so this test cannot drift from the schema it is about, and it runs on whichever
+    datastore the suite is configured for.
+    """
+    from examlops.data import get_db, init_db
+
+    init_db()
+    catalog.upsert_stream(
+        "",
+        "pre-migration",
+        connector="http",
+        model="JPCP",
+        alias="Production",
+        address="",
+        connection=None,
+        options={},
+        limits={},
+        state="enabled",
+        origin="api",
+        actor="ci",
+    )
+    with get_db() as conn:  # the pre-release shape, with a row already in it
+        conn.execute("ALTER TABLE dataplane_streams DROP COLUMN state_reason")
+
+    with pytest.raises(Exception, match="state_reason"):
+        catalog.set_stream_state("", "pre-migration", "paused")  # what 500'd live
+
+    init_db(force=True)  # the schema bootstrap an upgraded process runs
+
+    assert catalog.set_stream_state("", "pre-migration", "paused", reason="ops") is True
+    row = catalog.get_stream("pre-migration", "")
+    assert row["state"] == "paused" and row["state_reason"] == "ops"

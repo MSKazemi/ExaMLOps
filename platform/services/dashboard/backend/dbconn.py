@@ -57,6 +57,18 @@ def _postgres_configured() -> bool:
     return os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower() == "postgres"
 
 
+def postgres_configured() -> bool:
+    """Whether platform state lives in Postgres — public, because a *query strategy* can depend on
+    it even though the SQL dialect does not.
+
+    The translation layer means a route never writes engine-specific SQL. Cost is a different
+    question: on SQLite a statement is an in-process call, on Postgres it is a network round trip,
+    and the cheapest shape is not the same one. `routers/drift_data.py` measures and explains the
+    one place this matters.
+    """
+    return _postgres_configured()
+
+
 def _connect_postgres() -> Any | None:
     """A Postgres connection, or None if the core package is not importable here."""
     global _warned

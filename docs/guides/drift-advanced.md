@@ -15,6 +15,27 @@ and exportable the same way — and concept drift feeds the existing auto-retrai
 | **`concept`** | realized-error mean-shift test | input→target relationship changed |
 | **`data_quality`** | schema / null / range / cardinality profile | bad or malformed inputs |
 
+## Drift status changes as events
+
+The control plane scores every model's prediction drift every `CONTROL_PLANE_DRIFT_EVAL_SECONDS`
+(60) and, when a model's status changes, emits `drift.status_changed`, plus `alert.drift` when the
+new status is `WARNING` or `CRITICAL`. It records the last status per model (`drift_status_state`),
+so each change is announced once. A model first seen healthy is recorded quietly; a model first
+seen already drifting is announced with `previous` null. The record and the events commit
+together, and the comparison runs under a write lock, so two control-plane replicas never both
+announce the same change. Consumers subscribe on the [event backbone](event-backbone.md) instead
+of polling `exa drift status`.
+
+`exa drift status`, `exa drift trigger`, the autopilot and this evaluator share one computation
+(`examlops.drift_status`): the last 100 predictions, scored by the site's drift provider
+(`exa providers list --domain drift`). Before, the autopilot had its own copy: 50 predictions and
+fixed 2.0/3.0 thresholds that ignored a configured provider, so it could disagree with
+`exa drift trigger` about the same model.
+
+`DriftEvaluationFailing` alerts when the evaluator keeps failing
+([runbook](../runbooks/control-plane.md#driftevaluationfailing)); `exa drift status` still works then,
+because it scores on demand.
+
 ## Concept drift (`exa drift concept`)
 
 As **delayed labels** arrive (via the ground-truth feedback loop, `exa eval feedback`),

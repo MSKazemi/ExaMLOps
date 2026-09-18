@@ -248,3 +248,85 @@ async def test_successful_alias_set_is_audited(client, fake_deps, monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert audited and audited[0][1] == "model_promoted"
+
+
+@pytest.mark.asyncio
+async def test_versions_beyond_the_first_page_are_not_lost(client, fake_deps, monkeypatch):
+    """Every version must be returned, however many pages MLflow splits them across.
+
+    MLflow pages `model-versions/search`. Reading only the first page does not merely shorten a
+    list: the aliases are resolved from it, so a Production alias pointing at a version that fell
+    off the page makes the dashboard report the model as having no production version at all —
+    while it is serving one. `examlops.serving_snapshot` already follows the token "by design";
+    this path did not.
+    """
+    from tests.fakes import MLFLOW_VERSION_PAGE_SIZE
+
+    # A fixed, small count that is asserted to span several pages, rather than a multiple of the
+    # page size: deriving the count from the constant means raising the constant silently inflates
+    # this test instead of failing it (at page size 100k it built 300k versions and took 40 s).
+    n = 7
+    assert n > MLFLOW_VERSION_PAGE_SIZE * 2, (
+        f"the fake's page size ({MLFLOW_VERSION_PAGE_SIZE}) no longer makes {n} versions span "
+        "several pages, so this test would pass without the router following any token"
+    )
+    versions = [
+        {
+            "version": str(i),
+            "run_id": f"r{i}",
+            "current_stage": "None",
+            # The alias sits on the LAST page — the version an operator most needs to see.
+            "aliases": ["Production"] if i == 1 else [],
+            "creation_timestamp": 1600000000000 + i,
+            "last_updated_timestamp": 1600000000000 + i,
+        }
+        for i in range(n, 0, -1)
+    ]
+    transport = make_mlflow_transport({"JPCP": versions})
+    monkeypatch.setattr(
+        "routers.models._mlflow_client",
+        lambda: httpx.AsyncClient(base_url="http://mlflow", transport=transport),
+    )
+
+    token = await _login(client, VIEWER_PW)
+    body = (await client.get("/api/models/JPCP/versions", headers=_hdr(token))).json()
+    assert len(body) == n, body
+    prod = [row for row in body if row["alias"] == "Production"]
+    assert [row["version"] for row in prod] == ["1"], body
+
+
+@pytest.mark.asyncio
+async def test_a_registry_that_never_stops_paging_is_refused_not_truncated(
+    client, fake_deps, monkeypatch
+):
+    """A page token that repeats must end the request, and must not look like a short answer.
+
+    Returning what had been read so far would be the original bug wearing a loop: a silently
+    incomplete version list. Refusing says the registry is misbehaving, which is true and
+    actionable; a worker spinning forever on the same page says nothing and costs capacity.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if "registered-models/get" in path:
+            return httpx.Response(200, json={"registered_model": {"aliases": []}})
+        if "model-versions/search" in path:
+            return httpx.Response(
+                200,
+                json={
+                    "model_versions": [{"version": "1", "run_id": "r1"}],
+                    "next_page_token": "always-the-same",
+                },
+            )
+        if "runs/get" in path:
+            return httpx.Response(200, json={"run": {"data": {"metrics": [], "tags": []}}})
+        return httpx.Response(404, json={"detail": path})
+
+    monkeypatch.setattr(
+        "routers.models._mlflow_client",
+        lambda: httpx.AsyncClient(base_url="http://mlflow", transport=httpx.MockTransport(handler)),
+    )
+    token = await _login(client, VIEWER_PW)
+    r = await client.get("/api/models/JPCP/versions", headers=_hdr(token))
+    assert r.status_code == 502, r.text
+    assert "page token" in r.json()["detail"]

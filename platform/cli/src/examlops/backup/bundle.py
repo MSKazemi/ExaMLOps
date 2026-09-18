@@ -32,6 +32,12 @@ class BundleResult:
     bundle_dir: str
     overall_status: str
     manifest: dict[str, Any]
+    #: Off-site replication outcome, when a cycle was asked to replicate:
+    #: ``{"requested": True, "ok": bool, "error": str | None, "uri": str | None}``. ``None`` when
+    #: no push was requested. It is deliberately **not** part of ``overall_status``: a broken
+    #: off-site target must never invalidate a good local backup. It is equally deliberately not
+    #: left to a log line — see :func:`examlops.backup.schedule.run_cycle`.
+    offsite: dict[str, Any] | None = None
 
 
 def _examlops_version() -> str:
@@ -230,17 +236,24 @@ def restore_bundle(
     restored: dict[str, Any] = {}
     if "sqlite" in selected:
         restored["sqlite"] = sqlite_tier.restore_sqlite_tier(d, force=force)
-        # The restored file may be older than this process's cached "schema is ready" verdict:
-        # forget it so the next helper re-runs the additive DDL, the stamp and online migrations.
-        from examlops.platform_db import _INITIALIZED_PATHS
-
-        _INITIALIZED_PATHS.clear()
     if "config" in selected:
         restored["config"] = config_tier.restore_config_tier(d)
     if "postgres" in selected:
         restored["postgres"] = postgres_tier.restore_postgres_tier(d, force=force)
     if "objects" in selected:
         restored["objects"] = objects_tier.restore_objects_tier(d, force=force)
+
+    # Whichever tier owns platform state, what came back may predate this process's cached
+    # "schema is ready" verdict: forget it so the next helper re-runs the additive DDL, the stamp
+    # and the online migrations. **Both** tiers need this, and only `sqlite` used to do it — yet
+    # exactly one of the two holds platform state at a time (`postgres_tier.platform_dsn()` is
+    # what decides), so under the Postgres engine the clearing ran on the tier that was empty and
+    # was skipped on the tier that had just been replaced. Found when a live DR drill dropped the
+    # schema and `init_db()` kept answering "ready" for a schema that no longer existed.
+    if {"sqlite", "postgres"} & selected:
+        from examlops.platform_db import _INITIALIZED_PATHS
+
+        _INITIALIZED_PATHS.clear()
     # A restore that failed and reported success is worse than one that raised: the operator
     # believes state is back. Any item that explicitly says `ok: False` is surfaced here so the
     # caller — and `exa backup restore-bundle`, which exits 1 on it — cannot miss it.
@@ -251,12 +264,38 @@ def restore_bundle(
         for item in items
         if isinstance(item, dict) and item.get("ok") is False
     ]
+    # The same argument as `failed` above, one step earlier: a restore that put back *less* than
+    # the bundle holds and reported success is one an operator reads as "the platform is back".
+    # The default is `sqlite,config`, so a bundle carrying `postgres` or `objects` — the models and
+    # the MLflow artifacts — leaves them behind unless they were asked for by name. The prompt says
+    # which tiers are being restored, but a scripted recovery passes `--yes` and never sees it.
+    # Only a tier the bundle actually holds content for. `postgres` and `objects` appear in every
+    # manifest with `status: skipped` and zero items when the stack was not up at backup time —
+    # there is nothing to restore, and naming them on every restore is the noise that gets a
+    # warning ignored. A tier counts as left behind when at least one of its items was captured.
+    restorable = {
+        name
+        for name, body in manifest.get("tiers", {}).items()
+        if any((item or {}).get("status") == OK for item in (body.get("items") or []))
+    }
+    skipped = sorted(t for t in restorable if t not in selected)
     return {
         "bundle": bundle_dir,
         "restored_tiers": sorted(selected),
+        "available_tiers": sorted(available),
+        "skipped_tiers": skipped,
         "detail": restored,
         "failed": failed,
+        # Two different questions, and a disaster-recovery script is asking the second:
+        #   `ok`       — everything I was asked to restore came back. A deliberate
+        #                `--tier sqlite` restore is `ok`, and must stay so, or every partial
+        #                restore would read as a failure.
+        #   `complete` — everything the bundle *held* came back. This is the one that answers
+        #                "is the platform fully back", and it is false when a captured tier was
+        #                left behind. The human path prints a warning; without this field the
+        #                scripted path had only `ok: true` and exit 0 to go on.
         "ok": not failed,
+        "complete": not failed and not skipped,
         "compatibility": compat.to_dict(),
     }
 

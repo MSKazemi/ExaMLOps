@@ -97,8 +97,6 @@ const nodeTypes = { status: StatusNode, groupLabel: GroupLabel }
 // Node ids match the keys of the /health services map so live status colours them.
 
 const NODE_DEFS: { id: string; label: string; x: number; y: number }[] = [
-  { id: 'seanerbus_sim', label: 'SeanerBUS',         x: 0,    y: 60  },
-  { id: 'seanerbus',     label: 'SeanerBUS Bridge', x: 0,    y: 200 },
   { id: 'jupyterhub',    label: 'JupyterHub',       x: 0,    y: 440 },
   { id: 'control_plane', label: 'Control Plane',    x: 285,  y: 110 },
   { id: 'dashboard',     label: 'Dashboard',        x: 285,  y: 440 },
@@ -114,7 +112,6 @@ const NODE_DEFS: { id: string; label: string; x: number; y: number }[] = [
 ]
 
 const GROUP_DEFS: { id: string; label: string; x: number; y: number }[] = [
-  { id: 'g-clients',    label: 'Clients',            x: 4,    y: 20  },
   { id: 'g-control',    label: 'Control',            x: 289,  y: 72  },
   { id: 'g-training',   label: 'Training',           x: 574,  y: -18 },
   { id: 'g-storage',    label: 'Registry & Storage', x: 859,  y: 42  },
@@ -126,15 +123,12 @@ const GROUP_DEFS: { id: string; label: string; x: number; y: number }[] = [
 // [source, target, label, sourceHandle, targetHandle, dashed]
 const EDGE_DEFS: [string, string, string, string, string, boolean][] = [
   // Primary data / control flow
-  ['seanerbus_sim', 'seanerbus',     'Cap\'n\'Proto TCP', 's-right',  't-left',   false],
-  ['seanerbus',     'control_plane', 'drift → retrain', 's-right',  't-left',   false],
   ['control_plane', 'prefect',       'schedule run',    's-right',  't-left',   false],
   ['prefect',       'slurm',         'submit job',      's-bottom', 't-top',    false],
   ['slurm',         'mlflow',        'log + register',  's-right',  't-left',   false],
   ['mlflow',        'postgres',      'metadata',        's-right',  't-left',   false],
   ['mlflow',        'minio',         'artifacts',       's-right',  't-left',   false],
   ['mlflow',        'ray_serve',     'load model',      's-bottom', 't-top',    false],
-  ['seanerbus',     'ray_serve',     'infer-pipeline',  's-right',  't-left',   false],
   // Observability / proxy
   ['ray_serve',     'prometheus',    'metrics',         's-right',  't-left',   true],
   ['control_plane', 'prometheus',    'metrics',         's-bottom', 't-top',    true],

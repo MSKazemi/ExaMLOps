@@ -26,7 +26,6 @@ const Datasets = lazy(() => import('@/pages/Datasets').then((m) => ({ default: m
 const Config = lazy(() => import('@/pages/Config').then((m) => ({ default: m.Config })))
 const Audit = lazy(() => import('@/pages/Audit').then((m) => ({ default: m.Audit })))
 const Docs = lazy(() => import('@/pages/Docs').then((m) => ({ default: m.Docs })))
-const SeanerBus = lazy(() => import('./pages/SeanerBus'))
 const Approvals = lazy(() => import('@/pages/Approvals').then((m) => ({ default: m.Approvals })))
 const Pipelines = lazy(() => import('@/pages/Pipelines').then((m) => ({ default: m.Pipelines })))
 const Jupyter = lazy(() => import('@/pages/Jupyter').then((m) => ({ default: m.Jupyter })))
@@ -186,7 +185,6 @@ export default function App() {
                       <Route path="/platform/ops" element={<PlatformOps />} />
                       <Route path="/platform/providers" element={<Providers />} />
                       <Route path="/platform/config" element={<Config />} />
-                      <Route path="/platform/integrations" element={<SeanerBus />} />
                       <Route path="/platform/jupyter" element={<Jupyter />} />
                       <Route path="/platform/flags" element={<Flags />} />
                       {/* Feature-flagged consoles (F23 R7 / F25). */}

@@ -74,7 +74,12 @@ binding's ``option_keys``. Option *values* are never reported — they are free-
 config. Every state change is mirrored into ``dataplane_stream_connector_state``, whose label set
 is :data:`examlops.dataplane.streams.connectors.STATES` — the one vocabulary, ``standby``
 included. A state outside it is reported in ``status()`` and logged, but the gauge records
-:data:`UNKNOWN_STATE_FALLBACK` instead, so no connector can widen that label set.
+:data:`UNKNOWN_STATE_FALLBACK` instead, so no connector can widen that label set. A stream the
+supervisor *forgets* — deleted from the catalog, or turned into a push stream it does not run —
+has its whole series cleared, so a stream that no longer exists stops reporting ``stopped``.
+
+**Logging.** One INFO line when a stream's run starts (``started (kafka)``) and one when its
+thread exits (``stopped (kafka)``); everything else a run does is a WARNING.
 """
 
 from __future__ import annotations
@@ -325,6 +330,11 @@ class CatalogView:
     serving); past that — or with no snapshot at all — :meth:`get` raises
     :class:`CatalogUnavailable`. :meth:`refresh` always re-reads (the supervisor calls it each
     reconcile, so in the ``all`` role the push path shares its reads).
+
+    :meth:`invalidate` marks ONE entry for an immediate re-read, which is what a state change made
+    **in this process** calls (live finding D5): without it a pause or disable the route reported
+    as applied kept serving traffic from the snapshot for up to ``ttl_s``. It is a local fix by
+    construction — another replica has its own snapshot and converges within its own TTL.
     """
 
     def __init__(
@@ -345,6 +355,7 @@ class CatalogView:
         self._snapshot: dict[tuple[str, str], StreamBinding] | None = None
         self._read_at = float("-inf")  # last successful read
         self._tried_at = float("-inf")  # last attempt
+        self._invalid: set[tuple[str, str]] = set()  # entries owed one immediate re-read
         self._last_warning = float("-inf")
 
     def refresh(self) -> list[StreamBinding]:
@@ -353,7 +364,19 @@ class CatalogView:
         with self._lock:
             self._snapshot = {(b.project, b.name): b for b in rows}
             self._read_at = self._tried_at = self._clock()
+            self._invalid.clear()  # this snapshot is newer than every invalidation
         return rows
+
+    def invalidate(self, project: str, name: str) -> None:
+        """Force the next :meth:`get` of ``(project, name)`` to re-read the catalog.
+
+        Called when this process changes a stream's state, so the change is visible to the push
+        route on the very next request instead of up to ``ttl_s`` later. Exactly one re-read is
+        owed: if it fails, the entry falls back to the ordinary staleness rules rather than
+        re-reading a datastore that is down on every request.
+        """
+        with self._lock:
+            self._invalid.add((project, name))
 
     def get(self, project: str, name: str) -> StreamBinding | None:
         key = (project, name)
@@ -364,11 +387,16 @@ class CatalogView:
             snapshot, read_at, tried_at = self._snapshot, self._read_at, self._tried_at
             stale = snapshot is None or now - read_at >= self._ttl
             missing = snapshot is not None and key not in snapshot
-            reread = (stale and now - tried_at >= min(self._ttl, self._miss_refresh)) or (
-                missing and now - tried_at >= self._miss_refresh
+            invalid = key in self._invalid
+            reread = (
+                invalid
+                or (stale and now - tried_at >= min(self._ttl, self._miss_refresh))
+                or (missing and now - tried_at >= self._miss_refresh)
             )
             if reread:
                 self._tried_at = now
+                # One forced re-read per invalidation, whether or not it succeeds.
+                self._invalid.discard(key)
         if reread:
             try:
                 self.refresh()
@@ -552,6 +580,15 @@ class _Stream:
             )
         finally:
             self._set_state("stopped", None)
+            # The matching line to `_launch`'s "started (kafka)". Without it the whole shutdown of
+            # a stream was invisible in the log (live finding D8), and an operator reading a
+            # service log could not tell a connector that stopped from one that never ran.
+            logger.info(
+                "dataplane stream %s/%s: stopped (%s)",
+                display_project(self.binding.project),
+                self.binding.name,
+                self.binding.connector,
+            )
 
     def _serve(self) -> str:
         """Run the connector — reconnecting with backoff — until the stream is stopped
@@ -862,7 +899,11 @@ class StreamSupervisor:
                     if b is None:
                         if entry is not None:
                             self._streams.pop(key, None)
-                            self._set_gauge(entry.binding, "stopped")
+                            # Forgotten, not merely stopped: the stream is gone from the catalog
+                            # (or became a push stream this supervisor does not run), so its state
+                            # series is taken off the gauge rather than frozen at `stopped` for the
+                            # life of the process (live finding D8).
+                            self._clear_gauge(entry.binding)
                         continue
                     if b.state != "enabled":
                         self._streams[key] = self._record(
@@ -1067,6 +1108,12 @@ class StreamSupervisor:
     def _set_gauge(self, binding: StreamBinding, state: str) -> None:
         try:
             metrics.set_connector_state(binding.project, binding.name, state)
+        except Exception:  # noqa: BLE001
+            logger.debug("dataplane streams: connector-state gauge failed", exc_info=True)
+
+    def _clear_gauge(self, binding: StreamBinding) -> None:
+        try:
+            metrics.clear_connector_state(binding.project, binding.name)
         except Exception:  # noqa: BLE001
             logger.debug("dataplane streams: connector-state gauge failed", exc_info=True)
 

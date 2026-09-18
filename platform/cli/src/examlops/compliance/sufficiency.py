@@ -177,13 +177,12 @@ def integrity_state() -> IntegrityState:
     except Exception as exc:  # noqa: BLE001
         state.anchors_error = f"{type(exc).__name__}: {exc}"
     try:
-        from examlops.data.audit import autonomous_actions
+        from examlops.data.audit import count_autonomous_without_rollback
 
-        state.autonomous_without_rollback = sum(
-            1
-            for a in autonomous_actions(since_days=3650, limit=100000)
-            if not a.get("rollback_ref")
-        )
+        # Counted by the database, not by adding up a page of rows: this number decides whether
+        # `record_keeping` is insufficient, so a violation that fell off the end of a listing
+        # would be a compliance pack vouching for a record that contains it.
+        state.autonomous_without_rollback = count_autonomous_without_rollback(since_days=3650)
     except Exception as exc:  # noqa: BLE001
         state.autonomy_error = f"{type(exc).__name__}: {exc}"
     return state

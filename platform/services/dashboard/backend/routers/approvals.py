@@ -45,7 +45,7 @@ async def list_approvals(
     _claims: dict = Depends(require_role("viewer")),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    url = f"{settings.control_plane_url}/approvals"
+    url = f"{settings.control_plane_url}/v1/approvals"
     params: dict[str, str] = {}
     if status is not None:
         params["status"] = status
@@ -85,7 +85,7 @@ async def approve_model(
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    url = f"{settings.control_plane_url}/approve/{model_id}"
+    url = f"{settings.control_plane_url}/v1/approvals/{model_id}/approve"
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.post(url, headers=headers)
@@ -122,7 +122,7 @@ async def reject_model(
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    url = f"{settings.control_plane_url}/reject/{model_id}"
+    url = f"{settings.control_plane_url}/v1/approvals/{model_id}/reject"
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.post(url, headers=headers, json={"reason": body.reason})

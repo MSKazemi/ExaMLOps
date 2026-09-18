@@ -1,0 +1,265 @@
+# The serving gateway (plan P4.4, ADR 0126 decision 2): the one front door to the serving plane.
+#
+#   client ──▶ :8080 ─ local rate limit ─ body limit ─ ext_authz ─ router ──▶ ray-serving:8001
+#                        (429)             (413)       (401/403/429)          (timeout, retries
+#                                                                              within a budget)
+#
+# Only inference is routed: OIP v2 (/v2/… over REST, /inference.GRPCInferenceService/… over gRPC
+# to the model server's gRPC port), the inference pipeline and the deprecated /predict.
+# Ray Serve's admin routes (/reload, /traffic-rules), its dashboard and /metrics are not reachable
+# through the gateway at all. Envoy's admin interface listens on loopback only; Prometheus scrapes
+# the one read-only stats path through the :9902 listener.
+#
+# Authorization is `examlops.serving_gateway` (the `gateway-authz` service): virtual keys or IdP
+# access tokens, per-tenant quotas, and the verified tenant/principal/project headers, which
+# overwrite anything a client sent under the same names. tests/unit/test_serving_gateway_config.py
+# holds this file to those rules; tests/integration/test_serving_gateway_live.py runs it.
+
+admin:
+  address:
+    socket_address: {address: 127.0.0.1, port_value: 9901}
+
+# A bound on open client connections, so a connection flood exhausts this limit, not the process.
+overload_manager:
+  resource_monitors:
+    - name: envoy.resource_monitors.global_downstream_max_connections
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.resource_monitors.downstream_connections.v3.DownstreamConnectionsConfig
+        max_active_downstream_connections: 50000
+
+static_resources:
+  listeners:
+    - name: serving
+      address:
+        socket_address: {address: 0.0.0.0, port_value: 8080}
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: serving
+                # HTTP/1.1 and HTTP/2 (gRPC clients send cleartext HTTP/2) on the one port.
+                codec_type: AUTO
+                use_remote_address: true
+                request_timeout: 60s
+                stream_idle_timeout: 300s
+                common_http_protocol_options:
+                  idle_timeout: 300s
+                  headers_with_underscores_action: REJECT_REQUEST
+                route_config:
+                  name: serving
+                  virtual_hosts:
+                    - name: serving
+                      domains: ["*"]
+                      routes:
+                        - match: {prefix: "/v2/"}
+                          route: &inference
+                            cluster: ray_serving
+                            timeout: 35s
+                            retry_policy:
+                              retry_on: connect-failure,refused-stream,reset,retriable-status-codes
+                              retriable_status_codes: [503]
+                              num_retries: 2
+                              per_try_timeout: 35s
+                        - match: {path: "/v2"}
+                          route: *inference
+                        - match: {path: "/infer-pipeline/infer"}
+                          route: *inference
+                        - match: {prefix: "/predict/"}
+                          route: *inference
+                        # The same protocol over gRPC (HTTP/2 on this listener) to the model
+                        # server's gRPC port. The client's own deadline (grpc-timeout) governs,
+                        # capped like REST. UNAVAILABLE is gRPC's 503: a replica shedding load.
+                        - match: {prefix: "/inference.GRPCInferenceService/", grpc: {}}
+                          route:
+                            cluster: ray_serving_grpc
+                            timeout: 35s
+                            max_stream_duration: {grpc_timeout_header_max: 35s}
+                            retry_policy:
+                              retry_on: connect-failure,refused-stream,reset,unavailable
+                              num_retries: 2
+                              per_try_timeout: 35s
+                        # Everything else is 404 at once: filters run before routing, so without
+                        # this an unserved path would still be authorized and spend tenant quota.
+                        - match: {prefix: "/"}
+                          direct_response:
+                            status: 404
+                            body: {inline_string: '{"error": "not served by the gateway"}'}
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_authz:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                              disabled: true
+                http_filters:
+                  # A ceiling for the whole listener, before any work is done. Per-tenant quotas
+                  # are the authorization service's (shared across gateway replicas).
+                  - name: envoy.filters.http.local_ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                      stat_prefix: serving_ceiling
+                      token_bucket:
+                        max_tokens: 2000
+                        tokens_per_fill: 2000
+                        fill_interval: 1s
+                      filter_enabled:
+                        default_value: {numerator: 100, denominator: HUNDRED}
+                        runtime_key: serving_ceiling_enabled
+                      filter_enforced:
+                        default_value: {numerator: 100, denominator: HUNDRED}
+                        runtime_key: serving_ceiling_enforced
+                      response_headers_to_add:
+                        - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                          header: {key: retry-after, value: "1"}
+                  # Request bodies above 8 MiB are refused with 413 before they reach a model.
+                  - name: envoy.filters.http.buffer
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer
+                      max_request_bytes: 8388608
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      failure_mode_allow: false
+                      status_on_error: {code: 503}
+                      # Only the credential goes to the authorization service; never the body.
+                      allowed_headers:
+                        patterns:
+                          - exact: authorization
+                      http_service:
+                        server_uri:
+                          uri: http://gateway-authz:8090
+                          cluster: gateway_authz
+                          timeout: 2s
+                        path_prefix: /check
+                        authorization_response:
+                          allowed_upstream_headers:
+                            patterns:
+                              - exact: x-examlops-tenant
+                              - exact: x-examlops-principal
+                              - exact: x-examlops-project
+                          allowed_client_headers:
+                            patterns:
+                              - exact: www-authenticate
+                              - exact: retry-after
+                              - exact: content-type
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+    # Read-only Prometheus stats, without exposing the admin interface.
+    - name: metrics
+      address:
+        socket_address: {address: 0.0.0.0, port_value: 9902}
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: metrics
+                route_config:
+                  virtual_hosts:
+                    - name: metrics
+                      domains: ["*"]
+                      routes:
+                        - match: {path: "/stats/prometheus"}
+                          route: {cluster: envoy_admin}
+                        - match: {prefix: "/"}
+                          direct_response: {status: 404}
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: ray_serving
+      type: STRICT_DNS
+      connect_timeout: 2s
+      load_assignment:
+        cluster_name: ray_serving
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: {address: ray-serving, port_value: 8001}
+      # A model server that stops *answering* — a pod on a lost node is the usual way — keeps its
+      # share of the traffic until something notices, and each request sent there costs the caller
+      # its whole deadline. Kubernetes takes about two minutes to stop routing to it (measured in
+      # tests/integration/test_serving_node_loss_kind_live.py); an active health check takes about
+      # ten seconds, because the proxy is the one being ignored. Ejection is capped at half the
+      # endpoints, and Envoy's panic threshold keeps a lone unhealthy endpoint in service rather
+      # than answering "no healthy upstream" — a one-container deployment must not fail closed
+      # because its model is slow to load.
+      health_checks:
+        - timeout: 2s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 2
+          no_traffic_interval: 15s
+          http_health_check: {path: /ready}
+      outlier_detection:
+        split_external_local_origin_errors: true
+        consecutive_local_origin_failure: 3
+        consecutive_gateway_failure: 3
+        consecutive_5xx: 5
+        interval: 5s
+        base_ejection_time: 10s
+        max_ejection_percent: 50
+      # Retries may add at most 20 % to the load on the model server (plus a floor of 3), so an
+      # overloaded server is not buried under its own retries.
+      circuit_breakers:
+        thresholds:
+          - priority: DEFAULT
+            retry_budget:
+              budget_percent: {value: 20.0}
+              min_retry_concurrency: 3
+    # The model server's Open Inference Protocol gRPC port (HTTP/2).
+    - name: ray_serving_grpc
+      type: STRICT_DNS
+      connect_timeout: 2s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: {http2_protocol_options: {}}
+      load_assignment:
+        cluster_name: ray_serving_grpc
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: {address: ray-serving, port_value: 8081}
+      # No active health check here: `/ready` is HTTP/1 on the REST port, and the model server does
+      # not serve `grpc.health.v1`, so there is nothing to probe. Outlier detection is the backstop
+      # — slower, because it needs failures to count, and it is why a gRPC caller should carry a
+      # deadline (`grpc-timeout`) rather than rely on the proxy noticing.
+      outlier_detection:
+        split_external_local_origin_errors: true
+        consecutive_local_origin_failure: 3
+        consecutive_gateway_failure: 3
+        interval: 5s
+        base_ejection_time: 10s
+        max_ejection_percent: 50
+      circuit_breakers:
+        thresholds:
+          - priority: DEFAULT
+            retry_budget:
+              budget_percent: {value: 20.0}
+              min_retry_concurrency: 3
+    - name: gateway_authz
+      type: STRICT_DNS
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: gateway_authz
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: {address: gateway-authz, port_value: 8090}
+    - name: envoy_admin
+      type: STATIC
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: envoy_admin
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: {address: 127.0.0.1, port_value: 9901}

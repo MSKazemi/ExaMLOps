@@ -195,7 +195,7 @@ def ab_record(
     with get_db() as conn:
         test_row = conn.execute(
             "SELECT id FROM ab_tests WHERE model=? AND status='running' "
-            "ORDER BY started_at DESC LIMIT 1",
+            "ORDER BY started_at DESC, id DESC LIMIT 1",
             (model,),
         ).fetchone()
         if test_row is None:
@@ -243,7 +243,7 @@ def ab_analyze(
     with get_db() as conn:
         test_row = conn.execute(
             "SELECT id, variant_a, variant_b FROM ab_tests WHERE model=? "
-            "ORDER BY started_at DESC LIMIT 1",
+            "ORDER BY started_at DESC, id DESC LIMIT 1",
             (model,),
         ).fetchone()
         if test_row is None:

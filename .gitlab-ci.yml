@@ -370,6 +370,10 @@ test:infra:helm:
         - tests/unit/test_helm_agent_scaling.py
         - tests/unit/test_helm_secret_scoping.py
         - tests/unit/test_dashboard_agent_credentials.py
+        - tests/unit/test_helm_events.py
+        - tests/unit/test_helm_workload_identity.py
+        - tests/unit/test_helm_gateway.py
+        - tests/unit/test_helm_prometheus_rules.py
         - .gitlab-ci.yml
       when: on_success
     - when: never
@@ -397,6 +401,10 @@ test:infra:helm:
         tests/unit/test_helm_agent_scaling.py
         tests/unit/test_helm_secret_scoping.py
         tests/unit/test_dashboard_agent_credentials.py
+        tests/unit/test_helm_events.py
+        tests/unit/test_helm_workload_identity.py
+        tests/unit/test_helm_gateway.py
+        tests/unit/test_helm_prometheus_rules.py
         tests/unit/test_dockerfile_build_context.py -q
     - make helm-package
 

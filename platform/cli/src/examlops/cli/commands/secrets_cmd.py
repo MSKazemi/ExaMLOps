@@ -129,7 +129,11 @@ def rewrap_cmd(
         raise typer.Exit(1) from exc
     if _output.json_mode:
         _output.print_json(summary)
-        return
+        # The exit code, not only the payload. Rotation exists so the previous KEK can be
+        # decommissioned; a script that reads the exit code to gate that next step was told a
+        # rotation with failures had succeeded, and retiring the old key then makes every secret
+        # still wrapped under it permanently unreadable.
+        raise typer.Exit(1 if summary["failed"] else 0)
     verb = "Would rewrap" if dry_run else "Rewrapped"
     _output.ok(
         f"{verb} {summary['rewrapped']}/{summary['total']} secret(s) under key "

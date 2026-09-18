@@ -9,17 +9,19 @@ uses SQLite for local development; production can select the shared Postgres sto
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/livez` | none | Process liveness for restart decisions; always 200 while the server can respond |
-| GET | `/readyz` | none | Traffic readiness; returns 503 when startup checks or the approval store are unhealthy |
+| GET | `/readyz` | none | Traffic readiness (`ready` in `/health`); returns 503 when startup checks or the approval store are unhealthy. A failed startup check is re-run by the probe (at most every `CONTROL_PLANE_STARTUP_RECHECK_SECONDS`), so readiness recovers when the dependency does. A missing retrain dispatch target does **not** make the API unready (see [Dispatch target](#dispatch-target)) |
 | GET | `/ready` | none | Compatibility alias for the original liveness endpoint |
-| GET | `/health` | none | Diagnostic verdict, dependencies, pending approvals, and runtime scaling capabilities |
+| GET | `/health` | none | Diagnostic verdict, dependencies, pending approvals, the retrain `dispatch` target's state, and runtime capabilities (scaling blockers, `separation_of_duties`) |
 | GET | `/status` | **read** | Concurrent peer pings + pending approval count. Returns **exactly** `services` (`control_plane`/`mlflow`/`prefect`/`ray_serve`/`dashboard`, each `{ok, url}`) and `pending_approvals`. It carries **no** model list — `exa status` reads production models from the MLflow registry instead |
-| GET | `/models` | none | List `model_name → datasets` known to the auto-discovery registry |
+| GET | `/models` | **read** | List `model_name → datasets` known to the auto-discovery registry |
+| GET | `/models/{name}/meta` · `/readme` · `/images/{file}` | **read** | Model metadata, README and bundled images (the dashboard serves images to browsers through its own signed URLs) |
 | POST | `/retrain` | **write** | Validate + schedule a Prefect flow run |
 | GET | `/retrain/{flow_run_id}` | **read** | Poll Prefect for a run owned by the credential's tenant; the legacy credential retains operator-wide lookup |
 | POST | `/api/changes` | **write** | CI webhook — record changed model IDs as tenant-scoped pending approvals (no training yet) |
 | GET | `/approvals` | **read** | List only the credential tenant's approvals; filter by `?status=pending\|approved\|rejected` |
 | POST | `/approve/{model_id}` | **write** | Approve a pending change in the credential tenant — fires Prefect training immediately |
 | POST | `/reject/{model_id}` | **write** | Reject a pending change in the credential tenant with optional `{"reason": "..."}` body |
+| DELETE | `/approvals/{approval_id}` | **write** | Retract a pending approval (`exa approvals delete`). The record is kept as `retracted`; nothing is erased |
 | POST | `/webhooks/modelzoo/gitlab` | token header | GitLab push webhook — mark models stale, optionally auto-retrain |
 | POST | `/webhooks/modelzoo/github` | HMAC header | GitHub push webhook — same semantics as GitLab |
 | GET | `/modelzoo/status` | **read** | Per-model freshness: `current` / `stale` / `unknown` |
@@ -28,16 +30,95 @@ uses SQLite for local development; production can select the shared Postgres sto
 | GET | `/modelzoo/config` | **read** | Show runtime ModelZoo config |
 | PUT | `/modelzoo/config` | **write** | Update runtime config (takes effect immediately) |
 | GET | `/metrics` | none | Prometheus text-format metrics for the approval gate (Phase 13) |
+| POST | `/v1/retrain` | **write** | Accept a retrain as an **asynchronous command**: 202 + `Location: /v1/commands/{id}`; honours `Idempotency-Key` |
+| GET | `/v1/commands/{command_id}` | **read** | One command's state, attempts, result (`flow_run_id`) and last error, in the caller's tenant |
+| GET | `/v1/commands` | **read** | The tenant's commands, newest first; `?state=`, `?kind=`, `?limit=` (≤ 200) and `?cursor=` (the previous page's `next_cursor`) |
+| DELETE | `/v1/commands/{command_id}` | **write** | Cancel a command not yet dispatched (`pending`, or `failed` awaiting retry); audited |
+
+## Versioned API (`/v1`)
+
+Every operator route has a `/v1` path. Each `/v1` path runs the same handler as its legacy path,
+with the same authentication, request and response. The one intended difference is errors: under
+`/v1` they are [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem documents
+(`application/problem+json` with `type`, `title`, `status`, `detail`, `instance`, and `errors` for
+validation failures), while legacy paths keep FastAPI's `{"detail": …}`.
+
+| Legacy | `/v1` |
+|---|---|
+| `GET /status` | `GET /v1/status` |
+| `GET /models` · `/models/{name}/meta` · `/readme` · `/images/{file}` | `GET /v1/models` · `/v1/models/{name}/meta` · `/readme` · `/images/{file}` |
+| `GET /retrain/{flow_run_id}` | `GET /v1/runs/{flow_run_id}` |
+| `GET /approvals` | `GET /v1/approvals` |
+| `POST /approve/{model_id}` | `POST /v1/approvals/{model_id}/approve` |
+| `POST /reject/{model_id}` | `POST /v1/approvals/{model_id}/reject` |
+| `DELETE /approvals/{approval_id}` | `DELETE /v1/approvals/{approval_id}` |
+| `POST /api/changes` | `POST /v1/changes` |
+| `GET\|POST\|PUT /modelzoo/…` | `/v1/modelzoo/status` · `/events` · `/sync` · `/config` |
+| `POST /admin/reload` | `POST /v1/admin/reload` |
+| `POST /retrain` (synchronous) | `POST /v1/retrain` — an asynchronous command, not the same call |
+
+**The legacy paths are deprecated but not scheduled for removal.** Every response from one carries
+[RFC 9745](https://www.rfc-editor.org/rfc/rfc9745) `Deprecation: @1789084800` (since 2026-09-11)
+and a `Link` to its successor, with the request's own path parameters filled in:
+
+```http
+HTTP/1.1 200 OK
+Deprecation: @1789084800
+Link: </v1/approvals/JPCP/approve>; rel="successor-version"
+```
+
+There is no `Sunset` header, because no removal date has been set. When one is, the header will
+say so first.
+
+**The platform's own components use `/v1`.** The CLI, the MCP tools, the SDK, the dashboard and the
+Skipper agent call the `/v1` paths for every route in the table whose twin is the same handler, and
+`tests/unit/test_control_plane_callers_use_v1.py` fails if one goes back.
+
+That includes the synchronous `POST /retrain`. The platform's retrains (`exa retrain`,
+`exa drift trigger`, `exa autopilot`, `exa pipeline hpo start`, `exa production deploy`, the MCP
+and agent retrain tools, the bus bridge, the dashboard) submit through `POST /v1/retrain` and then
+wait a bounded time for the command to be dispatched, using `examlops.retrain_command`:
+
+| What happens | What the caller reports |
+|---|---|
+| Dispatched within the wait (normally about a second) | the `flow_run_id`, as the old route did, plus the `command_id` |
+| Still queued when the wait ends: admission full, Prefect briefly down | *accepted, not dispatched yet*, with the `command_id` to follow (`exa commands show <id>`). The control plane still dispatches it, so nobody should submit it again |
+| The control plane gave up (`dead`) or it was cancelled | an error with the command's `last_error` |
+
+Interactive commands wait `EXAMLOPS_RETRAIN_WAIT_SECONDS` (30 s). The automated loops (drift
+trigger, autopilot, bus bridge) wait at most 5 s so an outage cannot stall a cycle. A Prefect outage
+used to fail every one of these calls outright. Now the retrain is kept and dispatched when Prefect
+comes back.
+
+!!! note "Upgrade order"
+    The `/v1` paths and the components that call them ship together. When upgrading piecemeal,
+    upgrade the control plane **before** the dashboard, agent or CLI. An older control plane
+    answers `/v1` with 404, which the dashboard reads as "model not found".
+
+### The Python client
+
+`examlops.control_plane_api` is generated from the committed API contract
+(`platform/services/control_plane/api-contract.json`). It has one function per `/v1` operation,
+and nothing in it is hand-written:
+
+```python
+from examlops import control_plane_api as cp
+
+cp.list_approvals(status="pending")                      # base and token from the CLI config
+cp.approve("JPCP")
+cp.submit_retrain(body={"model_name": "JPCP", "dataset_name": "PM100Dataset"},
+                  idempotency_key="nightly-2026-09-11")
+cp.list_commands(state="dead", base="http://cp:8002", token=token)
+```
+
+Path parameters are URL-escaped, query parameters are sent only when given, and errors raise the
+CLI's `ClientError` with the problem document's `detail`. `make openapi-export` regenerates the
+contract and the client together. A test fails while the client is stale, and the generator
+refuses a new `/v1` route until it has a function name. The `exa approvals`, `exa modelzoo`,
+`exa retrain-status`, `exa production reload`, `exa cards` and `exa status` commands use it. Probes (`/health`, `/readyz`, `/livez`, `/ready`), `/metrics` and the inbound
+ModelZoo webhooks are infrastructure and stay unversioned.
 
 ## POST /retrain
-
-!!! warning "Known issue: dispatch has no matching deployment"
-    `exa pipeline deploy` registers `examlops_scheduled_training/examlops-nightly`, a wrapper that
-    retrains every model and accepts only `is_dummy`. It does not create
-    `examlops_scheduled_training/nightly`, and no deployment it creates accepts the model and
-    dataset a retrain passes. Until a per-model dispatch deployment ships, `POST /retrain` — and
-    every path that calls it — fails at dispatch with Prefect's 404. The response below shows
-    the shape once a matching deployment exists.
 
 ```bash
 curl -X POST http://localhost:18002/retrain \
@@ -47,8 +128,7 @@ curl -X POST http://localhost:18002/retrain \
     "model_name": "JPCP",
     "dataset_name": "PM100Dataset",
     "is_dummy": true,
-    "backend_name": "minio",
-    "parameters": {"reason": "manual smoke"}
+    "backend_name": "minio"
   }'
 ```
 
@@ -56,14 +136,13 @@ Response:
 ```json
 {
   "flow_run_id": "abc123…",
-  "deployment": "examlops_scheduled_training/nightly",
+  "deployment": "training_flow/examlops-dispatch",
   "status_url": "/retrain/abc123…",
   "parameters": {
     "model_name": "JPCP",
     "dataset_cls_name": "PM100Dataset",
     "is_dummy": true,
-    "backend_name": "minio",
-    "reason": "manual smoke"
+    "backend_name": "minio"
   }
 }
 ```
@@ -86,6 +165,12 @@ Failure modes:
 
 ### Durable dispatch and event delivery
 
+Send an `Idempotency-Key` header with any retrain you might retry: the same key and body return the
+first attempt's result instead of dispatching again, on `/retrain` and `/v1/retrain` alike. Skipper's
+retrain tools send one per call, so their built-in transport retries cannot create a second run.
+The dashboard's **Run pipeline** button submits `/v1/retrain` like `exa retrain --async`, so the
+same admission caps, audit and training lease govern every door.
+
 Each retrain or approval dispatch is claimed in `control_plane_commands` before the Prefect call.
 The control plane sends the same stable idempotency key to Prefect, stores the successful response,
 and can replay it for a repeated caller key. An expired dispatch lease can be recovered after a
@@ -96,6 +181,88 @@ The built-in relay publishes the outbox through the configured publisher; operat
 `exa events relay` manually. `log` is the local default, while Redis Streams is the implemented
 shared broker. Delivery is **at least once**, with a stable event ID for consumer deduplication.
 NATS and Kafka selectors remain fail-loud placeholders.
+
+### Asynchronous commands (`/v1`)
+
+`POST /retrain` dispatches inside the request: the caller waits on Prefect, and a Prefect outage is a
+failed request. `POST /v1/retrain` instead records the command durably and answers at once:
+
+```bash
+curl -si -X POST http://localhost:18002/v1/retrain \
+  -H "Authorization: Bearer $CONTROL_PLANE_TOKEN" -H "Idempotency-Key: nightly-2026-09-10" \
+  -H "Content-Type: application/json" \
+  -d '{"model_name": "JPCP", "dataset_name": "PM100Dataset"}'
+# HTTP/1.1 202 Accepted
+# location: /v1/commands/v1:retrain:3f9c…
+# {"command_id": "v1:retrain:3f9c…", "state": "pending", "attempts": 0, ...}
+
+exa retrain JPCP --dataset PM100Dataset --async   # the same, from the CLI
+exa commands show v1:retrain:3f9c…                # follow it
+```
+
+A worker pool in the control plane (`CONTROL_PLANE_COMMAND_WORKERS`) dispatches due commands oldest
+first, through the same admission caps, dispatch target and audit as the synchronous path:
+
+| State | Meaning |
+|---|---|
+| `pending` | Accepted, waiting for a worker (or for admission capacity — it waits, it does not fail) |
+| `dispatching` | A worker holds its lease; a crashed worker's lease expires and the command is retried |
+| `failed` | The last attempt failed; retried after exponential backoff (`CONTROL_PLANE_COMMAND_BACKOFF_SECONDS`) |
+| `succeeded` | A flow run was created; `result.flow_run_id` names it |
+| `dead` | `CONTROL_PLANE_COMMAND_MAX_ATTEMPTS` attempts failed; nothing retries it (alert `ControlPlaneCommandDead`) |
+| `cancelled` | Withdrawn with `DELETE /v1/commands/{id}` before dispatch |
+
+Once a run exists, the workers follow it (`CONTROL_PLANE_RECONCILE_SECONDS`) and record the flow
+run's own state as `run_state` — `SCHEDULED`, `RUNNING`, then `COMPLETED`, `FAILED`, `CANCELLED`,
+`CRASHED`, or `MISSING` if Prefect no longer knows the run. Reaching a terminal state publishes one
+outbox event, `retrain.run_<state>` (for example `retrain.run_completed`), for subscribers that
+would otherwise poll Prefect. This also applies to runs dispatched by the synchronous `/retrain`.
+
+**One training run per model and dataset.** While a retrain of the same model and dataset in your
+tenant is queued, dispatching or still training, `POST /v1/retrain` answers 409 naming the command
+to follow. A retry with the same `Idempotency-Key` is not refused: it returns the existing command.
+
+The command id is Prefect's idempotency key, so a retry after a lost response can never create a
+second run. The same `Idempotency-Key` with a different body answers 409. Commands submitted to the
+synchronous `/retrain` are never retried in the background: that caller has already been told the
+outcome.
+
+Errors on `/v1` are [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem documents
+(`application/problem+json` with `type`, `title`, `status`, `detail`, `instance`; validation
+failures add `errors`). The legacy routes keep their `{"detail": ...}` shape.
+
+### Dispatch target
+
+Every retrain the control plane dispatches — `POST /retrain`, an approval, a ModelZoo auto-retrain —
+goes to one Prefect deployment, `PREFECT_DEPLOYMENT_NAME`, by default
+`training_flow/examlops-dispatch`. `exa pipeline deploy` registers it beside the nightly schedule
+and **serves** it: runs execute only while that process is running.
+
+The control plane checks the target at startup, on `POST /admin/reload`, and at most once a minute
+after that, and reports it in `GET /health`:
+
+```json
+"dispatch": {"deployment": "training_flow/examlops-dispatch", "state": "ok",
+             "detail": null, "parameters": ["backend_name", "dataset_cls_name", "is_dummy", "model_name"]}
+```
+
+| `state` | Meaning | Effect |
+|---|---|---|
+| `ok` | The deployment exists and accepts `model_name`, `dataset_cls_name`, `is_dummy`, `backend_name` | Unknown extra `parameters` keys are rejected with 400 before anything is recorded |
+| `missing` | Prefect has no such deployment | `status: degraded`; a dispatch answers **503** naming the deployment and the fix |
+| `incompatible` | The flow does not accept what the control plane sends, or requires something it never sends | `status: degraded` |
+| `unreachable` | Prefect did not answer | No verdict; Prefect's own validation has the last word |
+
+None of these pulls the API out of rotation: approvals, reads and the durable command record keep
+working, and a fresh stack legitimately starts before `exa pipeline deploy` has run.
+
+### Admission capacity
+
+At most `EXAMLOPS_ADMISSION_MAX_RUNNING` dispatches run at once platform-wide, and
+`EXAMLOPS_ADMISSION_PER_TENANT` per tenant. A dispatch refused at capacity answers **429** with
+`Retry-After` (`CONTROL_PLANE_ADMISSION_RETRY_AFTER`, 30 s); retry with the same
+`Idempotency-Key` (or the legacy `X-Idempotency-Key`; both routes accept either). A refused request leaves nothing queued behind it, and a slot held by a
+dispatch whose process died is released when its lease expires — neither can block later requests.
 
 ## Approval Gate (Phase 11)
 
@@ -141,7 +308,39 @@ Each approval record carries:
 | `requested_at` | ISO 8601 timestamp of the CI push |
 | `resolved_at` | ISO 8601 timestamp of approve/reject |
 
+`status` is one of `pending`, `approving` (a dispatch is in flight), `approved`, `rejected`,
+`retracted` or `expired` (after `APPROVAL_EXPIRY_HOURS`).
+
 The dashboard Approvals page (admin-only) shows a badge with the pending count and lets sysadmins approve or reject with one click.
+
+### Separation of duties
+
+The principal that filed a change (`requested_by`) cannot approve it: the attempt answers **403**
+and another principal must approve. The rule is on by default
+(`CONTROL_PLANE_SEPARATION_OF_DUTIES`). The shared `CONTROL_PLANE_TOKEN` cannot satisfy it — every
+holder is the principal `legacy` — so it is exempt, and `GET /health` reports
+`runtime.separation_of_duties: enforced-except-legacy-token`. Give CI and each approver their own
+credential (`CONTROL_PLANE_CREDENTIALS_JSON`, or federated sign-in) to get an enforced gate.
+
+Rejecting your own change is allowed. Retracting one (`exa approvals delete <id>`) is too; the record
+stays as `retracted` with who and when.
+
+### Audit trail
+
+Every decision the gate takes is written to the hash-chained audit log that `exa audit` reads, **in
+the same database transaction as the decision**, so a decision cannot stand without its record:
+
+| Action | When |
+|---|---|
+| `approval_requested` | `POST /api/changes` files a pending approval |
+| `approval_approved` | An approval dispatches its training run |
+| `approval_rejected` | `POST /reject/{model_id}` |
+| `approval_retracted` | `DELETE /approvals/{approval_id}` |
+| `retrain_dispatched` | `POST /retrain` or a ModelZoo auto-retrain creates a flow run |
+
+The actor is the verified principal of the calling credential, whichever surface made the call —
+the CLI, the dashboard or Skipper. Approvals, rejections and retractions are also published as
+outbox events (`approval.approved`, `approval.rejected`, `approval.retracted`).
 
 ### CI integration
 
@@ -157,7 +356,19 @@ Required GitHub secrets: `CONTROL_PLANE_URL` and `CONTROL_PLANE_TOKEN`.
 ## Auth model
 
 `CONTROL_PLANE_CREDENTIALS_JSON` is a JSON object keyed by bearer secret. Each value defines a
-server-trusted principal, tenant, and non-empty list containing `read`, `write`, or both:
+server-trusted principal, a tenant, and a non-empty list of scopes:
+
+| Scope | Allows |
+|---|---|
+| `read` | Every read: status, approvals, runs, commands, ModelZoo status |
+| `write` | Every mutation (it implies all four scopes below) |
+| `retrain` | Request retrains (`POST /retrain`, `/v1/retrain`) and cancel queued commands |
+| `approve` | Approve, reject or retract pending approvals |
+| `changes` | Report CI model changes that open approvals (`POST /api/changes`) |
+| `admin` | Reload the registry; change or sync the ModelZoo integration |
+
+A refused call says which scopes would have allowed it (`Missing 'write' or 'approve' scope`). An
+unknown scope is a configuration error that fails authentication closed, never a silent grant.
 
 ```json
 {
@@ -175,6 +386,28 @@ server-trusted principal, tenant, and non-empty list containing `read`, `write`,
 ```
 
 The literal example secrets above are rejected as placeholders; generate distinct random values.
+
+### One credential per service (plan P3.2)
+
+Give each service its own principal and only the scopes it uses. The audit trail and every
+command then name the service that acted, and a compromised service can do only its own job:
+
+```json
+{
+  "<random>": {"principal": "seanerbus-bridge", "tenant": "default", "scopes": ["retrain"]},
+  "<random>": {"principal": "autopilot",        "tenant": "default", "scopes": ["read", "retrain"]},
+  "<random>": {"principal": "skipper",          "tenant": "default", "scopes": ["read", "retrain"]},
+  "<random>": {"principal": "dashboard",        "tenant": "default", "scopes": ["read", "write"]},
+  "<random>": {"principal": "ci",               "tenant": "default", "scopes": ["changes"]}
+}
+```
+
+Hand each service its secret through its own variable. In Compose these are
+`SEANERBUS_BRIDGE_CONTROL_PLANE_TOKEN`, `AUTOPILOT_CONTROL_PLANE_TOKEN`,
+`AGENT_CONTROL_PLANE_TOKEN` and `DASHBOARD_CONTROL_PLANE_TOKEN`; each falls back to the shared
+`CONTROL_PLANE_TOKEN` while unset. Add `approve` to Skipper's scopes only if the agent should
+approve models; separation of duties still refuses an approval by the principal that requested
+it.
 Identity and tenant are never accepted from request bodies or caller-chosen headers. Approval rows,
 durable commands, idempotency keys, and emitted events use the verified context. Cross-tenant
 approval access returns no matching record, and structured credentials cannot inspect another
@@ -200,18 +433,6 @@ denies. Federation alone is a complete configuration (no `CONTROL_PLANE_TOKEN` n
 trust file refuses every federated token and shows as `identity_federation: fail: …` in `/health`
 startup checks. Users get a token with `exa auth login`; see
 [Identity federation](identity-federation.md).
-
-## Wiring with the dataplane simulator
-
-The dataplane simulator (`platform/clients/dataplane_sim.py`) gains its own `POST /trigger-retrain` that proxies to the control plane:
-
-```bash
-curl -X POST http://localhost:8010/trigger-retrain \
-  -H "Content-Type: application/json" \
-  -d '{"model_name":"JPCP","dataset_name":"PM100Dataset","reason":"drift>50%"}'
-```
-
-That endpoint is what the Phase 4 client-sim drift tracker calls when its rolling per-model error rate exceeds `CLIENT_SIM_DRIFT_THRESHOLD`. The dataplane forwards with the configured `CONTROL_PLANE_TOKEN`.
 
 ## Make targets
 
@@ -256,6 +477,11 @@ The control plane is the authoritative hub for ModelZoo repository freshness tra
 **GitHub** — Settings → Webhooks → add URL `http://<control-plane>:18002/webhooks/modelzoo/github`, content type `application/json`, select *Push events*, set secret to `MODELZOO_WEBHOOK_SECRET`.
 
 The dashboard Config page (ModelZoo Integration section) shows the pre-filled webhook URL derived from the live control plane address.
+
+Deliveries are idempotent on the commit: a redelivered or replayed webhook for a commit already
+recorded (by a webhook or by the poller) answers `{"duplicate": true}` and does nothing — no second
+event row, no CI trigger, no auto-retrain. Bodies above `CONTROL_PLANE_WEBHOOK_MAX_BYTES` (5 MiB)
+answer 413.
 
 ### Background poller
 
@@ -332,7 +558,10 @@ Postgres state backend:
 | `CONTROL_PLANE_TOKEN` | unset | Legacy `legacy/default` bearer credential with `read` + `write`; optional when the structured map is configured |
 | `CONTROL_PLANE_CREDENTIALS_JSON` | unset | Token-keyed JSON map of `principal`, `tenant`, and `scopes`; malformed input fails all bearer authentication closed |
 | `PREFECT_API_URL` | `http://localhost:14200/api` | Prefect server endpoint. `14200` is the host port the stack publishes; under compose the service sets `http://orchestrator:4200/api` itself. |
-| `PREFECT_DEPLOYMENT_NAME` | `examlops_scheduled_training/nightly` | Deployment slug `POST /retrain` schedules (must be `flow_name/deployment_name`). Known issue: `exa pipeline deploy` does not create this deployment, and none it creates accepts a retrain's `model_name` / `dataset_cls_name` — see [POST /retrain](#post-retrain) |
+| `PREFECT_DEPLOYMENT_NAME` | `training_flow/examlops-dispatch` | Deployment every dispatched retrain goes to (must be `flow_name/deployment_name`). `exa pipeline deploy` registers and serves it; `GET /health` → `dispatch` says whether it exists and accepts the control plane's parameters. |
+| `CONTROL_PLANE_ADMISSION_RETRY_AFTER` | `30` | `Retry-After` seconds on a 429 admission refusal |
+| `CONTROL_PLANE_SEPARATION_OF_DUTIES` | `true` | Requester may not approve its own change (legacy token exempt) |
+| `CONTROL_PLANE_WEBHOOK_MAX_BYTES` | `5242880` | Largest accepted ModelZoo webhook body (413 above) |
 | `CONTROL_PLANE_URL` | `http://control-plane:8002` | Set on the dataplane simulator so it can forward |
 | `EXAMLOPS_DB_BACKEND` | `sqlite` | Control-plane state engine: `sqlite` for local development or `postgres` for shared production state |
 | `EXAMLOPS_POSTGRES_DSN` | unset | Required when the state backend is `postgres` |
@@ -365,6 +594,42 @@ The control plane exposes a Prometheus-compatible `/metrics` endpoint that the e
 | `examlops_approvals_pending` | Gauge | — | Current count of rows with `status = 'pending'`; updated on every create/approve/reject |
 | `examlops_approval_events_total` | Counter | `model_id`, `action` | Cumulative approval lifecycle events; `action` ∈ `{created, approved, rejected}` |
 | `examlops_approval_age_oldest_seconds` | Gauge | — | Age in seconds of the oldest pending approval; 0 when no pending approvals; computed on each `/metrics` scrape |
+
+### Retrain outcomes, and what a "success rate" divides by
+
+`examlops_retrain_requests_total{model_name, dataset_name, outcome}` carries **five** outcomes, and
+they are not all attempts:
+
+| Outcome | Meaning | A retrain happened? |
+|---|---|---|
+| `success` | dispatched and recorded | yes |
+| `error` | the dispatch never reached Prefect | no |
+| `dispatched_unrecorded` | Prefect took it; the bookkeeping write failed | **yes** — the training is running |
+| `dedup` | an identical retrain was already in flight | no (the first one is) |
+| `throttled` | refused by the rate limit | no |
+
+Two rules follow, and both were wrong until 2026-09-14:
+
+- **`dispatched_unrecorded` is not an error.** It used to be recorded as one, and
+  [HighRetrainErrorRate](../runbooks/control-plane.md#highretrainerrorrate) pages above a 20% error
+  rate over 15 minutes — with retrains being rare, one miscounted success is 100%. See
+  [RetrainDispatchedButNotRecorded](../runbooks/control-plane.md#retraindispatchedbutnotrecorded).
+- **A success *rate* must name its denominator.** Dividing by the unfiltered counter puts `dedup`,
+  `throttled` and `dispatched_unrecorded` in the denominator, so a retrain that succeeded on retry
+  reads as 50% and a throttled request lowers the score of a platform that did exactly what it was
+  configured to do. Both Grafana panels — **and, since 2026-09-14, the
+  [HighRetrainErrorRate](../runbooks/control-plane.md#highretrainerrorrate) alert** — divide by
+  `outcome=~"success|error"`, the outcomes that represent an attempt that concluded.
+
+    The alert was missed when the panels were fixed, and the arithmetic is worse there because it
+    decides whether anyone is paged: 3 errors out of 5 attempts is **60%** and fires; add 50
+    **throttled** requests and it reads **5.5%** and does not. Throttling is what happens when a
+    system is already under pressure, so the dilution is *anti*-correlated with the alert firing —
+    it is quietest exactly when it should be loudest.
+
+`tests/unit/test_grafana_panels_can_show_data.py` holds both: every outcome the code emits appears
+on every panel that breaks retrains down *by outcome* (checked per panel, not pooled across
+dashboards), and no success-rate panel divides by the bare counter.
 
 ### Scrape configuration
 

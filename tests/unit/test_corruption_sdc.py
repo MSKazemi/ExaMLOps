@@ -222,7 +222,12 @@ def _enable_auto_retrain(model: str) -> None:
 @pytest.fixture
 def fake_post():
     with patch("examlops.cli._client.post") as mock:
-        mock.return_value = {"flow_run_id": "run-123"}
+        mock.return_value = {
+            "command_id": "v1:retrain:x",
+            "state": "succeeded",
+            "result": {"flow_run_id": "run-123"},
+            "status_url": "/v1/commands/v1:retrain:x",
+        }  # POST /v1/retrain, dispatched
         yield mock
 
 

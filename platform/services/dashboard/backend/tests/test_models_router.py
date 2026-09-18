@@ -212,7 +212,15 @@ async def test_predict_proxies_to_ray(client, fake_cp, monkeypatch):
     def handler(request: _httpx.Request) -> _httpx.Response:
         captured["url"] = str(request.url)
         captured["body"] = request.content
-        return _httpx.Response(200, json={"prediction": 0.42})
+        return _httpx.Response(  # an Open Inference Protocol v2 answer (ADR 0126)
+            200,
+            json={
+                "model_name": "JPCP",
+                "model_version": "7",
+                "parameters": {"alias": "Canary", "run_id": "r7"},
+                "outputs": [{"name": "predict", "datatype": "FP64", "shape": [1], "data": [0.42]}],
+            },
+        )
 
     monkeypatch.setattr(
         "routers.models._ray_client",
@@ -225,8 +233,23 @@ async def test_predict_proxies_to_ray(client, fake_cp, monkeypatch):
         headers=_hdr(token),
     )
     assert response.status_code == 200, response.text
-    assert response.json() == {"prediction": 0.42}
-    assert "stage=Canary" in captured["url"]
+    assert response.json() == {
+        "model_name": "JPCP",
+        "model_version": "7",
+        "alias": "Canary",
+        "run_id": "r7",
+        "prediction": 0.42,
+    }
+    # The stage reaches the model server as the OIP alias. It used to go as a query parameter
+    # /predict never read, so a user's stage choice was silently ignored.
+    import json as _j
+
+    assert captured["url"].endswith("/v2/models/JPCP/infer")
+    sent = _j.loads(captured["body"])
+    assert sent["parameters"] == {"alias": "Canary"}
+    assert sent["inputs"] == [
+        {"name": "submit_time", "shape": [1], "datatype": "FP64", "data": [1.0]}
+    ]
 
 
 @pytest.mark.asyncio

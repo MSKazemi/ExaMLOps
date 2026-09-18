@@ -1240,6 +1240,8 @@ def log_mlflow_task(
         except Exception as exc:
             print(f"[pipeline] MLflow registration skipped: {exc}")
 
+    if registration.get("version"):
+        _sign_registered(registered_model_name, str(registration["version"]))
     _emit_training_lineage(
         registered_model_name,
         dataset_name,
@@ -1251,6 +1253,41 @@ def log_mlflow_task(
         is_dummy=is_dummy,
     )
     return registration
+
+
+def _sign_registered(model: str, version: str) -> None:
+    """Sign the version just registered — the bytes the serving plane will download (P4.10).
+
+    ``EXAMLOPS_SIGN_AT_REGISTRATION``: ``auto`` (default) signs whenever a signing key is
+    configured and skips otherwise; ``required`` fails the run when the version cannot be signed,
+    so an unsigned version never waits in the registry for a serving plane that enforces
+    verification to refuse it; ``off`` never signs. Signing runs after registration: a signature
+    needs a version to name.
+    """
+    policy = os.getenv("EXAMLOPS_SIGN_AT_REGISTRATION", "auto").strip().lower()
+    if policy == "off":
+        return
+    try:
+        from examlops import supplychain  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001 - a worker image without the platform package
+        if policy == "required":
+            raise RuntimeError(f"cannot sign {model} v{version}: {exc}") from exc
+        return
+    if supplychain.signing_configured() is None:
+        if policy == "required":
+            raise RuntimeError(
+                f"cannot sign {model} v{version}: no signing key "
+                "(EXAMLOPS_SIGNING_PRIVATE_KEY_FILE or secret model-signing/ed25519-private)"
+            )
+        return
+    try:
+        sig = supplychain.sign_registered_version(model, version, actor="pipeline")
+    except Exception as exc:  # noqa: BLE001 - reported, and fatal only when required
+        if policy == "required":
+            raise
+        print(f"[pipeline] Could not sign {model} v{version}: {exc}")
+        return
+    print(f"[pipeline] Signed {model} v{version} ({sig.algo}, {sig.digest[:23]})")
 
 
 def _emit_training_lineage(
@@ -1395,6 +1432,21 @@ def _evaluate_stage_rule(metric_val: float, threshold: float, direction: str) ->
     return metric_val >= threshold
 
 
+def _announce_alias(model_id: str, alias: str, version: Any, previous: str | None) -> None:
+    """Publish ``model.alias_changed`` for an alias this run moved (P2.4); best effort.
+
+    A worker image without the platform package still promotes — the serving plane's alias poll
+    picks the change up — so an absent package is not an error here.
+    """
+    try:
+        from examlops import events  # noqa: PLC0415
+    except ImportError:
+        return
+    events.alias_changed(
+        model_id, alias, version, previous_version=previous, actor="pipeline", via="training-flow"
+    )
+
+
 def _notify_ray_serve(model_id: str) -> None:
     """Best-effort webhook to Ray Serve so a fresh model is hot-reloaded.
 
@@ -1413,6 +1465,11 @@ def _notify_ray_serve(model_id: str) -> None:
         import urllib.request
 
         req = urllib.request.Request(f"{url.rstrip('/')}/reload/{model_id}", method="POST")
+        # /reload is an admin route (plan P0.6); without the token it answers 401/503 and the
+        # 60 s alias poller still picks the promotion up.
+        admin_token = os.getenv("RAY_SERVE_ADMIN_TOKEN", "")
+        if admin_token:
+            req.add_header("Authorization", f"Bearer {admin_token}")
         urllib.request.urlopen(req, timeout=2.0).close()  # noqa: S310
         print(f"[pipeline] Notified Ray Serve at {url} for model={model_id}")
     except Exception as exc:  # noqa: BLE001
@@ -1551,6 +1608,12 @@ def promote_task(
                 print(f"[pipeline] {stage}: not promoted — {gate_refusal} (ADR 0008).")
                 break  # stages are ordered; a refused version goes no further
         client.set_registered_model_alias(model_id, stage, str(version))
+        _announce_alias(
+            model_id,
+            stage,
+            version,
+            previous_production if stage == "Production" else None,
+        )
         set_aliases.append(stage)
         highest_status = stage
         print(
@@ -1588,6 +1651,7 @@ def promote_task(
         else:
             try:
                 client.set_registered_model_alias(model_id, "Archived", previous_production)
+                _announce_alias(model_id, "Archived", previous_production, None)
                 print(f"[pipeline] Archived previous {model_id} v{previous_production}")
             except Exception as exc:  # noqa: BLE001
                 print(f"[pipeline] Could not set @Archived on v{previous_production}: {exc}")

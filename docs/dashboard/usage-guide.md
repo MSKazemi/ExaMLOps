@@ -6,7 +6,7 @@ Ray Serve, MinIO, Grafana/Prometheus, the HPC schedulers, the control plane, and
 `platform.db` operational store — surfaced as consoles, health checks, deep links, and a
 reverse proxy. Almost every write on the dashboard calls the **same `examlops.*` /
 `platform_db` code paths as the `exa` CLI**, so the UI never drifts from the CLI and there
-is a natural CLI equivalent for most actions — and **every** `exa` command (bar twelve that
+is a natural CLI equivalent for most actions — and **every** `exa` command (bar eight that
 need a terminal) is runnable from the [CLI Console](#cli-console).
 
 - **URL:** http://localhost:18099 (remote `lxp-cpu01`: `<REMOTE_HOST>:18099`, or via `ssh lxp` port-forward)
@@ -27,6 +27,31 @@ re-prompts. Role gating is enforced at the backend (BFF), not just hidden in the
 viewer hitting an admin route gets a 403 with a `deny_reason`. Throughout this guide,
 actions marked **(admin)** are admin-only; everything else is viewer-visible.
 
+## Empty and unreadable are different answers
+
+A panel that cannot read its data says so. It does **not** fall back to the empty state, because
+the empty state is a *claim*: "no saved version yet", "no traffic split set (100% Production by
+default)", "no authored providers yet" are all statements about the platform's actual condition,
+and an operator acts on them. Rendering one over a failed query asserts something nobody checked.
+
+Wherever you see wording like *"… could not be read — this is not a statement that none exist"*,
+that is this rule. The reads behind these panels answer `503` rather than an empty list when the
+datastore cannot be queried, so automation sees the difference too.
+
+Three panels were corrected on 2026-09-14 after a sweep of every page and component:
+
+| Panel | Said, over a failed read | Why it mattered |
+|---|---|---|
+| Compliance → Saved versions | "No saved version yet" | a claim about a model's regulatory record |
+| MLOps → Traffic split | "No traffic split set (100% Production by default)" | a claim about where live inference traffic goes |
+| Providers card | "No authored providers yet" | a claim about which Python computes the cost, carbon and drift numbers on the page |
+
+The traffic panel carried a second fault worth knowing about, because it is the one that could
+*change* something: it is not remounted when you pick a different model, and its editor is seeded
+only when a read succeeds. A failed read therefore left the **previous** model's weights in the
+form at a valid sum of 100 — the condition that enables **Set split**. It now renders neither the
+weights nor the editor when the read failed.
+
 ## Navigation & layout
 
 The left sidebar groups ~40 consoles into six lifecycle groups plus a Home item and a
@@ -40,7 +65,7 @@ footer of utility links. URLs are lifecycle-scoped (e.g. `/build/models`,
 | **Serve** | LLMOps · Traffic · Gateway · Scaling · Next-Gen |
 | **Operate** | Drift · Alerts · Autopilot · SLOs · Admission · Facility · FinOps · Self-Obs |
 | **Govern** (admin) | Governance · Compliance · Audit · Approvals · Fairness · Secrets |
-| **Platform** | CLI Console · Resources · Projects · Events · Services · Providers · Config · SeanerBUS · Jupyter · Flags (admin) |
+| **Platform** | CLI Console · Resources · Projects · Events · Services · Providers · Config · Jupyter · Flags (admin) |
 | **Utility (footer)** | Documents · Preferences |
 
 Cross-cutting tools available on every page: the **Command Palette** (⌘K / Ctrl-K), the
@@ -65,7 +90,7 @@ confirm the platform is up and jump into any area.
 | Action | What it does | Use case | How to (UI) | Equivalent CLI |
 |---|---|---|---|---|
 | View platform status | Shows service count, online count (`online/probed`), models loaded, ModelZoo/dataset counts, and per-service `Online`/`Degraded`/`Offline`/`Not measured` badges | First thing you check each session — is everything healthy | Sidebar → Overview (or `/`) | `exa status` |
-| Read an unmeasured service | A grey **Not measured** badge means the dashboard probes nothing for that entry; hover it for the reason | Tell "we did not look" apart from "it is down" — `slurm` and `seanerbus_sim` are always unmeasured, and never move the overall status | Overview → Services → hover the badge | `exa hpc queue` / `exa hpc capacity` for the scheduler |
+| Read an unmeasured service | A grey **Not measured** badge means the dashboard probes nothing for that entry; hover it for the reason | Tell "we did not look" apart from "it is down" — `slurm` is always unmeasured, and never moves the overall status | Overview → Services → hover the badge | `exa hpc queue` / `exa hpc capacity` for the scheduler |
 | Quick actions | Shortcut buttons into common flows (command-center) | Fast jump to frequent tasks | Overview → Quick Actions row | — |
 | Open a service | Deep-link to a service's own UI (MLflow, Grafana, …) | Drill into a specific tool | Click a Service Health card | — |
 | Jump to Models / Datasets | Stat tiles link into those consoles | Navigate by the numbers | Click Models Loaded / ModelZoo / Datasets tile | `exa models list` / `exa data list` |
@@ -118,13 +143,26 @@ collaboration discussion thread. Reached at `/build/models/:name`.
 Single pane for registry health and **governed promotion**: a registry grid (per-model
 version, stage, health token, governed?, freshness) plus a guided promotion gate that says
 inline whether a promotion is allowed and, if not, exactly why (missing/disabled policy,
-awaiting approval). Read-only — it visualizes the decision the CLI enforces.
+awaiting approval). The registry and promotion panels are read-only — they visualize the decision
+the CLI enforces. The traffic-split panel below them is **not**: viewers read the split, admins
+edit it, and saving is the same write `exa serve traffic` makes.
 
 | Action | What it does | Use case | How to (UI) | Equivalent CLI |
 |---|---|---|---|---|
 | Review registry health | Per-model health (`ok`/`warn`/`unknown`), governed flag, freshness | Spot ungoverned or stale models before promoting | Sidebar → MLOps | `exa drift status` / `exa models lineage` |
 | Read the promotion gate | Shows the policy, approval step, and the one-line verdict (Blocked / Eligible / Ready) | Decide if a model is safe to promote | MLOps → select a model row | `exa pipeline promote <name> --if-rmse-lt …` |
 | Read the eval gate's verdict | The latest persisted ADR 0008 eval-gate report: passed / failed / warning / not yet run / no gate, with a per-metric table and the candidate version it judged. A failed gate also raises an alert | See *why* a promotion is blocked before retrying | MLOps → select a model → Eval gate | `exa eval gate <model>` |
+| Read the traffic split | The weights per serving alias for the selected model | Know where live inference traffic goes before promoting or rolling back | MLOps → select a model → Traffic split | `exa serve traffic <M>` |
+| Set the traffic split **(admin)** | Writes the per-alias weights; Save is blocked unless they sum to 100 | Shift traffic to a canary, or return to 100% Production | MLOps → select a model → Traffic split → edit → **Set split** | `exa serve traffic <M> --production N --canary M` |
+
+!!! warning "A split that cannot be read is reported as unreadable, not as 'none set'"
+    Since 2026-09-14 a failed read of the traffic rules shows *"The traffic split could not be read"*
+    and renders neither the weights nor the editor. It previously did two dishonest things at once:
+    a viewer was told *"No traffic split set (100% Production by default)"* — a positive claim about
+    live routing, made over a refusing datastore — and an admin who had selected a **second** model
+    kept the **first** model's weights in the editor at a valid sum of 100, one click from writing
+    them to a model whose split had never loaded. Verify with `exa serve traffic <M>` before
+    changing a split you could not read.
 
 ## Datasets  <!-- (role: viewer / admin) -->
 
@@ -426,7 +464,7 @@ commands stay terminal-only and show why (e.g. `exa chat`, `exa stack down`).
 
 ## Resources  <!-- (role: viewer / admin) -->
 
-Everything `exa` manages, as tables: 47 resources (projects, connections, workbenches, prompts,
+Everything `exa` manages, as tables: 48 resources (projects, connections, workbenches, prompts,
 SLOs, traffic splits, A/B tests, budgets, the AI-system register, gateway keys, HPC clusters,
 secrets, backups…), each with **New**, row **View / Edit /
 Delete** and a **⋯** menu of every other action. Declared once in `examlops.cli.resources`, run
@@ -517,7 +555,7 @@ Writes are capability-gated (`PROVIDERS_MANAGE`), not raw admin.
 ## Config  <!-- (role: viewer / admin) -->
 
 Two stores, on one page. The **dashboard's own settings** (service endpoints, credentials,
-thresholds, GitLab ModelZoo integration, ModelZoo webhook + auto-retrain, SeanerBUS bridge, Slurm
+thresholds, GitLab ModelZoo integration, ModelZoo webhook + auto-retrain, Slurm
 adapter, session API token) live in the dashboard database. The **exa CLI configuration**
 section manages the `config.toml` that every `exa` run started from the dashboard uses (CLI
 Console, Resources): effective settings with their source, contexts, validation and export.
@@ -526,7 +564,7 @@ Viewers see everything read-only (secrets masked); admins edit.
 | Action | What it does | Use case | How to (UI) | Equivalent CLI |
 |---|---|---|---|---|
 | View config | All service URLs + which secrets are set (values masked) | Confirm platform wiring | Sidebar → Config | — (dashboard settings) |
-| Edit endpoints/params **(admin)** | Change the dashboard's service URLs, thresholds, Slurm, SeanerBUS values | Point the dashboard at new endpoints | Config → edit fields → **Save** | — (dashboard settings, not the CLI's `config.toml`) |
+| Edit endpoints/params **(admin)** | Change the dashboard's service URLs, thresholds, Slurm values | Point the dashboard at new endpoints | Config → edit fields → **Save** | — (dashboard settings, not the CLI's `config.toml`) |
 | Set/rotate credentials **(admin)** | Type a new secret (encrypted at rest; blank = unchanged; × = clear) | Store MinIO/Grafana/GitLab/control-plane secrets | Config → Credentials → type → **Save** | — (dashboard settings) |
 | See the CLI's effective settings | Every `exa` setting with its value (secrets masked) and source — env var, context, base config, default | Know which endpoint/token a dashboard-run command will use | Config → **exa CLI configuration** | `exa env` |
 | Edit / reset a CLI setting **(admin)** | Write a value into the base config or the selected context; Reset removes it so the next source applies. A value set by an environment variable is locked (it would win anyway) | Point `exa` runs at another control plane, rotate its token | Config → exa CLI configuration → pencil / reset | `exa config set <key> <value> [--context C]` · `exa config unset <key> [--context C]` |
@@ -538,19 +576,6 @@ Viewers see everything read-only (secrets masked); admins edit.
 | Import .env **(admin)** | Upload a `.env`/`.env.dashboard` to populate config | Bulk-load config | Config → **Import .env** | — |
 | Apply Config (export) **(admin)** | Download `.env.dashboard` to place in repo + restart | Persist dashboard config to disk | Config → **Apply Config** | — |
 | Copy API token | Copies the current session bearer token | Make direct API calls | Config → API Token → copy | — |
-
-## SeanerBUS  <!-- (role: viewer) -->
-
-Status dashboard for the SeanerBUS→Ray-Serve bridge: bridge stats, per-model handler
-UUIDs, live Grafana metrics, config summary, and a log tail. Config edits are deferred to
-the Config page (admin).
-
-| Action | What it does | Use case | How to (UI) | Equivalent CLI |
-|---|---|---|---|---|
-| View bridge status | Bridge health/stats + per-model UUIDs + live metrics | Confirm HPC-job inference is flowing | Sidebar → SeanerBUS | — |
-| Copy a UUID | Copies a model's handler UUID | Register a topic handler | UUID row → copy | — |
-| Edit in Config | Deep-links to the SeanerBUS section of Config (admin edits) | Change bridge connection settings | SeanerBUS → **Edit in Config** | — |
-| (assign missing UUIDs) | Shown when a model UUID is unassigned | Backfill per-model UUIDs | (hint on page) | `exa seanerbus init-uuids` |
 
 ## Jupyter  <!-- (role: viewer) -->
 
@@ -627,6 +652,18 @@ link. Tenant-scoped, sanitized, audited. Currently surfaced on Model Detail.
 
 Full-screen auto-rotating kiosk (`/noc`) of big-font FinOps/alert slides for a wall
 display. Non-interactive except **Exit** back to `/`.
+
+**How to read a missing number on it.** The wall never shows an error page, so a figure it cannot
+get degrades instead — and the three states are deliberately different, because on a wall silence
+reads as "quiet":
+
+| On the wall | Means |
+|---|---|
+| a number | that figure is live |
+| `—` *Awaiting data* | the source has not reported yet; it resolves itself |
+| `—` *<source> source unavailable*, plus an amber **Degraded** badge in the header | the aggregate could not reach that source — this one is someone's job |
+
+A dash is never a zero. A zero would be a claim ("no alerts"); a dash is the absence of one.
 
 ---
 

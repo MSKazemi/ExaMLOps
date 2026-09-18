@@ -1,7 +1,5 @@
 import { useState, useEffect } from 'react'
 import { Zap, KeyRound, Building2 } from 'lucide-react'
-import uniboLogo from '@/assets/unibo.png'
-import seanergysLogo from '@/assets/seanergys.jpg'
 import { getAuth, setAuth, ssoLoginUrl, type Role } from '@/lib/auth'
 
 interface SsoProvider {
@@ -162,11 +160,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           <div>
             <h1 className="text-2xl font-bold gradient-text">ExaMLOps</h1>
             <p className="text-sm text-muted-foreground mt-1">Sign in to continue</p>
-          </div>
-          <div className="flex items-center justify-center gap-3 pt-1">
-            <img src={uniboLogo} alt="University of Bologna" className="h-6 w-6 object-contain opacity-60" />
-            <div className="h-4 w-px bg-border" />
-            <img src={seanergysLogo} alt="SEANERGYS" className="h-5 object-contain max-w-[72px] opacity-60" />
           </div>
         </div>
 

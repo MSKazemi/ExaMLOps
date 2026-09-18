@@ -71,11 +71,15 @@ def platform_status() -> dict[str, Any]:
     are reachable, loaded serving models, active pipeline runs and pending approvals.
     Use this first to understand overall platform state.
     """
+    from examlops.sdk import control_plane_status
+
     cfg = _cfg()
-    res = _get(f"{cfg.control_plane_url}/status", token=cfg.control_plane_token)
-    if not res.get("ok"):
-        return res
-    return {"ok": True, **res["data"]}
+    try:
+        # `/v1/status`, or `/status` on a control plane older than the /v1 API.
+        data = control_plane_status(cfg.control_plane_url, cfg.control_plane_token or "")
+    except _client.ClientError as exc:
+        return _err(str(exc), status=getattr(exc, "status", None))
+    return {"ok": True, **data}
 
 
 def list_models() -> dict[str, Any]:
@@ -84,11 +88,18 @@ def list_models() -> dict[str, Any]:
     Reads the MLflow model registry. Model names are lowercase in the registry
     (e.g. ``jpcp``).
     """
+    from examlops.mlflow_paging import PagingError, all_items
+
     cfg = _cfg()
-    res = _get(f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/search")
-    if not res.get("ok"):
-        return res
-    models = res["data"].get("registered_models", [])
+    url = f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/search"
+    # An agent cannot sanity-check a short list, so a partial registry is worse here than
+    # elsewhere: "these are the models" is taken at face value.
+    try:
+        models = all_items(_client.get, url, "registered_models")
+    except _client.ClientError as exc:
+        return _err(str(exc), status=getattr(exc, "status", None))
+    except PagingError as exc:
+        return _err(str(exc))
     out = []
     for m in models:
         aliases = {
@@ -135,7 +146,7 @@ def list_production_models() -> dict[str, Any]:
     alias.
     """
     cfg = _cfg()
-    res = _get(f"{cfg.control_plane_url}/models", token=cfg.control_plane_token)
+    res = _get(f"{cfg.control_plane_url}/v1/models", token=cfg.control_plane_token)
     if not res.get("ok"):
         return res
     return {"ok": True, **_as_dict(res["data"])}
@@ -144,7 +155,7 @@ def list_production_models() -> dict[str, Any]:
 def list_approvals() -> dict[str, Any]:
     """List pending sysadmin approval requests in the promotion gate."""
     cfg = _cfg()
-    res = _get(f"{cfg.control_plane_url}/approvals", token=cfg.control_plane_token)
+    res = _get(f"{cfg.control_plane_url}/v1/approvals", token=cfg.control_plane_token)
     if not res.get("ok"):
         return res
     return {"ok": True, **_as_dict(res["data"])}
@@ -153,7 +164,7 @@ def list_approvals() -> dict[str, Any]:
 def modelzoo_status() -> dict[str, Any]:
     """Report ModelZoo repository freshness and the latest upstream events."""
     cfg = _cfg()
-    res = _get(f"{cfg.control_plane_url}/modelzoo/status", token=cfg.control_plane_token)
+    res = _get(f"{cfg.control_plane_url}/v1/modelzoo/status", token=cfg.control_plane_token)
     if not res.get("ok"):
         return res
     return {"ok": True, **_as_dict(res["data"])}
@@ -571,9 +582,11 @@ def dataplane_snapshots(name: str, project: str = "") -> dict[str, Any]:
     """Committed snapshots of one dataplane source, newest first (revision, rows, time)."""
 
     def _q() -> dict[str, Any]:
-        from examlops.data.dataplane import list_pulls
+        from examlops.data.dataplane import list_snapshots
 
-        rows = list_pulls(project=project, source=name, limit=50)
+        # Selected as snapshots in SQL: filtering a page of *pulls* down to the committed ones
+        # answers "snapshots among the newest 50 pulls", so a source in a failure run reports
+        # having none — the answer an agent is least able to sanity-check.
         return {
             "snapshots": [
                 {
@@ -581,8 +594,7 @@ def dataplane_snapshots(name: str, project: str = "") -> dict[str, Any]:
                     "rows": r.get("row_count"),
                     "finished_at": r.get("finished_at"),
                 }
-                for r in rows
-                if r["status"] in ("succeeded", "unchanged") and r.get("revision")
+                for r in list_snapshots(project=project, source=name, limit=50)
             ]
         }
 
@@ -760,8 +772,14 @@ def trigger_retrain(
     }
     if backend_name:
         body["backend_name"] = backend_name
+    from examlops import retrain_command  # noqa: PLC0415
+
     try:
-        data = _client.post(f"{cfg.control_plane_url}/retrain", body, token=cfg.control_plane_token)
+        # The command API, waited on until dispatched (plan P1.6c). A retrain still queued when
+        # the wait ends comes back with `command_id`/`state` instead of a `flow_run_id`.
+        data = retrain_command.submit(
+            body, base=cfg.control_plane_url, token=cfg.control_plane_token
+        )
     except _client.ClientError as exc:
         return _err(str(exc), status=getattr(exc, "status", None))
 
@@ -784,7 +802,7 @@ def retrain_status(flow_run_id: str) -> dict[str, Any]:
     """
     cfg = _cfg()
     q = urllib.parse.quote(flow_run_id)
-    res = _get(f"{cfg.control_plane_url}/retrain/{q}", token=cfg.control_plane_token)
+    res = _get(f"{cfg.control_plane_url}/v1/runs/{q}", token=cfg.control_plane_token)
     if not res.get("ok"):
         return res
     return {"ok": True, **_as_dict(res["data"])}

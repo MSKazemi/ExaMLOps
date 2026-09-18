@@ -156,8 +156,33 @@ def backup_objects_tier(dest_dir: Path) -> TierResult:
     return TierResult("objects", status=rollup_status([i["status"] for i in items]), items=items)
 
 
+def _ensure_bucket(s3, bucket: str) -> bool:
+    """Create ``bucket`` if it is gone. Returns whether it had to be created.
+
+    A restore whose bucket still exists is the *easy* case. The case this tier is for — the one
+    ``docs/guides/backup-restore.md`` puts first in its recovery order — is the object store being
+    lost, and then the bucket is not there either. Uploading into it failed with a raw boto3
+    ``NoSuchBucket``, so the first step of a documented full-disaster recovery ended in a stack
+    trace. The backup recorded that this bucket existed and what was in it; recreating it is what
+    restoring it means.
+    """
+    try:
+        s3.head_bucket(Bucket=bucket)
+        return False
+    except Exception as exc:  # noqa: BLE001 — any "not there" answer means create it
+        if not _bucket_missing(exc):
+            raise
+        s3.create_bucket(Bucket=bucket)
+        return True
+
+
 def restore_objects_tier(bundle_dir: Path, *, force: bool = False) -> list[dict[str, Any]]:
-    """Upload mirrored objects back to their buckets. Refuses non-empty buckets without ``force``."""
+    """Upload mirrored objects back to their buckets. Refuses non-empty buckets without ``force``.
+
+    A bucket that no longer exists is recreated. Each bucket reports its own outcome rather than
+    the first failure ending the whole tier: an object store is restored bucket by bucket, and
+    losing the report for the rest of them is how a partial restore gets mistaken for a total one.
+    """
     manifest = json.loads((bundle_dir / "bundle.manifest.json").read_text())
     s3 = _s3_client()
     out: list[dict[str, Any]] = []
@@ -167,11 +192,40 @@ def restore_objects_tier(bundle_dir: Path, *, force: bool = False) -> list[dict[
         bucket = item["bucket"]
         bucket_dir = bundle_dir / item["dir"]
         index = json.loads((bucket_dir / "_index.json").read_text())
+        created = _ensure_bucket(s3, bucket)
         if not force and _list_keys(s3, bucket):
+            # Still a hard refusal: overwriting a live bucket is the operator's call to make.
             raise ValueError(f"bucket {bucket} is non-empty — pass force=True to overwrite")
         uploaded = 0
-        for key in index:
-            s3.upload_file(str(bucket_dir / key), bucket, key)
-            uploaded += 1
-        out.append({"bucket": bucket, "uploaded": uploaded})
+        try:
+            for key in index:
+                s3.upload_file(str(bucket_dir / key), bucket, key)
+                uploaded += 1
+        except Exception as exc:  # noqa: BLE001 — reported per bucket, see the docstring
+            out.append(
+                {
+                    "bucket": bucket,
+                    "uploaded": uploaded,
+                    "expected": len(index),
+                    "bucket_created": created,
+                    "ok": False,
+                    "reason": str(exc)[:200],
+                }
+            )
+            continue
+        # `ok` is what `bundle.restore_bundle` aggregates into its `failed` list. Without it an
+        # objects restore could not be reported as having failed at all, whatever happened.
+        # Flatly `True` here on purpose: reaching this line means every upload returned, so a
+        # `uploaded == len(index)` guard could not come out False — and a check that cannot fail
+        # reads like verification while performing none. The failure is reported above, where it
+        # actually happens.
+        out.append(
+            {
+                "bucket": bucket,
+                "uploaded": uploaded,
+                "expected": len(index),
+                "bucket_created": created,
+                "ok": True,
+            }
+        )
     return out

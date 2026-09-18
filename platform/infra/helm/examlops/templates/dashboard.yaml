@@ -56,6 +56,11 @@ spec:
               value: /var/lib/examlops-dashboard/config.toml
             - name: EXAMLOPS_DASHBOARD_CLI_WORKSPACE
               value: /var/lib/examlops-dashboard/cli-workspace
+            {{- if .Values.workloadIdentity.enabled }}
+            # Its workload identity (ADR 0125), read on every call; the static credential is the
+            # fallback until the sidecar has written the file.
+            - {name: CONTROL_PLANE_TOKEN_FILE, value: /run/spire/svid/control-plane.jwt}
+            {{- end }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           resources:
@@ -71,8 +76,17 @@ spec:
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
             - {name: cli-state, mountPath: /var/lib/examlops-dashboard}
+            {{- if .Values.workloadIdentity.enabled }}
+            - {name: spiffe-svid, mountPath: /run/spire/svid, readOnly: true}
+            {{- end }}
+        {{- if .Values.workloadIdentity.enabled }}
+        {{- include "examlops.spiffeHelperContainer" (dict "root" . "component" "dashboard") | nindent 8 }}
+        {{- end }}
       volumes:
         - {name: tmp, emptyDir: {}}
+        {{- if .Values.workloadIdentity.enabled }}
+        {{- include "examlops.spiffeVolumes" . | nindent 8 }}
+        {{- end }}
         {{- if .Values.dashboard.cliState.existingClaim }}
         - name: cli-state
           persistentVolumeClaim:

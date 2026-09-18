@@ -14,6 +14,41 @@ The production PII engine is **Presidio** and moderation is a hosted/LLM classif
 fallback is a set of regex detectors + the D7 secret scanner — so guardrails work with **no
 external service**.
 
+**Presidio is in no manifest in this repository, so the fallback is what your deployment runs.**
+That makes its exact coverage worth stating rather than leaving to the word "PII":
+
+| Detected | Not detected |
+|---|---|
+| email · phone · US-style SSN · credit-card number · **IPv4** · **IPv6** · **IBAN** | a person's **name** · national identifiers (an Italian fiscal code, a passport number) · file paths |
+
+Names are the important absence: they need named-entity recognition, which is precisely what
+Presidio would bring and a regex cannot.
+
+**Credentials are the secret scanner's half**, and the guardrail runs it on every input and output.
+That half had a hole worth knowing about: until 2026-09-13 it recognised AWS keys, Slack tokens,
+Fernet keys and private keys — **but not the credentials this platform itself issues**. The gateway
+mints virtual keys as `exa-` + 32 random characters, so a key pasted into a prompt passed the
+guardrail untouched and went on to the model provider, the cache and the logs. Upstream provider
+keys (`sk-…`, `sk-ant-…`) and GitHub tokens were missed for the same reason, on a platform whose
+whole job is proxying to those providers.
+
+All four are detected now. The virtual-key rule is deliberately strict — a real key is exactly 32
+characters and mixes case and digits — because a loose `exa-[\w-]{24,}` matched **462** ordinary
+documentation slugs like `exa-status-platform-snapshot-at-a-glance`, and a scanner that fires on
+the docs is a scanner someone switches off.
+
+IPv6 and IBAN were added on 2026-09-13; before that a deployment on IPv6 had its addresses stored
+in the clear while the IPv4 ones were redacted. IPv6 candidates are **confirmed** with
+`ipaddress.IPv6Address` before anything is replaced, because a pattern loose enough to match every
+IPv6 form also matches MAC addresses (`00:1b:44:11:3a:b7`) and timecodes (`01:02:03:04`) — and
+redacting those as "ipv6" would put a wrong label on data that is not an address. One deliberate
+gap: an address written with a **leading** `::` (such as `::1`) is not matched, because matching it
+would also redact `abc::def`, which is valid C++ as well as a valid address, and prompts here carry
+code. Loopback identifies nobody.
+
+`tests/unit/test_guardrails.py` pins all three lists — detected, left alone, and knowingly
+undetected — so the table above cannot quietly drift from the code.
+
 ## Modes
 
 At the gateway the mode comes from `EXAMLOPS_GUARDRAIL_MODE`, and the default is **`monitor`** —

@@ -10,8 +10,7 @@ hide:
 
 ExaMLOps automates the loop from drift to retraining, but some decisions stay with people.
 Each one passes through a gate and releases one part of the system, and the decision is
-recorded — in the hash-chained audit trail or, for approvals made in the dashboard, in the
-control plane's approval table. This tour walks through them; the catalogue below lists every
+recorded in the hash-chained audit trail, whichever surface made it. This tour walks through them; the catalogue below lists every
 human action the platform has.
 
 <div class="xm-player" data-scene="decisions" markdown>
@@ -25,7 +24,7 @@ human action the platform has.
 <li data-focus="auto,audit" data-run="auto-notice" data-actor="Autopilot" data-line="control"><strong>Autonomy levels decide whether it acts or asks.</strong> Each behaviour is AUTONOMOUS, REVIEW or DISABLED. Under REVIEW, or when a policy rule says <code>require_approval</code>, the autopilot does not act: it writes a <code>human_approval_required</code> event to the audit trail and an operator follows up with the normal commands.</li>
 <li data-focus="sysadmin,g-cluster,fleet" data-run="sysadmin-cluster;cluster-fleet" data-actor="Sysadmin" data-line="human"><strong>A cluster is approved before any job lands on it.</strong> <code>exa hpc connect</code> registers a cluster as PENDING. Placement refuses it until a sysadmin runs <code>exa hpc approve</code>.</li>
 <li data-focus="chat,g-confirm,skipper" data-run="chat-confirm;confirm-skipper" data-actor="Skipper user" data-line="human"><strong>Agents ask before they write.</strong> Skipper pauses every mutating tool and asks; through its web UI and <code>exa ask</code>, the approval is single-use and expires after 10 minutes by default. The MCP server offers write tools only when started with <code>--allow-writes</code>, and the dashboard copilot runs a read-only agent that only proposes commands.</li>
-<li data-focus="cp,mlflow,ray,fleet,skipper,audit" data-run="cp-audit,mlflow-audit,ray-audit,fleet-audit,skipper-audit" data-actor="Audit trail" data-line="observe"><strong>Decisions are recorded.</strong> Commands such as <code>exa approvals</code>, <code>exa pipeline promote</code>, <code>exa hpc approve</code> and the autopilot write to the hash-chained audit trail: who, what and why, each event carrying the hash of the one before it, so an edited record breaks the chain. Approvals made from the dashboard or Skipper are recorded in the control plane's approval table — the calling credential and the time — and approvals also as an outbox event; the signed-in person is not recorded there. <code>exa audit verify</code> walks the chain; with an external anchor configured, <code>exa audit verify-worm</code> checks it against that too.</li>
+<li data-focus="cp,mlflow,ray,fleet,skipper,audit" data-run="cp-audit,mlflow-audit,ray-audit,fleet-audit,skipper-audit" data-actor="Audit trail" data-line="observe"><strong>Decisions are recorded.</strong> Commands such as <code>exa approvals</code>, <code>exa pipeline promote</code>, <code>exa hpc approve</code> and the autopilot write to the hash-chained audit trail: who, what and why, each event carrying the hash of the one before it, so an edited record breaks the chain. The control plane records its own gate decisions in the same chain, in the same transaction as the decision: an approval request, an approval, a rejection, a retraction and every retrain it dispatches, whoever called it — the CLI, the dashboard or Skipper — each with the calling principal. Approvals and rejections also go out as outbox events. The principal that filed a change cannot approve it (the shared legacy token is the one exception, because every holder is the same principal). <code>exa audit verify</code> walks the chain; with an external anchor configured, <code>exa audit verify-worm</code> checks it against that too.</li>
 </ol>
 </div>
 
@@ -91,7 +90,7 @@ human action the platform has.
 | Fire retrains for drifted models | `exa drift trigger` (`--dry-run` to preview) | Cooldown, corruption veto |
 | Switch the autopilot on or off | `exa autopilot enable` · `exa autopilot disable` | Kill-switch |
 | Set a behaviour's autonomy level | `exa autopilot autonomy drift_auto_retrain REVIEW` (granting AUTONOMOUS needs `--ack`) | Autonomy level |
-| Freeze, kill or resume an autopilot run | `exa autopilot interrupt <run-id> --freeze` | Kill-switch |
+| Freeze, kill or resume an autopilot run | `exa autopilot interrupt <run-id> --freeze` (or `--kill`) · `exa autopilot resume <run-id>` | Kill-switch |
 | Keep one model away from autonomous action | `exa autopilot quarantine JPCP --reason "…"` | Kill-switch |
 | Acknowledge an alert | Dashboard Alerts page | Any signed-in user |
 

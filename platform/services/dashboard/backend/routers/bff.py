@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import backbone
 from auth import require_role
 from bff import aggregate
 from dbconn import connect, platform_db_path
@@ -105,7 +106,12 @@ async def stream(request: Request, channels: str = "*", user=Depends(_viewer)) -
 
     async def gen():
         try:
-            yield sse_frame("hello", {"channels": list(patterns)})
+            # `platform_events`: whether this stream carries every surface's events (the NATS
+            # backbone bridge) or only this dashboard process's own (see backbone.py).
+            yield sse_frame(
+                "hello",
+                {"channels": list(patterns), "platform_events": backbone.status()["running"]},
+            )
             while True:
                 if await request.is_disconnected():
                     break

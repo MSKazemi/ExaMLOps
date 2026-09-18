@@ -27,7 +27,10 @@ export function NocWall() {
   const { locale } = useI18n()
   const { data: finops } = useFinops()
   const { data: alerts } = useAlerts()
-  const slides = buildNocSlides(finops, alerts?.inbox, locale)
+  // The BFF names the sources it could not reach. A wall that shows "—" without saying why reads
+  // as quiet, which is the one thing a NOC display must never do by accident.
+  const unavailable = [...(finops?._partial ?? []), ...(alerts?._partial ?? [])]
+  const slides = buildNocSlides(finops, alerts?.inbox, locale, unavailable)
   const active = useRotator(slides.length, 12_000)
   const clock = useClock(locale)
   const slide = slides[active] ?? slides[0]
@@ -36,6 +39,15 @@ export function NocWall() {
     <div className="fixed inset-0 z-50 flex flex-col bg-black text-white" data-testid="noc-wall">
       <header className="flex items-center justify-between px-8 py-5 text-sm text-white/60">
         <span className="font-semibold tracking-widest uppercase">ExaMLOps · NOC</span>
+        {unavailable.length > 0 && (
+          <span
+            data-testid="noc-degraded"
+            role="status"
+            className="rounded bg-amber-500/20 px-3 py-1 text-base font-semibold text-amber-300"
+          >
+            {`Degraded — ${unavailable.join(', ')} unavailable`}
+          </span>
+        )}
         <span className="tabular-nums" aria-label="Current time">{clock}</span>
         <Link to="/" aria-label="Exit kiosk" className="flex items-center gap-1 text-white/50 hover:text-white">
           <Minimize2 className="size-4" aria-hidden="true" /> Exit

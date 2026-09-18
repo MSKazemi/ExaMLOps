@@ -13,6 +13,7 @@ Thin CLI over :mod:`examlops.backup`. Two layers:
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import typer
 
@@ -111,17 +112,33 @@ def create(
     res = backup.create_bundle(
         out, tiers=tiers, strict=strict, with_content=all_tiers or with_content
     )
+    push_error: str | None = None
+    push_uri: str | None = None
     if push:
         from examlops.backup import remote
 
         try:
-            remote.push(res.bundle_dir)
+            push_uri = remote.push(res.bundle_dir).get("uri")
         except Exception as exc:  # noqa: BLE001 — off-site push never fails the local bundle
-            _output.warning(f"off-site push failed: {exc}")
-    _audit("bundle_created", res.bundle_id, {"status": res.overall_status, "tiers": tiers})
+            push_error = f"{type(exc).__name__}: {exc}"[:300]
+        res.offsite = {
+            "requested": True,
+            "ok": push_error is None,
+            "error": push_error,
+            "uri": push_uri,
+        }
+    _audit(
+        "bundle_created",
+        res.bundle_id,
+        {"status": res.overall_status, "tiers": tiers, "push_error": push_error},
+    )
     if _output.json_mode:
-        _output.print_json(res.manifest)
-        return
+        payload: dict[str, Any] = dict(res.manifest)
+        if res.offsite is not None:
+            payload["offsite"] = res.offsite
+        _output.print_json(payload)
+        # Exit non-zero without printing a second document: `--json` promises exactly one.
+        raise typer.Exit(1 if push_error else 0)
     # A backup tool may not announce success for a backup that did not happen. This printed a
     # green tick and exited 0 for every outcome, `status=failed` included, and the per-tier lines
     # that would have said why went through `info()` — which `--quiet` suppresses while leaving
@@ -156,6 +173,15 @@ def create(
             _output.info(f"  {name}: ok")
         else:
             _output.warning(f"  {name}: {tier['status']}{_reason(tier)}")
+    if push and push_error is None:
+        _output.ok(f"Replicated off-site: {push_uri}")
+    elif push_error:
+        # The documented systemd timer runs exactly this command, and a timer's only signal is the
+        # exit code. A warning under a green tick meant a nightly job could fail to replicate every
+        # night for a year and report success every time.
+        _output.error(
+            f"Off-site replication FAILED — this bundle exists only on this host. {push_error}"
+        )
 
 
 @app.command("list")
@@ -296,6 +322,20 @@ def verify_bundle_cmd(
         raise typer.Exit(1)
 
 
+def _warn_about_skipped_tiers(result: dict, bundle_dir: str) -> None:
+    """Say what the bundle held and the restore left behind. Before the tick, in every mode."""
+    skipped = result.get("skipped_tiers") or []
+    if not skipped:
+        return
+    one = len(skipped) == 1
+    finish = " ".join(f"--tier {t}" for t in sorted({*result["restored_tiers"], *skipped}))
+    _output.warning(
+        f"NOT restored: {', '.join(skipped)} — {'this tier is' if one else 'these tiers are'} in "
+        f"the bundle but outside the default (sqlite, config). The platform is only partly back. "
+        f"Restore {'it' if one else 'them'} with: exa backup restore-bundle {bundle_dir} {finish}"
+    )
+
+
 @app.command("restore-bundle", epilog=_EX_RESTORE_BUNDLE)
 def restore_bundle_cmd(
     bundle_dir: str = typer.Argument(..., help="Path to a bundle directory to restore"),
@@ -326,6 +366,10 @@ def restore_bundle_cmd(
         bundle_dir,
         {"tiers": result["restored_tiers"], "forced": force, "ok": result["ok"]},
     )
+    # Said in *both* modes. `_output.warning` writes to stderr, so stdout still carries exactly one
+    # JSON document (the structured-output contract) while a human watching a scripted recovery
+    # still sees that the platform is only partly back.
+    _warn_about_skipped_tiers(result, bundle_dir)
     if _output.json_mode:
         _output.print_json(result)
         raise typer.Exit(0 if result["ok"] else 1)
@@ -360,12 +404,27 @@ def schedule_cmd(
         out_dir=out, tiers=tier_list, interval_s=interval, push=push or None, once=once
     )
     if once:
+        offsite = res.offsite if res else None
         if _output.json_mode:
-            _output.print_json(res.manifest if res else {"ok": False})
+            payload: dict[str, Any] = dict(res.manifest) if res else {"ok": False}
+            if offsite is not None:
+                payload["offsite"] = offsite
+            _output.print_json(payload)
         elif res:
             _output.ok(f"One cycle complete: {res.bundle_id} (status={res.overall_status}).")
+            if offsite and offsite.get("ok"):
+                _output.ok(f"Replicated off-site: {offsite.get('uri')}")
         else:
             _output.warning("Cycle produced no bundle.")
+        if offsite is not None and not offsite.get("ok"):
+            # The local bundle is intact and keeps its status; what failed is the copy that would
+            # survive losing this host. Reported here rather than only in a log line, because the
+            # success tick above is the whole of what most operators read.
+            _output.error(
+                f"Off-site replication FAILED — this bundle exists only on this host. "
+                f"{offsite.get('error')}"
+            )
+            raise typer.Exit(1)
 
 
 @app.command("prune")

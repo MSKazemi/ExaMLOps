@@ -18,7 +18,19 @@ from examlops.data.serving import get_traffic_rules, set_traffic_rules
 # Help panels for `exa serve` (title order = on-screen order). Applied in main.py after the
 # sub-typers (shadow/challenger/autoscale/routing/batch/ab/adapter) are attached there.
 _PANELS: list[tuple[str, list[str]]] = [
-    ("Health & Deploy", ["reload", "check", "infer-check", "benchmark", "manifest", "backend"]),
+    (
+        "Health & Deploy",
+        [
+            "reload",
+            "check",
+            "snapshot",
+            "infer-check",
+            "benchmark",
+            "loadtest",
+            "manifest",
+            "backend",
+        ],
+    ),
     ("LLM & VLM Serving", ["llm"]),
     ("Traffic & Routing", ["traffic", "traffic-list", "routing", "shadow", "ab"]),
     ("Scaling & Batch", ["autoscale", "batch"]),
@@ -62,11 +74,12 @@ def reload(
     target = model or "all models"
     with _output.spinner(f"Reloading {target} from MLflow into Ray Serve…"):
         try:
-            result = _client.post(url, {})
+            result = _client.post(url, {}, token=cfg.ray_serve_admin_token)
         except _client.ClientError as e:
             _output.error(
                 f"Failed to reload {target}: {e}",
-                hint="Is Ray Serve running? Try: exa stack status",
+                hint="Is Ray Serve running (exa stack status)? A 503/401 means RAY_SERVE_ADMIN_TOKEN "
+                "is unset on Ray Serve or here; alias moves still reload within 60 s on their own.",
             )
             return
     count = result.get("count", "?")
@@ -206,7 +219,13 @@ def traffic(
 
     cfg = load_config()
     try:
-        _client.post(f"{cfg.ray_serve_url}/traffic-rules/{model}", rules)
+        # The ingress mounts this route under /infer-pipeline; the bare path 404'd and the error
+        # was swallowed, so no replica ever got the live update (plan P0.4 / finding B4).
+        _client.post(
+            f"{cfg.ray_serve_url}/infer-pipeline/traffic-rules/{model}",
+            rules,
+            token=cfg.ray_serve_admin_token,
+        )
     except _client.ClientError:
         pass  # non-fatal: rules persisted in DB
 
@@ -225,6 +244,121 @@ def benchmark(
         _output.error("dummy_client.py not found — run exa serve benchmark from the repo root")
     except subprocess.CalledProcessError as e:
         _output.error(f"dummy_client.py exited with code {e.returncode}")
+
+
+_EXAMPLES_LOADTEST = (
+    "Examples:\n\n"
+    "  # 50 requests/s for 60 s straight at Ray Serve; fail if p99 > 300 ms or > 1 % errors\n"
+    "  exa serve loadtest jpcp --rate 50 --duration 60 --p99-ms 300 --max-error-rate 0.01\n\n"
+    "  # Through the serving gateway, with a virtual key from the environment\n"
+    "  EXAMLOPS_LOADTEST_TOKEN=exa-… exa serve loadtest jpcp --url http://localhost:18088\n\n"
+    "  # A model without a column signature: send a real request body\n"
+    "  exa serve loadtest mack --body request.json --rate 20 -o json"
+)
+
+
+@app.command("loadtest", epilog=_EXAMPLES_LOADTEST)
+def loadtest_cmd(
+    model: str = typer.Argument(..., help="Model to load, as named in the registry (e.g. jpcp)"),
+    rate: float = typer.Option(10.0, "--rate", "-r", help="Requests per second, held constant"),
+    duration: float = typer.Option(30.0, "--duration", "-d", help="Seconds to run"),
+    url: str | None = typer.Option(
+        None, "--url", help="Server to load (default: the configured Ray Serve URL)"
+    ),
+    alias: str | None = typer.Option(None, "--alias", help="Alias to call (default: the server's)"),
+    body: str | None = typer.Option(
+        None, "--body", help="JSON file with the OIP v2 request to send (default: from metadata)"
+    ),
+    timeout: float = typer.Option(30.0, "--timeout", help="Per-request timeout, seconds"),
+    max_in_flight: int = typer.Option(
+        1000, "--max-in-flight", help="Outstanding requests the client allows before dropping"
+    ),
+    p99_ms: float | None = typer.Option(None, "--p99-ms", help="Fail if p99 latency is higher"),
+    max_error_rate: float | None = typer.Option(
+        None, "--max-error-rate", help="Fail if more than this share of requests fail (0-1)"
+    ),
+) -> None:
+    """Load an inference endpoint at a fixed rate and check it against latency and error SLOs.
+
+    Requests leave on schedule whatever the server does.
+    Latency counts from when each request was due, so a stalled server shows as slow.
+    Exits 1 on a breached SLO, or when the client could not keep to the schedule.
+    A bearer credential (serving gateway) is read from EXAMLOPS_LOADTEST_TOKEN.
+    """
+    import asyncio  # noqa: PLC0415
+    import json as _json  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    from examlops import loadtest, oip_client  # noqa: PLC0415
+
+    cfg = load_config()
+    base = (url or cfg.ray_serve_url).rstrip("/")
+    headers = {}
+    token = os.getenv("EXAMLOPS_LOADTEST_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    else:
+        # Otherwise the configured serving credential, and only when the target is the configured
+        # serving URL: a --url elsewhere must not receive the platform's key.
+        from examlops.service_auth import headers_for  # noqa: PLC0415
+
+        headers.update(
+            headers_for(base, serving_base=cfg.ray_serve_url, serving_token=cfg.serving_token)
+        )
+    if body:
+        try:
+            request = _json.loads(Path(body).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            _output.error(f"Cannot read the request body {body}: {exc}")
+    else:
+        try:
+            metadata = _client.get(f"{base}/v2/models/{model}", token=token)
+            request = loadtest.body_from_metadata(metadata, alias=alias)
+        except (_client.ClientError, ValueError) as exc:
+            _output.error(f"Cannot build a request for {model}: {exc}", hint="Pass --body FILE")
+    if alias:
+        request.setdefault("parameters", {})["alias"] = alias
+    target = f"{base}{oip_client.infer_path(model)}"
+    if not _output.json_mode:
+        _output.info(f"Loading {target} at {rate:g}/s for {duration:g}s…")
+    report = asyncio.run(
+        loadtest.run(
+            target,
+            request,
+            rate=rate,
+            duration=duration,
+            headers=headers,
+            timeout=timeout,
+            max_in_flight=max_in_flight,
+        )
+    )
+    breaches = report.breaches(p99_ms=p99_ms, max_error_rate=max_error_rate)
+    result = {**report.to_dict(), "url": target, "passed": not breaches, "breaches": breaches}
+    if _output.json_mode:
+        _output.print_json(result)
+    else:
+        latency = result["latency_ms"]
+        _output.print_table(
+            f"Load test — {model}",
+            ["Sent", "OK", "Failed", "Shed", "Dropped", "Rate/s", "p50", "p95", "p99", "max"],
+            [
+                [
+                    result["sent"],
+                    result["succeeded"],
+                    result["failed"],
+                    result["shed"],
+                    result["dropped"],
+                    result["achieved_rate"],
+                    *(latency[k] for k in ("p50", "p95", "p99", "max")),
+                ]
+            ],
+        )
+        for breach in breaches:
+            _output.warning(breach)
+        if not breaches:
+            _output.ok("Within the SLOs given")
+    if breaches:
+        raise typer.Exit(1)
 
 
 _EXAMPLES_SERVE_MODELS = "Examples:\n\n  exa serve models\n\n  exa serve models --detail"

@@ -20,7 +20,7 @@ import urllib.request
 
 import audit_write
 from auth import require_role
-from capabilities import PROJECT_MANAGE, can, deny_reason
+from capabilities import PROJECT_MANAGE, can, deny_reason, require_capability
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
@@ -191,7 +191,13 @@ async def list_workbenches_view(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_workbench_view(
-    payload: dict = Body(...), principal: dict = Depends(_admin)
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROJECT_MANAGE)),
 ) -> dict:
     """Create a project-bound workbench (notebook) — admin / project.manage; audited.
 
@@ -249,6 +255,11 @@ async def set_status_view(
     name: str,
     payload: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROJECT_MANAGE)),
 ) -> dict:
     """Set a workbench's status to RUNNING or STOPPED (admin / project.manage; audited).
 
@@ -298,6 +309,11 @@ async def delete_workbench_view(
     project: str,
     name: str,
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROJECT_MANAGE)),
 ) -> dict:
     """Delete a workbench definition (admin / project.manage; audited)."""
     _require_manage(principal)

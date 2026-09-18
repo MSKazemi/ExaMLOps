@@ -1,6 +1,7 @@
 {{- /*
-Prometheus Operator scrape config for the control plane — the only tier that serves /metrics
-(approval gate, admission, command queue). Fails the render rather than emitting an object the
+Prometheus Operator scrape config for the control plane, the only application tier that serves
+/metrics (approval gate, admission, command queue), and, when it is deployed, the serving gateway's
+Envoy statistics. Fails the render rather than emitting an object the
 cluster cannot accept when the ServiceMonitor CRD is not installed.
 */ -}}
 {{- if .Values.metrics.serviceMonitor.enabled }}
@@ -18,6 +19,8 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
+  # The job name is the Service's examlops.io/job (control_plane), the name the alert rules use.
+  jobLabel: examlops.io/job
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "examlops.name" . }}
@@ -30,4 +33,59 @@ spec:
       path: /metrics
       interval: {{ .Values.metrics.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+{{- if (.Values.gateway | default dict).enabled }}
+---
+# The serving gateway: Envoy's statistics through its read-only metrics listener (the admin
+# interface itself stays on loopback).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "examlops.fullname" . }}-gateway
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  jobLabel: examlops.io/job
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "examlops.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: gateway
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace | quote }}]
+  endpoints:
+    - port: metrics
+      path: /stats/prometheus
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+---
+# The gateway's authorization tier: its decisions by status (ServingGatewayCredentialStoreUnavailable).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "examlops.fullname" . }}-gateway-authz
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway-authz
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  jobLabel: examlops.io/job
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "examlops.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: gateway-authz
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace | quote }}]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+{{- end }}
 {{- end }}

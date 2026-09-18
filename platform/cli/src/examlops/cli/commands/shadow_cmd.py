@@ -7,6 +7,7 @@ import typer
 from examlops.cli import _output
 from examlops.data import get_db, init_db
 from examlops.data.audit import write_audit_event
+from examlops.data.serving import serving_model_key, set_shadow_config
 
 app = typer.Typer(
     help="Shadow deployment traffic mirroring.",
@@ -58,13 +59,8 @@ def shadow_enable(
     """Enable shadow deployment for a model."""
     _ensure_tables()
     actor = os.getenv("EXAMLOPS_ACTOR", os.getenv("USER", "unknown"))
-    with get_db() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO shadow_config
-               (model, shadow_alias, enabled, updated_at, updated_by)
-               VALUES (?, ?, 1, CURRENT_TIMESTAMP, ?)""",
-            (model, shadow_alias, actor),
-        )
+    # Stored under the canonical serving key the Ray replica looks up (plan P0.4 / finding B4).
+    set_shadow_config(model, shadow_alias=shadow_alias, enabled=True, updated_by=actor)
     write_audit_event(
         source="cli",
         actor=actor,
@@ -82,11 +78,7 @@ def shadow_disable(
     """Disable shadow deployment for a model."""
     _ensure_tables()
     actor = os.getenv("EXAMLOPS_ACTOR", os.getenv("USER", "unknown"))
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE shadow_config SET enabled=0, updated_at=CURRENT_TIMESTAMP, updated_by=? WHERE model=?",
-            (actor, model),
-        )
+    set_shadow_config(model, enabled=False, updated_by=actor)
     write_audit_event(
         source="cli",
         actor=actor,
@@ -106,8 +98,9 @@ def shadow_status(
     with get_db() as conn:
         if model:
             rows = conn.execute(
-                "SELECT model, shadow_alias, enabled, updated_at FROM shadow_config WHERE model=?",
-                (model,),
+                "SELECT model, shadow_alias, enabled, updated_at FROM shadow_config "
+                "WHERE lower(model)=?",
+                (serving_model_key(model),),
             ).fetchall()
         else:
             rows = conn.execute(

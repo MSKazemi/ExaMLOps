@@ -178,8 +178,17 @@ exa dataplane manifest pm100 latest
 ```
 
 A pull that finds nothing new past the watermark reports `unchanged` rather than committing an
-identical snapshot; freshness (below) still resets to zero. Ask the dataplane service to run a
-pull instead of running it in-process:
+identical snapshot; freshness (below) still resets to zero.
+
+`pulls` and `snapshots` answer different questions, and their limits count different things.
+`pulls` lists attempts, successful or not. `snapshots` lists what a training run can pin to — a
+committed pull that produced a revision — and its limit counts **snapshots**, so a source whose
+recent pulls have been failing still shows its revisions. This matters precisely when it is easiest
+to misread: a broken source is when someone looks, and "no snapshots" would say the source never
+produced data rather than that it is failing *now*. The revisions stay pinnable throughout, and
+`exa dataplane pulls --source <name>` is where the failures are.
+
+Ask the dataplane service to run a pull instead of running it in-process:
 
 ```bash
 exa dataplane pull pm100 --remote
@@ -318,7 +327,11 @@ on a sample. The pull's result, its audit record and the gate's report then show
   in `EXAMLOPS_DATAPLANE_ALLOWED_HOSTS` (hostnames and/or CIDRs) — a platform-internal name like
   `mlflow` or `minio` is refused by default. For HTTP, REST and Zenodo sources the check is pinned
   to the resolved IP and repeated on every redirect, so DNS rebinding and redirects cannot bypass
-  it. S3 endpoints are checked on the first hop only (see *Connect a source*); a network egress
+  it; the guarded HTTP backend also **refuses unix sockets outright**, since an address guard cannot
+  judge one and `/var/run/docker.sock` is what it would otherwise reach. **`sftp` pins too**: it
+  connects to the address the check approved and hands paramiko that socket plus the *name*, which
+  is what `known_hosts` entries are keyed on — so there is no second lookup between the check and
+  the connection, and host-key verification still applies to the name. S3 endpoints are checked on the first hop only (see *Connect a source*); a network egress
   policy on the dataplane container is the backstop for them. The `sql` connector checks the
   connection URL's host before the engine is built; for `postgresql+psycopg` the checked address
   is additionally pinned via libpq's `hostaddr`, so DNS cannot rebind between the check and the
@@ -525,15 +538,37 @@ Top-level fields:
 
 ### Tenancy
 
-A stream's project is not a setting of its own: it comes from the model's own YAML file, its
+A stream's project is not a setting of its own: it comes from the model. If the model's YAML has a
 top-level `project:` key (the same key [project-scoped serving](projects-workspaces.md) already
-uses). Every stream declared under one model's `inference.streams` shares that model's project,
-unset meaning the unscoped default (shown as `_global`).
+uses), that is the project. If it does not, the project the model is **assigned** to is used:
+
+| the model's YAML | the model's project membership | the stream's project |
+|---|---|---|
+| `project: research` | must include `research` | `research` |
+| no `project:` key | exactly one project | that project |
+| no `project:` key | no project at all | `_global` (unscoped) |
+| no `project:` key | more than one project | refused — add `project:` to the YAML |
+
+The last row is an error on purpose: with several candidates the platform will not guess, and the
+message names the model, never the projects. This matters because most packs carry no `project:`
+key at all while their models *are* assigned to projects — with only the YAML key consulted, every
+stream such a pack declares would be refused.
 
 A stream in project `P` may bind model `M` only if `M` actually belongs to project `P` (checked
 against the project's own model membership, not merely echoed from the YAML); a stream with no
 project may only bind a model that belongs to no project at all. A stream naming a model outside
-its own project's membership is refused when it is defined.
+its own project's membership is refused when it is defined. Every refusal is logged (one line per
+refused entry, naming the file and the entry, never its values), and a sync that reports any error
+skips the removal sweep for that run and says so in the log — one broken entry must never look
+like "every other stream was intentionally removed".
+
+**A project-scoped stream needs a connection in its own project.** A Named Connection is looked up
+by `(project, name)` exactly, with no fallback to an unscoped one — for streams and for [batch
+sources](#connect-a-source) alike. A `kafka` stream in project `research` therefore cannot use a
+`_global` connection named `kafka-prod`; create one in `research`
+(`exa connection create kafka-prod --kind kafka --project research …`). The error it would
+otherwise report (`connection 'kafka-prod' not found (project=research)`) is exact but says
+nothing about why, so check the project first.
 
 A stream declared in a model YAML belongs to the pack (`origin: pack`) and cannot be changed
 through the API (there is none yet, but the rule already holds for the library's write path):
@@ -557,6 +592,19 @@ different model is rejected outright; a message naming a different alias is reje
 *version* answers its request, nor which alias's drift window its prediction lands in. A canary
 producer that could name `Production` would push that window over its threshold with traffic
 nobody meant to count there.
+
+**`model` and `alias` are read from the envelope only.** A message is an envelope when its top
+level has a `payload` object; then its sibling `model`/`alias`/`metadata` keys are the override,
+checked against the binding. A message *without* a `payload` key is itself the payload, so a
+top-level `alias` there is a field of your data, not an override: it is passed to the model and
+the request is served by the bound alias, answering `200` where the envelope form would have
+answered `422`. If you mean to name an alias, send an envelope — the silent case is a
+mis-typed override, not a refused one.
+
+```json
+{"payload": {"embedding": [0.1, 0.2]}, "alias": "Staging"}   // an override — checked, 422 if refused
+{"embedding": [0.1, 0.2], "alias": "Staging"}                // data — served by the bound alias
+```
 
 Only two outcomes ever feed drift: `model` (the model itself failed on the input) counts as a
 failure, and `ok` counts as a success, unless it carried no prediction, in which case it counts
@@ -590,7 +638,7 @@ What an HTTP caller sees, by outcome:
 | oversize body | 413 | larger than the stream's (or the service's) byte cap |
 | unknown stream, not a push stream, or model/alias not served | 404 | (a caller without access to the stream gets 403 instead, never this) |
 | stream paused | 503, `Retry-After: 30` | an operator paused it; try again later |
-| service draining | 503, `Retry-After: 5` | the process is shutting down; retry against another replica |
+| service draining | 503, `Retry-After: 5`, **or a connection error** | the process is shutting down; retry against another replica — see [Shutdown](#shutdown-and-what-a-caller-sees) |
 | local shed (in-flight or rate limit) | 429, `Retry-After` | this stream's own admission control, not the model service |
 | upstream overloaded | 503, `Retry-After` | the model service itself is over capacity |
 | deadline | 504 | the inference budget ran out |
@@ -613,10 +661,30 @@ stalled or slow replica can never overlap with the one that took over. Kafka doe
 replicas run `streams`; the mechanism exists for a future connector, such as a SeanerBUS req/res
 one, that has no such group of its own.
 
+#### Shutdown, and what a caller sees
+
 Shutdown is a graceful drain, bounded by `EXAMLOPS_DATAPLANE_DRAIN_SECONDS` (default 20): the
 process stops taking new work, lets in-flight pushes and Kafka commits finish, flushes drift and
 telemetry, then releases any leader leases it holds. Keep this below the orchestrator's own stop
-grace period, or the process is killed mid-flush.
+grace period, or the process is killed mid-flush. The drain logs one line when it begins and one
+when it ends, with how long it took and whether anything was still in flight.
+
+A request already being served is answered normally — verified live: a push held mid-body across
+`SIGTERM` still got its `200`, three seconds later, and its drift and input snapshots were written
+during the drain.
+
+A request that arrives *after* `SIGTERM` is a different matter. The push route and `/ready` do
+answer `503` (`Retry-After: 5`, and `{"status": "draining"}`) while draining, but on `SIGTERM`
+uvicorn closes its listener and drops idle keep-alive connections first, so in practice a new
+caller gets a **connection reset**, not a `503`. Both were measured; the 503 is what a caller sees
+when the drain flag is set without the server shutting down — a readiness probe that runs before
+`SIGTERM`.
+
+If you want callers to see `503` and `Retry-After` rather than a reset, flip readiness *before*
+the signal: a Kubernetes `preStop` hook (or taking the replica out of the load balancer) followed
+by a pause of at least one readiness period, so traffic has already moved before the process is
+told to stop. Nothing in the service can do this for you — by the time it has the signal, the
+listener is already going.
 
 Two tokens govern access: `DATAPLANE_TOKEN` (read, write and ingest) and the optional
 `DATAPLANE_INGEST_TOKEN`, which can only push messages and nothing else. Issue the ingest token
@@ -631,9 +699,15 @@ scope). What pausing does depends on the connector: a Kafka stream's assignment 
 place, so its consumer keeps polling, keeps its group membership, and keeps a leader lease if it
 holds one, resuming exactly where it left off; a connector with no such seam is stopped outright
 and started fresh once re-enabled. An HTTP push stream has no running connector to pause: the
-push route itself checks the binding's state on every request and answers 503 while paused.
-Disabling a stream stops it the same way disabling a pack entry does, and a push to it then
-answers 404, exactly as if the stream did not exist.
+push route answers 503 while paused. Disabling a stream stops it the same way disabling a pack
+entry does, and a push to it then answers 404, exactly as if the stream did not exist.
+
+**How quickly a state change takes effect.** The push route reads the catalog through a cache
+refreshed every `10 s`, not on every request. The replica that served the state change invalidates
+its own entry at once, so *that* replica applies the pause on the very next request. Every other
+replica converges within its own cache TTL — up to ten seconds, during which it still serves the
+stream. Wait that long before concluding a pause did not take, and do not treat pausing as a way
+to stop traffic instantly across a fleet; stop the producer for that.
 
 Dead letters live in the database, one row per message a stream could not deliver:
 
@@ -645,6 +719,25 @@ curl -X POST "http://localhost:18010/streams/jpcp-live/dead-letters/42/replay" \
     -H "Authorization: Bearer $DATAPLANE_TOKEN"
 
 curl -X DELETE "http://localhost:18010/streams/jpcp-live/dead-letters?older_than=P7D" \
+    -H "Authorization: Bearer $DATAPLANE_TOKEN"
+```
+
+#### Paging a dead-letter queue
+
+`limit` is clamped to 1…200 (default 50) and `next_cursor` is the `id` of the last row on the
+page; pass it back as `cursor` for the next one, and keep going until `next_cursor` is `null`.
+`reason` narrows the listing to one failure reason.
+
+Both `reason` and `cursor` are applied by the **query**, not to a page of rows after the fact. That
+distinction is the whole contract of the endpoint: a filter applied to an already-limited read can
+only ever see the window that read covered, so paging would stop at the store-read ceiling and a
+`reason` absent from the newest rows would come back as absent from the stream. `null` therefore
+means *this stream has no more dead letters matching your query* — not *none in the newest N* —
+and it is safe to page a queue of any size and to ask about a reason that last occurred long ago.
+
+```bash
+# every `oversize` dead letter, however far back — page until next_cursor is null
+curl "http://localhost:18010/streams/jpcp-live/dead-letters?reason=oversize&limit=200" \
     -H "Authorization: Bearer $DATAPLANE_TOKEN"
 ```
 
@@ -662,8 +755,14 @@ cannot be replayed. A dead letter's retention is `EXAMLOPS_DATAPLANE_DLQ_RETENTI
 
 Every series is prefixed `dataplane_stream_` and carries `project`/`stream` labels unless noted:
 
-- **`requests_total`**: requests by outcome, also labelled `connector` and `model`.
-- **`request_duration_seconds`**: admission to reply, a histogram.
+- **`requests_total`**: requests by outcome, also labelled `connector` and `model`. A message the
+  stream *refused* before any inference — an oversize body (413), a malformed envelope, a bad
+  `Idempotency-Key` — is counted too, with outcome `validation`: a stream rejecting everything it
+  is sent must not read as a stream nobody uses.
+- **`request_duration_seconds`**: admission to reply, a histogram — refusals included, on purpose.
+  A 413 is a reply, and it is a fast one, so a stream being flooded with oversize bodies really
+  does answer quickly; read its percentiles next to `requests_total` by outcome, or a drop looks
+  like an improvement.
 - **`in_flight`**: requests currently holding an in-flight permit.
 - **`shed_total`**: requests refused by this stream's own admission control, by reason
   (`in_flight` or `rate`).
@@ -671,10 +770,20 @@ Every series is prefixed `dataplane_stream_` and carries `project`/`stream` labe
 - **`telemetry_failed_total`**: telemetry records the sink failed to persist (no labels: a sink
   failure is process-wide, not a property of one stream).
 - **`connector_state`**: one-hot gauge of a stream's current connector state, labelled `state`.
+  The whole series disappears when the stream does (deleted from the catalog, or turned into a
+  push stream), rather than standing at `stopped` for the life of the process.
 - **`messages_expired_total`**: Kafka messages dead-lettered because they left the log while
   parked for a retry.
 - **`consumer_lag`**: a Kafka stream's distance from a partition's high watermark, labelled
-  `partition`.
+  `partition`, and cleared when the partition is revoked. The watermark is the broker's cached one,
+  refreshed by a real query every `10 s` (`EXAMLOPS_DATAPLANE_LAG_REFRESH_SECONDS`) — without that
+  query a partition nobody is fetching, because it is paused or parked in a retry backoff, would
+  report no lag at all, which is precisely when an operator needs the number. A stream that has
+  not consumed anything yet still reports: the distance is measured from the group's committed
+  offset, or from the log start when the group has committed nothing. **A stream that is
+  `paused` in the catalog before it ever starts has no series at all** — it never joins the
+  consumer group, so nothing owns its partitions; read a missing series as "not running", never
+  as "no backlog".
 - **`dead_letters_total`**: dead letters recorded, by reason.
 - **`embedding_{norm,mean,std}`** and **`embedding_{norm,mean,std}_baseline`**: the latest
   request's embedding summary and the recorded baseline, labelled `model` only (not

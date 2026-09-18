@@ -133,7 +133,9 @@ _FLUSH_FLOOR_S = 0.5
 _STACK_RETRY_S = 5.0
 _CONTENT_LENGTH = re.compile(r"[0-9]{1,18}")
 
-_COMMITTED = ("succeeded", "unchanged")
+#: Imported, not re-spelled: `catalog.list_snapshots` selects on these in SQL, and a second copy
+#: here is a copy that can drift from the one the query uses.
+_COMMITTED = catalog.COMMITTED_PULL_STATUSES
 _ACTIVE = ("running", "committing")
 # How long /health waits for the snapshot store before reporting it down.
 _STORE_PROBE_TIMEOUT_S = 3.0
@@ -573,6 +575,58 @@ _HTTP_PROBLEMS = {
 }
 
 
+class StreamErrorMiddleware:
+    """Turn an *unexpected* failure of a stream route into the surface's own 500 problem document.
+
+    Live finding D1: a schema the datastore had not migrated made ``POST /streams/{n}/state``
+    raise ``sqlite3.OperationalError`` straight out of the route. Starlette answered a bare
+    ``Internal Server Error`` — no ``application/problem+json``, no ``type``, nothing a client
+    handling this surface's documents could parse — and the traceback went to the log. The
+    documents are the contract of the whole ``/streams`` surface (review M9), and an unforeseen
+    failure is exactly when a caller most needs one.
+
+    So: every ``/streams`` path answers ``500 …/unexpected`` for anything that escapes, with the
+    cause logged **here** (type and traceback, in the service log) and never in the response — a
+    datastore error's text can name columns, constraints and, through a constraint violation, a
+    value. Everything outside ``/streams`` is left exactly as it was: the exception propagates to
+    Starlette's own handler.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http" or not _STREAM_PATH.fullmatch(scope.get("path", "")):
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def _send(message: Any) -> None:
+            nonlocal started
+            if message.get("type") == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, _send)
+        except Exception:
+            logger.exception(
+                "dataplane: %s %s failed unexpectedly",
+                scope.get("method", "?"),
+                scope.get("path", "?"),
+            )
+            if started:  # the answer is already on the wire: nothing left to say
+                raise
+            response = _problem(
+                500,
+                "unexpected",
+                "Internal server error",
+                "the request could not be served",
+                outcome="unexpected",
+            )
+            await response(scope, receive, send)
+
+
 async def _http_error(request: Request, exc: Exception) -> Response:
     """Every stream route's own errors (auth, authorisation, 404, 409) as RFC 9457 problem
     documents (M9); every other route keeps FastAPI's ``{"detail": …}`` exactly."""
@@ -710,8 +764,11 @@ async def _read_capped(request: Request, limit: int) -> bytes | None:
 
 
 #: ``GET /streams/{name}/dead-letters`` pagination (A8b): the default and the ceiling ``limit`` is
-#: clamped to, and how many rows are read from the store before the route's own filter/cursor and
-#: page-size slicing apply (matches ``dlq.list_dead_letters``'s own documented 1…1000 clamp).
+#: clamped to, and the hard ceiling on a single store read (matches ``dlq.list_dead_letters``'s own
+#: documented 1…1000 clamp). The route reads one row past the page, never a fixed window, because
+#: `reason` and the cursor are selected in the query — so the cap bounds one read but never bounds
+#: what paging can reach. It must stay above ``_DLQ_LIST_MAX``: a cap below a page would truncate
+#: the page itself and bring the truncation back (``test_dlq_fetch_cap_exceeds_a_full_page``).
 _DLQ_LIST_DEFAULT = 50
 _DLQ_LIST_MAX = 200
 _DLQ_FETCH_CAP = 1000
@@ -777,16 +834,59 @@ def _replay_response(result: Any, binding: Any) -> JSONResponse:
     return JSONResponse(payload, status_code=result.status)
 
 
+def _count_refused(binding: Any, outcome: str, started: float) -> None:
+    """Count one request the *route* refused, before the ingress ever saw it.
+
+    A 413, an envelope the parser rejects, a malformed header: the ingress counts everything it
+    handles, so these were the only answers this surface gives that no counter recorded (live
+    finding D8) — a stream refusing every oversize message it was sent looked idle. Same series,
+    same labels as :meth:`~examlops.dataplane.streams.ingress.StreamIngress.handle`; only a
+    refusal whose binding is known can be counted, which is why every size check happens after the
+    catalog lookup.
+
+    ``observe_request`` also observes ``dataplane_stream_request_duration_seconds``, so a refusal
+    lands in the latency histogram too. That is deliberate (re-review): the histogram measures
+    admission to reply, a 413 *is* a reply, and a stream whose answers are nearly all refusals has
+    genuinely fast replies — excluding them would describe a latency the callers never saw. It is
+    stated in the guide's metrics section, because a sudden drop in the percentiles of a stream
+    under attack is otherwise a puzzle.
+    """
+    from examlops.dataplane.streams import metrics
+
+    try:
+        metrics.observe_request(
+            binding.project,
+            binding.name,
+            binding.connector,
+            binding.model,
+            outcome,
+            max(0.0, time.monotonic() - started),
+        )
+    except Exception:  # noqa: BLE001 - a counter never decides an answer
+        logger.debug("dataplane: refusal counter failed", exc_info=True)
+
+
 def _mount_stream_routes(router: APIRouter, rt: _StreamRuntime) -> None:
     from examlops.dataplane.streams.client import BUDGET_HEADER
     from examlops.dataplane.streams.supervisor import PUSH_CONNECTOR, CatalogUnavailable
 
-    def _too_large(limit: int) -> JSONResponse:
+    def _too_large(limit: int, binding: Any, started: float) -> JSONResponse:
+        _count_refused(binding, "validation", started)
         return _problem(
             413,
             "too-large",
             "Content too large",
             f"the message body is larger than {limit} bytes",
+            outcome="validation",
+        )
+
+    def _refused(binding: Any, started: float, status_code: int, detail: str) -> JSONResponse:
+        _count_refused(binding, "validation", started)
+        return _problem(
+            status_code,
+            "validation" if status_code == 422 else "timeout",
+            "Invalid message" if status_code == 422 else "Request timeout",
+            detail,
             outcome="validation",
         )
 
@@ -833,9 +933,15 @@ def _mount_stream_routes(router: APIRouter, rt: _StreamRuntime) -> None:
         ``model`` is a 500 because the model itself failed on this input — a server-side failure,
         neither the caller's fault (not 422) nor an answer (not 200 ``ok: false``). A replayed
         ``Idempotency-Key`` answers ``Idempotent-Replayed: true`` and is not counted again.
+
+        Every refusal this route makes once it knows the stream — 413, 408, a malformed
+        ``Idempotency-Key``/budget header, an envelope the parser rejects — is counted in
+        ``dataplane_stream_requests_total`` as ``validation`` (``_count_refused``), so a stream
+        that refuses everything it is sent does not read as a stream nobody uses.
         """
         rt.inflight.enter()
         handed_off = False
+        started = time.monotonic()
         try:
             # Counted before the check, so a drain that begins now waits for this request.
             if rt.draining.is_set():
@@ -855,8 +961,10 @@ def _mount_stream_routes(router: APIRouter, rt: _StreamRuntime) -> None:
                 if not _CONTENT_LENGTH.fullmatch(raw_length.strip()):  # digits only: no sign
                     return _problem(400, "bad-request", "Bad request", "invalid Content-Length")
                 declared = int(raw_length.strip())
-                if declared > rt.push_max_bytes:
-                    return _too_large(rt.push_max_bytes)
+            # Every size check waits for the binding, which is what makes a 413 countable against
+            # the stream that refused it (live finding D8): the stream's own `max_bytes` is the
+            # limit anyway, and it can only be read here. An oversize body to an unknown, disabled
+            # or paused stream therefore answers 404/503, as it would at any size.
             try:
                 binding = await run_in_threadpool(rt.catalog.get, proj, name)
             except CatalogUnavailable:
@@ -889,16 +997,15 @@ def _mount_stream_routes(router: APIRouter, rt: _StreamRuntime) -> None:
                 )
             limit = max(1, min(rt.push_max_bytes, int(binding.limits.max_bytes)))
             if declared is not None and declared > limit:
-                return _too_large(limit)
+                return _too_large(limit, binding, started)
 
             key = request.headers.get("idempotency-key")
             if key is not None and not _IDEMPOTENCY_KEY.fullmatch(key):
-                return _problem(
+                return _refused(
+                    binding,
+                    started,
                     422,
-                    "validation",
-                    "Invalid message",
                     f"Idempotency-Key must be 1-{IDEMPOTENCY_KEY_MAX} visible ASCII characters",
-                    outcome="validation",
                 )
             trace = (request.headers.get("traceparent") or "").strip()
             traceparent = trace if _TRACEPARENT.fullmatch(trace) else None  # malformed: ignored
@@ -906,29 +1013,27 @@ def _mount_stream_routes(router: APIRouter, rt: _StreamRuntime) -> None:
             raw_budget = request.headers.get(BUDGET_HEADER)
             if raw_budget is not None:
                 if not _BUDGET.fullmatch(raw_budget.strip()):
-                    return _problem(
+                    return _refused(
+                        binding,
+                        started,
                         422,
-                        "validation",
-                        "Invalid message",
                         f"{BUDGET_HEADER} must be an integer number of milliseconds",
-                        outcome="validation",
                     )
                 budget_ms = min(PUSH_BUDGET_MAX_MS, max(1, int(raw_budget.strip())))
 
             try:
                 raw = await asyncio.wait_for(_read_capped(request, limit), rt.push_read_timeout_s)
             except TimeoutError:
-                return _problem(
+                return _refused(
+                    binding,
+                    started,
                     408,
-                    "timeout",
-                    "Request timeout",
                     f"the message body did not arrive within {rt.push_read_timeout_s:g}s",
-                    outcome="validation",
                 )
             except ClientDisconnect:  # the caller left mid-body: nobody to answer, nothing to log
                 return Response(status_code=400)
             if raw is None:
-                return _too_large(limit)
+                return _too_large(limit, binding, started)
             from examlops.dataplane.streams.kafka_stream import EnvelopeRejected, parse_value
             from examlops.dataplane.streams.types import StreamRequest
 
@@ -936,10 +1041,8 @@ def _mount_stream_routes(router: APIRouter, rt: _StreamRuntime) -> None:
                 payload, model, alias, metadata = parse_value(raw, max_bytes=limit)
             except EnvelopeRejected as reject:
                 if reject.reason == "oversize":
-                    return _too_large(limit)
-                return _problem(
-                    422, "validation", "Invalid message", reject.detail, outcome="validation"
-                )
+                    return _too_large(limit, binding, started)
+                return _refused(binding, started, 422, reject.detail)
             metadata.pop("tenant", None)  # defence in depth; the ingress never reads it (I4)
             req = StreamRequest(
                 stream=binding.name,
@@ -1082,6 +1185,14 @@ def _mount_stream_routes(router: APIRouter, rt: _StreamRuntime) -> None:
             proj, name, new_state, only_if_state=prior_state, reason=body.reason
         )
         if changed:
+            # This process changed it, so this process's catalog snapshot is wrong *now* — the
+            # push route read a paused stream as enabled for up to the view's TTL (live finding
+            # D5). Other replicas still converge on their own TTL; there is no cross-replica
+            # invalidation, and the guide says so.
+            try:
+                rt.catalog.invalidate(proj, name)
+            except Exception:  # noqa: BLE001 - the state change stands either way
+                logger.debug("dataplane: catalog invalidation failed", exc_info=True)
             details: dict[str, Any] = {
                 "project": proj,
                 "name": name,
@@ -1124,9 +1235,7 @@ def _mount_stream_routes(router: APIRouter, rt: _StreamRuntime) -> None:
         authorize_stream(caller, request, "read", proj, name)
         if get_stream(name, proj) is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"stream {name!r} not found")
-        rows = list_dead_letters(proj, stream=name, limit=_DLQ_FETCH_CAP)
-        if reason is not None:
-            rows = [r for r in rows if r.get("reason") == reason]
+        cursor_id: int | None = None
         if cursor:
             try:
                 cursor_id = int(cursor)
@@ -1134,12 +1243,21 @@ def _mount_stream_routes(router: APIRouter, rt: _StreamRuntime) -> None:
                 raise HTTPException(
                     status.HTTP_422_UNPROCESSABLE_ENTITY, "cursor must be an integer id"
                 ) from None
-            rows = [r for r in rows if int(r["id"]) < cursor_id]
         page_size = _clamp_dlq_limit(limit)
-        page = rows[:page_size]
-        next_cursor = (
-            str(page[-1]["id"]) if len(page) == page_size and len(rows) > page_size else None
+        # One row past the page is all it takes to know whether a next page exists, and asking the
+        # store for `reason`/`cursor` rather than filtering afterwards is what makes that true:
+        # a filter applied to an already-limited read can only ever see the window the limit
+        # covered, so paging stopped at the cap and a `reason` absent from the newest rows read as
+        # absent from the stream.
+        rows = list_dead_letters(
+            proj,
+            stream=name,
+            limit=min(page_size + 1, _DLQ_FETCH_CAP),
+            reason=reason,
+            before_id=cursor_id,
         )
+        page = rows[:page_size]
+        next_cursor = str(page[-1]["id"]) if len(rows) > page_size else None
         return {"items": page, "next_cursor": next_cursor}
 
     @router.get("/streams/{name}/dead-letters/{dead_letter_id}")
@@ -1275,6 +1393,15 @@ def _drain(rt: _StreamRuntime, scheduler: Any) -> None:
     flushes still get :data:`_FLUSH_FLOOR_S` each, so the drain overruns its budget by at most
     about a second. Each step is guarded: one failing step never skips the next."""
     rt.begin_drain()  # 1. /ready and push answer 503 from here on (already, after SIGTERM)
+    began = time.monotonic()
+    # The drain was silent from end to end (live finding D8): the whole shutdown in the service
+    # log was the server's own three lines, so "did it drain or was it killed" could not be
+    # answered from the log of a process that is already gone.
+    logger.info(
+        "dataplane: drain started (%.1fs left of the budget, %d push request(s) in flight)",
+        rt.remaining(),
+        rt.inflight.count,
+    )
     _drain_step("supervisor.stop", rt.stop_intake)  # 2. connectors stop and commit (once)
     if not rt.inflight.wait_idle(rt.remaining()):  # 3. in-flight pushes finish
         logger.warning(
@@ -1289,6 +1416,11 @@ def _drain(rt: _StreamRuntime, scheduler: Any) -> None:
         # signal-and-wait: each run gives its own lease back as it exits (never on its behalf)
         _drain_step("supervisor.release_leases", lambda: supervisor.release_leases(rt.remaining()))
     _drain_step("scheduler.stop", lambda: scheduler.stop(rt.remaining()))  # 6. the scheduler
+    logger.info(
+        "dataplane: drain finished in %.2fs (%d push request(s) still in flight)",
+        time.monotonic() - began,
+        rt.inflight.count,
+    )
 
 
 def _stop_intake_quietly(rt: _StreamRuntime) -> None:
@@ -1453,6 +1585,10 @@ def create_app(
     app.state.role = role
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
+    # Outside the exception handlers on purpose: those run inside Starlette's ExceptionMiddleware,
+    # which only handles HTTPException. This wraps the whole stack, so an unforeseen failure of a
+    # stream route still answers this surface's own problem document (live finding D1).
+    app.add_middleware(StreamErrorMiddleware)
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -1678,11 +1814,9 @@ def create_app(
     ) -> list[dict[str, Any]]:
         authorize_source(caller, request, "read", project, name)
         _existing(name, project)
-        return [
-            r
-            for r in catalog.list_pulls(project=project, source=name, limit=limit)
-            if r["status"] in _COMMITTED and r.get("revision")
-        ]
+        # `limit` bounds snapshots, not the pulls they would be filtered out of — see
+        # `catalog.list_snapshots`. This route is what a training run consults to pin a revision.
+        return catalog.list_snapshots(project=project, source=name, limit=limit)
 
     if mount_streams:
         _mount_stream_routes(api, rt)

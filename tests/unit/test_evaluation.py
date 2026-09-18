@@ -319,3 +319,27 @@ def test_run_eval_gate_end_to_end():
 
 def test_run_eval_gate_none_when_unconfigured():
     assert gate_mod.run_eval_gate("Unconfigured", "1", candidate_scores={}) is None
+
+
+def test_gate_reports_are_newest_first_even_within_one_second():
+    """`reports[0]` is read as the standing verdict, so a tie on `ts` must not decide it.
+
+    Two gate reports land in one second whenever a promote and an autopilot cycle judge the same
+    model, or a CI matrix runs the suite twice. `ts` has one-second resolution, so ordering by it
+    alone leaves the choice to the query plan — and SQLite returns the *oldest* of the tied rows,
+    which here means the superseded verdict is handed to the MCP `gate_reports` tool as current.
+    """
+    from examlops import platform_db
+    from examlops.platform_db import get_gate_reports
+
+    with platform_db.get_db() as conn:
+        for i, passed in enumerate((1, 0), start=1):  # the second one is the standing verdict
+            conn.execute(
+                "INSERT INTO gate_reports (ts, model, candidate, baseline, passed, mode, "
+                "report_json) VALUES ('2026-09-15 12:00:00', 'TIED', ?, '1', ?, 'block', '{}')",
+                (str(i + 1), passed),
+            )
+
+    reports = get_gate_reports("TIED")
+    assert [r["candidate"] for r in reports] == ["3", "2"], reports
+    assert reports[0]["passed"] == 0, "the newest verdict is the failing one"

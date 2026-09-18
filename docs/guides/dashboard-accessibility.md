@@ -14,7 +14,7 @@ a set of reusable primitives, so new surfaces inherit it rather than retrofittin
 |---|---|
 | Keyboard operability (R2) | `useFocusTrap` traps + restores focus in dialogs; `SkipLink` → `#main` landmark |
 | Screen-reader live regions (R3) | `AnnouncerProvider` polite/assertive `aria-live`; `RouteAnnouncer` announces page changes |
-| Contrast AA (R4) | `lib/a11y.ts` OKLCH→luminance contrast math; a CI test audits the real F3 tokens meet AA |
+| Contrast AA (R4) | `lib/a11y.ts` OKLCH→luminance contrast math; a CI test reads `index.css` and audits every text pair in every declared theme — with one recorded failure, see below |
 | Non-colour status (R4) | F3 status semantics — always icon **+** label, never colour alone |
 | Reduced motion (R5) | global `@media (prefers-reduced-motion: reduce)` neutralizes animation/transition |
 | Accessible charts (R6) | F4 `<ChartFrame>` renders a keyboard-reachable data-table fallback |
@@ -45,12 +45,37 @@ text so repeating the same message still triggers a screen-reader announcement.
 
 ## Contrast audit (the axe stand-in)
 
-`lib/a11y.test.ts` converts each F3 **OKLCH** token to relative luminance and asserts foreground, muted,
-and primary all meet AA (≥ 4.5:1) on their background across the day/night/high-contrast themes. Editing
-a token that regresses contrast **fails CI** — a dependency-free guard until axe-core is added.
+`lib/a11y.test.ts` converts each F3 **OKLCH** token to relative luminance and asserts every
+text-on-surface pair meets AA (≥ 4.5:1) in each theme the stylesheet declares. Editing a token that
+regresses contrast **fails CI** — a dependency-free guard until axe-core is added.
 
 `oklchLuminance` implements OKLCH → OKLab → linear-sRGB → WCAG relative luminance (channels clamped to
 gamut), so the check runs on the real palette, not a hex approximation.
+
+!!! warning "That sentence was not true until 2026-09-14"
+
+    The audit used to check four colours **transcribed into the test file**, under theme names the
+    stylesheet does not use (`dark`/`light`/`high-contrast`; the CSS ships `:root`, `day`,
+    `midnight`). Editing `index.css` could not fail it: it audited a copy. It now reads the
+    stylesheet itself and checks **nine** pairs per theme instead of three.
+
+    Widening it found a real failure the old shape could not see: **`--primary-foreground` on
+    `--primary` is 3.42:1** in the default and `midnight` themes — the label on primary buttons,
+    below AA's 4.5 for normal text (it passes the 3.0 large-text threshold). `day` is fine at 6.13.
+
+    **It is recorded, not silently fixed, because the fix is a design decision.** `--primary` serves
+    two roles — a surface that carries text, and a foreground used on the page background — and on a
+    dark theme *no single lightness satisfies both at AA*: white text on it needs L ≤ 0.565, while it
+    needs L ≥ 0.58 to stay readable on the background. So the options are:
+
+    1. give `--primary-foreground` a dark value (measured **5.66:1**, and `--primary` is untouched) —
+       one line per theme, but blue buttons get near-black labels;
+    2. split `--primary` into a surface colour and an accent colour, which is what the conflict is
+       really telling you, and update the components that use each.
+
+    The test carries the failure as a named exception with its measurement, and a second assertion
+    fails if a recorded failure stops reproducing — so whichever option is taken, the entry cannot
+    outlive the problem.
 
 ## Notes & limits
 

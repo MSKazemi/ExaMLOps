@@ -43,14 +43,46 @@ def test_a_backup_run_by_the_suite_copies_no_real_store(tmp_path):
     assert not copied & {"skipper_memory", "agent_memory", "skipper_review", "mlflow"}, copied
 
 
-def test_the_checkout_stores_cannot_be_opened(monkeypatch):
+def test_the_checkout_stores_cannot_be_opened():
     """The conftest audit hook refuses a connection to the checkout's own stores and records it,
-    so a test fails even when the code under test swallows the error. Driven through the real
-    seam — a `PLATFORM_DB` left pointing at the checkout's file, which is the accident it stops."""
+    so a test fails even when the code under test swallows the error.
+
+    Asked of the hook directly, because it must hold on **either** datastore engine. Four of the
+    five stores it names are SQLite whatever `EXAMLOPS_DB_BACKEND` says — the agent's memory, its
+    review store and MLflow's — so this is exactly as load-bearing on a Postgres install as on a
+    SQLite one, and the seam below cannot reach it there.
+    """
+    import sqlite3
+
+    import pytest
+
+    from tests import conftest
+
+    for store in sorted(conftest._CHECKOUT_STORES):
+        with pytest.raises(PermissionError, match="checkout's own store"):
+            sqlite3.connect(store)
+    assert sorted(set(conftest._CHECKOUT_STORE_OPENS)) == sorted(conftest._CHECKOUT_STORES), (
+        "every refusal is recorded, so the teardown check fails the test that caused it"
+    )
+    conftest._CHECKOUT_STORE_OPENS.clear()  # opened on purpose here
+
+
+def test_a_platform_db_left_in_the_checkout_is_refused_through_get_db(monkeypatch):
+    """The same guard through the real seam: a `PLATFORM_DB` still pointing at the checkout's own
+    file, which is the accident it was written for.
+
+    SQLite only, and not as a concession — on Postgres `PLATFORM_DB` names nothing the platform
+    opens, so the accident this describes cannot happen there. Skipping says that; passing
+    vacuously (the hook never fires, `get_db` succeeds against the shared schema) would not.
+    """
     import pytest
 
     from examlops.platform_db import get_db
+    from examlops.storage.testing import postgres_backend
     from tests import conftest
+
+    if postgres_backend():
+        pytest.skip("PLATFORM_DB is not the datastore on Postgres; the hook is covered above")
 
     monkeypatch.setenv("PLATFORM_DB", str(conftest.REPO_ROOT / "platform.db"))
     with pytest.raises(PermissionError, match="checkout's own store"):

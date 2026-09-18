@@ -21,11 +21,21 @@ def get(url: str, token: str = "") -> Any:
     return _send(req, url)
 
 
-def post(url: str, body: dict[str, Any], token: str = "", timeout: float = 10.0) -> Any:
+def post(
+    url: str,
+    body: dict[str, Any],
+    token: str = "",
+    timeout: float = 10.0,
+    idempotency_key: str | None = None,
+) -> Any:
     data = json.dumps(body).encode()
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if idempotency_key:
+        # Makes a repeated submission (a retry after a timeout, a re-run of the same automation
+        # cycle) resolve to the one command the first attempt created (plan P1.7).
+        headers["Idempotency-Key"] = idempotency_key
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     return _send(req, url, timeout=timeout)
 
@@ -92,7 +102,35 @@ def put(url: str, body: Any, token: str | None = None) -> Any:
     return _send(req, url, timeout=30)
 
 
+def _platform_service_auth(req: urllib.request.Request, url: str) -> None:
+    """MLflow's / Prefect's credential for a call to the configured MLflow or Prefect (P3.6), and
+    the serving credential (``serving_token``) for a call to the configured ``ray_serve`` URL.
+
+    Only when the URL is under one of those configured bases, and never over an
+    ``Authorization`` the caller already set (a control-plane bearer, or the serving admin token).
+    """
+    if req.has_header("Authorization"):
+        return
+    try:
+        from examlops.cli._config import load_config
+        from examlops.service_auth import headers_for
+
+        cfg = load_config()
+        extra = headers_for(
+            url,
+            mlflow_base=cfg.mlflow_url,
+            prefect_base=cfg.prefect_url,
+            serving_base=cfg.ray_serve_url,
+            serving_token=cfg.serving_token,
+        )
+    except Exception:  # noqa: BLE001 - a config problem must not break an unauthenticated call
+        return
+    for key, value in extra.items():
+        req.add_header(key, value)
+
+
 def _send(req: urllib.request.Request, url: str, timeout: float = 10.0) -> Any:
+    _platform_service_auth(req, url)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             body = resp.read().decode("utf-8", errors="replace")
@@ -118,6 +156,43 @@ def _send(req: urllib.request.Request, url: str, timeout: float = 10.0) -> Any:
         raise ClientError(f"Timed out after {timeout:g}s connecting to {url}") from exc
 
 
+#: Which credential a 401 is about, per service: the ``Config`` field holding that service's base
+#: URL, the environment variable, the ``exa config set`` key, and what to call the service.
+#:
+#: This helper serves every command, and the 401 message used to name Skipper's ``AGENT_API_KEY``
+#: whatever had answered — so ``exa dataplane pull --remote``, which needs
+#: ``EXAMLOPS_DATAPLANE_TOKEN``, sent operators to the wrong variable (live pass 2). Ray Serve is
+#: deliberately absent: it has two credentials (``serving_token`` and ``ray_serve_admin_token``)
+#: and which one a route wants cannot be told from the URL, and naming the wrong one is the bug
+#: this table exists to fix.
+_SERVICE_TOKENS: tuple[tuple[str, str, str, str], ...] = (
+    ("dataplane_url", "EXAMLOPS_DATAPLANE_TOKEN", "dataplane_token", "the dataplane service"),
+    ("control_plane_url", "CONTROL_PLANE_TOKEN", "control_plane_token", "the control plane"),
+    ("agent_url", "AGENT_API_KEY", "agent_token", "Skipper"),
+    ("dashboard_url", "DASHBOARD_TOKEN", "dashboard_token", "the dashboard"),
+)
+
+
+def _auth_hint(url: str) -> str:
+    """How to authenticate to whichever configured service ``url`` belongs to, or ``""``.
+
+    Matched against the configured base URLs rather than guessed from the path, so a site that
+    moved a service still gets the right variable named.
+    """
+    try:
+        from examlops.cli._config import load_config
+
+        cfg = load_config()
+    except Exception:  # noqa: BLE001 - a config problem must not replace the auth error
+        return ""
+    target = url.rstrip("/")
+    for field, env, key, label in _SERVICE_TOKENS:
+        base = str(getattr(cfg, field, "") or "").rstrip("/")
+        if base and (target == base or target.startswith(base + "/")):
+            return f" Set {env}, or run `exa config set {key}` ({label})."
+    return ""
+
+
 def _raise_http(exc: urllib.error.HTTPError, url: str) -> None:
     code = exc.code
     try:
@@ -126,12 +201,8 @@ def _raise_http(exc: urllib.error.HTTPError, url: str) -> None:
         body = ""
 
     if code == 401:
-        raise ClientError(
-            f"Authentication required ({url}). "
-            "Configure the token required by that service (for Skipper: AGENT_API_KEY or "
-            "`exa config set agent_token` and use the hidden prompt).",
-            status=code,
-        ) from exc
+        hint = _auth_hint(url) or " Configure the token that service requires."
+        raise ClientError(f"Authentication required ({url}).{hint}", status=code) from exc
     if code == 403:
         raise ClientError(
             f"Access denied ({url}). Check your token has the required permissions.",

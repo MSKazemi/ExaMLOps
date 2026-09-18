@@ -81,6 +81,30 @@ exa --json audit autonomy --last 7d
 ADR 0110 decision 4 calls a NULL `rollback_ref` on an autonomous action a policy violation; the
 refusal that enforces it is not built yet, so for now they are reported and the command says so.
 
+### The listing is bounded; the counts are not
+
+`--limit` (default 500) caps how many actions are **listed**. It never caps the numbers: `count`,
+`undoable` and `without_rollback` are counted by the database over the whole `--last` window, and
+the command says so when it truncated the page:
+
+```text
+Showing the 500 most recent of 6210 autonomous action(s) in the window.
+The counts below are for the whole window, not this page.
+```
+
+This separation is the point rather than a detail. A violation is, by nature, the rare row — so a
+count taken from the length of a page answers "violations among the newest 500" while reading as
+"violations in the window", and the more autonomous work a platform does, the more confidently it
+reports zero. The same count decides whether the `record_keeping` section of an EU AI Act technical
+file is *insufficient*, and the section's own message sends an auditor to this command, so the two
+surfaces have to agree on the number.
+
+Raise `--limit` to see the older ones rather than only count them:
+
+```bash
+exa audit autonomy --last 365d --limit 5000
+```
+
 ## What is wired up
 
 `exa drift trigger` and `exa autopilot run` both declare themselves `autonomous` for the whole

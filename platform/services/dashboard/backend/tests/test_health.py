@@ -53,8 +53,8 @@ async def test_health_degraded_when_service_down(client):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "degraded"
-    # Synthetic services are not HTTP-pinged: postgres (DB), dashboard (self), slurm (mock), seanerbus_sim (proxied).
-    _SYNTHETIC = {"postgres", "dashboard", "slurm", "seanerbus_sim"}
+    # Synthetic services are not HTTP-pinged: postgres (DB), dashboard (self), slurm (mock).
+    _SYNTHETIC = {"postgres", "dashboard", "slurm"}
     for key, svc in body["services"].items():
         if key not in _SYNTHETIC:
             assert svc["status"] == "down", f"{key} expected down, got {svc['status']}"
@@ -98,11 +98,9 @@ async def test_health_contains_all_services(client):
         "control_plane",
         "postgres",
         "loki",
-        "seanerbus",
         "jupyterhub",
         "dashboard",
         "slurm",
-        "seanerbus_sim",
         "dataplane",
     }
 
@@ -114,9 +112,6 @@ async def test_health_contains_all_services(client):
 # which is the case where a scheduler *does* exist and the dashboard simply cannot see it from
 # here. That second branch pinned the top-level `status` at `degraded` for the entire life of any
 # real-scheduler deployment, which is how a health endpoint teaches its operators to ignore it.
-# `seanerbus_sim` had the same defect from the other side: it copied the bridge's HTTP
-# reachability, but the bridge's own `/health` is a constant `{"status": "ok", …}` that says
-# nothing about whether the Cap'n Proto bus is connected.
 
 
 def _up_client():
@@ -133,7 +128,7 @@ async def test_unprobed_services_report_unknown_and_say_why(client):
         mock_client_cls.return_value = _up_client()
         body = (await client.get("/api/health")).json()
 
-    assert body["unmeasured"] == ["seanerbus_sim", "slurm"]
+    assert body["unmeasured"] == ["slurm"]
     for key in body["unmeasured"]:
         svc = body["services"][key]
         assert svc["status"] == "unknown", f"{key} claimed {svc['status']} without probing anything"

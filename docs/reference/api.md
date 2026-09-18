@@ -136,7 +136,7 @@ Aggregate health of all services. No authentication required.
     "slurm":      {"status": "unknown",  "url": "",
                    "note": "EXAMLOPS_SLURM_MODE=mock — training runs inline, so there is no scheduler to probe."}
   },
-  "unmeasured": ["seanerbus_sim", "slurm"]
+  "unmeasured": ["slurm"]
 }
 ```
 
@@ -144,11 +144,10 @@ Aggregate health of all services. No authentication required.
 `"unknown"` — *nothing was probed*, so no verdict is claimed. An `unknown` entry always carries a
 `note` saying why, and every such key is listed in the top-level `unmeasured` array.
 
-**`unmeasured` entries do not move the top-level `status`.** Two services are reported for
+**`unmeasured` entries do not move the top-level `status`.** One service is reported for
 completeness and never probed: `slurm` (the scheduler runs off-cluster, or in `mock` mode is not
-involved at all — use `exa hpc queue` / `exa hpc capacity` instead) and `seanerbus_sim` (the bridge
-does not report its bus connection, so only the bridge's own HTTP endpoint is measured, under the
-`seanerbus` key). Before this, `slurm` answered `ok` in mock mode and `down` in every other mode,
+involved at all — use `exa hpc queue` / `exa hpc capacity` instead). Before this, `slurm` answered
+`ok` in mock mode and `down` in every other mode,
 which held the whole payload at `degraded` for the entire life of a real-scheduler deployment.
 
 The URLs above are the **host** ports the compose stack publishes (`15000:5000`, `14200:4200`, …).
@@ -196,10 +195,15 @@ Multiplexed **Server-Sent-Events** stream of live platform events. Requires the 
 Events are tenant-filtered (a client never sees another tenant's events) and backpressured (under a
 flood the oldest queued event is dropped; each frame carries a `_dropped` count).
 
+With the NATS event backbone (`EXAMLOPS_EVENT_PUBLISHER=nats`), the stream also carries every
+platform event whichever surface produced it, for example `job.retrain_run_failed`,
+`deploy.model_alias_changed` and `approval.approved`; see the dashboard architecture page for the
+mapping. `hello` reports `platform_events: true` when that is so.
+
 **Stream:**
 ```
 event: hello
-data: {"channels": ["job.*", "drift.*"]}
+data: {"channels": ["job.*", "drift.*"], "platform_events": true}
 
 event: job.started
 data: {"model": "JPCP", "run_id": "abc123", "_dropped": 0}
@@ -647,8 +651,18 @@ runs dispatched for their tenant.
 
 The legacy `CONTROL_PLANE_TOKEN` remains valid as principal `legacy`, tenant `default`, with both
 scopes and operator-wide flow lookup. Malformed structured JSON—or reuse of the legacy secret in the
-map—fails all bearer authentication closed. Health/readiness, metrics, registry listing, and model
-metadata/assets remain public. ModelZoo webhooks use their separate webhook secret.
+map—fails all bearer authentication closed. Health/readiness and metrics are public; the registry
+listing and model metadata, READMEs and images need `read`. ModelZoo webhooks use their separate
+webhook secret.
+
+### Versions
+
+Every operator route also answers under `/v1` (for example `GET /v1/models` and
+`POST /v1/approvals/{model_id}/approve`). A `/v1` path runs the same handler with the same
+authorization, but returns errors as RFC 9457 `application/problem+json`. The unversioned paths
+are deprecated but still served. Each response names its successor:
+`Deprecation: @1789084800` and `Link: </v1/...>; rel="successor-version"`. The full mapping is in
+the [control plane guide](../guides/control-plane.md#versioned-api-v1).
 
 ### `GET /livez`, `GET /readyz`, and `GET /health`
 
@@ -676,10 +690,11 @@ compatibility alias for liveness.
     "configured_event_publisher": "redis",
     "event_relay_enabled": true,
     "outbox": {"pending": 2, "published": 41, "poison": 0},
-    "horizontal_scaling_safe": false,
-    "horizontal_scaling_blockers": [
-      "retrain_dedup_requires_client_key",
-      "circuit_breaker_process_local"
+    "horizontal_scaling_safe": true,
+    "horizontal_scaling_blockers": [],
+    "horizontal_scaling_notes": [
+      "circuit_breaker_per_replica",
+      "legacy_retrain_without_idempotency_key_is_a_new_request"
     ]
   }
 }
@@ -688,8 +703,11 @@ compatibility alias for liveness.
 The runtime block reports what this process actually uses. Durable command records and Prefect
 idempotency keys protect retrain dispatch across processes sharing the state backend. The selected
 coordinator owns rate limits, retrain locks, and the singleton poller lease. The event relay drains
-the same state database and reports pending, published, and poison rows. Circuit-breaker state and
-runtime configuration remain local, so do not infer multi-replica safety from Postgres alone.
+the same state database and reports pending, published, and poison rows. Runtime settings live in
+the state store too. `horizontal_scaling_safe` is computed from this configuration: the example is
+safe because state is on Postgres, the relay runs and events go to a real broker. With SQLite or the
+`log` publisher it is false, and `horizontal_scaling_blockers` says why. The notes list what is true
+but not a blocker (see [Running more than one replica](../components/control-plane.md#running-more-than-one-replica)).
 
 ---
 
@@ -711,7 +729,7 @@ runtime configuration remain local, so do not infer multi-replica safety from Po
 ```json
 {
   "flow_run_id": "abc123",
-  "deployment": "examlops_scheduled_training/nightly",
+  "deployment": "training_flow/examlops-dispatch",
   "status_url": "/retrain/abc123"
 }
 ```

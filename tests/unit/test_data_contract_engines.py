@@ -383,8 +383,9 @@ def test_the_recorded_check_says_which_engine_judged(monkeypatch):
 
 def test_a_datastore_from_before_gains_the_engine_column(tmp_path, monkeypatch):
     from examlops.platform_db import get_data_quality_checks, get_db, init_db
+    from examlops.storage.testing import datastore_before_a_migration
 
-    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "old.db"))
+    datastore_before_a_migration(tmp_path, monkeypatch, "data_quality_checks")
     with get_db() as conn:
         conn.execute(
             "CREATE TABLE data_quality_checks (id INTEGER PRIMARY KEY AUTOINCREMENT, "

@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .providers import Provider, ProviderMeta, register_provider
-from .providers.loader import resolve_provider
+from .providers.loader import degraded_to_default, resolve_provider
 
 DOMAIN = "drift"
 
@@ -90,7 +90,8 @@ def resolve_drift_score_fn(override: str | None = None):
     register_builtins()
     try:
         provider = resolve_provider(DOMAIN, override=override, group=DOMAIN)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - a broken provider must not stop the calculation
+        degraded_to_default(DOMAIN, exc)
         provider = None
 
     def _score(live_mean: float, live_std: float, baseline: dict | None) -> tuple[float, str]:
@@ -108,7 +109,8 @@ def resolve_drift_score_fn(override: str | None = None):
             if provider is not None:
                 out = provider.compute(inputs)
                 return float(out["z_score"]), str(out["status"])
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - a broken provider must not stop the calculation
+            degraded_to_default(DOMAIN, exc)
             pass
         # Graceful degradation: inline z-score
         z = abs(live_mean - baseline["mean"]) / baseline["std"]

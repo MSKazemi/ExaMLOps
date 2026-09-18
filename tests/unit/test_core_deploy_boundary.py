@@ -27,6 +27,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests.unit._guard_deps import scan_files
+
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_ROOTS = (
     "platform/cli/src/examlops",
@@ -95,7 +97,7 @@ def _is_runtime(path: Path) -> bool:
 def _measure() -> dict[str, dict[str, int]]:
     found: dict[str, dict[str, int]] = {}
     for root in RUNTIME_ROOTS:
-        for path in sorted((ROOT / root).rglob("*.py")):
+        for path in scan_files(ROOT / root):
             if not _is_runtime(path):
                 continue
             text = path.read_text(errors="replace")

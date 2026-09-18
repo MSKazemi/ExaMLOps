@@ -6,6 +6,8 @@ import os
 import sys
 import types
 
+import pytest
+
 # ── minimal stubs so bridge imports succeed without seanerbus installed ─────
 
 capnp_stub = types.ModuleType("capnp")
@@ -123,3 +125,89 @@ def test_errors_counter_increments():
     bridge._ERRORS.labels(model="TEST").inc()
     after = REGISTRY.get_sample_value("seanerbus_inference_errors_total", {"model": "TEST"}) or 0.0
     assert after == before + 1
+
+
+def _model_error():
+    """The bridge's own model-failure exception, resolved after the stubbed import."""
+    return bridge.ModelInferenceError
+
+
+# `seanerbus_inferences_total` says "Total inference calls dispatched to Ray Serve", and the
+# bridge's own internal stats count every call — success and all four error branches alike. The
+# Prometheus counter did not: it was incremented after `raise_for_status()`, so it counted only
+# **successes**, while `seanerbus_inference_errors_total` counted the failures.
+#
+# Everything that divides one by the other therefore computed errors ÷ successes and called it an
+# error rate: 90 % failures rendered as 900 % on three `percent` panels, and a total outage — no
+# successes at all — as +Inf. The alert kept firing only because its `clamp_min` denominator
+# saved it from the division.
+def _drive(monkeypatch, *, fails: int, succeeds: int, exc: type[BaseException] = RuntimeError):
+    import asyncio
+
+    class _Req:
+        job_id = "j"
+        model_name = "TEST2"
+        alias = "Production"
+        num_nodes = 1
+        user_id = "u"
+
+    async def _ok(*_a, **_k):
+        return 1.0, "run", "1"
+
+    async def _boom(*_a, **_k):
+        raise exc("ray serve is down")
+
+    def _count(name: str) -> float:
+        return REGISTRY.get_sample_value(name, {"model": "TEST2"}) or 0.0
+
+    # Deltas: the registry is process-global, so an earlier test's calls are still in it.
+    base_total = _count("seanerbus_inferences_total")
+    base_errors = _count("seanerbus_inference_errors_total")
+
+    for _ in range(succeeds):
+        monkeypatch.setattr(bridge, "_call_pipeline", _ok)
+        asyncio.run(bridge._call_inference(_Req()))
+    for _ in range(fails):
+        monkeypatch.setattr(bridge, "_call_pipeline", _boom)
+        asyncio.run(bridge._call_inference(_Req()))
+    return (
+        _count("seanerbus_inferences_total") - base_total,
+        _count("seanerbus_inference_errors_total") - base_errors,
+    )
+
+
+def test_every_dispatched_call_is_counted_so_the_error_rate_cannot_exceed_one(monkeypatch):
+    total, errors = _drive(monkeypatch, fails=9, succeeds=1)
+
+    assert total == 10, (
+        f"{total} calls counted for 10 dispatched — the denominator of every error-rate panel "
+        "and of SeanerBUSHighErrorRate is not the population it claims to measure."
+    )
+    assert errors == 9
+    assert errors / total == 0.9, "90% of calls failed; the error rate must read 0.9, not 9.0"
+
+
+def test_a_total_outage_reads_as_one_hundred_percent_and_not_infinity(monkeypatch):
+    total, errors = _drive(monkeypatch, fails=5, succeeds=0)
+
+    # The moment the operator actually looks. With a success-only denominator this was 5/0.
+    assert total == 5
+    assert errors / total == 1.0
+
+
+# Each `except` branch in `_call_inference` counts the error and the call separately, so the
+# invariant has to hold in all of them — not just the one an arbitrary exception happens to land
+# in. A mutant that double-counted a `ModelInferenceError` survived until this was parametrised.
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(RuntimeError, id="unexpected"),
+        pytest.param(ValueError, id="schema"),
+        pytest.param(_model_error(), id="model-failure"),
+    ],
+)
+def test_errors_are_a_subset_of_calls_in_every_failure_branch(monkeypatch, exc):
+    total, errors = _drive(monkeypatch, fails=3, succeeds=1, exc=exc)
+    assert total == 4, f"{exc.__name__}: {total} calls counted for 4 dispatched"
+    assert errors == 3, f"{exc.__name__}: {errors} errors counted for 3 failures"
+    assert errors <= total, "an error rate above 100% means the denominator is the wrong population"

@@ -13,7 +13,7 @@ import sqlite3
 
 import audit_write
 from auth import require_role
-from capabilities import PROJECT_MANAGE, can, deny_reason
+from capabilities import PROJECT_MANAGE, can, deny_reason, require_capability
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
@@ -315,7 +315,11 @@ def _pipelines(conn, name: str, models: list[str]) -> dict:
         traffic: dict = {}
         for m in models:
             try:
-                tr = conn.execute("SELECT rules FROM traffic_rules WHERE model=?", (m,)).fetchone()
+                tr = conn.execute(
+                    "SELECT rules FROM traffic_rules WHERE lower(model)=lower(?) "
+                    "ORDER BY updated_at DESC LIMIT 1",
+                    (m,),
+                ).fetchone()
                 if tr:
                     traffic[m] = json.loads(tr["rules"])
             except Exception:
@@ -385,7 +389,14 @@ def _examlops_adopt():
 
 @router.put("/{name}")
 async def update_project_view(
-    name: str, payload: dict = Body(...), principal: dict = Depends(_admin)
+    name: str,
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROJECT_MANAGE)),
 ) -> dict:
     """Edit a project's quota, budget, description and namespace (admin / project.manage; audited).
 
@@ -447,7 +458,15 @@ async def update_project_view(
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_project_view(payload: dict = Body(...), principal: dict = Depends(_admin)) -> dict:
+async def create_project_view(
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROJECT_MANAGE)),
+) -> dict:
     """Create a project (admin / project.manage; audited)."""
     _require_manage(principal)
     name = (payload.get("name") or "").strip()
@@ -489,7 +508,14 @@ async def create_project_view(payload: dict = Body(...), principal: dict = Depen
 
 @router.post("/{name}/resources")
 async def assign_resource_view(
-    name: str, payload: dict = Body(...), principal: dict = Depends(_admin)
+    name: str,
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROJECT_MANAGE)),
 ) -> dict:
     """Attach a resource (kind/ref) to a project (admin / project.manage; audited)."""
     _require_manage(principal)
@@ -517,7 +543,14 @@ async def assign_resource_view(
 
 @router.post("/{name}/members")
 async def add_member_view(
-    name: str, payload: dict = Body(...), principal: dict = Depends(_admin)
+    name: str,
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROJECT_MANAGE)),
 ) -> dict:
     """Add a person to a project with owner/editor/viewer role (admin / project.manage; audited)."""
     _require_manage(principal)
@@ -544,7 +577,16 @@ async def add_member_view(
 
 
 @router.delete("/{name}/members/{subject}")
-async def remove_member_view(name: str, subject: str, principal: dict = Depends(_admin)) -> dict:
+async def remove_member_view(
+    name: str,
+    subject: str,
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROJECT_MANAGE)),
+) -> dict:
     """Remove a person from a project (admin / project.manage; audited)."""
     _require_manage(principal)
     conn = _connect()
@@ -574,7 +616,14 @@ async def remove_member_view(name: str, subject: str, principal: dict = Depends(
 
 @router.post("/{name}/storage")
 async def bind_storage_view(
-    name: str, payload: dict = Body(default={}), principal: dict = Depends(_admin)
+    name: str,
+    payload: dict = Body(default={}),
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROJECT_MANAGE)),
 ) -> dict:
     """Ensure per-project storage and (optionally) bind a connection to it (P6, ADR 0091).
 
@@ -626,7 +675,15 @@ async def bind_storage_view(
 
 
 @router.delete("/{name}")
-async def delete_project_view(name: str, principal: dict = Depends(_admin)) -> dict:
+async def delete_project_view(
+    name: str,
+    principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROJECT_MANAGE)),
+) -> dict:
     """Delete a project and its membership/resource rows (admin / project.manage; audited).
 
     Removes the project row plus its ``project_models``/``project_resources``/``authz_relations``
@@ -653,6 +710,11 @@ async def onboard_model_view(
     model: str,
     payload: dict = Body(default={}),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROJECT_MANAGE)),
 ) -> dict:
     """Provision one project for a Zoo model — project · storage · MinIO connection · budget · model ·
     workbench · pipeline surfaces (admin / project.manage; audited). Idempotent.
@@ -690,6 +752,11 @@ async def onboard_model_view(
 async def onboard_all_view(
     payload: dict = Body(default={}),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PROJECT_MANAGE)),
 ) -> dict:
     """Onboard every Zoo/pack model (one project each; admin / project.manage; audited). Idempotent —
     already-provisioned models report ``changed=false``. Body (optional): ``{dryRun, connectionName,

@@ -19,7 +19,14 @@ def submit(
     project: str | None = typer.Option(None, "--project", help="Project attribution"),
     priority: int = typer.Option(0, "--priority", help="Higher runs first within a tenant"),
 ) -> None:
-    """Enqueue a work item (durable; drained under the global + per-tenant caps)."""
+    """Enqueue a work item (durable). A worker claims it under the global + per-tenant caps.
+
+    **This enqueues; it does not dispatch.** `examlops.admission` is a facade whose `dispatch` is
+    injected by whatever embeds it, and the control plane runs its own admission accounting on this
+    table rather than through the facade — so an item submitted here waits until something claims
+    it. `exa admission stats` reports how long the oldest queued item has been waiting, which is
+    what tells a busy queue from a stranded one.
+    """
     from examlops import admission
 
     try:
@@ -31,7 +38,10 @@ def submit(
     if _output.json_mode:
         _output.print_json({"id": item_id, "kind": kind, "tenant": tenant})
         return
-    _output.ok(f"Queued admission #{item_id} ({kind}, tenant={tenant}).")
+    _output.ok(
+        f"Queued admission #{item_id} ({kind}, tenant={tenant}) — it waits for a worker to claim "
+        f"it. Check it is moving with: exa admission stats"
+    )
 
 
 @app.command("stats")

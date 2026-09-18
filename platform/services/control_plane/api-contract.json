@@ -53,6 +53,27 @@
         ]
       }
     },
+    "/approvals/{approval_id}": {
+      "delete": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "approval_id",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/approve/{model_id}": {
       "post": {
         "parameters": [
@@ -281,6 +302,11 @@
           ],
           [
             "header",
+            "idempotency-key",
+            false
+          ],
+          [
+            "header",
             "x-idempotency-key",
             false
           ]
@@ -314,6 +340,423 @@
       }
     },
     "/status": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/admin/reload": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/approvals": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "query",
+            "status",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/approvals/{approval_id}": {
+      "delete": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "approval_id",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/approvals/{model_id}/approve": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "model_id",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/approvals/{model_id}/reject": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "model_id",
+            true
+          ]
+        ],
+        "request_body_required": false,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/changes": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": true,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/commands": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "query",
+            "cursor",
+            false
+          ],
+          [
+            "query",
+            "kind",
+            false
+          ],
+          [
+            "query",
+            "limit",
+            false
+          ],
+          [
+            "query",
+            "state",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/commands/{command_id}": {
+      "delete": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "command_id",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      },
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "command_id",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/models/{name}/images/{filename}": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "filename",
+            true
+          ],
+          [
+            "path",
+            "name",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/models/{name}/meta": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "name",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/models/{name}/readme": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "name",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/modelzoo/config": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      },
+      "put": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": true,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/modelzoo/events": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "query",
+            "limit",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/modelzoo/status": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/modelzoo/sync": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/retrain": {
+      "post": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "header",
+            "idempotency-key",
+            false
+          ]
+        ],
+        "request_body_required": true,
+        "responses": [
+          "202",
+          "422"
+        ]
+      }
+    },
+    "/v1/runs/{flow_run_id}": {
+      "get": {
+        "parameters": [
+          [
+            "header",
+            "authorization",
+            false
+          ],
+          [
+            "path",
+            "flow_run_id",
+            true
+          ]
+        ],
+        "request_body_required": null,
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
+    "/v1/status": {
       "get": {
         "parameters": [
           [

@@ -57,7 +57,8 @@ def set_slo(
     """Declare or version-bump one SLO spec (R1)."""
     from examlops.slo import apply_spec
 
-    apply_spec(
+    # `apply_spec` is where an SLI query is judged, so every surface inherits the same verdict.
+    warnings = apply_spec(
         {
             "model": model,
             "name": name,
@@ -69,6 +70,8 @@ def set_slo(
             "gate_promotion": gate,
         }
     )
+    for warning in warnings:
+        _output.warning(warning)
     _output.ok(f"SLO '{name}' set for {model} (target={target}, window={window})")
 
 
@@ -81,7 +84,9 @@ def apply(
 
     specs = load_specs(path)
     for spec in specs:
-        apply_spec(spec)
+        # Named per spec: in a file of twenty, "one of these dilutes itself" is not actionable.
+        for warning in apply_spec(spec):
+            _output.warning(f"{spec.get('model')}/{spec.get('name')}: {warning}")
     _output.ok(f"Applied {len(specs)} SLO spec(s) from {path}")
 
 

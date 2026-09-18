@@ -26,6 +26,7 @@ from examlops.coordination import DbCoordinator
 from examlops.data import dataplane as catalog
 from examlops.data.audit import export_audit_events
 from examlops.data.dataplane import get_stream, set_stream_state, upsert_stream
+from examlops.dataplane.service import app as app_module
 from examlops.dataplane.service.app import create_app
 from examlops.dataplane.service.auth import STREAM_FORBIDDEN_DETAIL
 from examlops.dataplane.streams.dlq import (
@@ -297,6 +298,66 @@ def test_state_transitions_are_audited_with_the_right_event_and_previous_state(
     assert rows[0]["actor"] is not None
 
 
+def test_a_pause_reaches_this_processs_push_route_on_the_very_next_request(env):
+    """Live finding D5: the push route reads the catalog through a TTL cache, so a pause this
+    process had just applied — and reported as applied — kept serving traffic for up to the TTL.
+    This process now invalidates the entry it changed; other replicas still converge on their own
+    TTL, which is what the guide says."""
+    push = {"payload": {"x": 1}}
+    assert env.client.post("/streams/s1/messages", headers=H, json=push).status_code == 200
+    assert env.client.post("/streams/s1/state", headers=H, json={"state": "paused"}).json() == {
+        "project": "",
+        "name": "s1",
+        "state": "paused",
+        "changed": True,
+    }
+    r = env.client.post("/streams/s1/messages", headers=H, json=push)
+    assert r.status_code == 503 and r.json()["detail"] == "stream paused"
+
+    resumed = env.client.post("/streams/s1/state", headers=H, json={"state": "enabled"})
+    assert resumed.status_code == 200
+    assert env.client.post("/streams/s1/messages", headers=H, json=push).status_code == 200
+
+
+def test_an_unexpected_datastore_failure_is_the_surfaces_own_problem_document(env, monkeypatch):
+    """Live finding D1: an un-migrated column made this route raise ``sqlite3.OperationalError``
+    and the caller got a bare ``Internal Server Error`` with no problem document at all. The
+    cause is logged, never echoed."""
+    import sqlite3
+
+    def _boom(*a, **k):
+        raise sqlite3.OperationalError("no such column: state_reason")
+
+    monkeypatch.setattr(app_module, "_state_change_event", _boom)
+    r = env.client.post("/streams/s1/state", headers=H, json={"state": "paused"})
+    assert r.status_code == 500
+    assert r.headers["content-type"].startswith("application/problem+json")
+    doc = r.json()
+    assert doc["type"].endswith("/unexpected") and doc["status"] == 500
+    assert "state_reason" not in json.dumps(doc)  # the cause goes to the log, not the caller
+
+
+def test_a_route_outside_streams_keeps_its_own_error_handling(env, monkeypatch):
+    """The 500 problem document is the stream surface's contract, not a service-wide rewrite.
+
+    Driven through a real route rather than asserted against the path regex (re-review): the same
+    failure is answered as a problem document on ``/streams`` and left to Starlette everywhere
+    else — which, for the test client, means it propagates.
+    """
+    import sqlite3
+
+    def _boom(*a, **k):
+        raise sqlite3.OperationalError("the datastore is gone")
+
+    monkeypatch.setattr(app_module.dataplane, "list_source_defs", _boom)
+    with pytest.raises(sqlite3.OperationalError):  # unchanged: no problem document, no 500 body
+        env.client.get("/sources", headers=H)
+
+    monkeypatch.setattr(app_module, "_state_change_event", _boom)
+    r = env.client.post("/streams/s1/state", headers=H, json={"state": "paused"})
+    assert r.status_code == 500 and r.json()["type"].endswith("/unexpected")
+
+
 def test_a_no_op_state_change_reports_changed_false_and_writes_no_audit(env):
     r = env.client.post("/streams/s1/state", headers=H, json={"state": "enabled"})
     assert r.status_code == 200
@@ -454,6 +515,62 @@ def test_list_dead_letters_pagination_defaults_and_is_capped(env):
     assert len(nxt["items"]) == 2
     seen_ids = {i["id"] for i in small["items"]} | {i["id"] for i in nxt["items"]}
     assert len(seen_ids) == 4  # no overlap between the two pages
+
+
+def test_list_dead_letters_cursor_pages_past_the_store_read_cap(env, monkeypatch):
+    """The cursor must reach rows older than one read of the store.
+
+    The route reads a bounded number of rows and pages within them. If the cursor is applied to
+    what that read returned, the oldest reachable dead letter is the last row of the *first* read
+    — everything behind it is unreachable through the API, and the caller is told there is no
+    next page rather than that the window ran out. Shrinking the cap makes the same arithmetic
+    reachable in five rows instead of a thousand and one.
+    """
+    monkeypatch.setattr(app_module, "_DLQ_FETCH_CAP", 3)
+    for i in range(5):
+        _seed_dl("", "s1", error=f"e{i}")
+
+    seen: list[int] = []
+    cursor: str | None = None
+    for _ in range(10):  # bounded so a broken next_cursor loops forever in the test, not in prod
+        params: dict[str, Any] = {"limit": 2}
+        if cursor:
+            params["cursor"] = cursor
+        page = env.client.get("/streams/s1/dead-letters", headers=H, params=params).json()
+        seen.extend(i["id"] for i in page["items"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert len(seen) == 5, "paging stopped before the oldest dead letter"
+    assert len(set(seen)) == 5, "a row was served on two pages"
+
+
+def test_list_dead_letters_reason_filter_looks_past_the_store_read_cap(env, monkeypatch):
+    """A `reason` filter applied to a bounded read answers about the window, not the stream.
+
+    A stream whose recent dead letters are all `not_json` still has its one `oversize` row, and
+    the caller asking for `oversize` must be shown it — not an empty list that is
+    indistinguishable from "this never happened".
+    """
+    monkeypatch.setattr(app_module, "_DLQ_FETCH_CAP", 3)
+    oldest = _seed_dl("", "s1", reason="oversize")
+    for _ in range(4):
+        _seed_dl("", "s1", reason="not_json")
+
+    items = env.client.get(
+        "/streams/s1/dead-letters", headers=H, params={"reason": "oversize"}
+    ).json()["items"]
+    assert [i["id"] for i in items] == [oldest]
+
+
+def test_dlq_fetch_cap_exceeds_a_full_page():
+    """The store-read ceiling must never be the thing that sizes a page.
+
+    The route reads ``page_size + 1`` rows bounded by the cap. If the cap were ever lowered to or
+    below ``_DLQ_LIST_MAX``, a caller asking for a full page would get a short one *and* be told
+    there is no next page — the same silent truncation, reintroduced by a constant.
+    """
+    assert app_module._DLQ_FETCH_CAP > app_module._DLQ_LIST_MAX
 
 
 def test_list_dead_letters_unknown_and_other_project_stream_is_404(env):

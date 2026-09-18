@@ -165,8 +165,16 @@ nav:
       - Developer Onboarding: guides/developer-onboarding.md
       - Architecture: guides/architecture.md
       - Testing strategy: guides/testing.md
+      - Game days (chaos drills): guides/game-days.md
+      - Honest degradation: guides/honest-degradation.md
       - Postgres datastore backend: guides/postgres-backend.md
       - Project Workspace Architecture: architecture/project-workspace.md
+      - Control plane and serving plane: architecture/control-and-serving-planes.md
+      - Event backbone (NATS JetStream): guides/event-backbone.md
+      - Serving snapshot: guides/serving-snapshot.md
+      - Serving gateway: guides/serving-gateway.md
+      - Model server on Kubernetes: guides/serving-on-kubernetes.md
+      - Workload identity (SPIFFE/SPIRE): guides/workload-identity.md
       - Projects & Workspaces: guides/projects-workspaces.md
       - Project Anatomy (storage · pipelines · view): guides/project-anatomy.md
       - Platform Ops (manage the platform from a notebook): guides/platform-ops-workbench.md
@@ -192,7 +200,14 @@ nav:
       - HPC Fleet (discover · connect · schedule): guides/hpc-fleet.md
       - HPC Training Workflow (run on a real cluster): guides/hpc-training-workflow.md
   - Runbooks:
+      - Overview and SLOs: runbooks/index.md
+      - Serving: runbooks/serving.md
+      - Control plane: runbooks/control-plane.md
+      - Event backbone: runbooks/events.md
+      - Bus bridge: runbooks/bus.md
       - Dataplane: runbooks/dataplane.md
+      - Monitoring stack: runbooks/platform.md
+      - LLM serving: runbooks/llm.md
   - Tutorials:
       - A Tour of Next-Gen 40: tutorials/nextgen-40-tour.md
       - Set up a Project from the Dashboard: tutorials/dashboard-project-setup.md

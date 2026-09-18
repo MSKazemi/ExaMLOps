@@ -64,7 +64,6 @@ from routers import (
     scaffold,
     scaling,
     scim,
-    seanerbus,
     search,
     secrets,
     selfobs,
@@ -117,7 +116,16 @@ async def lifespan(app: FastAPI):
         import logging
 
         logging.getLogger("dashboard").warning("MinIO bucket setup failed (non-fatal): %s", exc)
+
+    # Platform events from the NATS backbone onto /api/v1/stream (ADR 0124). A connect can take
+    # the NATS timeout, so it runs off the loop; the bridge never raises and is a no-op off NATS.
+    import asyncio
+
+    import backbone
+
+    await asyncio.to_thread(backbone.start, asyncio.get_running_loop())
     yield
+    await asyncio.to_thread(backbone.stop)
     await engine.dispose()
 
 
@@ -229,7 +237,6 @@ app.include_router(proxy.router, prefix="/api")
 app.include_router(docs.router, prefix="/api")
 app.include_router(models.router, prefix="/api")
 app.include_router(modelzoo.router, prefix="/api")
-app.include_router(seanerbus.router, prefix="/api")
 app.include_router(containers.router, prefix="/api")
 app.include_router(approvals.router, prefix="/api")
 # Asset DAG + freshness, read-only (ADR 0036 clause 5); rebuilding stays `exa assets materialize`.

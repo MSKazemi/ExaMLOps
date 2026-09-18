@@ -12,9 +12,11 @@ Design (mirrors the ADR-0074 provider seam + the item-0.1 StorageBackend seam):
     :class:`EventPublisher`, marking each published/failed. Delivery is at-least-once: every
     publication carries a stable outbox event ID so consumers can deduplicate crash replays;
   * the publisher is swappable via ``EXAMLOPS_EVENT_PUBLISHER``. The default ``log`` publisher is
-    dependency-free (works offline, in tests, single-node dev), and ``redis`` publishes a stable
-    envelope to Redis Streams. ``nats``/``kafka`` are placeholders that fail loudly instead of
-    silently dropping events.
+    dependency-free (works offline, in tests, single-node dev); ``nats`` publishes to NATS
+    JetStream (ADR 0124, idempotent at the broker via ``Nats-Msg-Id``); ``redis`` appends to a
+    Redis Stream. ``kafka`` is a placeholder that fails loudly instead of silently dropping events.
+  * every event leaves as a CloudEvents 1.0 envelope (:mod:`examlops.events.envelope`); a publisher
+    that implements ``publish_event(envelope)`` receives the whole envelope from the relay.
 """
 
 from __future__ import annotations
@@ -58,10 +60,46 @@ class _BrokerSkeleton:
             f"(not dropped) so no event is lost."
         )
 
+    def is_unavailable(self, exc: BaseException) -> bool:
+        """Always: nothing here can publish, and no event is to blame for that. The outbox keeps
+        the backlog visible and drainable instead of poisoning it over a misconfiguration."""
+        return True
 
-class NatsPublisher(_BrokerSkeleton):
-    _NAME = "nats"
-    _ENV = "EXAMLOPS_NATS_URL"
+
+class NatsPublisher:
+    """Publish CloudEvents to NATS JetStream (ADR 0124).
+
+    The subject is ``<prefix>.<topic>`` (default ``examlops.events.retrain.scheduled``) and the
+    ``Nats-Msg-Id`` header is the stable outbox id, so a relay that publishes and then crashes
+    before marking the row produces one stream message, not two, within the duplicate window.
+    """
+
+    def __init__(self, stream: Any | None = None) -> None:
+        from examlops.events import nats_backend  # noqa: PLC0415
+
+        self._js = stream if stream is not None else nats_backend.shared()
+        self._subject_for = nats_backend.subject_for
+
+    def check(self) -> None:
+        """Raise unless the broker is reachable (the control plane's startup check calls this)."""
+        self._js.check()
+
+    def is_unavailable(self, exc: BaseException) -> bool:
+        """Did this failure come from the connection rather than the event? `nats-py` answers."""
+        from examlops.events import nats_backend  # noqa: PLC0415
+
+        return nats_backend.is_unavailable(exc)
+
+    def publish(self, topic: str, payload: dict[str, Any], *, event_id: str) -> None:
+        from examlops.events import envelope  # noqa: PLC0415
+
+        self.publish_event(envelope.build(topic, payload, event_id=event_id))
+
+    def publish_event(self, event: dict[str, Any]) -> None:
+        from examlops.events import envelope  # noqa: PLC0415
+
+        subject = self._subject_for(envelope.topic_of(event))
+        self._js.publish(subject, envelope.encode(event), msg_id=str(event["id"]))
 
 
 class KafkaPublisher(_BrokerSkeleton):
@@ -156,7 +194,13 @@ def reset_publisher() -> None:
     _publisher = None
 
 
-def publish(topic: str, payload: dict[str, Any]) -> int:
+def publish(
+    topic: str,
+    payload: dict[str, Any],
+    *,
+    actor: str | None = None,
+    tenant: str | None = None,
+) -> int:
     """Durably enqueue an event to the outbox (does NOT publish inline). Returns its row id.
 
     The relay does the actual broker publish, so a broker outage never blocks the domain write.
@@ -165,18 +209,126 @@ def publish(topic: str, payload: dict[str, Any]) -> int:
     from examlops.data.events import enqueue_event
 
     init_db()
-    return enqueue_event(topic, payload)
+    return enqueue_event(topic, payload, actor=actor, tenant=tenant)
 
 
-def relay_once(limit: int = 100) -> dict[str, int]:
+def alias_changed(
+    model: str,
+    alias: str,
+    version: str | int | None,
+    *,
+    previous_version: str | int | None = None,
+    removed: bool = False,
+    actor: str | None = None,
+    via: str = "cli",
+) -> int | None:
+    """Announce that an MLflow alias moved: ``model.alias_changed`` (P2.4).
+
+    Every surface that moves an alias — ``exa pipeline promote``/``rollback``/``production``, the
+    autopilot, the training pipeline, the agent, the dashboard — calls this after MLflow accepted
+    the change, so the serving plane (ADR 0127) can react to the change instead of polling for it.
+
+    MLflow is the alias's system of record and has already committed, so this cannot share its
+    transaction. A failed enqueue is logged and swallowed rather than failing a promotion that
+    did happen: the serving plane's alias poll (``RAY_RELOAD_POLL_SECONDS``) stays as the
+    backstop for a lost event. Returns the outbox id, or ``None`` when the enqueue failed.
+    """
+    payload = {
+        "model": model,
+        "model_key": model.strip().lower(),
+        "alias": alias,
+        "version": None if version is None else str(version),
+        "previous_version": None if previous_version is None else str(previous_version),
+        "removed": removed,
+        "via": via,
+    }
+    try:
+        return publish(
+            "model.alias_changed",
+            payload,
+            actor=actor or os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or None,
+        )
+    except Exception as exc:  # noqa: BLE001 - the alias moved; losing its event must not undo that
+        logger.warning("model.alias_changed for %s/%s not enqueued: %s", model, alias, exc)
+        return None
+
+
+# Signs, in an exception's text, that the *transport* failed rather than the event being refused.
+# Deliberately narrow: a message that merely says something broke ("broker down") is not evidence
+# about the connection, and treating it as one would let a genuinely poison event retry forever.
+_UNAVAILABLE_SIGNS = (
+    "no servers",
+    "connection refused",
+    "connection closed",
+    "connection reset",
+    "connection lost",
+    "no route to host",
+    "name or service not known",
+    "temporary failure in name resolution",
+    "timed out",
+    "timeout",
+    "unreachable",
+    "broken pipe",
+    "network is down",
+)
+
+
+def describe(exc: BaseException) -> str:
+    """A never-empty one-line description of a publish failure.
+
+    ``str(exc)`` is empty for some of the exceptions that matter most here — a bare
+    ``TimeoutError`` is what :class:`examlops.events.nats_backend._LoopThread` raises when the
+    broker does not answer within ``EXAMLOPS_NATS_TIMEOUT``. An empty reason read as *no* reason:
+    the relay reported ``unavailable: ""``, the control plane's falsy check dropped it, and
+    `/health` said ``ok`` through the outage this whole path exists to make visible.
+    """
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def is_unavailable(publisher: Any, exc: BaseException) -> bool:
+    """Is this failure "the backbone is not there" rather than "this event was refused"?
+
+    A publisher that understands its own client library answers for itself (``is_unavailable``);
+    otherwise the exception type and text decide. The distinction is what separates a backlog that
+    drains by itself when the broker returns from an event stranded as poison: see
+    :func:`examlops.data.events.defer_outbox_claim`.
+    """
+    own = getattr(publisher, "is_unavailable", None)
+    if callable(own):
+        try:
+            return bool(own(exc))
+        except Exception as verdict_failed:  # noqa: BLE001 - a broken classifier decides nothing
+            logger.warning(
+                "%s could not classify %r: %s", type(publisher).__name__, exc, verdict_failed
+            )
+    if isinstance(exc, TimeoutError | ConnectionError):
+        return True
+    text = str(exc).lower()
+    return any(sign in text for sign in _UNAVAILABLE_SIGNS)
+
+
+def relay_once(limit: int = 100) -> dict[str, Any]:
     """Publish one batch of outbox events via the configured publisher (item 1.3).
 
     Claims up to ``limit`` unpublished rows atomically, publishes each, and marks it
     published/failed. Returns ``{"published": n, "failed": m, "claimed": k}``. Idempotent and
     safe to run concurrently (the claim bumps attempts under a write lock) or on a timer/cron.
+
+    A failure that means *the backbone is not there* (:func:`is_unavailable`) ends the batch: the
+    rows still in it are deferred, with no attempt charged, and the result carries ``deferred``
+    and ``unavailable``. Without that, a cycle against a dead broker costs one client timeout per
+    event — 36 seconds for six events in the chaos drill, over eight minutes at the default batch
+    size — during which the relay makes no progress and ``/health`` still shows the previous
+    cycle's verdict.
     """
     from examlops.data import init_db
-    from examlops.data.events import claim_outbox_batch, mark_event_failed, mark_event_published
+    from examlops.data.events import (
+        claim_outbox_batch,
+        defer_outbox_claim,
+        mark_event_failed,
+        mark_event_published,
+    )
 
     init_db()
     publisher = get_publisher()
@@ -189,16 +341,43 @@ def relay_once(limit: int = 100) -> dict[str, int]:
         raise RuntimeError("EXAMLOPS_EVENT_MAX_ATTEMPTS must be greater than zero")
     batch = claim_outbox_batch(limit, max_attempts=max_attempts)
     published = failed = 0
-    for row in batch:
+    unavailable: str | None = None
+    deferred: list[int] = []
+    from examlops.events import envelope  # noqa: PLC0415
+
+    for index, row in enumerate(batch):
         try:
-            payload = json.loads(row["payload"])
-            publisher.publish(row["topic"], payload, event_id=f"outbox:{row['id']}")
+            publish_event = getattr(publisher, "publish_event", None)
+            if callable(publish_event):
+                publish_event(envelope.from_outbox_row(row))
+            else:
+                payload = json.loads(row["payload"])
+                publisher.publish(row["topic"], payload, event_id=f"outbox:{row['id']}")
             mark_event_published(row["id"])
             published += 1
         except Exception as exc:  # noqa: BLE001 - relay must not crash on one bad event
-            mark_event_failed(row["id"], str(exc))
+            if is_unavailable(publisher, exc):
+                # Nowhere to send the rest either. Stop here rather than proving it once per row.
+                unavailable = describe(exc)
+                deferred = [r["id"] for r in batch[index:]]
+                defer_outbox_claim(deferred, unavailable)
+                logger.warning(
+                    "event backbone unavailable (%s); %d event(s) stay in the outbox",
+                    unavailable,
+                    len(deferred),
+                )
+                break
+            mark_event_failed(row["id"], describe(exc))
             failed += 1
             logger.warning(
-                "event relay failed for id=%s topic=%s: %s", row["id"], row["topic"], exc
+                "event relay failed for id=%s topic=%s: %s",
+                row["id"],
+                row["topic"],
+                describe(exc),
             )
-    return {"claimed": len(batch), "published": published, "failed": failed}
+    result: dict[str, Any] = {"claimed": len(batch), "published": published, "failed": failed}
+    if unavailable is not None:
+        # Only when it happened: callers sum the three counts, and `/health` reads `unavailable`.
+        result["deferred"] = len(deferred)
+        result["unavailable"] = unavailable
+    return result

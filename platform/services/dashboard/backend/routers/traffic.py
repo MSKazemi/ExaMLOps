@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import audit_write
 from auth import require_role
-from capabilities import TRAFFIC_MANAGE, can, deny_reason
+from capabilities import TRAFFIC_MANAGE, can, deny_reason, require_capability
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
 router = APIRouter(prefix="/v1/traffic", tags=["traffic"])
@@ -124,7 +124,11 @@ def _ab_analysis(conn, model: str) -> dict | None:
         return None
 
     test_row = conn.execute(
-        "SELECT id, variant_a, variant_b FROM ab_tests WHERE model=? ORDER BY started_at DESC LIMIT 1",
+        # `, id DESC`: two tests started for one model inside the same second tie on
+        # `started_at`, and the loser's `variant_a`/`variant_b` would then select the samples this
+        # analysis reports on — a statistical verdict about the wrong experiment.
+        "SELECT id, variant_a, variant_b FROM ab_tests WHERE model=? "
+        "ORDER BY started_at DESC, id DESC LIMIT 1",
         (model,),
     ).fetchone()
     if test_row is None:
@@ -175,7 +179,15 @@ async def get_ab(model: str | None = None, _=Depends(_viewer)) -> dict:
 
 
 @router.post("/ab/start")
-async def ab_start(payload: dict = Body(...), principal: dict = Depends(_admin)) -> dict:
+async def ab_start(
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+    # Also through the enforcing dependency, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the admin dependency, never in place of it: `require_capability` admits
+    # operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(TRAFFIC_MANAGE)),
+) -> dict:
     """Start an A/B test (admin; audited ``source=dashboard``). Mirrors ``exa serve ab start``.
 
     Body: ``{model, variant_a?, variant_b?, split?, name?}``. 409 if one is already running."""
@@ -228,7 +240,15 @@ async def ab_start(payload: dict = Body(...), principal: dict = Depends(_admin))
 
 
 @router.post("/ab/stop")
-async def ab_stop(payload: dict = Body(...), principal: dict = Depends(_admin)) -> dict:
+async def ab_stop(
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+    # Also through the enforcing dependency, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the admin dependency, never in place of it: `require_capability` admits
+    # operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(TRAFFIC_MANAGE)),
+) -> dict:
     """Stop the running A/B test for a model (admin; audited). Mirrors ``exa serve ab stop``.
 
     Body: ``{model}``. Returns ``{stopped}`` — ``false`` when nothing was running."""
@@ -267,15 +287,17 @@ async def get_shadow(model: str | None = None, _=Depends(_viewer)) -> dict:
         with get_db() as conn:
             _ensure_shadow(conn)
             if model:
+                # Case-insensitive: serving stores the lowercase MLflow key (plan P0.4).
+                key = model.strip().lower()
                 config_rows = conn.execute(
                     "SELECT model, shadow_alias, enabled, updated_at, updated_by "
-                    "FROM shadow_config WHERE model=?",
-                    (model,),
+                    "FROM shadow_config WHERE lower(model)=?",
+                    (key,),
                 ).fetchall()
                 result_rows = conn.execute(
                     "SELECT id, ts, model, production_pred, shadow_pred, diff_pct, job_id "
-                    "FROM shadow_results WHERE model=? ORDER BY ts DESC, id DESC LIMIT 50",
-                    (model,),
+                    "FROM shadow_results WHERE lower(model)=? ORDER BY ts DESC, id DESC LIMIT 50",
+                    (key,),
                 ).fetchall()
             else:
                 config_rows = conn.execute(
@@ -289,7 +311,15 @@ async def get_shadow(model: str | None = None, _=Depends(_viewer)) -> dict:
 
 
 @router.post("/shadow")
-async def set_shadow(payload: dict = Body(...), principal: dict = Depends(_admin)) -> dict:
+async def set_shadow(
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+    # Also through the enforcing dependency, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the admin dependency, never in place of it: `require_capability` admits
+    # operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(TRAFFIC_MANAGE)),
+) -> dict:
     """Enable/disable shadow deployment for a model (admin; audited ``shadow_config_set``).
 
     Body: ``{model, enabled, shadow_alias?}``. ``enabled=true`` mirrors ``exa serve shadow enable``
@@ -302,23 +332,16 @@ async def set_shadow(payload: dict = Body(...), principal: dict = Depends(_admin
     shadow_alias = (payload.get("shadow_alias") or "Staging").strip() or "Staging"
 
     get_db, init_db = _examlops_data()
+    from examlops.data.serving import set_shadow_config  # noqa: PLC0415 - guarded above
+
     init_db()
     actor = principal.get("sub", "?")
     with get_db() as conn:
         _ensure_shadow(conn)
-        if enabled:
-            conn.execute(
-                "INSERT OR REPLACE INTO shadow_config "
-                "(model, shadow_alias, enabled, updated_at, updated_by) "
-                "VALUES (?, ?, 1, CURRENT_TIMESTAMP, ?)",
-                (model, shadow_alias, actor),
-            )
-        else:
-            conn.execute(
-                "UPDATE shadow_config SET enabled=0, updated_at=CURRENT_TIMESTAMP, updated_by=? "
-                "WHERE model=?",
-                (actor, model),
-            )
+    # The same code path as `exa serve shadow`, so both store the canonical key the Ray replica
+    # reads (plan P0.4 / finding B4).
+    set_shadow_config(model, shadow_alias=shadow_alias, enabled=enabled, updated_by=actor)
+    with get_db() as conn:
         _audit(
             conn,
             actor,

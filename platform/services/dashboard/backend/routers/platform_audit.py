@@ -64,7 +64,11 @@ async def get_platform_audit(
             if source:
                 query += " AND source=?"
                 params.append(source)
-            query += " ORDER BY ts DESC LIMIT ?"
+            # `id` breaks the tie — `ts` has one-second resolution and a cycle writes several
+            # events within it, so ordering by `ts` alone left the order to the query plan and
+            # showed the oldest of the tied second as the newest. `id` is the chain order, and
+            # this console and `exa audit` must answer "what happened first" identically.
+            query += " ORDER BY ts DESC, id DESC LIMIT ?"
             params.append(limit)
             rows = conn.execute(query, params).fetchall()
             conn.close()

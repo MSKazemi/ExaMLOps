@@ -53,6 +53,8 @@ _CLI_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cli",
 sys.path.insert(0, os.path.abspath(_CLI_SRC))
 
 try:
+    # Not via `platform_db`: that module's surface is frozen (the coupling ratchet).
+    from examlops.data.audit import audit_best_effort
     from examlops.platform_db import (
         get_input_baseline,
         write_audit_event,
@@ -74,6 +76,9 @@ except Exception:
     def write_audit_event(*a, **k):
         pass  # type: ignore[misc]
 
+    def audit_best_effort(*a, **k):  # type: ignore[misc]
+        return False
+
     def write_input_snapshot(*a, **k):
         pass  # type: ignore[misc]
 
@@ -87,6 +92,51 @@ except Exception:
 
     def _httpx_timeout(read=None, connect=None):  # type: ignore[misc]
         return httpx.Timeout(10.0)
+
+
+def _control_plane_headers() -> dict[str, str]:
+    """JSON + the bridge's bearer + a fresh ``Idempotency-Key``: a retried submission resolves to
+    the same control-plane command instead of a second retrain (plan P1.7)."""
+    headers = {"Content-Type": "application/json", "Idempotency-Key": uuid.uuid4().hex}
+    from examlops.service_auth import control_plane_bearer  # noqa: PLC0415
+
+    token = control_plane_bearer(CONTROL_PLANE_TOKEN)  # CONTROL_PLANE_TOKEN_FILE first (ADR 0125)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _json_field(response: httpx.Response, field: str) -> object:
+    try:
+        return response.json().get(field)
+    except Exception:  # noqa: BLE001 - an audit detail, never worth failing the path
+        return None
+
+
+async def _follow_retrain(client: httpx.AsyncClient, view: dict, headers: dict[str, str]) -> dict:
+    """Wait for a submitted retrain command to be dispatched (``examlops.retrain_command``).
+
+    Without the examlops package the 202 answer is returned as is: the retrain is accepted and
+    the control plane dispatches it; the requester just gets the command's URL instead of a run.
+    """
+    try:
+        from examlops import retrain_command
+    except Exception:  # noqa: BLE001
+        return {"command_id": view.get("command_id"), "status_url": view.get("status_url")}
+
+    async def fetch(command_id: str) -> dict:
+        r = await client.get(f"{CONTROL_PLANE_URL}/v1/commands/{command_id}", headers=headers)
+        r.raise_for_status()
+        return r.json()
+
+    try:
+        # A bus requester waits for this reply, so wait the short automation budget, not 30 s.
+        return await retrain_command.follow_async(
+            view, fetch, wait=retrain_command.AUTOMATION_WAIT_SECONDS
+        )
+    except httpx.HTTPError:
+        # Accepted, then following it failed: the command stands, so report it as accepted.
+        return retrain_command.outcome(view)
 
 
 from model_schema_registry import ModelSchemaRegistry  # noqa: E402
@@ -211,6 +261,20 @@ _LATENCY = Histogram(
 _RETRAINS = Counter(
     "seanerbus_retrain_triggers_total",
     "Total drift-triggered retrains posted to the Control Plane",
+)
+# Per-inference telemetry is written off the reply path (plan P0.5 / finding B5). These make the
+# cost of that decision visible instead of silent: what was dropped, what failed, what is waiting.
+_TELEMETRY_DROPPED = Counter(
+    "seanerbus_telemetry_dropped_total",
+    "Inference telemetry records dropped because the persistence spool was full",
+)
+_TELEMETRY_FAILURES = Counter(
+    "seanerbus_telemetry_persist_failures_total",
+    "Inference telemetry records whose database write failed (the inference itself succeeded)",
+)
+_TELEMETRY_DEPTH = Gauge(
+    "seanerbus_telemetry_queue_depth",
+    "Inference telemetry records waiting to be written",
 )
 
 # Input-embedding drift (phase 21). The bridge already computes norm/mean/std on every
@@ -352,8 +416,9 @@ async def run_status_server(port: int = 8003) -> None:
 class ModelInferenceError(RuntimeError):
     """The ingress served the request but the MODEL failed to produce a prediction.
 
-    Raised when the pipeline answers 5xx with ``{"error": "inference_failed"}`` — a
-    model-quality signal that MUST reach the drift tracker. Distinct from transport failures
+    Raised when the pipeline answers 5xx with ``{"error": "inference_failed"}`` and ``cause``
+    ``model`` (or no cause, from an older pipeline) — a model-quality signal that MUST reach the
+    drift tracker. Distinct from transport failures
     (connect/timeout/unreachable), which stay excluded so an outage never masquerades as drift.
     Without this distinction the tracker could never see a model failure at all: the ingress
     converts them to HTTP 500 and ``raise_for_status`` turned every one into an excluded
@@ -406,13 +471,13 @@ class DriftTracker:
         log.warning(
             "Drift detected for %s (error_rate=%.0f%%) — triggering retrain", model, rate * 100
         )
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if CONTROL_PLANE_TOKEN:
-            headers["Authorization"] = f"Bearer {CONTROL_PLANE_TOKEN}"
+        headers = _control_plane_headers()
         try:
             async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+                # The command API (plan P1.6c): 202 means the retrain is durably accepted and the
+                # control plane dispatches it — this path needs no flow run id, so it does not wait.
                 r = await client.post(
-                    f"{CONTROL_PLANE_URL}/retrain",
+                    f"{CONTROL_PLANE_URL}/v1/retrain",
                     json={
                         "model_name": model,
                         "dataset_name": "FDataDataset",
@@ -457,6 +522,7 @@ class DriftTracker:
                     "error_rate": round(rate, 4),
                     "dataset": "FDataDataset",
                     "http_status": r.status_code,
+                    "command_id": _json_field(r, "command_id"),
                 },
             )
         except httpx.HTTPError as exc:
@@ -523,13 +589,26 @@ async def _call_pipeline(
         except Exception:  # noqa: BLE001
             detail = None
         if isinstance(detail, dict):
-            if detail.get("error") == "inference_failed":
+            # The pipeline says why (`cause`). Only `model` is the model failing; an answer
+            # without a cause comes from an older pipeline and keeps the old meaning. Any other
+            # cause (transport, replica_lost, timeout, protocol, pipeline) is infrastructure:
+            # raise_for_status below sends it down the path that never feeds the drift tracker.
+            if (
+                detail.get("error") == "inference_failed"
+                and detail.get("cause", "model") == "model"
+            ):
                 raise ModelInferenceError(str(detail.get("detail") or "inference_failed"))
             if detail.get("error") == "validation_error":
                 raise ValueError(str(detail.get("detail") or "validation_error"))
         resp.raise_for_status()
     latency_s = time.perf_counter() - t0
-    _INFERENCES.labels(model=model_name).inc()
+    # `_INFERENCES` is NOT incremented here. This line is past `raise_for_status()`, so counting
+    # it here counted successes only — while the metric's name, its help text and the bridge's own
+    # `_bridge_stats["inferences_total"]` all mean *every dispatched call*. Everything dividing
+    # errors by it therefore computed errors ÷ successes: 90 % failures read as 900 %, and a total
+    # outage as +Inf. It is now incremented beside each `inferences_total` below, which is the one
+    # place that decides what a dispatched call is. Latency stays here: only a served response has
+    # one.
     _LATENCY.labels(model=model_name).observe(latency_s)
     latency_ms = latency_s * 1000
     data = resp.json()
@@ -546,12 +625,68 @@ async def _call_pipeline(
         latency_ms,
     )
     embedding = features.get("embedding") or features.get("features", {}).get("embedding")
-    # The three per-inference SQLite writes are offloaded to a worker thread so they never block
-    # the asyncio event loop (they take the platform.db write lock / wait out busy_timeout). QW10.
-    await asyncio.to_thread(
-        _persist_inference_telemetry, model_name, alias, prediction, embedding, str(job.job_id)
-    )
+    # Reply first (plan P0.5 / finding B5). The drift and input-embedding writes used to be awaited
+    # here, so a locked or unreachable database turned a successful prediction into an error on the
+    # bus and added up to busy_timeout x retries of latency to every job. They are now handed to a
+    # bounded spool that a background worker drains; this call never waits on the database.
+    _telemetry_spool.offer((model_name, alias, prediction, embedding, str(job.job_id)))
     return prediction, run_id, version
+
+
+class _TelemetrySpool:
+    """A bounded, drop-on-full queue of per-inference telemetry, drained by one worker task.
+
+    Bounded because an unbounded buffer converts a slow database into a memory leak. Dropping is
+    the right overflow policy for this data: drift and input-embedding statistics are windowed
+    aggregates, so a lost sample shifts nothing an operator acts on, while a blocked reply stalls a
+    scheduler waiting on the bus. Every drop and every failed write is counted.
+    """
+
+    def __init__(self, maxsize: int) -> None:
+        self._maxsize = max(1, maxsize)
+        self._queue: asyncio.Queue[tuple] | None = None
+        self._worker: asyncio.Task[None] | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def offer(self, record: tuple) -> bool:
+        loop = asyncio.get_running_loop()
+        # A queue and its worker belong to the loop that created them. If the running loop has
+        # changed (a reconnect under a fresh `asyncio.run`, a test harness), start over on this
+        # one: records queued on a dead loop would never be drained.
+        if self._queue is None or self._loop is not loop:
+            self._queue = asyncio.Queue(maxsize=self._maxsize)
+            self._loop = loop
+            self._worker = None
+        if self._worker is None or self._worker.done():
+            self._worker = loop.create_task(self._drain())
+        try:
+            self._queue.put_nowait(record)
+        except asyncio.QueueFull:
+            _TELEMETRY_DROPPED.inc()
+            return False
+        _TELEMETRY_DEPTH.set(self._queue.qsize())
+        return True
+
+    async def _drain(self) -> None:
+        assert self._queue is not None
+        while True:
+            record = await self._queue.get()
+            try:
+                await asyncio.to_thread(_persist_inference_telemetry, *record)
+            except Exception as exc:  # noqa: BLE001 - telemetry must never take the bridge down
+                _TELEMETRY_FAILURES.inc()
+                log.warning("Inference telemetry write failed (inference unaffected): %s", exc)
+            finally:
+                self._queue.task_done()
+                _TELEMETRY_DEPTH.set(self._queue.qsize())
+
+    async def join(self) -> None:
+        """Wait until every offered record has been written or failed (tests, shutdown)."""
+        if self._queue is not None:
+            await self._queue.join()
+
+
+_telemetry_spool = _TelemetrySpool(int(os.getenv("SEANERBUS_TELEMETRY_QUEUE_MAX", "1000")))
 
 
 def _persist_inference_telemetry(
@@ -561,9 +696,13 @@ def _persist_inference_telemetry(
     embedding: object,
     job_id: str,
 ) -> None:
-    """The per-inference drift / input-embedding / audit SQLite writes, bundled so they run in a
-    single worker-thread hop off the asyncio loop (QW10). Kept as one function so the hot inference
-    path makes exactly one ``to_thread`` transition."""
+    """The per-inference drift / input-embedding writes, run by the telemetry spool's worker.
+
+    There is deliberately no per-inference audit event. It used to append an ``inference_served``
+    row to the hash-chained audit log for every prediction: nothing read those rows, retention
+    excludes the audit chain so they were never pruned, and each append took the platform-wide
+    audit lock on the hot path. The audit log records decisions; request volume is
+    ``seanerbus_inferences_total``."""
     if prediction is not None:
         write_drift_snapshot(model_name, alias, float(prediction), job_id)
     if embedding:
@@ -579,9 +718,6 @@ def _persist_inference_telemetry(
         _EMB_MEAN.labels(model=model_name).set(emb_mean)
         _EMB_STD.labels(model=model_name).set(emb_std)
         _publish_input_baseline(model_name)
-    write_audit_event(
-        "bridge", None, "inference_served", model_name, {"alias": alias, "job_id": job_id}
-    )
 
 
 # ── pubsub handler ─────────────────────────────────────────────────────────────
@@ -613,6 +749,7 @@ async def _run_pubsub(conn: Connection) -> None:
             # is a genuine inference failure (record False); a real prediction is a
             # success. Transport failures below never reach the tracker.
             _drift_tracker.record(model, prediction is not None)
+            _INFERENCES.labels(model=model).inc()
             _bridge_stats["inferences_total"] += 1
             m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
             m["inferences"] += 1
@@ -624,6 +761,7 @@ async def _run_pubsub(conn: Connection) -> None:
             _ERRORS.labels(model=model).inc()
             error_msg = str(exc)
             log.error("Model inference failed for pubsub job %s: %s", job.job_id, exc)
+            _INFERENCES.labels(model=model).inc()
             _bridge_stats["inferences_total"] += 1
             m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
             m["inferences"] += 1
@@ -633,6 +771,7 @@ async def _run_pubsub(conn: Connection) -> None:
             _ERRORS.labels(model=model).inc()
             error_msg = str(exc)
             log.error("Schema error handling pubsub job %s: %s", job.job_id, exc)
+            _INFERENCES.labels(model=model).inc()
             _bridge_stats["inferences_total"] += 1
             m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
             m["inferences"] += 1
@@ -644,6 +783,7 @@ async def _run_pubsub(conn: Connection) -> None:
             _ERRORS.labels(model=model).inc()
             error_msg = str(exc)
             log.error("Ray Serve transport error for job %s: %s", job.job_id, exc)
+            _INFERENCES.labels(model=model).inc()
             _bridge_stats["inferences_total"] += 1
             m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
             m["inferences"] += 1
@@ -653,6 +793,7 @@ async def _run_pubsub(conn: Connection) -> None:
             _ERRORS.labels(model=model).inc()
             error_msg = str(exc)
             log.error("Unexpected error handling pubsub job %s: %s", job.job_id, exc)
+            _INFERENCES.labels(model=model).inc()
             _bridge_stats["inferences_total"] += 1
             m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
             m["inferences"] += 1
@@ -685,6 +826,7 @@ async def _call_inference(req: HpcJobV1, override_model: str | None = None) -> H
         prediction, run_id, version = await _call_pipeline(req, override_model=model)
         # Model-quality signal only: no prediction on a served response = failure.
         _drift_tracker.record(model, prediction is not None)
+        _INFERENCES.labels(model=model).inc()
         _bridge_stats["inferences_total"] += 1
         m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
         m["inferences"] += 1
@@ -703,6 +845,7 @@ async def _call_inference(req: HpcJobV1, override_model: str | None = None) -> H
         _drift_tracker.record(model, False)
         _ERRORS.labels(model=model).inc()
         log.error("Model inference failed in req/res inference handler: %s", exc)
+        _INFERENCES.labels(model=model).inc()
         _bridge_stats["inferences_total"] += 1
         m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
         m["inferences"] += 1
@@ -712,6 +855,7 @@ async def _call_inference(req: HpcJobV1, override_model: str | None = None) -> H
         # Schema misconfiguration — do NOT feed into drift tracker
         _ERRORS.labels(model=model).inc()
         log.error("Schema error in req/res inference handler: %s", exc)
+        _INFERENCES.labels(model=model).inc()
         _bridge_stats["inferences_total"] += 1
         m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
         m["inferences"] += 1
@@ -721,6 +865,7 @@ async def _call_inference(req: HpcJobV1, override_model: str | None = None) -> H
         # Infrastructure/transport failure — excluded from drift (see _run_pubsub).
         _ERRORS.labels(model=model).inc()
         log.error("Ray Serve transport error in req/res inference handler: %s", exc)
+        _INFERENCES.labels(model=model).inc()
         _bridge_stats["inferences_total"] += 1
         m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
         m["inferences"] += 1
@@ -730,6 +875,7 @@ async def _call_inference(req: HpcJobV1, override_model: str | None = None) -> H
         # Unexpected/infrastructure failure — likewise excluded from drift.
         _ERRORS.labels(model=model).inc()
         log.error("Unexpected error in req/res inference handler: %s", exc)
+        _INFERENCES.labels(model=model).inc()
         _bridge_stats["inferences_total"] += 1
         m = _bridge_stats["per_model"].setdefault(model, {"inferences": 0, "errors": 0})
         m["inferences"] += 1
@@ -758,14 +904,14 @@ async def _handle_retrain(req: RetrainReqV1) -> RetrainResV1:
     dataset = req.dataset_name or "FDataDataset"
     backend = req.backend_name or "dataplane"
 
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    if CONTROL_PLANE_TOKEN:
-        headers["Authorization"] = f"Bearer {CONTROL_PLANE_TOKEN}"
+    headers = _control_plane_headers()
 
     try:
         async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+            # The command API (plan P1.6c), waited on until dispatched: the requester gets the
+            # flow run id when the dispatch happens in time, otherwise the command to follow.
             r = await client.post(
-                f"{CONTROL_PLANE_URL}/retrain",
+                f"{CONTROL_PLANE_URL}/v1/retrain",
                 json={
                     "model_name": model,
                     "dataset_name": dataset,
@@ -775,11 +921,21 @@ async def _handle_retrain(req: RetrainReqV1) -> RetrainResV1:
                 headers=headers,
             )
             r.raise_for_status()
-        data = r.json()
+            data = await _follow_retrain(client, r.json(), headers)
         flow_run_id = data.get("flow_run_id") or ""
-        log.info("Retrain accepted for %s → flow_run_id=%s", model, flow_run_id)
+        log.info(
+            "Retrain accepted for %s → flow_run_id=%s command=%s",
+            model,
+            flow_run_id or "(not dispatched yet)",
+            data.get("command_id"),
+        )
+        # `audit_best_effort`, not `write_audit_event`: this sits inside the same `try` as the
+        # control-plane POST, whose handler answers the bus with `error_msg`. A raise here reported
+        # a retrain the control plane had ACCEPTED as failed, and a caller that retries on error
+        # would fire a second retrain of the same model on the cluster. The helper logs and counts
+        # the lost event instead.
         await asyncio.to_thread(
-            write_audit_event,
+            audit_best_effort,
             "bridge",
             None,
             "retrain_triggered",
@@ -790,9 +946,10 @@ async def _handle_retrain(req: RetrainReqV1) -> RetrainResV1:
                 "backend": backend,
                 "is_dummy": bool(req.is_dummy),
                 "flow_run_id": flow_run_id,
+                "command_id": data.get("command_id"),
             },
         )
-        return RetrainResV1(flow_run_id=flow_run_id)
+        return RetrainResV1(flow_run_id=flow_run_id, status_url=data.get("status_url") or "")
     except httpx.HTTPError as exc:
         log.error("Retrain request failed for %s: %s", model, exc)
         return RetrainResV1(error_msg=str(exc))
@@ -810,12 +967,17 @@ async def _handle_retrain(req: RetrainReqV1) -> RetrainResV1:
 async def _handle_vector(req: VectorReqV1) -> VectorResV1:
     try:
         async with httpx.AsyncClient(timeout=_httpx_timeout()) as client:
+            # Open Inference Protocol v2 (ADR 0126); /predict is deprecated.
+            from examlops import oip_client
+
             resp = await client.post(
-                f"{RAY_SERVE_URL}/predict/{DEFAULT_MODEL}",
-                json={"features": {"embedding": list(req.values)}, "alias": DEFAULT_ALIAS},
+                f"{RAY_SERVE_URL}{oip_client.infer_path(DEFAULT_MODEL)}",
+                json=oip_client.features_request(
+                    {"embedding": list(req.values)}, alias=DEFAULT_ALIAS
+                ),
             )
             resp.raise_for_status()
-        prediction = resp.json().get("prediction", 0.0)
+        prediction = oip_client.result(resp.json())["prediction"]
         log.info("Vector inference OK | model=%s prediction=%s", DEFAULT_MODEL, prediction)
         _bridge_stats["vectors_total"] += 1
         return VectorResV1(results=[prediction])

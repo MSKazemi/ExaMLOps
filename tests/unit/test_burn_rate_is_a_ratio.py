@@ -58,10 +58,20 @@ def _evaluate(expr: str, errors_per_sec: float, total_per_sec: float) -> bool:
     Only the two `sum(rate(...))` terms and `clamp_min` carry meaning here; everything else in
     these expressions is plain arithmetic, so Python can finish the job.
     """
-    # The selector with a `status=~...` filter is the error stream; the bare one is all traffic.
-    expr = re.sub(
-        re.escape(_METRIC) + r"\{[^}]*\}\[[0-9a-z]+\]", f"__ERR__[{errors_per_sec}]", expr
-    )
+
+    # Which selector is which is decided by **what it names**, not by whether it is filtered.
+    # "filtered = errors, bare = all traffic" held only while the denominator was the unfiltered
+    # counter; since 2026-09-14 it names its valid events (`success|error|timeout|…`) so that client
+    # faults cannot dilute the rate. Under the old rule both terms substituted to the error stream,
+    # every expression became `errors / errors = 1.0`, and three scenarios "fired" that should not
+    # have — a broken *test*, reporting a broken alert.
+    def _stream(match: re.Match[str]) -> str:
+        selector = match.group(0)
+        rate = total_per_sec if "success" in selector else errors_per_sec
+        marker = "__TOT__" if "success" in selector else "__ERR__"
+        return f"{marker}[{rate}]"
+
+    expr = re.sub(re.escape(_METRIC) + r"\{[^}]*\}\[[0-9a-z]+\]", _stream, expr)
     expr = re.sub(re.escape(_METRIC) + r"\[[0-9a-z]+\]", f"__TOT__[{total_per_sec}]", expr)
     expr = re.sub(r"sum\(rate\(__ERR__\[([0-9.e+-]+)\]\)\)", r"\1", expr)
     expr = re.sub(r"sum\(rate\(__TOT__\[([0-9.e+-]+)\]\)\)", r"\1", expr)
@@ -99,11 +109,20 @@ def test_burn_rate_alerts_fire_only_when_the_budget_is_actually_burning(name, er
         )
 
 
-def test_the_threshold_matches_the_multiplier_the_alert_advertises():
-    """A burn-rate threshold is `multiplier x error budget` — and the summary names the multiplier.
+def test_the_threshold_is_the_multiplier_the_alert_advertises():
+    """The expression compares a burn rate against the multiplier its own summary names.
 
-    This is what keeps the number in the operator-facing text and the number in the expression
-    from drifting apart, which is the other half of how the broken rule stayed plausible.
+    This keeps the number in the operator-facing text and the number in the expression from
+    drifting apart — the other half of how the broken rule stayed plausible.
+
+    **The form changed on 2026-09-14 and this assertion changed with it.** It used to compare the
+    error *ratio* against `multiplier x budget` (0.072), which is arithmetically the same test but
+    leaves `$value` holding the ratio — and the annotations print `$value` as the burn rate. A 16x
+    burn rendered as `80m×` (`humanize` uses SI prefixes) under a summary reading `> 14.4×`.
+    Dividing by the budget inside the rule makes the value dimensionless, so the threshold *is* the
+    advertised multiplier and there is no factor left for a reader to apply. The scenario tests
+    above are unchanged and still pass, which is what shows the fix altered the reported number and
+    not which traffic fires.
     """
     rules = yaml.safe_load(_RULES.read_text(encoding="utf-8"))
     checked = 0
@@ -112,10 +131,18 @@ def test_the_threshold_matches_the_multiplier_the_alert_advertises():
             if r.get("alert") not in _BURN_ALERTS:
                 continue
             multiplier = _BURN_ALERTS[r["alert"]]
-            threshold = float(re.search(r">\s*([0-9.]+)\s*$", " ".join(r["expr"].split()))[1])
-            assert threshold == pytest.approx(multiplier * _ERROR_BUDGET), (
-                f"{r['alert']} compares against {threshold}, but a {multiplier}x burn of a "
-                f"{_ERROR_BUDGET} budget is {multiplier * _ERROR_BUDGET}"
+            expr = " ".join(r["expr"].split())
+            threshold = float(re.search(r">\s*([0-9.]+)\s*$", expr)[1])
+            assert threshold == pytest.approx(multiplier), (
+                f"{r['alert']} compares against {threshold}, but its summary advertises "
+                f"{multiplier}x. The expression must yield the burn rate, so the threshold is the "
+                f"multiplier itself."
+            )
+            assert f"/ {_ERROR_BUDGET}" in expr, (
+                f"{r['alert']} compares against {multiplier} without dividing by the "
+                f"{_ERROR_BUDGET} error budget, so its value is an error ratio and not a burn "
+                f"rate — the operator-facing number would be wrong by a factor of "
+                f"{1 / _ERROR_BUDGET:g}."
             )
             assert f"{multiplier:g}" in r["annotations"]["summary"]
             checked += 1

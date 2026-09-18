@@ -125,12 +125,13 @@ def _audit(
     *,
     source: str = "exa-secrets",
 ) -> None:
-    try:
-        from examlops.data.audit import write_audit_event
+    # `audit_best_effort` keeps the half this comment is about — a secret operation is never
+    # blocked by the audit log — and drops the half that hid the loss. A lost record of a secret
+    # read is exactly what an auditor asks for, and the hash chain cannot show a row that never
+    # arrived, so the loss is logged and counted instead of passed over.
+    from examlops.data.audit import audit_best_effort
 
-        write_audit_event(source, actor, action, path, extra or {})
-    except Exception:
-        pass  # audit must never block a secret operation
+    audit_best_effort(source, actor, action, path, extra or {})
 
 
 def _tenant_allowed(path: str, tenant: str) -> bool:
@@ -375,6 +376,32 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
     ("slack-token", re.compile(r"xox[baprs]-[0-9A-Za-z-]{10,}")),
     ("fernet-ish", re.compile(r"gAAAAA[0-9A-Za-z_\-]{20,}")),
+    # The platform's **own** credential. `exa gateway key create` mints `exa-` +
+    # `secrets.token_urlsafe(24)`, and until this rule existed the scanner recognised Slack's
+    # tokens and AWS's but not the ones this platform hands out — so a virtual key pasted into a
+    # prompt passed the guardrail untouched and reached the model provider, the cache and the logs.
+    #
+    # The lookaheads are what keep it off the documentation: `docs/assets/explore/data/` is full of
+    # slugs like `exa-status-platform-snapshot-at-a-glance`, and a plain `exa-[\w-]{24,}` matched
+    # **462** of them across the tracked tree — a rule that fires on the docs is a rule someone
+    # turns off. A real key is exactly 32 characters and, with probability 1 − 3e−8, contains both
+    # an upper-case letter and a digit; a slug is lower-case words.
+    (
+        "examlops-virtual-key",
+        re.compile(
+            r"\bexa-(?=[A-Za-z0-9_\-]{32}(?![A-Za-z0-9_\-]))"
+            r"(?=[A-Za-z0-9_\-]*[A-Z])(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{32}"
+        ),
+    ),
+    # Upstream model-provider keys. This platform is an LLM gateway: its users hold these, and a
+    # prompt is exactly where one gets pasted by accident.
+    ("provider-api-key", re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_\-]{20,}")),
+    (
+        "github-token",
+        re.compile(
+            r"\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{22,}\b"
+        ),
+    ),
 ]
 
 

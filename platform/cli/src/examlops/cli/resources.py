@@ -607,6 +607,17 @@ RESOURCES: tuple[Resource, ...] = (
         actions=("config use",),
     ),
     R(
+        "control-command",
+        "Control-plane commands",
+        "Asynchronous control-plane commands (e.g. `exa retrain --async`): state, attempts, cancel.",
+        list="commands list",
+        key="command_id",
+        rows_key="items",
+        show="commands show",
+        actions=("commands cancel",),
+        columns=("command_id", "kind", "state", "attempts", "updated_at"),
+    ),
+    R(
         "module",
         "Modules",
         "This site's feature profile: which platform modules are on, and why (ADR 0128).",
@@ -621,6 +632,8 @@ RESOURCES: tuple[Resource, ...] = (
 # Command groups that have a `list`-like verb but are not resources, and why. Keeps the coverage
 # check honest: a new list command must be placed in one of the two.
 NOT_RESOURCES: dict[str, str] = {
+    "commands list": "Asynchronous command records are created by `exa retrain --async`, not by a "
+    "create form, and are read-only apart from cancel — `exa commands show/cancel` covers them.",
     "features list": "Feature *files* per model, fetched and pushed as files — the workspace covers it.",
     "pipeline list": "The pipeline registry view is the Pipelines console; its rows are not addressable.",
     "agent memory list": "Requires a memory kind to list; it is a query, not an enumerable resource.",

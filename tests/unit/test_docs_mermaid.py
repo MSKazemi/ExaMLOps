@@ -216,7 +216,7 @@ def test_the_pinned_mermaid_matches_the_major_the_site_loads():
     """Material loads mermaid itself, from a URL inside its own bundle. Checking against a
     different major would make this guard authoritative about a grammar no reader ever runs — so
     when Material moves to the next major, this fails and says to move the pin with it."""
-    material = Path(__import__("material").__file__).parent
+    material = Path(pytest.importorskip("material").__file__).parent
     bundles = list((material / "templates" / "assets" / "javascripts").glob("bundle.*.min.js"))
     assert bundles, "mkdocs-material's bundle is not where this test expects it"
 

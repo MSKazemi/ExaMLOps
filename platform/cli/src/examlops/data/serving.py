@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from examlops.data.events import enqueue_event
 from examlops.platform_db import get_db, init_db, install_write_retry
 
 __all__ = [
@@ -19,8 +20,11 @@ __all__ = [
     "list_llm_endpoints",
     "set_llm_endpoint_state",
     "upsert_llm_endpoint",
+    "serving_model_key",
     "set_traffic_rules",
     "get_traffic_rules",
+    "set_shadow_config",
+    "get_shadow_config",
     "set_promotion_rule",
     "get_promotion_rule",
     "disable_challenger",
@@ -31,6 +35,7 @@ __all__ = [
     "get_device_pools",
     "list_autoscale_configs",
     "list_challenger_configs",
+    "count_scale_events",
     "list_scale_events",
     "record_challenger_sample",
     "record_scale_event",
@@ -39,20 +44,104 @@ __all__ = [
 ]
 
 
+def serving_model_key(model: str) -> str:
+    """The key per-model serving configuration is *matched* under.
+
+    Serving addresses a model by its MLflow registered-model name, which is lowercase (``jpcp``);
+    operators type the registry name (``JPCP``). Traffic splits and shadow config were stored as
+    typed and read with a case-sensitive match on whatever the router held — ``exa serve traffic
+    JPCP`` wrote ``JPCP``, the inference router looked up ``jpcp``, and a configured canary split
+    silently never applied (plan P0.4 / finding B4).
+
+    Rows keep the operator's spelling for display; every reader matches on this key and every writer
+    retires rows stored under another casing, so exactly one row per model survives and a row
+    written before the fix still resolves.
+    """
+    return model.strip().lower()
+
+
 def set_traffic_rules(model: str, rules: dict[str, int], updated_by: str | None = None) -> None:
+    name, key = model.strip(), serving_model_key(model)
+    init_db()
     with get_db() as conn:
+        # One row per model, whatever casing earlier writers used.
+        conn.execute("DELETE FROM traffic_rules WHERE lower(model)=? AND model<>?", (key, name))
+        # updated_at explicitly: SQLite's REPLACE re-inserts the row with a fresh default, but the
+        # Postgres translation updates only the listed columns and left the old timestamp.
         conn.execute(
-            "INSERT OR REPLACE INTO traffic_rules (model, rules, updated_by) VALUES (?,?,?)",
-            (model, json.dumps(rules), updated_by),
+            "INSERT OR REPLACE INTO traffic_rules (model, rules, updated_by, updated_at) "
+            "VALUES (?,?,?,CURRENT_TIMESTAMP)",
+            (name, json.dumps(rules), updated_by),
+        )
+        # Same transaction: the change and its event commit together (ADR 0124). The serving
+        # snapshot (ADR 0127) rebuilds on it instead of every router polling this table.
+        enqueue_event(
+            "serving.traffic_changed",
+            {"model": name, "model_key": key, "rules": rules},
+            conn=conn,
+            actor=updated_by,
         )
 
 
 def get_traffic_rules(model: str) -> dict[str, int] | None:
+    init_db()  # schema-once per process; a fresh replica's first read must not fail
     with get_db() as conn:
-        row = conn.execute("SELECT rules FROM traffic_rules WHERE model=?", (model,)).fetchone()
+        row = conn.execute(
+            "SELECT rules FROM traffic_rules WHERE lower(model)=? ORDER BY updated_at DESC LIMIT 1",
+            (serving_model_key(model),),
+        ).fetchone()
     if row is None:
         return None
     return json.loads(row["rules"])
+
+
+def set_shadow_config(
+    model: str,
+    *,
+    shadow_alias: str = "Staging",
+    enabled: bool = True,
+    updated_by: str | None = None,
+) -> str:
+    """Enable (or disable) shadow mirroring for ``model``; returns the name it stored.
+
+    Shared by ``exa serve shadow`` and the dashboard, which each carried their own SQL — and their
+    own casing — until P0.4. Disabling a model with no row is a no-op, not an error.
+    """
+    name, key = model.strip(), serving_model_key(model)
+    init_db()
+    with get_db() as conn:
+        if enabled:
+            conn.execute("DELETE FROM shadow_config WHERE lower(model)=? AND model<>?", (key, name))
+            conn.execute(
+                "INSERT OR REPLACE INTO shadow_config "
+                "(model, shadow_alias, enabled, updated_at, updated_by) "
+                "VALUES (?, ?, 1, CURRENT_TIMESTAMP, ?)",
+                (name, shadow_alias, updated_by),
+            )
+        else:
+            conn.execute(
+                "UPDATE shadow_config SET enabled=0, updated_at=CURRENT_TIMESTAMP, updated_by=? "
+                "WHERE lower(model)=?",
+                (updated_by, key),
+            )
+        enqueue_event(
+            "serving.shadow_changed",
+            {"model": name, "model_key": key, "enabled": enabled, "shadow_alias": shadow_alias},
+            conn=conn,
+            actor=updated_by,
+        )
+    return name
+
+
+def get_shadow_config(model: str) -> dict[str, Any] | None:
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT model, shadow_alias, enabled, updated_at, updated_by FROM shadow_config "
+            "WHERE lower(model)=? ORDER BY updated_at DESC LIMIT 1",
+            (serving_model_key(model),),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def set_promotion_rule(
@@ -176,6 +265,25 @@ def list_scale_events(model: str, *, last_n: int = 50) -> list[dict[str, Any]]:
             "SELECT * FROM scale_events WHERE model=? ORDER BY id DESC LIMIT ?", (model, last_n)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def count_scale_events(model: str, *, to_replicas: int | None = None) -> int:
+    """How many scale events a model has, optionally only those that scaled *to* a replica count.
+
+    A companion to :func:`list_scale_events`, not a variant of it. That one is a listing and its
+    ``last_n`` is right; this is a count, and counting matches inside a listing answers "among the
+    newest ``last_n``" — which is how an unqualified total (a savings figure, say) quietly shrinks
+    to a fraction of itself as a model accumulates history.
+    """
+    init_db()
+    sql = "SELECT COUNT(*) AS c FROM scale_events WHERE model=?"
+    args: list[Any] = [model]
+    if to_replicas is not None:
+        sql += " AND to_replicas=?"
+        args.append(int(to_replicas))
+    with get_db() as conn:
+        row = conn.execute(sql, args).fetchone()
+    return int(row["c"])
 
 
 def record_challenger_sample(

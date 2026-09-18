@@ -9,7 +9,7 @@ import dbconn
 import pytest
 
 from examlops import platform_db as pdb
-from tests.conftest import VIEWER_PW
+from tests.conftest import ADMIN_PW, VIEWER_PW
 
 
 @pytest.fixture
@@ -171,3 +171,52 @@ async def test_fails_open_without_tables(client, tmp_path, monkeypatch):
     assert r.status_code == 200 and r.json() == []
     s = await _get(client, "/api/nextgen/summary", token)
     assert s.json()["federated_runs"] == 0
+
+
+@pytest.mark.asyncio
+async def test_another_tenants_events_do_not_crowd_out_the_callers_own(client, platform_db):
+    """`LIMIT` must not run before the tenant filter.
+
+    The query took the newest N rows across **every** tenant and `scope_to_tenant` then dropped the
+    ones belonging to others. On a busy platform a caller's own events are pushed out of that
+    window by tenants they cannot see, and the page shows fewer rows than exist — or none — while
+    saying nothing. Here the caller's single event is older than three belonging to `other`.
+    """
+    conn = dbconn.connect(pdb._db_path(), row_factory=None)
+    conn.executemany(
+        "INSERT INTO scale_events (model, from_replicas, to_replicas, reason, tenant) "
+        "VALUES (?,?,?,?,?)",
+        [("JPCP", 1, 9, "load", "other")] * 3,
+    )
+    conn.commit()
+    conn.close()
+
+    token = await _login(client, VIEWER_PW)
+    r = await _get(client, "/api/nextgen/autoscale/events?limit=2", token)
+
+    rows = r.json()
+    assert rows, "the caller's own scale events were crowded out by another tenant's"
+    assert all(row.get("tenant") in (None, "default") for row in rows), rows
+
+
+@pytest.mark.asyncio
+async def test_a_platform_admin_still_sees_every_tenants_events(client, platform_db):
+    """The SQL predicate must not narrow a cross-tenant admin (F15 R4).
+
+    `tenant_sql_filter` returns `1=1` for a platform admin, which is the half a well-meaning
+    "always filter by tenant" simplification would remove — silently hiding other centres' events
+    from the one role that is supposed to see them.
+    """
+    conn = dbconn.connect(pdb._db_path(), row_factory=None)
+    conn.execute(
+        "INSERT INTO scale_events (model, from_replicas, to_replicas, reason, tenant) "
+        "VALUES ('MACK', 1, 4, 'load', 'other')"
+    )
+    conn.commit()
+    conn.close()
+
+    token = await _login(client, ADMIN_PW)
+    r = await _get(client, "/api/nextgen/autoscale/events?limit=50", token)
+
+    tenants = {row.get("tenant") for row in r.json()}
+    assert "other" in tenants, f"a platform admin saw only {tenants}"

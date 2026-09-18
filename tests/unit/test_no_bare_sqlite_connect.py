@@ -19,6 +19,16 @@ _TESTS = _REPO / "tests"
 _ALLOWED = {_CORE / "resilience" / "db.py"}
 _PATTERN = re.compile(r"\bsqlite3\.connect\s*\(")
 
+#: Tests allowed to call ``sqlite3.connect`` directly, with the reason. The rule below is about
+#: reaching *platform state* through the seam; an exemption is only legitimate when the call **is**
+#: the thing under test rather than a way to read a row.
+_TEST_ALLOWED = {
+    "tests/unit/test_suite_stores_are_isolated.py": (
+        "drives the `sqlite3.connect` audit hook that refuses the checkout's own stores: the call "
+        "is the subject, and on Postgres `get_db()` opens no file that could trigger it"
+    ),
+}
+
 
 def _python_files(root: Path) -> list[Path]:
     """Every ``.py`` under ``root`` — and proof that there was something to scan.
@@ -60,12 +70,25 @@ def test_tests_reach_the_platform_db_through_the_seam():
     """
     offenders: list[str] = []
     for py in _python_files(_TESTS):
-        if py == Path(__file__).resolve():
+        rel = py.relative_to(_REPO).as_posix()
+        if py == Path(__file__).resolve() or rel in _TEST_ALLOWED:
             continue
         for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), start=1):
             if _PATTERN.search(line):
-                offenders.append(f"{py.relative_to(_REPO)}:{i}: {line.strip()}")
+                offenders.append(f"{rel}:{i}: {line.strip()}")
     assert not offenders, (
         "Tests must reach platform state through platform_db.get_db(), not sqlite3.connect():\n"
         + "\n".join(offenders)
     )
+
+
+def test_the_exemptions_still_describe_something_real():
+    """An exemption outlives the thing it excused, and then it is just a hole."""
+    for rel in _TEST_ALLOWED:
+        py = _REPO / rel
+        assert py.exists(), f"{rel} is gone; drop the exemption"
+        text = py.read_text(encoding="utf-8")
+        assert _PATTERN.search(text), f"{rel} no longer calls sqlite3.connect; drop the exemption"
+        assert "addaudithook" in text or "audit hook" in text, (
+            f"{rel} is exempted for driving the connect audit hook and no longer mentions it"
+        )

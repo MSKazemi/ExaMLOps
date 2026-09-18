@@ -5,6 +5,19 @@ release wrote: models, projects, pipelines, the audit chain, and the site's conf
 pack. This page explains how a release decides whether it can open that data, how the data is
 brought forward, and how to go back.
 
+## A probe names a route the image has to serve
+
+The chart's readiness and liveness probes are part of its contract with the image it deploys. When
+the serving gateway's readiness probe moved from `/healthz` to `/readyz` on 2026-09-14, an older
+control-plane image — which serves `/healthz` but not `/readyz` — produced pods that answered `404`
+to every probe, never became ready, and left `helm upgrade --wait` to expire with nothing more
+informative than `context deadline exceeded`.
+
+So: **deploy a chart with the image it shipped with.** Mixing a newer chart with an older image is
+not a partial upgrade, it is a rollout that cannot converge. The release pipeline ships them
+together for this reason, and `make helm-kind-live` builds the image from the current tree before
+testing the chart rather than trusting whatever is on the machine.
+
 ## The data-format stamp
 
 Every platform datastore (SQLite `platform.db` or the Postgres schema) holds a small stamp in
@@ -72,6 +85,74 @@ exa upgrade apply            # --dry-run to preview; --tier … to widen the pre
 # 5. Pre-flight the whole install
 exa instance check           # exit 1 on any problem — use it as a CI or maintenance-window gate
 ```
+
+### The pre-upgrade backup has to be a rollback point
+
+`exa upgrade apply` takes a bundle **before** it migrates, and refuses to go on unless that bundle
+actually captured something. Until 2026-09-14 it refused only `overall_status: failed` — and a
+bundle whose every requested tier was **skipped** reports `skipped`, not `failed`. That is a
+directory with a manifest and no data in it, so the migration ran against production data with no
+rollback point at all.
+
+Both `failed` and `skipped` now stop the upgrade, and the refusal says what to fix:
+
+```
+⚠ Pre-upgrade backup: ./backups/examlops-backup-<ts> (skipped)
+✗ refusing to upgrade: the pre-upgrade backup is 'skipped' — it captured nothing, so there would
+  be no rollback point. Check the backup tiers (`exa backup create --all` and
+  `exa backup verify-bundle`), or re-run with `--no-backup` if you have a rollback point of your own.
+```
+
+`partial` is allowed through **only if the bundle holds the tier this instance keeps its platform
+state in** — `postgres` under `EXAMLOPS_DB_BACKEND=postgres`, `sqlite` otherwise. That distinction
+matters because "at least one tier was captured" is not the same as "the data being migrated was
+captured":
+
+- The default tier list is now chosen from the engine. It was `["sqlite", "config"]` on *every*
+  engine, and under Postgres the sqlite tier skips the platform DB **on purpose** (its state is in
+  Postgres, dumped by the `postgres` tier, which that default never asked for). The bundle reported
+  `partial` because the config tier succeeded — so on the enterprise backend the pre-upgrade backup
+  held none of the data the migration was about to change.
+- Asking for the right tier is not the same as getting it. If the `postgres` tier is requested and
+  captures nothing — `pg_dump` missing, the server unreachable — the upgrade refuses on what the
+  manifest **holds**, not on what was requested.
+
+A config tier with nothing to snapshot still lets the upgrade run, which is the case that must not
+be blocked. Widen what is captured with `--tier`, and note the status line is no longer a green tick
+when the bundle is empty.
+
+### If a migration fails
+
+The question worth answering before step 4 runs against production data: a migration dies on row
+10,000 — a bad row, a lost connection, a killed pod — **is the datastore now half old and half
+new?**
+
+No. Each migration runs inside its own transaction together with the stamp update that records it,
+so a migration that raises leaves:
+
+- **no partial data** — everything it wrote is rolled back;
+- **the stamp where it was** — the format is not advanced, and a *breaking* step that died does not
+  raise the minimum-reader floor, so older releases are not locked out of data that was never
+  actually migrated;
+- **the migration still pending** — `exa upgrade plan` lists it again, and running `exa upgrade
+  apply` retries it from the start;
+- **a non-zero exit and the error**, not a success line.
+
+This holds on both engines and is pinned by
+`tests/unit/test_lifecycle_dataformat.py::test_a_migration_that_dies_partway_leaves_nothing_behind`,
+which runs a migration that writes a row and then raises, on SQLite and — through
+`make test-postgres` — on Postgres. The test is paired with a migration that *succeeds*, so it
+cannot pass over a mechanism that is simply unable to write.
+
+So the recovery is to fix the cause and run `exa upgrade apply` again. The pre-upgrade bundle from
+step 4 is there for the failure this cannot cover: a migration that completes and turns out to have
+been *wrong*.
+
+**Read what `apply` reports, not just the exit code.** `applied` lists what this process migrated
+and can legitimately be empty — another replica may have won the race and done it first. What says
+the instance is finished is `ok`, which is derived from the data afterwards, and `pending_after`,
+which names anything still outstanding. On the terminal, an empty `applied` prints as *none
+pending*; if migrations did not apply, you get an error naming them instead.
 
 Beyond the datastore, the plan and the check also look at two other things:
 

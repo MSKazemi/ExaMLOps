@@ -99,14 +99,35 @@ def list_models(client: httpx.Client) -> list[str]:
 
 
 def predict(client: httpx.Client, model_name: str, features: dict[str, Any]) -> dict:
-    return _post(client, f"/predict/{model_name}", {"features": features})
+    """One prediction over Open Inference Protocol v2 (ADR 0126), spelled out as an example.
+
+    Each feature is one named tensor: a scalar has shape [1], a list (an embedding) [1, len].
+    The answer's first output tensor holds the prediction.
+    """
+    inputs = [
+        {
+            "name": name,
+            "shape": [1, len(value)] if isinstance(value, list) else [1],
+            "datatype": "FP64",
+            "data": value if isinstance(value, list) else [value],
+        }
+        for name, value in features.items()
+    ]
+    answer = _post(client, f"/v2/models/{model_name}/infer", {"inputs": inputs})
+    data = answer["outputs"][0]["data"]
+    params = answer.get("parameters") or {}
+    return {
+        "prediction": data[0] if len(data) == 1 else data,
+        "model_version": answer.get("model_version"),
+        "run_id": params.get("run_id"),
+    }
 
 
 def run_examples(client: httpx.Client, model_names: list[str]) -> None:
     print("── Example predictions ─────────────────────────────────")
     for name in model_names:
         features = EXAMPLE_FEATURES.get(name, {k: 1 for k in ["num_nodes_req_cat", "user_id_cat"]})
-        print(f"  POST /predict/{name}")
+        print(f"  POST /v2/models/{name}/infer")
         print(f"    features  : {features}")
         try:
             t0 = time.perf_counter()
@@ -121,7 +142,7 @@ def run_examples(client: httpx.Client, model_names: list[str]) -> None:
 
 
 def benchmark(client: httpx.Client, model_name: str, n: int) -> None:
-    print(f"── Benchmark: {n} requests → /predict/{model_name} ─────────")
+    print(f"── Benchmark: {n} requests → /v2/models/{model_name}/infer ─────────")
     ranges = RANDOM_FEATURE_RANGES.get(
         model_name,
         {"num_nodes_req_cat": (1, 64), "user_id_cat": (1, 500)},
@@ -185,7 +206,7 @@ def main() -> None:
                 args.model = model_names[0]
                 print(f"--model not specified, defaulting to '{args.model}'\n")
             features = json.loads(args.features)
-            print(f"── Custom predict → /predict/{args.model} ──────────────")
+            print(f"── Custom predict → /v2/models/{args.model}/infer ──────────────")
             print(f"  features  : {features}")
             try:
                 t0 = time.perf_counter()

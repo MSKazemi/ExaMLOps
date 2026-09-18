@@ -92,8 +92,21 @@ class _FakeS3:
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
         Path(dest).write_bytes(self.data[bucket][key])
 
+    def head_bucket(self, Bucket):  # noqa: N803 — boto3's parameter name
+        if Bucket not in self.data:
+            raise RuntimeError(f"NoSuchBucket: {Bucket}")
+
+    def create_bucket(self, Bucket):  # noqa: N803 — boto3's parameter name
+        self.data.setdefault(Bucket, {})
+
     def upload_file(self, src, bucket, key):
-        self.data.setdefault(bucket, {})[key] = Path(src).read_bytes()
+        # Was `self.data.setdefault(bucket, {})`, which quietly created the bucket — so a restore
+        # into an object store that had lost its buckets (the *whole point* of this tier) passed
+        # here and failed against a real MinIO with `NoSuchBucket`. A double that is more
+        # forgiving than the thing it stands in for tests nothing on the path that matters.
+        if bucket not in self.data:
+            raise RuntimeError(f"NoSuchBucket: {bucket}")
+        self.data[bucket][key] = Path(src).read_bytes()
 
 
 def test_objects_skips_when_boto3_missing(tmp_path, monkeypatch):
@@ -220,8 +233,81 @@ def test_objects_mirror_and_restore_roundtrip(tmp_path, monkeypatch):
     )
     fake.data["mlflow-artifacts"] = {}  # empty → restore allowed without force
     out = objects_tier.restore_objects_tier(tmp_path, force=False)
+    assert out[0]["uploaded"] == 2 and out[0]["ok"] is True
+    assert out[0]["bucket_created"] is False  # it was still there
+    assert fake.data["mlflow-artifacts"]["a.txt"] == b"hello"
+
+
+def test_restore_recreates_a_bucket_the_disaster_took(tmp_path, monkeypatch):
+    """The case this tier exists for: the object store is gone, buckets and all.
+
+    `docs/guides/backup-restore.md` puts objects **first** in its recovery order, because model
+    artifacts have to exist before the registry's references to them resolve. Restoring into a
+    store that had lost the bucket raised a raw boto3 `NoSuchBucket`, so the first step of a
+    documented full-disaster recovery ended in a stack trace. Verified against a real MinIO before
+    and after the fix; the in-memory double had hidden it by creating buckets on upload.
+    """
+    import json
+
+    from examlops.backup import objects_tier
+
+    fake = _FakeS3({"mlflow-artifacts": {"a.txt": b"hello", "sub/b.bin": b"\x00\x01\x02"}})
+    monkeypatch.setenv("EXAMLOPS_BACKUP_BUCKETS", "mlflow-artifacts")
+    monkeypatch.setattr(objects_tier, "_s3_client", lambda: fake)
+
+    res = objects_tier.backup_objects_tier(tmp_path)
+    (tmp_path / "bundle.manifest.json").write_text(
+        json.dumps({"tiers": {"objects": {"items": res.items}}})
+    )
+
+    del fake.data["mlflow-artifacts"]  # the store lost the bucket itself
+    out = objects_tier.restore_objects_tier(tmp_path, force=True)
+
+    assert out[0]["ok"] is True and out[0]["bucket_created"] is True
     assert out[0]["uploaded"] == 2
     assert fake.data["mlflow-artifacts"]["a.txt"] == b"hello"
+    assert fake.data["mlflow-artifacts"]["sub/b.bin"] == b"\x00\x01\x02"
+
+
+def test_a_bucket_that_fails_to_restore_is_reported_not_raised(tmp_path, monkeypatch):
+    """One bad bucket must not cost the report for every other bucket.
+
+    An object store is restored bucket by bucket; the first failure ending the tier is how a
+    partial restore gets mistaken for a total one. The per-bucket `ok` is also what
+    `restore_bundle` aggregates — without it, an objects restore could not be reported as having
+    failed at all, whatever happened to it.
+    """
+    import json
+
+    from examlops.backup import bundle as bundle_mod
+    from examlops.backup import objects_tier
+
+    fake = _FakeS3({"mlflow-artifacts": {"a.txt": b"hello"}})
+    monkeypatch.setenv("EXAMLOPS_BACKUP_BUCKETS", "mlflow-artifacts")
+    monkeypatch.setattr(objects_tier, "_s3_client", lambda: fake)
+    res = objects_tier.backup_objects_tier(tmp_path)
+    (tmp_path / "bundle.manifest.json").write_text(
+        json.dumps(
+            {
+                "tiers": {"objects": {"items": res.items}},
+                "data_format": 1,
+                "min_reader_format": 1,
+            }
+        )
+    )
+
+    def _no(src, bucket, key):
+        raise RuntimeError("disk full on the object store")
+
+    monkeypatch.setattr(fake, "upload_file", _no)
+    out = objects_tier.restore_objects_tier(tmp_path, force=True)
+    assert out[0]["ok"] is False and out[0]["uploaded"] == 0 and out[0]["expected"] == 1
+    assert "disk full" in out[0]["reason"]
+
+    # And the whole-bundle caller must see it — that is what `exa backup restore-bundle` exits on.
+    result = bundle_mod.restore_bundle(str(tmp_path), tiers=["objects"], force=True)
+    assert result["ok"] is False, result
+    assert result["failed"] and result["failed"][0]["bucket"] == "mlflow-artifacts"
 
 
 # ── config tier ────────────────────────────────────────────────────────────────
@@ -260,3 +346,74 @@ def test_config_tier_skips_when_dir_absent(tmp_path, monkeypatch):
     monkeypatch.delenv("EXAMLOPS_SECRETS_KEYS", raising=False)
     res = config_tier.backup_config_tier(tmp_path)
     assert res.status == "skipped"
+
+
+# ─── the approvals tier follows the control plane (plan P0.9 / finding B6) ───────────────────
+#
+# The compose sidecar hard-coded CONTROL_PLANE_DB=/data/approvals.db long after the control plane
+# moved its state into the shared platform.db. Every bundle therefore carried an "approvals" item
+# that was a stale file nothing wrote any more, beside the real state it did not know was there.
+
+
+def _sqlite_items(tmp_path):
+    from examlops.backup import sqlite_tier
+
+    return {i["name"]: i for i in sqlite_tier.backup_sqlite_tier(tmp_path / "bundle").items}
+
+
+def _seed(path):
+    from examlops.resilience import db as _rdb
+
+    conn = _rdb.connect(str(path))
+    conn.execute("CREATE TABLE IF NOT EXISTS pending_approvals (id TEXT)")
+    conn.commit()
+    conn.close()
+
+
+def test_approvals_inside_the_platform_db_is_not_snapshotted_twice(tmp_path, monkeypatch):
+    shared = tmp_path / "platform.db"
+    _seed(shared)
+    monkeypatch.setenv("EXAMLOPS_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("PLATFORM_DB", str(shared))
+    monkeypatch.delenv("CONTROL_PLANE_DB", raising=False)
+
+    items = _sqlite_items(tmp_path)
+
+    assert items["platform"]["status"] == "ok"
+    assert items["approvals"]["status"] == "skipped"
+    assert "inside the platform DB" in items["approvals"]["reason"]
+
+
+def test_a_separate_control_plane_db_is_still_backed_up(tmp_path, monkeypatch):
+    shared, own = tmp_path / "platform.db", tmp_path / "cp.db"
+    _seed(shared)
+    _seed(own)
+    monkeypatch.setenv("EXAMLOPS_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("PLATFORM_DB", str(shared))
+    monkeypatch.setenv("CONTROL_PLANE_DB", str(own))
+
+    assert _sqlite_items(tmp_path)["approvals"]["status"] == "ok"
+
+
+def test_control_plane_state_on_postgres_is_left_to_the_postgres_tier(tmp_path, monkeypatch):
+    leftover = tmp_path / "platform.db"
+    _seed(leftover)
+    monkeypatch.setenv("EXAMLOPS_DB_BACKEND", "postgres")
+    monkeypatch.setenv("PLATFORM_DB", str(leftover))
+    monkeypatch.setenv("CONTROL_PLANE_DB", str(leftover))
+
+    items = _sqlite_items(tmp_path)
+
+    assert items["approvals"]["status"] == "skipped"
+    assert "postgres tier" in items["approvals"]["reason"]
+
+
+def test_compose_sidecar_follows_the_control_plane():
+    import yaml
+
+    compose = (
+        Path(__file__).resolve().parents[2] / "platform/infra/docker-compose/docker-compose.yml"
+    )
+    env = yaml.safe_load(compose.read_text())["services"]["backup"]["environment"]
+    assert env["CONTROL_PLANE_DB"] == "${CONTROL_PLANE_DB:-/state/platform.db}"
+    assert "EXAMLOPS_DB_BACKEND" in env and "EXAMLOPS_POSTGRES_DSN" in env

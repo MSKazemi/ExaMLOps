@@ -27,9 +27,47 @@ _PII_PATTERNS = {
     "email": re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
     "phone": re.compile(r"\b(?:\+?\d{1,3}[ -]?)?(?:\(?\d{3}\)?[ -]?)\d{3}[ -]?\d{4}\b"),
     "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+    # Before `credit_card`, whose digit run would otherwise eat the account number out of an IBAN.
+    "iban": re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b"),
     "credit_card": re.compile(r"\b(?:\d[ -]?){13,16}\b"),
     "ipv4": re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+    # Candidates only — confirmed by `_VALIDATORS` below. A pattern loose enough to catch every
+    # IPv6 form also catches MAC addresses (`00:1b:44:11:3a:b7`) and timecodes (`01:02:03:04`),
+    # and redacting those as "ipv6" would be a wrong label on data that was not an address.
+    "ipv6": re.compile(
+        r"\b[0-9A-Fa-f:]*::?[0-9A-Fa-f:]*[0-9A-Fa-f]\b|\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{1,4}\b"
+    ),  # noqa: E501
 }
+
+
+def _is_ipv6(candidate: str) -> bool:
+    """Whether a candidate really is an IPv6 address, rather than a MAC or a timecode."""
+    import ipaddress
+
+    try:
+        ipaddress.IPv6Address(candidate)
+    except ValueError:
+        return False
+    return True
+
+
+#: Detectors whose matches are confirmed before being treated as a finding. A regex decides where
+#: to *look*; the validator decides whether it found anything — which is what keeps "ipv6" from
+#: meaning "any run of hex separated by colons".
+_VALIDATORS = {"ipv6": _is_ipv6}
+
+
+def _matches(name: str, pat: re.Pattern[str], text: str) -> list[str]:
+    """Every confirmed match of one detector, in order."""
+    check = _VALIDATORS.get(name)
+    out = []
+    for m in pat.finditer(text):
+        value = m.group(0)
+        if check is None or check(value):
+            out.append(value)
+    return out
+
+
 # A tiny toxicity wordlist stub (a hosted classifier replaces this in production).
 _TOXIC = re.compile(r"\b(kill yourself|i hate you|slur1|slur2)\b", re.IGNORECASE)
 
@@ -56,9 +94,9 @@ class Guardrail(Protocol):
 def detect_pii(text: str) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for name, pat in _PII_PATTERNS.items():
-        found = pat.findall(text)
+        found = _matches(name, pat, text)
         if found:
-            out[name] = [f if isinstance(f, str) else "".join(f) for f in found]
+            out[name] = found
     return out
 
 
@@ -66,9 +104,26 @@ def redact_pii(text: str) -> tuple[str, list[str]]:
     findings: list[str] = []
     redacted = text
     for name, pat in _PII_PATTERNS.items():
-        if pat.search(redacted):
+        check = _VALIDATORS.get(name)
+        if check is None:
+            if pat.search(redacted):
+                findings.append(name)
+                redacted = pat.sub(f"[redacted-{name}]", redacted)
+            continue
+        # A validated detector replaces only the matches its validator confirms, so a MAC address
+        # that looks like an address to the regex is left exactly as it was found.
+        hit = False
+
+        def _sub(m: re.Match[str], _check=check, _name=name) -> str:
+            nonlocal hit
+            if not _check(m.group(0)):
+                return m.group(0)
+            hit = True
+            return f"[redacted-{_name}]"
+
+        redacted = pat.sub(_sub, redacted)
+        if hit:
             findings.append(name)
-            redacted = pat.sub(f"[redacted-{name}]", redacted)
     return redacted, findings
 
 
@@ -161,9 +216,12 @@ class DefaultGuardrail:
         return allowed if self.mode == "enforce" else True
 
     def _record(self, direction: str, action: str, rule: str) -> None:
+        # The telemetry row and the audit record are recorded independently. They shared one
+        # `try` before, so a failed insert also skipped the audit write — the governance record
+        # of a block was lost because a counters table was unavailable, which is a different
+        # system having a different problem.
         try:
             from examlops.data import get_db
-            from examlops.data.audit import write_audit_event
 
             with get_db() as conn:
                 conn.execute(
@@ -171,16 +229,20 @@ class DefaultGuardrail:
                        VALUES (?,?,?,?,?)""",
                     (self.tenant, direction, action, rule, self.mode),
                 )
-            if action in ("block", "redact"):
-                write_audit_event(
-                    "exa-guardrails",
-                    None,
-                    f"guardrail_{action}",
-                    f"{self.tenant}/{direction}",
-                    {"rule": rule, "mode": self.mode},
-                )
-        except Exception:
+        except Exception:  # noqa: BLE001 - guardrail telemetry must never block the request
             pass
+        if action in ("block", "redact"):
+            # Counted rather than swallowed: a block that happened and was not recorded reads,
+            # afterwards, exactly like a block that never happened.
+            from examlops.data.audit import audit_best_effort
+
+            audit_best_effort(
+                "exa-guardrails",
+                None,
+                f"guardrail_{action}",
+                f"{self.tenant}/{direction}",
+                {"rule": rule, "mode": self.mode},
+            )
 
 
 def _redact_secret(text: str) -> str:

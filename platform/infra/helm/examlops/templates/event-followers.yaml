@@ -1,0 +1,103 @@
+{{- /*
+Consumers of the event backbone (ADR 0124): durable JetStream consumers, one pod each, no Service.
+They only receive events when the control plane relays the outbox to NATS, so enabling one without
+`events.publisher: nats` (or without `events.natsUrl`) fails the render instead of deploying a pod
+that waits forever.
+*/ -}}
+{{- $events := .Values.events | default dict }}
+{{- $followers := $events.followers | default dict }}
+{{- $autopilot := $followers.autopilot | default dict }}
+{{- $watch := $followers.skipperWatch | default dict }}
+{{- if and (eq ($events.publisher | default "log") "nats") (not $events.natsUrl) }}
+{{- fail "events.publisher is nats but events.natsUrl is empty: set it to the NATS server, e.g. nats://nats.messaging:4222" }}
+{{- end }}
+{{- if and (or $autopilot.enabled $watch.enabled) (ne ($events.publisher | default "log") "nats") }}
+{{- fail "an events follower is enabled but events.publisher is not nats: followers read NATS, and with the log publisher nothing ever reaches them" }}
+{{- end }}
+{{- $root := . }}
+{{- range $follower := list (dict "component" "autopilot-follower" "values" $autopilot "svc" $root.Values.controlPlane "secret" (include "examlops.controlPlaneSecret" $root) "command" (list "exa" "autopilot" "follow") "actor" "autopilot") (dict "component" "skipper-watch" "values" $watch "svc" $root.Values.agent "secret" (include "examlops.agentSecret" $root) "command" (list "python" "-m" "skipper.watch" "--daemon") "actor" "skipper-watch") }}
+{{- if $follower.values.enabled }}
+{{- $identity := and $root.Values.workloadIdentity.enabled (eq $follower.component "autopilot-follower") }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "examlops.fullname" $root }}-{{ $follower.component }}
+  labels:
+    {{- include "examlops.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $follower.component }}
+spec:
+  # One consumer: a second pod during a rollout would share the durable consumer's work and could
+  # run one cycle twice, so the old pod goes before the new one starts.
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 1, maxSurge: 0}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "examlops.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $follower.component }}
+  template:
+    metadata:
+      labels:
+        {{- include "examlops.labels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $follower.component }}
+    spec:
+      serviceAccountName: {{ include "examlops.serviceAccountName" $root }}
+      {{- with $root.Values.global.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $follower.component }}
+          image: {{ include "examlops.image" (dict "root" $root "svc" $follower.svc) }}
+          imagePullPolicy: {{ $follower.svc.image.pullPolicy }}
+          command: {{ toJson $follower.command }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "examlops.fullname" $root }}-config
+            - secretRef:
+                name: {{ $follower.secret | quote }}
+          env:
+            - {name: EXAMLOPS_ACTOR, value: {{ $follower.actor | quote }}}
+            - {name: HOME, value: /tmp}   # the root filesystem is read-only
+            {{- if eq $follower.component "autopilot-follower" }}
+            - name: CONTROL_PLANE_URL
+              value: http://{{ include "examlops.fullname" $root }}-control-plane:{{ $root.Values.controlPlane.port }}
+            - name: MLFLOW_TRACKING_URI
+              value: {{ $follower.values.mlflowTrackingUri | default "http://mlflow:5000" | quote }}
+            # Its own narrowly scoped credential when the Secret has one; otherwise the shared token
+            # from envFrom stays in effect (as in Compose).
+            - name: CONTROL_PLANE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $follower.secret | quote }}
+                  key: AUTOPILOT_CONTROL_PLANE_TOKEN
+                  optional: true
+            {{- end }}
+            {{- if $identity }}
+            # Its workload identity (ADR 0125), read on every call; the static credential above is
+            # the fallback until the sidecar has written the file.
+            - {name: CONTROL_PLANE_TOKEN_FILE, value: /run/spire/svid/control-plane.jwt}
+            {{- end }}
+          securityContext:
+            {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml ($follower.values.resources | default dict) | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            {{- if $identity }}
+            - {name: spiffe-svid, mountPath: /run/spire/svid, readOnly: true}
+            {{- end }}
+        {{- if $identity }}
+        {{- include "examlops.spiffeHelperContainer" (dict "root" $root "component" $follower.component) | nindent 8 }}
+        {{- end }}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+        {{- if $identity }}
+        {{- include "examlops.spiffeVolumes" $root | nindent 8 }}
+        {{- end }}
+{{- end }}
+{{- end }}

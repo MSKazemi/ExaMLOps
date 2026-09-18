@@ -38,6 +38,40 @@ The route outlet is wrapped in `<ErrorBoundary>`, which catches render/runtime e
 designed `EmptyState` fallback with a **Try again** button instead of a blank white screen. Wrap any
 independently-failing subtree in its own boundary if you want finer isolation.
 
+## A failed load must not look like an empty platform
+
+*The UI half of [honest degradation](honest-degradation.md), which catalogues the same defect across the platform.*
+
+`<ErrorBoundary>` catches a *render* error. A **failed query** does not throw — `throwOnError` is
+deliberately not set — so the component renders with `data === undefined`, and what the operator sees
+is whatever that path draws. Two rules follow, and both have been got wrong here:
+
+**A zero is a claim; a dash is the absence of one.** `0 device pools` asserts that none are
+configured. A page that prints it because the request failed has made that claim without earning it,
+and from the operator's chair it is indistinguishable from an idle platform. Render `—` when you do
+not know, and say why:
+
+```tsx
+const { data, isLoading, error } = useThing()
+const kpi = (n: number | undefined) => (error ? '—' : (n ?? 0))
+```
+
+**Say which state it is.** The consoles use `EmptyState` for both "nothing here" and "could not
+load", distinguished by the title — `"No prompts yet"` against `"Couldn't load prompts"` — and 35
+pages already do this. The NOC wall additionally separates *"Awaiting data"* (has not reported) from
+*"<source> unavailable"* (the BFF could not reach it), because a wall is read from a distance and
+silence there reads as quiet.
+
+**Check it by rendering, not by reading.** Measuring this class with `grep` gave three different
+wrong answers in one sitting — 27 pages, then 3, then 1 — because pages express the same intent in
+different words. Mounting the page with a rejecting `apiFetch` and asserting on what the user is
+shown is the only measurement that settled it, and it is two lines in a test:
+
+```tsx
+apiFetch.mockImplementation(() => Promise.reject(new Error('upstream 503')))
+expect(container.textContent).not.toMatch(/0Device pools/)
+```
+
 ## Route code-splitting (R6)
 
 Heavy / less-frequent routes are `lazy()`-imported and rendered inside a `<Suspense>` skeleton, so they

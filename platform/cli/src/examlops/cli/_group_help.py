@@ -199,6 +199,10 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     "report": [
         ("Generate a cost/carbon report", "exa report generate --help"),
     ],
+    "commands": [
+        ("Asynchronous commands, newest first", "exa commands list"),
+        ("Follow one (state, flow run, last error)", "exa commands show <id>"),
+    ],
     # Governance & Security
     "approvals": [
         ("Pending model-change approvals", "exa approvals list"),

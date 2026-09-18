@@ -75,17 +75,17 @@ def test_an_empty_store_reports_zero_and_not_unknown(cp):
     )
 
 
-def test_health_reports_an_unreadable_store_as_unknown_not_empty(cp):
+def test_health_reports_an_unreadable_store_as_unknown_not_empty(cp, monkeypatch):
     _seed_pending(cp, 5)
     client = TestClient(cp.app)
     assert client.get("/health").json()["pending_approvals"] == 5
 
-    cp._get_db = _boom
+    monkeypatch.setattr(cp, "_get_db", _boom)  # restored at teardown, unlike `cp._get_db = …`
     body = client.get("/health").json()
     assert body["pending_approvals"] is None, "0 is the value that means 'nothing is waiting'"
 
 
-def test_status_reports_an_unreadable_store_as_unknown_not_empty(cp):
+def test_status_reports_an_unreadable_store_as_unknown_not_empty(cp, monkeypatch):
     _seed_pending(cp, 5)
     client = TestClient(cp.app)
     assert (
@@ -95,7 +95,7 @@ def test_status_reports_an_unreadable_store_as_unknown_not_empty(cp):
         == 5
     )
 
-    cp._get_db = _boom
+    monkeypatch.setattr(cp, "_get_db", _boom)  # restored at teardown, unlike `cp._get_db = …`
     assert (
         client.get("/status", headers={"Authorization": "Bearer test-token"}).json()[
             "pending_approvals"
@@ -104,8 +104,8 @@ def test_status_reports_an_unreadable_store_as_unknown_not_empty(cp):
     )
 
 
-def test_a_control_plane_that_cannot_read_its_queue_is_not_ok(cp):
+def test_a_control_plane_that_cannot_read_its_queue_is_not_ok(cp, monkeypatch):
     """`exa production` gates on `status == "ok"`. A queue nobody can see is not a passing platform."""
     client = TestClient(cp.app)
-    cp._get_db = _boom
+    monkeypatch.setattr(cp, "_get_db", _boom)  # restored at teardown, unlike `cp._get_db = …`
     assert client.get("/health").json()["status"] == "degraded"

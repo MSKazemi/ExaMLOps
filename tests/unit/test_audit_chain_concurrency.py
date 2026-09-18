@@ -186,8 +186,10 @@ def test_pg_conn_path_takes_advisory_lock_before_head_read():
     conn = PgConnection()
     _append_on(conn, "test", None, "unit_test", "t", None, "default")
 
-    assert "BEGIN IMMEDIATE" in conn.executed, "Pg conn= path must take the advisory lock"
-    lock_at = conn.executed.index("BEGIN IMMEDIATE")
+    # The chain's lock is the `audit` scope (plan P1.3): every appender must take the same key.
+    locks = [s for s in conn.executed if s.startswith("BEGIN IMMEDIATE")]
+    assert locks == ["BEGIN IMMEDIATE /* lock:audit */"], "Pg conn= path must take the audit lock"
+    lock_at = conn.executed.index(locks[0])
     head_at = next(
         i for i, s in enumerate(conn.executed) if s.startswith("SELECT hash FROM audit_events")
     )
@@ -204,7 +206,7 @@ def test_sqlite_conn_path_takes_no_extra_lock():
     from examlops.data.audit import _append_on
 
     _append_on(conn, "test", None, "unit_test", "t", None, "default")
-    assert "BEGIN IMMEDIATE" not in conn.executed
+    assert not any(s.startswith("BEGIN IMMEDIATE") for s in conn.executed)
 
 
 def test_chain_intact_when_callers_pass_an_idle_connection(db):
@@ -256,23 +258,91 @@ def test_a_caller_holding_its_own_write_keeps_atomicity(db):
     assert db.verify_audit_chain()["count"] == 0
 
 
-def test_an_idle_connection_that_loses_the_lock_race_retries_instead_of_failing(db):
-    """The idle-connection lock is retried, as every other platform write is.
+# ── the scripted compliance check is the second reader ───────────────────────
 
-    ``busy_timeout`` waits once; a saturated host can still outlast it — seen as
-    ``database is locked`` from the concurrent-writer test under the full parallel suite. Nothing
-    is open on an idle connection when ``BEGIN IMMEDIATE`` loses, so re-issuing it is safe.
-    Deterministic here: the holder releases after the waiter's first attempt has already failed.
+
+def _one_unchained_row(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "p.db"))
+    from examlops.data.audit import write_audit_event
+    from examlops.platform_db import get_db, init_db
+
+    init_db()
+    write_audit_event("cli", "m", "chained", "t", None)
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO audit_events (source, actor, action, target, details) VALUES (?,?,?,?,?)",
+            ("legacy", "m", "unchained", "t", None),
+        )
+
+
+def test_the_result_says_whether_the_whole_log_was_verified(tmp_path, monkeypatch):
+    """`ok` and `fully_verified` answer different questions.
+
+    `ok` means *the chain that exists is intact* and must stay true here — crying wolf over
+    pre-chain history would make the command useless. `fully_verified` means *every row was
+    checked*, which is the question a compliance script is asking when it runs `exa audit verify`
+    and reads the exit code.
     """
-    db.init_db()
-    with db.get_db() as holder, db.get_db() as waiter:
-        holder.execute("BEGIN IMMEDIATE")  # another writer holds the lock
-        waiter.execute("PRAGMA busy_timeout=0")  # so the first attempt fails at once
-        release = threading.Timer(0.15, holder.commit)
-        release.start()
-        try:
-            db.write_audit_event("test", "w", "raced", "t", conn=waiter)
-            waiter.commit()
-        finally:
-            release.join()
-    assert db.verify_audit_chain()["count"] == 1
+    _one_unchained_row(tmp_path, monkeypatch)
+    from examlops.data.audit import verify_audit_chain
+
+    result = verify_audit_chain()
+    assert result["ok"] is True
+    assert result["fully_verified"] is False, (
+        "a log that was only partly read reported itself as fully verified"
+    )
+
+
+def test_a_clean_chain_is_fully_verified(tmp_path, monkeypatch):
+    """Anti-vacuity: the flag must be able to be true."""
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "p.db"))
+    from examlops.data.audit import verify_audit_chain, write_audit_event
+    from examlops.platform_db import init_db
+
+    init_db()
+    write_audit_event("cli", "m", "a", "t", None)
+    assert verify_audit_chain()["fully_verified"] is True
+
+
+def test_a_broken_chain_is_not_fully_verified(tmp_path, monkeypatch):
+    """A chain that broke was not fully verified either — the flag must not contradict `ok`."""
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "p.db"))
+    from examlops.data.audit import verify_audit_chain, write_audit_event
+    from examlops.platform_db import get_db, init_db
+
+    init_db()
+    for i in range(3):
+        write_audit_event("cli", "m", f"a{i}", "t", None)
+    # The append-only triggers refuse UPDATE and DELETE, so the chain is broken the way it could
+    # really be broken through this connection: by appending a row whose hashes do not follow.
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO audit_events (source, actor, action, target, details, tenant, "
+            "prev_hash, hash) VALUES (?,?,?,?,?,?,?,?)",
+            ("cli", "m", "forged", "t", None, "default", "not-the-head", "not-a-real-hash"),
+        )
+    result = verify_audit_chain()
+    assert result["ok"] is False
+    assert result["fully_verified"] is False
+
+
+def test_a_scripted_verify_is_told_what_it_could_not_check(tmp_path, monkeypatch):
+    """`exa --json audit verify` returned before the warning, so only the human ever saw it.
+
+    The warning goes to stderr, so stdout still carries exactly one JSON document.
+    """
+    import json
+
+    from typer.testing import CliRunner
+
+    _one_unchained_row(tmp_path, monkeypatch)
+    from examlops.cli.main import app
+
+    result = CliRunner().invoke(app, ["--json", "audit", "verify"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["unchained"] == 1
+    assert payload["fully_verified"] is False
+    assert "carry no hash" in result.stderr, (
+        f"the scripted path said nothing about what it could not check; stderr={result.stderr!r}"
+    )

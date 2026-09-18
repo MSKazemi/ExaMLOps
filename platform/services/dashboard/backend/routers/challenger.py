@@ -19,7 +19,14 @@ the CLI already writes.
 from __future__ import annotations
 
 from auth import require_role
-from capabilities import MODEL_PROMOTE, TRAFFIC_MANAGE, can, deny_reason
+from capabilities import (
+    MODEL_PROMOTE,
+    TRAFFIC_MANAGE,
+    can,
+    deny_reason,
+    require_capability,
+    scope_to_tenant,
+)
 from fastapi import APIRouter, Depends, HTTPException, status
 
 router = APIRouter(prefix="/challenger", tags=["challenger"])
@@ -51,12 +58,17 @@ def _cc():
 
 
 @router.get("")
-async def list_challengers(_=Depends(_viewer)) -> list[dict]:
-    """Every configured challenger. Empty list when none exist or the store is unreadable."""
+async def list_challengers(principal: dict = Depends(_viewer)) -> list[dict]:
+    """Configured challengers for the caller's tenant. Empty when none exist or unreadable.
+
+    `list_challenger_configs()` takes `tenant=None` to mean *every* tenant, and this asked for
+    exactly that. A helper whose default is "no filter" reads like a helper with a safe
+    default, which is why this kind of call slips past a guard that only scans raw SQL.
+    """
     try:
         from examlops.data.serving import list_challenger_configs  # type: ignore
 
-        return list(list_challenger_configs())
+        return scope_to_tenant(principal, list(list_challenger_configs()))
     except Exception:
         return []
 
@@ -76,7 +88,18 @@ async def challenger_status(model: str, _=Depends(_viewer)) -> dict:
 
 
 @router.post("/{model}/promote")
-async def promote(model: str, principal=Depends(_admin)) -> dict:
+async def promote(
+    model: str,
+    principal=Depends(_admin),
+    # `model.promote` is a **step-up** capability (RFC 9470) and, for a federated user, one the
+    # centre's own PDP may veto. Both live in `iam_gate.enforce`, which only `require_capability`
+    # calls — so checking the capability with a bare `can()` reused the *name* of the gate without
+    # the gate. With step-up opted in, `/api/models/…/promote` demanded re-authentication while
+    # this door, to the same authority, did not. Kept alongside the admin dependency rather than
+    # replacing it: `require_capability` admits operators too, and widening who may promote is not
+    # this fix's business.
+    _gate: dict = Depends(require_capability(MODEL_PROMOTE)),
+) -> dict:
     """Propose promotion of the challenger (C3-gated, audited).
 
     Returns ``proposed: false`` with the current status when the policy is not met — the operator

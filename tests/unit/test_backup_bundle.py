@@ -143,3 +143,152 @@ def test_list_bundles_newest_first(platform_db, tmp_path):
     rows = backup.list_bundles(str(tmp_path / "bk"))
     assert rows and rows[0]["bundle_id"] == b1.bundle_id
     assert rows[0]["overall_status"] == b1.overall_status
+
+
+# ── a partial restore must not present as a restore ───────────────────────────
+
+
+def _bundle_with_an_extra_tier(bundle_dir: str, tier: str = "objects") -> None:
+    """Add a tier to the bundle's manifest, as a `--with-objects` bundle would carry.
+
+    The tier carries no items, so `verify_bundle` — which checks each item's checksum — still
+    passes. The point of the test is a **verified** bundle whose heavy tier the default leaves
+    behind, not a broken one.
+    """
+    import json
+
+    from examlops.backup.bundle import _MANIFEST_NAME
+
+    path = Path(bundle_dir) / _MANIFEST_NAME
+    manifest = json.loads(path.read_text())
+    manifest["tiers"][tier] = {
+        "status": "ok",
+        # One captured item: a tier with none holds nothing to restore, which is
+        # exactly what `postgres`/`objects` look like when the stack was down.
+        "items": [{"name": "models", "status": "ok", "bucket": "models"}],
+    }
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+
+
+@sqlite_tier_only
+def test_a_restore_reports_the_tiers_it_did_not_restore(platform_db, tmp_path):
+    """The default restores sqlite + config. A bundle holding more must say so.
+
+    After a disaster the operator reads one line. `Restored tiers ['sqlite','config']` with a green
+    tick, from a bundle that also held `objects` — the models and MLflow artifacts — reads as "the
+    platform is back". The prompt names the tiers, but a scripted recovery passes `--yes` and never
+    sees it. This module already argues the same point for failed items: "a restore that failed and
+    reported success is worse than one that raised".
+    """
+    from examlops import backup
+
+    res = backup.create_bundle(str(tmp_path / "bk"))
+    _bundle_with_an_extra_tier(res.bundle_dir, "objects")
+
+    out = backup.restore_bundle(res.bundle_dir, force=True)
+    assert "objects" not in out["restored_tiers"], "the default must not restore heavy tiers"
+    assert out.get("available_tiers"), "the result does not say what the bundle held"
+    assert "objects" in out["available_tiers"]
+    assert out.get("skipped_tiers") == ["objects"], (
+        f"the restore did not report what it left behind: {out.get('skipped_tiers')!r}"
+    )
+
+
+@sqlite_tier_only
+def test_a_full_restore_reports_nothing_skipped(platform_db, tmp_path):
+    """Anti-vacuity: the field must reflect the restore, not always be populated."""
+    from examlops import backup
+
+    res = backup.create_bundle(str(tmp_path / "bk"))
+    # A plain bundle taken with no stack up: `postgres`/`objects` are in the manifest with zero
+    # captured items, so the default restore leaves *nothing* behind and must say nothing.
+    out = backup.restore_bundle(res.bundle_dir, force=True)
+    assert out["skipped_tiers"] == [], (
+        "a tier the bundle captured nothing for was reported as left behind; a warning that fires "
+        f"on every restore is one nobody reads: {out['skipped_tiers']}"
+    )
+
+
+@sqlite_tier_only
+def test_the_operator_is_told_which_tiers_were_left_behind(platform_db, tmp_path):
+    """Executed through the CLI: the library knowing is not the operator being told."""
+    from typer.testing import CliRunner
+
+    from examlops import backup
+    from examlops.cli.main import app
+
+    res = backup.create_bundle(str(tmp_path / "bk"))
+    _bundle_with_an_extra_tier(res.bundle_dir, "objects")
+
+    result = CliRunner().invoke(
+        app, ["backup", "restore-bundle", res.bundle_dir, "--force", "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "objects" in result.output, (
+        "the operator was shown a green restore with no mention of the tier still missing:\n"
+        f"{result.output}"
+    )
+
+
+@sqlite_tier_only
+def test_the_result_says_whether_the_restore_was_complete(platform_db, tmp_path):
+    """`ok` and `complete` answer different questions, and a DR script needs the second.
+
+    `ok` means "everything I was asked to restore came back" — true for a deliberate
+    `--tier sqlite` restore, and it must stay true or every partial restore would look like a
+    failure. `complete` means "everything the bundle held came back", which is the question a
+    disaster-recovery script is actually asking.
+    """
+    from examlops import backup
+
+    res = backup.create_bundle(str(tmp_path / "bk"))
+    _bundle_with_an_extra_tier(res.bundle_dir, "objects")
+
+    partial = backup.restore_bundle(res.bundle_dir, force=True)
+    assert partial["ok"] is True, "the tiers it was asked for did come back"
+    assert partial["complete"] is False, (
+        "a restore that left a captured tier behind reported itself as complete"
+    )
+
+
+@sqlite_tier_only
+def test_a_restore_that_left_nothing_behind_is_complete(platform_db, tmp_path):
+    """Anti-vacuity: `complete` must be able to be true."""
+    from examlops import backup
+
+    res = backup.create_bundle(str(tmp_path / "bk"))
+    out = backup.restore_bundle(res.bundle_dir, force=True)
+    assert out["skipped_tiers"] == []
+    assert out["complete"] is True
+
+
+@sqlite_tier_only
+def test_a_scripted_restore_is_not_told_it_succeeded_fully(platform_db, tmp_path):
+    """The `--json` path is what the DR runbook prescribes, and it returned exit 0 in silence.
+
+    The warning is written to **stderr**, so stdout still carries exactly one JSON document — the
+    structured-output contract — while a human watching a scripted recovery still sees it.
+    """
+    import json
+
+    from typer.testing import CliRunner
+
+    from examlops import backup
+    from examlops.cli.main import app
+
+    res = backup.create_bundle(str(tmp_path / "bk"))
+    _bundle_with_an_extra_tier(res.bundle_dir, "objects")
+
+    result = CliRunner().invoke(
+        app, ["--json", "backup", "restore-bundle", res.bundle_dir, "--force", "--yes"]
+    )
+    payload = json.loads(result.stdout)
+    assert payload["skipped_tiers"] == ["objects"]
+    assert payload["complete"] is False, "the machine-readable answer still claimed a full restore"
+    # stdout is still exactly one document — the warning must not have been printed there.
+    assert result.stdout.strip().startswith("{") and result.stdout.strip().endswith("}")
+    # …and it must have been printed *somewhere*: a human watching a scripted recovery is the
+    # second reader of this command, and silence for them was the original defect.
+    assert "NOT restored" in result.stderr, (
+        f"the scripted path emitted no warning at all; stderr was {result.stderr!r}"
+    )

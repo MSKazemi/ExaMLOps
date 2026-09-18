@@ -19,10 +19,19 @@ to tune for a slow/unreliable environment.
 | `EXAMLOPS_DB_BUSY_TIMEOUT_MS` | `5000` | SQLite `busy_timeout` (ms) — how long a writer waits for a lock before `database is locked` |
 | `RAY_MLFLOW_TIMEOUT` | `10` | Per-call MLflow REST timeout (s) in Ray Serve (`MLFLOW_HTTP_REQUEST_TIMEOUT`) |
 | `RAY_MLFLOW_MAX_RETRIES` | `3` | MLflow REST retry count in Ray Serve |
-| `RAY_PREDICT_TIMEOUT` | `30` | Hard ceiling (s) on a single `model.predict()`; exceeding it returns HTTP 504 |
+| `RAY_PREDICT_TIMEOUT` | `30` | Hard ceiling (s) on a single `model.predict()`; exceeding it returns HTTP 504. A caller's shorter `X-ExaMLOps-Budget-Ms` lowers it for that request |
 | `RAY_PREDICT_WORKERS` | `4` | Thread-pool size backing the predict timeout |
 | `RAY_MAX_ONGOING_REQUESTS` | `100` | Max concurrent requests per Ray Serve replica |
-| `INFERENCE_ROUTE_RETRIES` | `2` | Transient-error retries on the inference-pipeline → MultiModelServer hop |
+| `EXAMLOPS_GATEWAY_TENANT_RPM` | `600` | [Serving gateway](../guides/serving-gateway.md): requests per tenant per minute, counted across every gateway replica through the shared coordinator. Over it: `429` with `Retry-After`. `0` turns the quota off. |
+| `EXAMLOPS_GATEWAY_SCOPE_CACHE_SECONDS` | `30` | With `EXAMLOPS_MULTITENANCY` on, how long the serving gateway caches which project a model belongs to. With nothing cached and the platform store unreachable, a request is refused (`503`), never opened. |
+| `EXAMLOPS_GATEWAY_KEY_CACHE_SECONDS` | `60` | How long the serving gateway keeps accepting a virtual key it verified, while the platform datastore is unreachable. A key it has not verified is refused (`503`). |
+| `RAY_MAX_QUEUED_REQUESTS` | `-1` | Load shedding for the model server: once this many requests wait at a caller (the HTTP proxy or a handle), the next is answered 503 at once. `-1` = unbounded (Ray's default) — size it per site, see [Ray Serve → Overload](../components/ray-serve.md#overload-deadlines-and-load-shedding) |
+| `INFERENCE_MAX_QUEUED_REQUESTS` | `-1` | The same bound for the inference-pipeline ingress (`/infer-pipeline/infer`); a shed request gets 503 with `Retry-After: 1` |
+| `INFERENCE_ROUTE_RETRIES` | `2` | Ceiling on retries of the inference-pipeline → MultiModelServer hop (transport errors, 503, and one retry of a request whose replica died under it); each retry must also fit the request's deadline and the retry budget |
+| `INFERENCE_PIPELINE_REPLICAS` | `2` | Replicas of each inference-pipeline stage (ingress, feature transformer, router). They hold no state, so more replicas are only redundancy |
+| `INFERENCE_DEADLINE_SECONDS` | `30` | Time budget given to an inference request that arrives without an `X-ExaMLOps-Budget-Ms` header; every hop spends from it and the request is answered 504 when it runs out |
+| `INFERENCE_DEADLINE_MAX_SECONDS` | `300` | Ceiling on the budget a caller may ask for with `X-ExaMLOps-Budget-Ms` |
+| `INFERENCE_RETRY_MAX_TOKENS` / `INFERENCE_RETRY_TOKEN_RATIO` | `100` / `0.1` | Retry budget of the inference router (gRPC `retryThrottling`): a failed attempt costs one token, a success earns the ratio back, and retries are allowed only above half. A burst of about 50 failures (a replica dying with its requests) is retried; a sustained outage earns about one retry per ten successes, so it is not multiplied by retries. Was 10, which failed requests whenever more than five were on a dying replica |
 | `EXAMLOPS_SLURM_CMD_TIMEOUT` | `30` | Timeout (s) on each `sbatch`/`squeue`/`sacct` call |
 | `EXAMLOPS_SLURM_MAX_WAIT_S` | `86400` | Ceiling (s) on `wait_until_complete` before `JobTimeoutError` |
 | `EXAMLOPS_SLURM_MAX_UNKNOWN_POLLS` | `5` | Consecutive UNKNOWN/absent polls tolerated before a job is declared lost |
@@ -34,7 +43,8 @@ to tune for a slow/unreliable environment.
 | `AGENT_DB` | `./agent_memory.db` | Skipper checkpointer SQLite path (resolved to absolute; WAL + busy_timeout applied) |
 
 Docker Compose memory ceilings (OOM isolation) are also env-overridable:
-`RAY_MEM_LIMIT` (`6g`), `RAY_CPUS` (`2.0`), `MLFLOW_MEM_LIMIT` (`2g`),
+`RAY_MEM_LIMIT` (`6g`), `RAY_CPUS` (`2.0`), `MLFLOW_MEM_LIMIT` (`4g`; MLflow 3.16 holds about
+0.85 GiB per server worker, and `MLFLOW_WORKERS`, default `2`, sets how many),
 `ORCHESTRATOR_MEM_LIMIT` (`2g`), `POSTGRES_MEM_LIMIT` (`1g`),
 `CONTROL_PLANE_MEM_LIMIT` (`512m`), `DASHBOARD_MEM_LIMIT` (`1g`),
 `JUPYTERHUB_MEM_LIMIT` (`2g`), `BRIDGE_MEM_LIMIT` (`1g`), `DATAPLANE_MEM_LIMIT` (`2g`), and for the `lineage` profile `MARQUEZ_MEM_LIMIT` (`1g`), `MARQUEZ_WEB_MEM_LIMIT` (`256m`), `MARQUEZ_DB_MEM_LIMIT` (`512m`).
@@ -55,15 +65,23 @@ the usual cause of "it works from the CLI but not in the dashboard".
 | `EXAMLOPS_POSTGRES_SCHEMA` | `public` | Scopes an instance to one schema — how the test suite isolates, and how two instances share one server. |
 | `EXAMLOPS_POSTGRES_POOL` | `1` (on) | Per-`(dsn, schema)` connection pooling. `0` opts out. |
 | `EXAMLOPS_POSTGRES_CONNECT_TIMEOUT` | `2.0` | Seconds to wait for the datastore before declaring it unreachable. Bounds one probe per process, before the pool is built, so a downed datastore costs a moment rather than the driver's 30 s default on every command. Unix-socket and multi-host DSNs skip the probe. |
-| `EXAMLOPS_POSTGRES_UNREACHABLE_TTL` | `5.0` | How long an "unreachable" verdict is cached, so one command probes once. It expires, so a long-lived process recovers when the server returns. |
+| `EXAMLOPS_POSTGRES_UNREACHABLE_TTL` | `5.0` | How long an "unreachable" verdict is cached, so one command probes once, and every call during an outage fails in microseconds. It expires, so a long-lived process recovers when the server returns. |
+| `EXAMLOPS_POSTGRES_POOL_TIMEOUT` | `2.0` | Seconds a call waits for a free pooled connection before failing (the driver's own default is 30). Short enough to fit inside a readiness probe: with the store gone, a 30 s wait held every worker and the service answered nothing. Raise it only if a legitimately busy pool starts failing. |
+| `EXAMLOPS_POSTGRES_TCP_TIMEOUT_MS` | `10000` | `tcp_user_timeout` (milliseconds) on every connection: how long a query may wait for an unacknowledged packet before the kernel gives up. This is what bounds a query whose server vanished without a reset — a killed container, a severed route — where retransmission would otherwise take minutes. A DSN naming `tcp_user_timeout` keeps its own value. |
 | `EXAMLOPS_COORDINATOR` | `db` | Cross-process coordination backend: `db` (via the datastore) or `redis` (cross-host HA). |
-| `EXAMLOPS_EVENT_PUBLISHER` | `log` | Event publisher: `log` (dependency-free) or `redis` (Redis Streams). `nats` and `kafka` are reserved fail-loud placeholders, not operational backends. Drain the outbox with `exa events relay`. |
-| `EXAMLOPS_NATS_URL` | unset | Reserved NATS endpoint. Selecting the NATS publisher fails loudly until its transport is implemented. |
+| `EXAMLOPS_EVENT_PUBLISHER` | `log` | Event publisher: `log` (dependency-free, dev/tests), `nats` (NATS JetStream — the backbone, ADR 0124; needs `examlops[events]` and `EXAMLOPS_NATS_URL`) or `redis` (Redis Streams). `kafka` is a fail-loud placeholder. Every event is published as a CloudEvents 1.0 envelope. Drain the outbox with `exa events relay` (the control plane relays its own). |
+| `EXAMLOPS_NATS_URL` | unset | NATS server(s), e.g. `nats://nats:4222` (comma-separated for a cluster). Required by the `nats` publisher, event consumers and `exa events tail`. |
+| `EXAMLOPS_NATS_STREAM` | `EXAMLOPS_EVENTS` | JetStream stream holding platform events and dead letters; created on first use. |
+| `EXAMLOPS_NATS_SUBJECT_PREFIX` | `examlops.events` | Subject prefix: topic `retrain.scheduled` publishes to `examlops.events.retrain.scheduled`. Dead letters use `examlops.dlq.<consumer>`. |
+| `EXAMLOPS_NATS_MAX_AGE_SECONDS` | `604800` (7 days) | Stream retention; a consumer down longer than this misses events. |
+| `EXAMLOPS_NATS_DUPLICATE_WINDOW` | `120` | Seconds JetStream remembers `Nats-Msg-Id` (the outbox id), so a relay retry inside the window is one message, not two. |
+| `EXAMLOPS_NATS_REPLICAS` | `1` | Stream replicas; `3` on a clustered deployment. |
+| `EXAMLOPS_NATS_TIMEOUT` | `5` | Seconds per NATS operation before the call fails (the outbox keeps the event). |
 | `EXAMLOPS_KAFKA_BROKERS` | unset | Reserved comma-separated Kafka brokers. Selecting the Kafka publisher fails loudly until its transport is implemented. |
 | `EXAMLOPS_REDIS_PREFIX` | `examlops:coord` | Namespace prefix for Redis coordination keys; use a distinct value per installation sharing a Redis database. |
 | `EXAMLOPS_REDIS_EVENT_STREAM` | `examlops.events` | Redis Stream name used by the implemented event publisher. |
 | `EXAMLOPS_REDIS_EVENT_MAXLEN` | `100000` | Approximate maximum Redis Stream length; must be a positive integer. |
-| `EXAMLOPS_EVENT_MAX_ATTEMPTS` | `5` | Maximum automatic outbox publication attempts. Exhausted rows remain as poison evidence for operator inspection. |
+| `EXAMLOPS_EVENT_MAX_ATTEMPTS` | `5` | Maximum automatic outbox publication attempts, spent only by an event a broker actually refused — an unreachable broker defers the batch and charges nothing. Exhausted rows remain as poison evidence for operator inspection. |
 | `EXAMLOPS_CONFIG` | `~/.config/examlops/config.toml` | Overrides the CLI config path so containers and CI can pin a config and tests run hermetically. |
 | `EXAMLOPS_PROJECT` | active CLI context or `default` | Explicit project/tenant context for CLI commands and trusted server-side agent scoping. Request callers cannot override an authenticated agent tenant with payload data. |
 | `EXAMLOPS_USECASE_DIR` | `usecases/seanergy` | Selects the use-case pack (ADR 0094). The platform core names no concrete model or dataset; this is how it reaches content. |
@@ -79,6 +97,7 @@ the usual cause of "it works from the CLI but not in the dashboard".
 | `EXAMLOPS_ACTOR` | `$USER` | Actor stamped into every audit event. Set it in CI and in scripts, or the log records whichever account the runner happens to use. |
 | `EXAMLOPS_PRINCIPAL_KIND` | `human` | Set to `agent` by an agent runtime for the `exa` processes it drives. An agent is never auto-confirmed: with `-o json` or `--yes` a command that asks for confirmation is refused with `plan_required` instead of proceeding. Any other value (or unset) means a human, whose scripts behave as before. |
 | `EXAMLOPS_AUDIT_WORM_PATH` | unset | External append-only WORM anchor for audit checkpoints — a local file in dev, an S3 Object-Lock path or Rekor log in production. Verify with `exa audit verify-worm`. |
+| `EXAMLOPS_AUDIT_STREAM` | unset (off) | `1` publishes every audit event on the event backbone as `audit.recorded`, in the same transaction as the audit row, with the fields the hash chain covers so a SIEM can verify it (`examlops.data.audit.verify_audit_stream`). Set it on every process that writes audit events. |
 | `EXAMLOPS_OIDC_ISSUER` | unset | OIDC issuer for RS256 access-token validation. Unset ⇒ SSO off (single-tenant). See also `EXAMLOPS_OIDC_AUDIENCE` / `_JWKS` / `_TENANT_CLAIM` / `_SUBJECT_CLAIM`. |
 | `CONTROL_PLANE_ALLOWED_HOSTS` | `*` | Comma-separated allow-list for the control plane's Host header. `*` is a development default. |
 | `EXAMLOPS_SSH_AUTO_ADD_HOST_KEYS` | unset (off) | `1` opts into adding unknown SSH host keys. Off means `RejectPolicy` — an unknown host fails rather than being trusted. Governs the HPC SSH transport and the dataplane's `sftp://` sources alike (see `EXAMLOPS_DATAPLANE_SSH_KNOWN_HOSTS`). |
@@ -135,11 +154,10 @@ already runs. Guide: [Identity federation](../guides/identity-federation.md).
 | `EXAMLOPS_IAM_ACCOUNT_CACHE_TTL` | `10` | Seconds a federated account's status (active / deactivated / deprovisioned, ADR 0132) is cached per process. A deactivation over SCIM or `exa auth deactivate` takes effect at once in the process that received it and within this many seconds everywhere else. |
 | `EXAMLOPS_AUTH_ISSUER` | unset | CLI: the IdP `exa auth login` uses when no `--provider`/`--issuer` is given (config key `auth_issuer`, per context). |
 | `EXAMLOPS_AUTH_CLIENT_ID` | unset (`exa-cli`) | CLI: the public OAuth client id registered for `exa` at that IdP (config key `auth_client_id`). |
+| `DASHBOARD_BACKBONE` | `auto` | With `EXAMLOPS_EVENT_PUBLISHER=nats` (and `EXAMLOPS_NATS_URL` set), each dashboard replica relays the platform's events from NATS onto its live stream (`GET /api/v1/stream`). `off` keeps the stream to this process's own events. |
 | `DASHBOARD_LOCAL_LOGIN` | `true` | `false` ⇒ the shared viewer/admin passwords stop working and organisation SSO is the only way into the dashboard. |
 | `DASHBOARD_SESSION_COOKIE_SECURE` | `true` | SSO session cookie is `Secure` + `__Host-` prefixed. Browsers accept that over HTTPS and `http://localhost` only; set `false` for a deployment reached over plain `http://<host>`. |
 | `DASHBOARD_SSO_SESSION_HOURS` | `8` | Lifetime of a dashboard session created by SSO. |
-
----
 
 ---
 
@@ -186,7 +204,6 @@ Defaults are in the module header of `platform/services/control_plane/app.py`.
 |---|---|---|
 | `RETRAIN_RATE_LIMIT_PER_MIN` | `20` | Token-bucket capacity for `POST /retrain`; the refill rate is this per minute. Exceeding it returns 429 with a retry hint. |
 | `APPROVAL_EXPIRY_HOURS` | `72` | Pending approvals older than this are swept to `expired`. `0` disables the sweep, leaving stale entries pending indefinitely. |
-| `IDEMPOTENCY_TTL_SECONDS` | `300` | How long a response is replayed for a repeated idempotency key. |
 | `NOTIFICATION_WEBHOOK_URL` | unset | Webhook the CI notifier posts model changes to. Unset ⇒ the notification is skipped, not failed. Set it as a **masked** CI variable. |
 | `RETRAIN_DATASET` | `FDataDataset` | Dataset the CI retrain-on-merge job passes. |
 | `RETRAIN_DUMMY` | `false` | `true` makes that job run a dummy (no real training). |
@@ -233,7 +250,6 @@ server process — you name the weights with `--hf-model`, not by exporting them
 | `EXAMLOPS_VLLM_HOST_PORT` | `18011` | Port published on the host by the Compose launcher. |
 | `EXAMLOPS_VLLM_API_KEY` | empty | Bearer token the server requires, if any. |
 | `EXAMLOPS_VLLM_IMAGE` | `docker://vllm/vllm-openai:latest` | Image for the container/Apptainer launcher. |
-| `EXAMLOPS_VLLM_LAUNCHER` | auto | Force a launcher (`compose` / `hpc`) instead of detecting one. |
 | `EXAMLOPS_VLLM_WORK_DIR` | unset | Scratch directory for launcher state — read per call, so it can be changed without reloading the module. |
 | `EXAMLOPS_VLLM_MODULES` | unset | `module load` lines to emit into the HPC launch script. |
 | `EXAMLOPS_VLLM_RAY_PORT` | `6379` | Ray head port for multi-node tensor parallelism. |
@@ -252,6 +268,7 @@ Variables read by the `exa` CLI's next-gen surface (MCP/A2A, `exa ask`, config c
 | `EXAMLOPS_MCP_ALLOW_WRITES` | unset (read-only) | When truthy (`1`/`true`/`yes`/`on`), `exa mcp serve` registers mutating tools (e.g. `trigger_retrain`). Equivalent to `exa mcp serve --allow-writes`. |
 | `AGENT_URL` | `http://localhost:18004` | Skipper agent OpenAI-compatible bridge that `exa ask` calls. Also settable via `exa config set agent <url>`. |
 | `AGENT_API_KEY` | unset | Bearer token sent by `exa ask` when the agent bridge is token-gated. |
+| `AGENT_ALLOW_UNAUTHENTICATED` | unset | Development opt-out only. An agent bound beyond loopback (`AGENT_SERVER_HOST` other than `127.0.0.1`/`localhost`/`::1`, as in compose) with no `AGENT_API_KEY`/`AGENT_API_KEYS_JSON` refuses every request with 503; set this truthy to serve it as the anonymous `local` principal anyway. |
 | `EXAMLOPS_UID` / `EXAMLOPS_GID` | `1000` / `1000` | Dev compose only: the user and group the agent, control-plane and dashboard images are built to run as, so it can write the host-owned `/state` mount (`platform.db`). Set them to your host `id -u` / `id -g` if those are not 1000. Image builds without these (Helm, CI) run as `10001`. |
 | `EXAMLOPS_CONTEXT` | unset | Selects a named config context for the invocation (same effect as `exa -c <name>` / `exa config use <name>`, without persisting). Resolution order: env var → active context → config file → default. |
 
@@ -309,6 +326,7 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_DATAPLANE_DRIFT_DATASET` | unset | ADR 0131 stream drift — the dataset a drift retrain uses for a model with no `drift_auto_retrain` row. Unset ⇒ such a trip is suppressed (`retrain_suppressed`, reason `no_config`). A use-case name, so it is set by the deployment, never hard-coded (ADR 0094). |
 | `EXAMLOPS_DATAPLANE_DRIFT_BACKEND` | `dataplane` | ADR 0131 stream drift — the dataset backend passed to the retrain trigger. |
 | `EXAMLOPS_DATAPLANE_LEGACY_SEANERBUS_UUID` | unset (off) | ADR 0131 stream catalog — truthy (`1`/`true`/`yes`/`on`) makes the pack sync also derive one legacy `seanerbus` stream per model from the model YAML's `seanerbus_uuid` key (`examlops.dataplane.streams.bindings`). Off by default: only `inference.streams` entries become streams. For the SeanerBUS cutover window. |
+| `EXAMLOPS_DATAPLANE_LAG_REFRESH_SECONDS` | `10` | ADR 0131 stream consumer lag — how often a Kafka stream's poll loop asks the broker for a **real** high watermark per assigned partition, instead of librdkafka's cached one. The cache is refreshed only by fetch responses, so a partition that is paused (by an operator, or parked in a retry backoff) freezes it and `dataplane_stream_consumer_lag` reads 0 exactly while a backlog builds. Between refreshes the cached value still serves, and the two are combined with `max`. Lower it for a tighter lag signal at the cost of one metadata request per partition per interval; a negative or unparseable value keeps the default. However low you set it, one refresh pass is bounded to ~2 s of real time and resumes at the next partition on its following turn, so a slow or unreachable broker can never keep the consumer out of `poll()` (its group heartbeat) for one timeout per partition. That bound is a fixed constant on purpose — it protects group membership, which is correctness, not a metrics setting. |
 | `EXAMLOPS_DATAPLANE_DLQ_RETENTION_DAYS` | `7` | ADR 0131 stream dead letters (`examlops.dataplane.streams.dlq.prune`) — days a row of `dataplane_stream_dead_letters` is kept. The dataplane service's pull scheduler deletes older rows at most once an hour and writes one `dataplane_stream_dlq_pruned` audit event per run that deleted any. A non-integer or a value below 1 falls back to the default (with a warning). A stored payload exists only on a stream whose `options.dlq_store_payload` is true, is at most 256 KiB and is redacted (secrets and personal data) before it is written. |
 | `EXAMLOPS_DATA_CONTRACT_GATE` | `enforce` | **A5** training-gate mode (ADR 0005 clause 2): `enforce` fails the run closed on an error-severity contract violation, `warn` records it and continues, `off` skips. An unrecognised value falls back to `enforce` — a typo must not quietly disable a gate that fails closed by design. Dummy runs and datasets with no contract are skipped with a recorded reason. |
 | `EXAMLOPS_CONTRACT_ENGINE` | `auto` | **A5** data-contract engine (ADR 0005 clause 1): `auto` validates with Pandera when it is importable — a row-level failure then names the rows that failed — and with the pandas-only engine otherwise; `python` forces the pandas-only engine. The two reach the same verdict on every check (`tests/unit/test_data_contract_engines.py`), so there is deliberately no value that requires Pandera. An unrecognised value warns and means `auto`. Every verdict records its engine (`exa data validate` output, `--json` `engine`, `data_quality_checks.engine`). |
@@ -316,7 +334,6 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_ASSET_PREFECT_RETRIES` | `0` | **A4** Prefect task retries for a failed asset production function under `--orchestrator prefect` (ADR 0036). Opt-in: a build that failed halfway is not known to be safe to repeat. |
 | `EXAMLOPS_ASSET_PREFECT_RETRY_DELAY` | `10` | **A4** seconds between those retries. |
 | `EXAMLOPS_JOB_SCRIPT_DIR` | `$XDG_CACHE_HOME/examlops/jobs` | Where generated scheduler job scripts are kept (mode 0700): asset builds (`exa assets materialize --orchestrator scheduler`, ADR 0036) and reindex jobs (`exa embedding reindex --scheduler`, ADR 0043). They are the record of what each job ran. Never the adapter's working directory, which for the mock is inside the repository. The job's interpreter, repo and work dir come from `EXAMLOPS_HPC_REMOTE_PYTHON` / `_REPO` / `_WORKDIR`; with none set it uses the submitting interpreter. |
-| `EXAMLOPS_HPC_WORKDIR` | unset | Where a scheduler adapter keeps its own job files — per-job folders, generated scripts and fetched logs — as `<it>/<mock\|slurm\|flux>`. On a cluster point it at a path the compute nodes can see, because Slurm writes `--output` there; CI and tests point it at a temporary directory. Unset, the **mock** uses the cache directory (`$XDG_CACHE_HOME/examlops/mock_hpc_jobs`) and a real `slurm`/`flux` adapter keeps its historical relative default (`slurm_jobs` / `flux_jobs`), i.e. the submit directory, which stays the operator's choice. |
 | `EXAMLOPS_ASSET_JOB_DIR` | unset | **Deprecated** alias of `EXAMLOPS_JOB_SCRIPT_DIR` (its v0.53.0 name, when asset builds were the only scheduler jobs). Still honoured; `EXAMLOPS_JOB_SCRIPT_DIR` wins when both are set. |
 | `EXAMLOPS_ENCODER_REGISTRY` | `local` | **A6** where encoders are recorded (ADR 0043 clause 1). `local` keeps them in `platform.db`. `mlflow` makes the MLflow encoder registry the record: one run per encoder with an `encoder.json` card artifact, published before `platform.db` indexes it. An unknown value is an error. Publish existing encoders with `exa embedding migrate`. |
 | `EXAMLOPS_ENCODER_EXPERIMENT` | `examlops-encoders` | **A6** the MLflow experiment that holds the encoder registry. |
@@ -336,7 +353,11 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `RAY_SHADOW_MAX_INFLIGHT` | `16` | Cap on concurrent shadow requests. Excess is **dropped and counted** (`examlops_shadow_total{status="dropped"}`), never queued: an unbounded queue would turn a slow shadow into unbounded memory growth on a serving replica. |
 | `RAY_SHADOW_CONFIG_TTL` | `30` | Seconds the `shadow_config` lookup is cached. It is consulted per request, so a SQLite read per prediction would put the shadow's cost on the production path. |
 | `EXAMLOPS_GUARDRAIL_MODE` | `monitor` | **D8** guardrails at the **gateway** boundary (ADR 0026 clause 3) — every `GatewayClient.chat` is scanned on the way in and on the way out. `monitor` (default) records findings to `guardrail_events` and changes nothing a caller can observe; `enforce` blocks injection/toxicity and redacts PII and secrets, failing closed on a scanner error; `off` skips the scan at no cost. An unrecognised value falls back to `monitor` rather than off, so a typo cannot silently disable the boundary. |
-| `EXAMLOPS_SIGNING_KEY` | unset | **D3** supply-chain — HMAC model-signing key; else read from D7 secret `model-signing/key`. |
+| `EXAMLOPS_SIGNING_KEY` | unset | **D3** supply-chain — the **legacy** HMAC model-signing key (else D7 secret `model-signing/key`). Used to sign only when no Ed25519 key is configured, and to verify versions signed that way. Every verifier holding it could also forge, so prefer Ed25519. |
+| `EXAMLOPS_SIGNING_PRIVATE_KEY_FILE` | unset | Ed25519 private key (PEM, `openssl genpkey -algorithm ed25519 -out signing.pem`) used by `exa models sign` and by the training pipeline at registration; else the D7 secret `model-signing/ed25519-private`. Only the signer holds it: never set it on Ray Serve. |
+| `EXAMLOPS_SIGNING_PUBLIC_KEYS` | unset | The serving plane's trust bundle: comma-separated base64 raw Ed25519 public keys (`exa models sign` prints the signer's). A signature verifies only under one of these. Keep a retiring key listed until everything it signed is re-signed. |
+| `EXAMLOPS_SIGNING_PUBLIC_KEYS_FILE` | unset | The same trust bundle as a file of one or more PEM public keys (`openssl pkey -in signing.pem -pubout`). Both sources are read. |
+| `EXAMLOPS_SIGN_AT_REGISTRATION` | `auto` | Whether the training pipeline signs each version it registers: `auto` signs when a signing key is configured, `required` fails the run when it cannot sign (so an unsigned version never reaches a serving plane that enforces), `off` never signs. |
 | `EXAMLOPS_SERVING_BACKEND` | `ray-compose` | **E1** serving backend — `ray-compose` (default) or `kserve-k8s`. |
 | `EXAMLOPS_VECTOR_BACKEND` | `sqlite` | **B5** vector store — `sqlite` (persistent fallback) or `pgvector`. |
 | `EXAMLOPS_PGVECTOR_DSN` | unset | **B5** Postgres+pgvector DSN (required for the `pgvector` backend). |
@@ -382,6 +403,7 @@ The scheduler backend and its transport are independent. `EXAMLOPS_SLURM_MODE` a
 | `EXAMLOPS_HPC_SSH_PORT` | `22` | SSH port |
 | `EXAMLOPS_HPC_REMOTE_REPO` | repo root | Path to the deployed ExaMLOps repo on the cluster |
 | `EXAMLOPS_HPC_REMOTE_PYTHON` | `<remote_repo>/.venv/bin/python` | Remote interpreter that runs the training script |
+| `EXAMLOPS_HPC_WORKDIR` | see the note | Where an adapter keeps its **own** job files (logs, per-job folders), as `<it>/<kind>`. Set it on a filesystem the compute nodes can see; CI wants a temporary directory. Unset, the **mock** scheduler uses the cache directory — its historical default was a folder inside the installed package, so a mock run wrote generated scripts and pickles holding absolute local paths into the checkout. A real **slurm**/**flux** adapter keeps its relative default (`slurm_jobs` / `flux_jobs`): those paths reach `sbatch --output` and must resolve on the cluster, so the submit directory is the operator's to choose. Distinct from `EXAMLOPS_JOB_SCRIPT_DIR`, which holds the generated *scripts*. |
 | `EXAMLOPS_HPC_REMOTE_WORKDIR` | adapter working dir | Root for per-job dirs on the cluster |
 | `EXAMLOPS_HPC_GPUS` | unset | GPUs per job (`0`/unset ⇒ no GPU flag; lxp Flux has 0 enrolled) |
 | `EXAMLOPS_HPC_ACCOUNT` | unset | Account/bank (`--account` for Slurm, `--bank` for flux-accounting) |
@@ -396,11 +418,19 @@ The scheduler backend and its transport are independent. `EXAMLOPS_SLURM_MODE` a
 | `EXAMLOPS_HPC_REGISTRY` | `~/.config/examlops/clusters.yaml` | HPC Fleet cluster-definition registry file (Phase 36) |
 | `EXAMLOPS_HPC_CLUSTER` | unset | Default fleet cluster for commands taking `--cluster` (Phase 36) |
 | `MLFLOW_TRACKING_URI` | `http://localhost:15000` | MLflow server endpoint for logging and model loading |
+| `MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD` | unset | The credential every MLflow client sends when the server requires authentication (plan P3.6): MLflow's own SDK reads them, and the platform's raw-HTTP callers (control plane, dashboard, agent, CLI) send the same Basic header through `examlops.service_auth`. Put them in `.env`; every service that loads it picks them up. |
+| `MLFLOW_TRACKING_TOKEN` | unset | Alternative to the pair above: a bearer token (for an MLflow behind a token-checking proxy). Takes precedence. |
+| `MLFLOW_AUTH` | unset | `basic` starts MLflow with its basic-auth app (Compose). Needs `MLFLOW_ADMIN_PASSWORD`; the server refuses to start without one rather than falling back to MLflow's public default `admin`/`password1234`. |
+| `MLFLOW_ADMIN_USERNAME` / `MLFLOW_ADMIN_PASSWORD` | `admin` / unset | The basic-auth app's admin account, written into its config at start. Its user store lives on the `mlflow_auth` volume. |
+| `MLFLOW_DEFAULT_PERMISSION` | `READ` | What an authenticated MLflow user may do with resources they were not granted explicitly (`READ`, `EDIT`, `MANAGE`, `NO_PERMISSIONS`). |
+| `MLFLOW_FLASK_SERVER_SECRET_KEY` | unset | Secret for the basic-auth app's session and CSRF protection; set a random value when `MLFLOW_AUTH=basic`. |
 | `MLFLOW_S3_ENDPOINT_URL` | `http://localhost:19000` | MinIO S3-compatible endpoint for MLflow artifact storage |
 | `AWS_ACCESS_KEY_ID` | `minioadmin` | MinIO access key |
 | `AWS_SECRET_ACCESS_KEY` | `minioadmin` | MinIO secret key |
 | `PREFECT_API_URL` | `http://localhost:14200/api` | Prefect server API endpoint |
-| `PREFECT_DEPLOYMENT_NAME` | `examlops_scheduled_training/nightly` | Prefect deployment slug used by `POST /retrain`. `exa pipeline deploy` does not create a deployment under this name that accepts a retrain's parameters (known issue; see the control-plane guide) |
+| `PREFECT_API_AUTH_STRING` | unset | `user:password` for a self-hosted Prefect that requires authentication (plan P3.6). In Compose, setting it in `.env` turns authentication **on** at the server and every client sends it; unset, Prefect is open as before. The server-side variable is exported only from a non-empty value, because Prefect treats `PREFECT_SERVER_API_AUTH_STRING=""` as "require an empty password" and would refuse every client. Also set it where the Prefect worker runs. |
+| `PREFECT_API_KEY` | unset | A Prefect Cloud API key; sent as a bearer when no auth string is set. |
+| `PREFECT_DEPLOYMENT_NAME` | `training_flow/examlops-dispatch` | Prefect deployment every control-plane retrain is dispatched to (`POST /retrain`, the approval gate, ModelZoo auto-retrain). `exa pipeline deploy` registers it and serves its runs; its parameters are exactly `model_name`, `dataset_cls_name`, `is_dummy`, `backend_name`. `GET /health` reports whether it exists (`dispatch`). |
 
 ---
 
@@ -421,15 +451,42 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 | Variable | Default | Purpose |
 |---|---|---|
 | `MODEL_STAGE` | `Production` | Default MLflow alias when no per-request alias or version is specified |
-| `RAY_NUM_REPLICAS` | `2` | Ray Serve replicas per deployment |
+| `RAY_NUM_REPLICAS` | `2` | Replicas of the model server; the floor when autoscaling is on |
+| `RAY_AUTOSCALE_MAX_REPLICAS` | unset | Set it and Ray autoscales the model server between `RAY_NUM_REPLICAS` and this ceiling (a lower value is raised to the floor). Every replica loads the whole hot set, so size it by memory too |
+| `RAY_AUTOSCALE_TARGET_ONGOING` | `5` | In-flight requests per model-server replica that the autoscaler aims for |
+| `RAY_AUTOSCALE_UPSCALE_DELAY_S` | `30` | Seconds demand must stay above target before a replica is added |
+| `RAY_AUTOSCALE_DOWNSCALE_DELAY_S` | `300` | Seconds demand must stay below target before a replica is removed |
 | `RAY_SERVE_PORT` | `8001` | Ray Serve internal HTTP port (host-exposed as `18001`) |
+| `RAY_SERVE_GRPC_PORT` | `8081` | Port of the model server's [Open Inference Protocol v2 gRPC](../components/ray-serve.md#open-inference-protocol-v2-over-grpc) service (host `18081` in Compose); `0` turns it off. It binds `RAY_SERVE_HOST`. |
+| `RAY_SERVE_GRPC_MAX_MESSAGE_MB` | `8` | Largest gRPC request or answer the model server accepts; larger ones get `RESOURCE_EXHAUSTED`. |
+| `RAY_SERVE_HOST` | `0.0.0.0` | Address the HTTP port binds. The [workload-identity overlay](../guides/workload-identity.md#every-hop-to-the-model-server-mutual-tls) sets `127.0.0.1`, so the mutual-TLS sidecar in the model server's own network namespace is the one way in and `18001` is not published. |
 | `RAY_PRELOAD_ALIASES` | `Production,Canary,Staging` | Comma-separated MLflow aliases pre-loaded into the hot set at startup and on reload |
 | `RAY_VERSION_CACHE_SIZE` | `8` | LRU cache size for raw-version (`/predict` with `version=`) lookups |
-| `RAY_RELOAD_POLL_SECONDS` | `60` | Background MLflow alias-poll interval in seconds; `0` disables polling |
+| `RAY_RELOAD_POLL_SECONDS` | `60` | Background MLflow alias-poll interval in seconds; `0` disables polling. With a serving snapshot published (`RAY_SNAPSHOT_MODE=auto`), replicas do not poll MLflow at all; this interval applies only while no snapshot exists. |
+| `RAY_SNAPSHOT_MODE` | `auto` | `auto`: replicas serve the serving snapshot the control plane publishes (ADR 0127), and the inference router takes traffic splits from it; both fall back to their own MLflow scan or table read only while no snapshot exists. `off`: the legacy paths only. |
+| `RAY_SNAPSHOT_POLL_SECONDS` | `2` | How often a replica looks for a newer serving-snapshot generation (minimum 0.5). |
+| `RAY_ARTIFACT_CACHE` | unset (off; Compose: a volume) | Directory of content-addressed local copies of the model versions this replica serves. Each version is fetched once, by version, and its files' SHA-256 digests are re-checked on every use (a corrupted copy is refetched). With the serving snapshot, this is what lets a replica restart and serve while MLflow is down. Signature verification (`EXAMLOPS_SERVING_VERIFY`) runs against the cached bytes. |
+| `RAY_ARTIFACT_CACHE_MAX_GB` | `20` | Size bound for `RAY_ARTIFACT_CACHE`; least-recently-used versions are evicted beyond it (`0` = unbounded). |
+| `RAY_SNAPSHOT_CACHE` | `<tmp>/examlops-serving-snapshot.json` (Compose: a volume) | The replica's last-known-good snapshot, served when NATS, the database and the control plane are all unreachable at start. Used only when no source answers; a reachable database that has no snapshot is never overridden by an old file. |
+| `RAY_SERVE_ADMIN_TOKEN` | unset (admin routes closed) | Bearer required by Ray Serve's admin routes: `POST /reload`, `/reload/{model}` and `/infer-pipeline/traffic-rules/{model}`. Unset or a placeholder makes them answer 503; inference is unaffected, and alias moves still reload within `RAY_RELOAD_POLL_SECONDS`. Callers send it from the same variable: `exa serve reload` / `exa serve traffic` (config key `ray_serve_admin_token`), the agent, and the pipeline's promotion webhook. |
+| `EXAMLOPS_SERVING_VERIFY` | `warn` | Verify-before-load for Ray Serve: `off`, `warn` (check every load and audit a failure as `model_verify_failed`, never refuse) or `enforce` (refuse an unsigned, tampered, untrusted or unverifiable artifact and keep serving the last-known-good version). Serving loads exactly the bytes it verified, against the signature record the serving snapshot carries. `enforce` needs every served version signed (at registration, or `exa models sign`) and the signer's public key in `EXAMLOPS_SIGNING_PUBLIC_KEYS`. The default was `off` until registration signed models (plan P4.10). |
+| `MINIO_SERVING_ACCESS_KEY` / `MINIO_SERVING_SECRET_KEY` | unset | Read-only MinIO credential for Ray Serve on `mlflow-artifacts`, created by `minio-init` when both are set. Serving only downloads models; unset falls back to the root credential. |
+| `MINIO_MLFLOW_ACCESS_KEY` / `MINIO_MLFLOW_SECRET_KEY` | unset | MLflow server's credential: read-write on `mlflow-artifacts`, nothing else (no bucket creation, no admin). Created by `minio-init`; unset falls back to root. |
+| `MLFLOW_DB_USER` / `MLFLOW_DB_PASSWORD` | `mlops` / `POSTGRES_PASSWORD` | MLflow's own Postgres role (plan P3.4). Set both and `postgres-init` creates the role, makes it the owner of the `mlflow` database (existing tables included), and shuts every other role out. Change the password and re-run `up` to rotate it. |
+| `PREFECT_DB_USER` / `PREFECT_DB_PASSWORD` | `mlops` / `POSTGRES_PASSWORD` | Prefect's own Postgres role on the `prefect` database, the same way. |
+| `DASHBOARD_DB_USER` / `DASHBOARD_DB_PASSWORD` / `DASHBOARD_DB_NAME` | `mlops` / `POSTGRES_PASSWORD` / `mlflow` | The dashboard's own Postgres role and database. A dashboard role needs its own database (`DASHBOARD_DB_NAME=dashboard`); `postgres-init` refuses one on `mlflow`. Moving existing tables: docs/guides/production-hardening.md. The backup sidecar follows `DASHBOARD_DB_NAME`. |
+| `MINIO_DASHBOARD_ACCESS_KEY` / `MINIO_DASHBOARD_SECRET_KEY` | unset | Dashboard's credential: read-write on `dashboard-model-docs` and the project-storage bucket. |
+| `MINIO_BACKUP_ACCESS_KEY` / `MINIO_BACKUP_SECRET_KEY` | unset | Backup sidecar's credential: **read-only** on `mlflow-artifacts`, `dashboard-model-docs` and project storage. Restoring objects is an operator's action with the root credential. |
+| `MINIO_NOTEBOOK_ACCESS_KEY` / `MINIO_NOTEBOOK_SECRET_KEY` | unset | What JupyterHub hands every spawned notebook: read-write on `mlflow-artifacts` and project storage. A notebook runs arbitrary user code, so it never gets root once this is set. |
 | `MINIO_DATAPLANE_ACCESS_KEY` / `MINIO_DATAPLANE_SECRET_KEY` | unset | ADR 0130 dataplane service's credential: read-write on `EXAMLOPS_DATA_BUCKET` only (`EXAMLOPS_DATA_S3_ACCESS_KEY`/`_SECRET_KEY` in the container), created by `minio-init`; unset falls back to root, same fallback shape as the dashboard's. |
+| `MLFLOW_ALLOWED_HOSTS` | `mlflow`, `localhost`, `127.0.0.1`, `$PUBLIC_HOST` (each with any port) | `Host` headers the MLflow server accepts (was `*`). Add every name clients use to reach MLflow. |
+| `MLFLOW_CORS_ALLOWED_ORIGINS` | the dashboard's origins on `localhost`, `127.0.0.1` and `$PUBLIC_HOST` | Browser origins allowed to call MLflow cross-origin (was `*`). |
 | `TRAFFIC_RULES_TTL_SECONDS` | `30` | TTL of the inference-pipeline router's per-replica traffic-split cache. Split changes written by the ingress or `exa serve traffic` (other processes) apply within this window; negative results are cached too. |
 | `RAY_SERVE_RELOAD_URL` | unset | Ray Serve URL for the Prefect promotion webhook (`POST /reload/{model_id}`); unset disables the webhook |
 | `RAY_METRICS_EXPORT_PORT` | `8080` | Prometheus metrics export port used by Ray |
+| `RAY_GAUGE_REFRESH_SECONDS` | `5` | How often each model-server replica republishes its gauges (`models_loaded`, the applied snapshot generation, the served version per alias). Ray 2.55 clears a gauge once it is collected, so a gauge set only at load time disappears from Prometheus. `0` disables; keep it under Ray's 10 s report interval |
+| `EXAMLOPS_LOADTEST_TOKEN` | unset | Bearer credential `exa serve loadtest` sends, e.g. a serving-gateway virtual key. Read from the environment so it never appears on the command line or in `ps`. Unset, the command sends `EXAMLOPS_SERVING_TOKEN` instead, but only when its target is the configured `ray_serve` URL. |
+| `EXAMLOPS_SERVING_TOKEN` | unset | `exa`'s serving credential (config key `serving_token`): a [serving-gateway](../guides/serving-gateway.md#credentials) virtual key or an IdP access token. It is sent only on requests under the configured `ray_serve` URL, and never over a credential a request already carries. Point `ray_serve` at the gateway to use it. |
 
 ---
 
@@ -439,14 +496,45 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 |---|---|---|
 | `CONTROL_PLANE_PORT` | `8002` | HTTP port for the retrain API (host-exposed as `18002`) |
 | `CONTROL_PLANE_TOKEN` | unset | Legacy operator bearer credential. It maps to principal `legacy`, tenant `default`, with `read` and `write` scopes; optional when the structured credential map is configured. |
-| `CONTROL_PLANE_CREDENTIALS_JSON` | unset | JSON object keyed by bearer secret. Each value requires `principal`, `tenant`, and non-empty `scopes` containing only `read` and/or `write`. Malformed input or a secret duplicated from `CONTROL_PLANE_TOKEN` fails all bearer authentication closed. |
+| `CONTROL_PLANE_CREDENTIALS_JSON` | unset | JSON object keyed by bearer secret. Each value requires `principal`, `tenant`, and non-empty `scopes` drawn from `read`, `write` (every mutation), and the narrow action scopes `retrain`, `approve`, `changes` and `admin` (plan P3.2). Malformed input, an unknown scope, or a secret duplicated from `CONTROL_PLANE_TOKEN` fails all bearer authentication closed. |
+| `CONTROL_PLANE_LEGACY_TOKEN` | `on` | Whether the shared, all-scopes `CONTROL_PLANE_TOKEN` is accepted: `on`; `warn` (accepted, each use counted in `control_plane_legacy_token_uses_total` and the caller logged at most once a minute); `off` (refused with 403). Any other value is `off` and fails the startup check. See [Retiring the shared legacy token](../components/control-plane.md#retiring-the-shared-legacy-token). |
+| `CONTROL_PLANE_WORKLOAD_IDENTITIES_JSON` | unset | SPIFFE ID → `principal`, `tenant`, `scopes` (the same scopes as `CONTROL_PLANE_CREDENTIALS_JSON`). A workload presenting a valid JWT-SVID for one of these IDs acts with those scopes. See [Workload identities](../components/control-plane.md#workload-identities-spiffe). |
+| `CONTROL_PLANE_SPIFFE_AUDIENCE` | `control-plane` | The audience a JWT-SVID must name to be accepted by the control plane. |
+| `CONTROL_PLANE_TOKEN_FILE` | unset | A file holding the bearer credential a platform service sends the control plane, read on every call: a JWT-SVID that spiffe-helper keeps fresh (ADR 0125), or a rotated Secret mounted as a file. Wins over `CONTROL_PLANE_TOKEN`; missing or empty falls back to it. Read by the CLI and autopilot follower, the bus bridge, the dashboard and the agent. |
+| `EXAMLOPS_SPIFFE_TRUST_DOMAIN` | unset (off) | The SPIFFE trust domain workload identities belong to, e.g. `examlops.internal`. A JWT-SVID for another trust domain is refused. |
+| `EXAMLOPS_SPIFFE_BUNDLE` | unset | The trust bundle's JWT keys: a JWKS or SPIFFE bundle file (`spire-server bundle show -format spiffe`), or the bundle set spiffe-helper writes (`jwt_bundle_file_name`, only this trust domain's keys are used), re-read when it changes;, the JSON itself, or an `https://` URL of SPIRE's OIDC discovery keys. |
+| `SPIFFE_WORKLOADS` | `control-plane dashboard skipper autopilot seanerbus-bridge` | Compose identity overlay: the workloads `spire-register` registers, each `spiffe://<trust domain>/<name>` selected by the container label `examlops.spiffe=<name>`. See [Workload identity](../guides/workload-identity.md). |
+| `SPIFFE_JWT_SVID_TTL` | `300` | Compose identity overlay: JWT-SVID lifetime in seconds for newly registered workloads. |
+| `SPIRE_SERVER_MEM_LIMIT` / `SPIRE_AGENT_MEM_LIMIT` | `256m` / `128m` | Compose identity overlay: memory ceilings of the SPIRE server and agent. |
+| `SEANERBUS_BRIDGE_CONTROL_PLANE_TOKEN` / `AUTOPILOT_CONTROL_PLANE_TOKEN` / `AGENT_CONTROL_PLANE_TOKEN` / `DASHBOARD_CONTROL_PLANE_TOKEN` | unset (→ `CONTROL_PLANE_TOKEN`) | Compose: the control-plane bearer each of those services sends. Issue each its own credential in `CONTROL_PLANE_CREDENTIALS_JSON` with only the scopes it needs (the bridge: `retrain`), so the audit trail names the service and a compromised one cannot act beyond its job. |
 | `CONTROL_PLANE_URL` | `http://control-plane:8002` | Control plane URL used by the dataplane simulator and CI notify script |
 | `CONTROL_PLANE_DB` | `PLATFORM_DB`, else `/data/approvals.db` | SQLite path for commands, approvals, admission, outbox, and ModelZoo state. Inside the service this becomes the shared `PLATFORM_DB`, keeping transactions and the relay on one file. |
-| `CONTROL_PLANE_COMMAND_LEASE_SECONDS` | `300` | Time before an interrupted durable Prefect dispatch can be reclaimed with the same idempotency key. |
+| `CONTROL_PLANE_COMMAND_LEASE_SECONDS` | `60` | How long a dispatch claim lasts. When the replica holding it stops (a crash, a killed pod), another replica takes the command over after this and dispatches it again with the same Prefect idempotency key, so no second run is created. Keep it above `CONTROL_PLANE_DISPATCH_BUDGET_SECONDS` (8). Was 300. |
 | `CONTROL_PLANE_RETRAIN_LOCK_SECONDS` | command lease (minimum `60`) | Coordinator lease for one tenant/model/dataset retrain dispatch. |
 | `CONTROL_PLANE_POLLER_LEASE_SECONDS` | `30` (minimum `3`) | Coordinator lease used to elect the singleton ModelZoo poller. |
 | `CONTROL_PLANE_EVENT_RELAY_SECONDS` | `1` | In-process outbox relay interval; `0` disables it. |
 | `CONTROL_PLANE_EVENT_RELAY_BATCH_SIZE` | `100` | Maximum outbox rows claimed per relay pass. |
+| `CONTROL_PLANE_SNAPSHOT_SECONDS` | `60` | The serving-snapshot projector's full recompile interval, which catches changes made directly in MLflow. It also recompiles within a tick of any `serving.*` or `model.alias_changed` event. `0` disables the projector; replicas then keep polling MLflow themselves. |
+| `CONTROL_PLANE_DRIFT_EVAL_SECONDS` | `60` | How often the control plane scores every model's prediction drift and announces a status change as `drift.status_changed` (and `alert.drift` for WARNING/CRITICAL). `0` disables the evaluator; `exa drift status` is unaffected. |
+| `CONTROL_PLANE_SNAPSHOT_TICK_SECONDS` | `1` | How often the projector checks the outbox for a serving-relevant change (minimum 0.2). |
+| `EXAMLOPS_SNAPSHOT_MLFLOW_TIMEOUT` | `10` | Seconds per MLflow REST call while compiling the serving snapshot. A failed compile keeps the previous generation in force. |
+| `CONTROL_PLANE_STARTUP_RECHECK_SECONDS` | `10` | While a startup check is failing, `/health` and `/readyz` re-run the checks at most this often (minimum 1), so a dependency that was briefly down at boot does not keep the replica unready. Passing checks are never re-run. |
+| `CONTROL_PLANE_EVENT_BACKBONE_STATS_SECONDS` | `30` | How often the relay reads consumer lag and dead-letter depth from JetStream for `/metrics` (minimum 5; only with `EXAMLOPS_EVENT_PUBLISHER=nats`). |
+| `CONTROL_PLANE_ADMISSION_RETRY_AFTER` | `30` (minimum `1`) | `Retry-After` seconds on the HTTP 429 returned when a retrain or approval dispatch is refused because the tenant's admission capacity (`EXAMLOPS_ADMISSION_PER_TENANT` / `_MAX_RUNNING`) is full. Retry with the same `Idempotency-Key`. |
+| `CONTROL_PLANE_SEPARATION_OF_DUTIES` | `true` | The principal that filed an approval (`POST /api/changes`) cannot approve it (403); another principal must. The shared `CONTROL_PLANE_TOKEN` is exempt — every holder is principal `legacy`, so requester and approver are indistinguishable — and `GET /health` → `runtime.separation_of_duties` says `enforced-except-legacy-token`. Use structured or federated credentials for an enforced gate; `false` disables the rule. |
+| `CONTROL_PLANE_WEBHOOK_MAX_BYTES` | `5242880` (5 MiB, minimum 1024) | Largest ModelZoo webhook body accepted (413 above it), checked against the declared length and the bytes actually received. |
+| `CONTROL_PLANE_DISPATCH_BUDGET_SECONDS` | `8` | Total time one dispatch may spend on Prefect (deployment lookup + flow-run creation, including retries). Kept below the 10 s client timeout so the server answers before its callers give up; exhausted → 502. |
+| `CONTROL_PLANE_PREFECT_CONNECT_TIMEOUT` / `CONTROL_PLANE_PREFECT_READ_TIMEOUT` | `3` / `5` | Per-attempt Prefect timeouts, each further capped by what is left of the dispatch budget. |
+| `CONTROL_PLANE_PREFECT_ATTEMPTS` | `3` | Attempts per Prefect call on a 5xx or transport error, with full-jitter backoff that never sleeps past the budget. A 4xx is never retried; a POST is retried only when it carries an idempotency key. |
+| `CONTROL_PLANE_COMMAND_WORKERS` | `1` | Worker threads that dispatch asynchronous commands (`POST /v1/retrain`). `0` disables them: commands are accepted and wait. Every platform retrain (CLI, autopilot, drift trigger, MCP, agent, bus bridge) goes through these commands, so with `0` no retrain is dispatched anywhere. Safe on several replicas — claims are atomic in the datastore. |
+| `EXAMLOPS_RETRAIN_WAIT_SECONDS` | `30` | How long `exa retrain`, `exa pipeline hpo start`, `exa production deploy` and the MCP/agent retrain tools wait for a submitted retrain to be dispatched. A retrain still queued when it runs out is reported as accepted with its `command_id` (follow it with `exa commands show`), never as an error. Automated loops (drift trigger, autopilot, bus bridge) wait at most 5 s. |
+| `CONTROL_PLANE_COMMAND_POLL_SECONDS` | `1` (minimum `0.1`) | How often each worker looks for due commands. |
+| `CONTROL_PLANE_SETTINGS_TTL_SECONDS` | `5` | How long a control-plane replica acts on its cached copy of the shared runtime settings (`PUT /v1/modelzoo/config`) before re-reading them; the bound on how long replicas can disagree after a change. |
+| `CONTROL_PLANE_COMMAND_MAX_ATTEMPTS` | `5` | Dispatch attempts before an asynchronous command is buried as `dead`. |
+| `CONTROL_PLANE_COMMAND_BACKOFF_SECONDS` | `5` | Base of the exponential backoff between attempts (capped at 300 s). |
+| `CONTROL_PLANE_RECONCILE_SECONDS` | `30` (minimum `1`) | How often the command workers poll each dispatched flow run until it reaches a terminal state (recorded as `run_state`, published once as `retrain.run_<state>`). |
+| `CONTROL_PLANE_ORPHAN_RECHECK_SECONDS` | `60` | How often a replica asks again about the same buried command. It has to ask more than once: the run it is looking for appears *after* the burial, so a single early "no run" would be the wrong answer. |
+| `CONTROL_PLANE_ORPHAN_CHECK_WINDOW_SECONDS` | `900` | How far back the reconcile sweep looks for commands it gave up on, to ask Prefect whether one of them left a training run behind ([ControlPlaneDeadCommandLeftARun](../runbooks/control-plane.md#controlplanedeadcommandleftarun)). `0` turns the check off; a replica asks about each command once, and the burying replica is often the one that cannot reach Prefect, which is why any replica may do it. |
 | `RETRAIN_RATE_LIMIT_PER_MIN` | `20` | Per-tenant write limit enforced by the selected `EXAMLOPS_COORDINATOR`. |
 
 ### ModelZoo Integration (Phase 12)
@@ -470,12 +558,21 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 |---|---|---|
 | `DASHBOARD_VIEWER_PASSWORD` | **required** | Viewer-role login password |
 | `DASHBOARD_ADMIN_PASSWORD` | **required** | Admin-role login password |
-| `DASHBOARD_JWT_SECRET` | **required** | HS256 signing secret for JWT tokens (minimum 32 characters) |
+| `DASHBOARD_JWT_SECRET` | **required** | HS256 signing secret for JWT tokens (minimum 32 characters). A key derived from it also signs the short-lived (1 h) URLs the dashboard issues for bundled model README images. |
+| `CONTROL_PLANE_TOKEN` (dashboard) | unset | Fallback bearer the dashboard sends on control-plane reads (`/models*`, bundled images) when the Config page's encrypted `control_plane_token` secret is unset. The stored secret wins when both exist; it is never sent to the browser. |
 | `DASHBOARD_SECRET_KEY` | **required** | Fernet key (base64-encoded, 44 characters) for secrets-at-rest encryption |
 | `DASHBOARD_JWT_TTL_HOURS` | `12` | JWT token expiry in hours |
 | `DASHBOARD_TRUSTED_PROXY` | unset | When truthy, the login/BFF rate limiter keys on the leftmost `X-Forwarded-For` address instead of the socket peer. Set ONLY behind a trusted reverse proxy — the header is spoofable when clients connect directly. |
 | `DASHBOARD_GITLAB_INSECURE_TLS` | unset | Opt-out of TLS verification on the dashboard→GitLab modelzoo calls (private-CA escape hatch). Default verifies; prefer shipping the CA bundle. |
 | `DASHBOARD_PORT` | `8099` | Dashboard HTTP port (host-exposed as `18099`) |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | `minioadmin` | The credential the dashboard itself uses for model-doc images and project storage. Compose sets these from `MINIO_DASHBOARD_ACCESS_KEY`/`_SECRET_KEY`, which is the least-privilege pair (read-write on its own buckets only); the defaults are dev-only and must not survive into a deployment. |
+| `DASHBOARD_MINIO_BUCKET` | `dashboard-model-docs` | Bucket holding uploaded model documentation and README images. |
+| `DASHBOARD_MAX_IMAGE_BYTES` | `5242880` (5 MiB) | Largest image the dashboard will accept for a model README. Raising it raises what an authenticated editor can store. |
+| `DASHBOARD_IMAGE_URL_TTL_SECONDS` | `300` | Lifetime of the signed URL the browser gets for a bundled README image. Short on purpose: the URL is the capability. |
+| `EXAMLOPS_REPO_URL` / `EXAMLOPS_REPO_BRANCH` | unset / `main` | Repository the *view source* links point at. Unset means no source links rather than broken ones. |
+| `ENV_EXPORT_PATH` | `/app/.env.dashboard` | Where `exa config export` writes the dashboard's effective configuration inside the container. |
+| `DATAPLANE_URL` | `http://localhost:18010` | Dataplane the dashboard queries. **Note the name**: the dashboard's own variable has no `EXAMLOPS_` prefix, and Compose feeds it from `EXAMLOPS_DATAPLANE_URL`. Setting only the prefixed one works through Compose; setting the dashboard's environment directly needs this name. |
+| `SLURM_MODE` | `mock` | Scheduler mode the dashboard reports (`mock` / `slurm` / `flux`). Same naming subtlety: Compose supplies it from `EXAMLOPS_SLURM_MODE`. |
 | `GITLAB_URL` | `https://gitlab.com` | GitLab base URL for ModelZoo repository integration |
 | `GITLAB_TOKEN` | unset | GitLab PAT with `read_repository` scope; used by the Datasets and Models pages to list files from the modelzoo repo. Also used as a last-resort fallback for the "Run CI Pipeline" button when no DB or env trigger token is configured. |
 | `GITLAB_PROJECT_ID` | unset | ModelZoo project ID; used by the Datasets/Models pages. Also used by the "Run CI Pipeline" fallback path when `AI_PROD_GITLAB_PROJECT_ID` is absent. |
@@ -523,6 +620,7 @@ The bridge (`platform/clients/seanerbus_bridge.py`) connects to the real SeanerB
 | `SEANERBUS_VECTOR_UUID` | unset | Optional: req/res UUID for `VectorReqV1 → VectorResV1` |
 | `SEANERBUS_DEFAULT_MODEL` | `JPCP` | Fallback model name when `HpcJobV1.modelName` is empty |
 | `SEANERBUS_DEFAULT_ALIAS` | `Production` | Fallback MLflow alias when `HpcJobV1.alias` is empty |
+| `SEANERBUS_TELEMETRY_QUEUE_MAX` | `1000` | Bound on per-inference drift / input-embedding records waiting to be written. The bridge replies on the bus first and writes these in the background; a full spool drops the record (`seanerbus_telemetry_dropped_total`), and a failed write is counted (`seanerbus_telemetry_persist_failures_total`) without failing the inference. |
 | `SEANERBUS_PUBLISH_RESULTS` | `true` | Publish inference results back onto the bus. `false` makes the bridge consume-only. |
 | `SEANERBUS_INFERENCE_UUID` | unset | **Legacy** global req/res UUID, used only when no per-model `seanerbus_uuid` is present in any model YAML. Prefer `exa seanerbus init-uuids`. |
 | `SEANERBUS_JOB_TOPIC_UUID` / `SEANERBUS_RESULT_TOPIC_UUID` | unset | Pub/sub topic UUIDs for the job and result streams. |
@@ -557,7 +655,7 @@ automatically.
 | `AGENT_OLLAMA_NUM_CTX` | `16384` | Context window requested from Ollama. Its server default (4096) truncates Skipper's scoped tool-pack prompts (~5k tokens) from the front, dropping the system prompt. `0` leaves the server default. |
 | `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`skipper.server`). |
 | `AGENT_API_KEY` | unset | Legacy single credential protecting completions, status, history, and WebSocket tools. It remains the dashboard fallback and maps to the `primary` principal. Prefer distinct caller credentials in `AGENT_API_KEYS_JSON`. |
-| `AGENT_API_KEYS_JSON` | unset | JSON object mapping trusted principal names to distinct bearer credentials, for example `{"dashboard":"<dashboard-key>","cli-operator":"<cli-key>"}`. Names become server-derived conversation and memory owners; callers cannot choose them. Use distinct credentials wherever memory isolation matters. |
+| `AGENT_API_KEYS_JSON` | unset | JSON object mapping trusted principal names to distinct bearer credentials, for example `{"dashboard":"<dashboard-key>","cli-operator":"<cli-key>"}`. Names become server-derived conversation and memory owners; callers cannot choose them. Use distinct credentials wherever memory isolation matters. Entries are validated individually: a non-string or empty value, or an empty principal name, is refused for that principal only — logged once at `WARNING` and counted on the agent's `GET /healthz` as `credential_config_problems`. A map that does not parse at all leaves authentication on, never off. |
 | `DASHBOARD_AGENT_API_KEY` | unset | Dashboard BFF credential forwarded to the agent. Its value must appear under the `dashboard` principal (or another intentionally named dashboard principal) in `AGENT_API_KEYS_JSON`. The dashboard prefers this over legacy `AGENT_API_KEY`. |
 | `AGENT_REQUIRE_API_KEY` | `false` | Refuse agent-server startup when no API key is configured. The Helm deployment sets this to `true`. |
 | `PROMETHEUS_URL` | `http://localhost:19090` | Prometheus endpoint for the `get_metrics` tool |
@@ -633,6 +731,7 @@ The reactive chat loop records each turn's tool calls into the shared `examlops.
 |---|---|---|
 | `AGENT_WATCH_ENABLED` | `true` | Kill-switch for the `--daemon` loop. |
 | `AGENT_WATCH_INTERVAL_S` | `300` | Daemon cycle interval (seconds). |
+| `AGENT_WATCH_EVENTS` | `true` | With `EXAMLOPS_NATS_URL` set, the `--daemon` also consumes `retrain.*` from the event backbone and raises `alert.retrain` for a run that ends FAILED, CRASHED or MISSING. `false` keeps it to the polled drift and cost signals. |
 | `AGENT_WATCH_DRIFT_Z` | `3.0` | Prediction-drift z-score threshold that raises a drift alert. |
 | `AGENT_WATCH_COST_BUDGET` | `0` | Platform cost ceiling (USD) for the FinOps signal; `0` disables the cost check. |
 
@@ -666,6 +765,10 @@ Used by services to reach each other inside the Docker Compose network (internal
 | `RAY_DASHBOARD_URL` | `http://ray-serve:8265` | Internal Ray Dashboard URL |
 | `PROMETHEUS_URL` | `http://prometheus:9090` | Internal Prometheus URL |
 | `GRAFANA_URL` | `http://grafana:3000` | Internal Grafana URL |
+| `MINIO_URL` | `http://localhost:19000` | Internal MinIO S3 API the dashboard uses for model docs |
+| `MINIO_CONSOLE_URL` | `http://localhost:19001` | Internal MinIO console URL |
+| `LOKI_URL` | `http://localhost:13100` | Internal Loki URL the dashboard queries for logs |
+| `JUPYTERHUB_URL` | `http://localhost:18888` | Internal JupyterHub URL (workbench status) |
 
 ---
 
@@ -680,6 +783,20 @@ Override the URLs sent to the browser when the dashboard is accessed from a remo
 | `PUBLIC_RAY_DASHBOARD_URL` | `http://localhost:18265` | Clickable Ray Dashboard URL returned to the browser |
 | `PUBLIC_PROMETHEUS_URL` | `http://localhost:19090` | Clickable Prometheus URL returned to the browser |
 | `PUBLIC_GRAFANA_URL` | `http://localhost:13000` | Clickable Grafana URL returned to the browser |
+| `PUBLIC_RAY_SERVE_URL` | `http://localhost:18001` | Clickable Ray Serve API URL (the model-detail *Try the API* link) |
+| `PUBLIC_CONTROL_PLANE_URL` | `http://localhost:18002` | Clickable control-plane URL |
+| `PUBLIC_MINIO_CONSOLE_URL` | `http://localhost:19001` | Clickable MinIO console URL |
+| `PUBLIC_LOKI_URL` | `http://localhost:13100` | Clickable Loki URL |
+| `PUBLIC_JUPYTERHUB_URL` | `http://localhost:18888` | Clickable JupyterHub URL |
+| `PUBLIC_DASHBOARD_URL` | `http://localhost:18099` | The dashboard's own browser-facing base, used in links it emits |
+| `GRAFANA_LOKI_EXPLORE_URL` | `http://localhost:13000/explore` | Grafana *Explore* deep link the log views point at |
+
+Every one of these reaches the dashboard through its **pydantic-settings** class
+(`platform/services/dashboard/backend/settings.py`), where the field `public_ray_serve_url` *is* the
+variable `PUBLIC_RAY_SERVE_URL`. That matters for more than curiosity: a variable read this way never
+appears as a string literal anywhere, so it is invisible to a text search — which is exactly how
+nineteen of them went undocumented until `tests/unit/test_env_vars_are_documented.py` learned to read
+the settings class as well as the code.
 
 Example for remote server access (`<REMOTE_HOST>` = the deploy node's address):
 ```bash
@@ -701,7 +818,7 @@ vendored in this repository.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `EXAMLOPS_MODELZOO_DIR` | `<repo>/modelzoo` | Where to find the `seanergys_modelzoo` checkout. Every runtime path-resolution site (pipeline engine, Ray Serve, control plane, use-case pack, `exa data`/`exa synth`) honours it. |
+| `EXAMLOPS_MODELZOO_DIR` | `<repo>/modelzoo` | Where to find the `seanergys_modelzoo` checkout. Every runtime path-resolution site (pipeline engine, Ray Serve, control plane, use-case pack, `exa data`/`exa data synth`) honours it. |
 
 The deploy pipeline clones it into `$EXAMLOPS_DEPLOY_PATH/modelzoo` — the default location —
 so nothing needs setting in a standard deployment. Point the variable elsewhere if you keep
@@ -760,7 +877,7 @@ variable.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `RAY_MODELS_DIR` | unset | Phase 14 — directory of per-model YAML files (e.g., `pipelines/models`); takes precedence over `RAY_REGISTRY_PATH` for per-model alias control |
+| `RAY_MODELS_DIR` | unset | Phase 14 — directory of per-model YAML files (e.g., `usecases/seanergy/models`); takes precedence over `RAY_REGISTRY_PATH` for per-model alias control |
 | `RAY_REGISTRY_PATH` | unset | Legacy path to `model_registry.yaml`; superseded by `RAY_MODELS_DIR` (Phase 14). Still works as fallback when `RAY_MODELS_DIR` is unset |
 | `RAY_REGISTRY_ENV` | unset | Env overlay name (e.g., `prod`) loaded alongside `RAY_REGISTRY_PATH`; maps to `pipelines/envs/<ENV>.yaml` |
 

@@ -291,6 +291,45 @@ jobs:
           helm template rel platform/infra/helm/examlops --set global.imageRegistry=ghcr.io/mskazemi/ \
             | docker run --rm -i "$KUBECONFORM_IMAGE" -strict -summary -
 
+      # The default render leaves the optional tiers out (network policies, the event followers),
+      # so their manifests would never be checked. The same validation with every one of them on.
+      - name: Validate the optional tiers too
+        run: |
+          set -euo pipefail
+          helm template rel platform/infra/helm/examlops --set global.imageRegistry=ghcr.io/mskazemi/ \
+            --set networkPolicy.enabled=true --set upgrade.hook.enabled=true \
+            --set events.publisher=nats --set events.natsUrl=nats://nats:4222 \
+            --set events.followers.autopilot.enabled=true \
+            --set events.followers.skipperWatch.enabled=true \
+            --set gateway.enabled=true --set gateway.ingress.host=inference.example.org \
+            | docker run --rm -i "$KUBECONFORM_IMAGE" -strict -summary -
+
+      - name: Validate the monitoring objects against the Prometheus Operator's CRDs
+        # PrometheusRule and ServiceMonitor are CRD kinds too; their vendored schemas are strict.
+        run: |
+          set -euo pipefail
+          helm template rel platform/infra/helm/examlops --set global.imageRegistry=ghcr.io/mskazemi/ \
+            --api-versions monitoring.coreos.com/v1/PrometheusRule \
+            --api-versions monitoring.coreos.com/v1/ServiceMonitor \
+            --set metrics.prometheusRule.enabled=true --set metrics.serviceMonitor.enabled=true \
+            --set gateway.enabled=true \
+            | docker run --rm -i -v "$PWD/platform/infra/helm/schemas:/schemas:ro" "$KUBECONFORM_IMAGE" \
+              -strict -summary -schema-location default \
+              -schema-location '/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' -
+
+      - name: Validate workload identities against SPIRE's own CRD
+        # ClusterSPIFFEID is a CRD kind with no public schema. The vendored one is generated from
+        # SPIRE's spire-crds chart and strict, so a misspelt field fails here, not in a cluster.
+        run: |
+          set -euo pipefail
+          helm template rel platform/infra/helm/examlops --set global.imageRegistry=ghcr.io/mskazemi/ \
+            --set workloadIdentity.enabled=true --set workloadIdentity.trustDomain=example.org \
+            --set events.publisher=nats --set events.natsUrl=nats://nats:4222 \
+            --set events.followers.autopilot.enabled=true --set networkPolicy.enabled=true \
+            | docker run --rm -i -v "$PWD/platform/infra/helm/schemas:/schemas:ro" "$KUBECONFORM_IMAGE" \
+              -strict -summary -schema-location default \
+              -schema-location '/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' -
+
   security-ok:
     # The one security check the release workflow and branch protection require. Reports
     # (pip-audit, npm audit, trivy config) are deliberately not in `needs`: they never fail.

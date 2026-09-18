@@ -22,7 +22,7 @@ conn.request(JPCP_UUID, ...)  ──► routes to whoever    ◄── 30b0f24c
 ```
 
 - The reqgen **hardcodes** the UUID in `generator.py`
-- The bridge **reads** the same UUID from `pipelines/models/jpcp.yaml`
+- The bridge **reads** the same UUID from `usecases/seanergy/models/jpcp.yaml`
 - If they match → SeanerBUS connects them. If not → `[?] unexpected payloadType=0`
 - Neither side knows anything about the other directly
 
@@ -35,7 +35,7 @@ two repos. The `models.yaml` in the seanerbus repo mirrors it.
 |------|------|-------|
 | `ai-production-inference-request-generator/src/examlops_reqgen/generator.py` | seanerbus | `JPCP_UUID = uuid.UUID("30b0f24c-...")` hardcoded |
 | `ai-production-inference-request-generator/models.yaml` | seanerbus | `uuid: 30b0f24c-...` reference copy |
-| `pipelines/models/jpcp.yaml` | ai-productions | `seanerbus_uuid: 30b0f24c-...` source of truth |
+| `usecases/seanergy/models/jpcp.yaml` | ai-productions | `seanerbus_uuid: 30b0f24c-...` source of truth |
 
 ---
 
@@ -161,5 +161,5 @@ log: ← RES  job=bcdad28d  [ok]  196ms
 | `platform/clients/seanerbus_bridge.py` | ai-productions | Registers UUID handlers, calls Ray Serve, replies |
 | `platform/clients/seanerbus_client.py` | ai-productions | Typed async wrapper around raw `seanerbus.client.Connection` |
 | `platform/clients/seanerbus_msgs/` | ai-productions | Cap'n'Proto schema + Python classes for all message types |
-| `pipelines/models/jpcp.yaml` | ai-productions | Source of truth for `seanerbus_uuid` |
+| `usecases/seanergy/models/jpcp.yaml` | ai-productions | Source of truth for `seanerbus_uuid` |
 | `ai-production-inference-request-generator/models.yaml` | seanerbus | Mirror of UUIDs — must stay in sync with ai-productions YAMLs |

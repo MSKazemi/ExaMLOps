@@ -793,6 +793,9 @@ def promote(
         model,
         {"from": from_alias, "to": to_alias, "version": version, metric: metric_val},
     )
+    from examlops import events
+
+    events.alias_changed(model, to_alias, version, actor=actor, via="exa-pipeline-promote")
 
     _emit_promotion_lineage(model, str(version), from_alias, to_alias, metric, metric_val)
 

@@ -1,0 +1,214 @@
+# SPIRE on this Docker host: short-lived SPIFFE identities for the platform's services (ADR 0125).
+#
+# Used through ../docker-compose.identity.yml, which includes this file and points the services at
+# what it produces. It also runs on its own, which is how
+# tests/integration/test_spire_compose_attestation_live.py checks it.
+#
+#   spire-pki          one-shot: the node CA and the agent's x509pop certificate
+#   spire-server       issues identities; keys and registrations persist in spire_server_data
+#   spire-register     one-shot: the agent's bootstrap bundle, and one entry per SPIFFE_WORKLOADS name
+#   spire-docker-proxy read-only Docker API (containers only, no POST) for the agent's attestor
+#   spire-agent        attests callers by container label, examlops.spiffe=<name>
+#   spiffe-helper-*    one per service: keeps its JWT-SVID (or, for the control plane, the trust
+#                      bundle) in the service's svid_* volume
+#
+# Anyone who can start a container on this host with an examlops.spiffe label gets that identity;
+# on a Docker host that is already root. Nothing here publishes a port.
+
+x-spiffe-helper: &spiffe-helper
+  image: ghcr.io/spiffe/spiffe-helper:0.11.0@sha256:1c92e5998ad3621e3323f25aabe40f5a88ba730ee0edb248aa8c943ca504e8a2
+  command: ["-config", "/conf/helper.conf"]
+  mem_limit: 32m
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  network_mode: none   # the agent's socket is the only thing it talks to
+  depends_on:
+    spire-agent:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  spire-pki:
+    build:
+      context: .
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-spire-init:${EXAMLOPS_IMAGE_TAG:-latest}
+    command: ["pki"]
+    environment:
+      EXAMLOPS_SPIFFE_TRUST_DOMAIN: ${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}
+    volumes:
+      - spire_pki:/pki
+    network_mode: none
+    restart: "no"
+
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.15.3@sha256:4082f30d3e0ddc4000a171392c4ea174345ee44d161ee917c70b97b2ecfba141
+    command: ["-config", "/conf/server.conf", "-expandEnv"]
+    environment:
+      EXAMLOPS_SPIFFE_TRUST_DOMAIN: ${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}
+    volumes:
+      - ./server.conf:/conf/server.conf:ro
+      - spire_pki:/pki:ro
+      - spire_server_data:/var/lib/spire/server
+      - spire_server_run:/run/spire/server/private
+    networks: [spire]
+    mem_limit: ${SPIRE_SERVER_MEM_LIMIT:-256m}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      spire-pki:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck",
+             "-socketPath", "/run/spire/server/private/api.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  spire-register:
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-spire-init:${EXAMLOPS_IMAGE_TAG:-latest}
+    command: ["register"]
+    environment:
+      EXAMLOPS_SPIFFE_TRUST_DOMAIN: ${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}
+      # One SPIFFE ID per name: spiffe://<trust domain>/<name>, selected by examlops.spiffe=<name>.
+      SPIFFE_WORKLOADS: ${SPIFFE_WORKLOADS:-control-plane dashboard skipper autopilot seanerbus-bridge gateway ray-serving}
+      SPIFFE_JWT_SVID_TTL: ${SPIFFE_JWT_SVID_TTL:-300}
+    volumes:
+      - spire_pki:/pki
+      - spire_server_run:/run/spire/server/private
+    network_mode: none
+    depends_on:
+      spire-pki:
+        condition: service_completed_successfully
+      spire-server:
+        condition: service_healthy
+    restart: "no"
+
+  spire-docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.2.0@sha256:083bd0ed8783e366d745f332f0e4489816dd35d984bef8f16e6d89484a22c082
+    mem_limit: 64m
+    environment:
+      CONTAINERS: "1"   # inspect a caller's container; nothing else, and never a write
+      POST: "0"
+      IMAGES: "0"
+      NETWORKS: "0"
+      VOLUMES: "0"
+      EXEC: "0"
+      INFO: "0"
+      AUTH: "0"
+      SECRETS: "0"
+      SWARM: "0"
+      SERVICES: "0"
+      TASKS: "0"
+      BUILD: "0"
+      COMMIT: "0"
+      CONFIGS: "0"
+      DISTRIBUTION: "0"
+      NODES: "0"
+      PLUGINS: "0"
+      SYSTEM: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Reachable only by the SPIRE agent: container inspection shows every container's environment.
+    networks: [spire_attest]
+    restart: unless-stopped
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.15.3@sha256:41b0dcd8b258a69db9e2768292a060766fb76fd866e4bc925849981ea1b825ff
+    command: ["-config", "/conf/agent.conf", "-expandEnv"]
+    # The host PID namespace, so the PID of a process calling the Workload API maps to its container.
+    pid: host
+    environment:
+      EXAMLOPS_SPIFFE_TRUST_DOMAIN: ${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}
+    volumes:
+      - ./agent.conf:/conf/agent.conf:ro
+      - spire_pki:/pki:ro
+      - spire_agent_data:/var/lib/spire/agent
+      - spire_agent_socket:/run/spire/sockets
+    networks: [spire, spire_attest]
+    mem_limit: ${SPIRE_AGENT_MEM_LIMIT:-128m}
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      spire-register:
+        condition: service_completed_successfully
+      spire-docker-proxy:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-agent", "healthcheck",
+             "-socketPath", "/run/spire/sockets/agent.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── One helper per service. The label is the identity; the volume is what the service reads. ──
+  spiffe-helper-control-plane:
+    <<: *spiffe-helper
+    labels:
+      examlops.spiffe: control-plane
+    volumes:
+      - ./helper-verifier.conf:/conf/helper.conf:ro
+      - spire_agent_socket:/run/spire/sockets:ro
+      - svid_control_plane:/run/spire/svid
+
+  spiffe-helper-dashboard:
+    <<: *spiffe-helper
+    labels:
+      examlops.spiffe: dashboard
+    volumes:
+      - ./helper-caller.conf:/conf/helper.conf:ro
+      - spire_agent_socket:/run/spire/sockets:ro
+      - svid_dashboard:/run/spire/svid
+
+  spiffe-helper-skipper:
+    <<: *spiffe-helper
+    labels:
+      examlops.spiffe: skipper
+    volumes:
+      - ./helper-caller.conf:/conf/helper.conf:ro
+      - spire_agent_socket:/run/spire/sockets:ro
+      - svid_skipper:/run/spire/svid
+
+  spiffe-helper-autopilot:
+    <<: *spiffe-helper
+    profiles: [events]
+    labels:
+      examlops.spiffe: autopilot
+    volumes:
+      - ./helper-caller.conf:/conf/helper.conf:ro
+      - spire_agent_socket:/run/spire/sockets:ro
+      - svid_autopilot:/run/spire/svid
+
+  spiffe-helper-seanerbus-bridge:
+    <<: *spiffe-helper
+    profiles: [seanerbus]
+    labels:
+      examlops.spiffe: seanerbus-bridge
+    volumes:
+      - ./helper-caller.conf:/conf/helper.conf:ro
+      - spire_agent_socket:/run/spire/sockets:ro
+      - svid_seanerbus_bridge:/run/spire/svid
+
+volumes:
+  spire_pki:
+  spire_server_data:
+  spire_server_run:
+  spire_agent_data:
+  spire_agent_socket:
+  svid_control_plane:
+  svid_dashboard:
+  svid_skipper:
+  svid_autopilot:
+  svid_seanerbus_bridge:
+
+# Internal only: SPIRE needs no egress, and no platform service needs to reach either network.
+networks:
+  spire:
+    internal: true
+  spire_attest:
+    internal: true

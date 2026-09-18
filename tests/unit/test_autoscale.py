@@ -119,6 +119,40 @@ def test_r7_scale_to_zero_savings():
     assert s["saved_cost"] == pytest.approx(2.0)
 
 
+def test_r7_savings_counts_every_scale_to_zero_not_just_the_recent_ones():
+    """A savings total must cover the model's whole history, not its newest page of events.
+
+    `saved_cost` is reported as an absolute — the dashboard's scaling panel and
+    `exa autoscale savings` both print it with no window qualifier — so counting the
+    scale-to-zero transitions inside a bounded listing silently under-reports money saved, by
+    more and more as a model accumulates events. Under-reporting a saving is not a safe
+    direction to be wrong in: it is the number that justifies the feature.
+    """
+    from examlops import platform_db
+    from examlops.autoscale import scale_to_zero_savings, set_policy
+
+    set_policy("JPCP", scale_to_zero_after_s=3600, gpu_fraction=1.0)
+    with platform_db.get_db() as conn:
+        # 600 scale-to-zero transitions: more than any one listing of recent events returns.
+        conn.executemany(
+            "INSERT INTO scale_events (model, from_replicas, to_replicas, reason) "
+            "VALUES ('JPCP', 1, 0, 'idle')",
+            [() for _ in range(600)],
+        )
+        # Scaling *up* is not a saving, and another model's savings are not this model's.
+        conn.execute(
+            "INSERT INTO scale_events (model, from_replicas, to_replicas, reason) "
+            "VALUES ('JPCP', 0, 2, 'load')"
+        )
+        conn.execute(
+            "INSERT INTO scale_events (model, from_replicas, to_replicas, reason) "
+            "VALUES ('MACK', 1, 0, 'idle')"
+        )
+    s = scale_to_zero_savings("JPCP", gpu_cost_per_hour=2.0)
+    assert s["scale_to_zero_events"] == 600
+    assert s["saved_gpu_hours"] == pytest.approx(600.0)
+
+
 def test_cli_smoke():
     from typer.testing import CliRunner
 

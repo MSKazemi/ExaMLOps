@@ -196,10 +196,35 @@ def tenant_visible(principal: dict, resource_tenant: str | None) -> bool:
     *platform* admin: an admin whose identity comes from a data center's IdP administers that
     center's tenant and no other (ADR 0120 — a center's admin is not an admin of another center).
     """
+    # Both sides default to "default", and they must default the same way. Only the resource side
+    # did, while routes are handed the raw token payload — which for a locally issued token carries
+    # no `tenant` claim at all. So `None != "default"` and this denied *everything*, which is the
+    # likeliest reason no route ever called it: wiring it in emptied the page. The single-tenant
+    # case is exactly what `principal_from_claims` already documents ("tenant defaults to
+    # 'default' when the token carries no tenant claim"); saying it in one place and not the other
+    # is what left the two halves unable to meet.
     rt = resource_tenant or "default"
-    if principal.get("tenant") == rt:
+    if (principal.get("tenant") or "default") == rt:
         return True
     return principal.get("role") == "admin" and not principal.get("idp")
+
+
+def tenant_sql_filter(principal: dict, column: str = "tenant") -> tuple[str, tuple]:
+    """A SQL predicate restricting rows to what ``principal`` may see, and its parameters.
+
+    `scope_to_tenant` filters rows in Python, which is correct only when the query returned every
+    row the caller might be entitled to. A query carrying its own ``LIMIT`` does not: the database
+    takes the newest N rows across **all** tenants and the filter then removes the ones belonging
+    to others, so a caller on a busy platform is shown fewer of their own rows than exist — or
+    none — with nothing saying so. Put this in the ``WHERE`` and the limit applies to their rows.
+
+    Returns ``("1=1", ())`` for a principal who may see every tenant, so the caller can always
+    interpolate it unconditionally. Keep `scope_to_tenant` on the result as well: this narrows the
+    query, that one is the check.
+    """
+    if principal.get("role") == "admin" and not principal.get("idp"):
+        return "1=1", ()
+    return f"COALESCE({column}, 'default') = ?", (principal.get("tenant") or "default",)
 
 
 def assert_tenant_access(principal: dict, resource_tenant: str | None) -> None:

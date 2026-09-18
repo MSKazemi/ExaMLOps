@@ -168,11 +168,26 @@ def _visible(run: cli_runner.Run, principal: dict) -> bool:
     return principal.get("role") == "admin" or run.actor == _actor(principal)
 
 
-def _require(principal: dict, capability: str, why: str = "") -> None:
+def _require(
+    principal: dict, capability: str, why: str = "", request: Request | None = None
+) -> None:
+    """Refuse the role that lacks `capability`, then run the enforcing path for it.
+
+    Every other router names its capability in a route-level
+    `Depends(require_capability(...))`. This one cannot: the capability is chosen **per request**
+    from the tier of the command being run — `cli.run` for a read, `cli.write` for one that
+    changes platform state — and that is only known after the argv has been built. So the
+    enforcement `require_capability` would have done happens here instead, once the answer exists.
+    Without it a federated caller's centre saw only the coarse `api.write` for `/api/v1/cli/run`,
+    whatever `exa` command was inside it.
+    """
     role = principal.get("role", "")
     if not can(role, capability):
         detail = deny_reason(role, capability)
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"{why} {detail}".strip())
+    from iam_gate import enforce  # noqa: PLC0415 — keeps this module import-light
+
+    enforce(capability, principal, request)
 
 
 # ── catalog ───────────────────────────────────────────────────────────────────────────────
@@ -181,7 +196,7 @@ def _require(principal: dict, capability: str, why: str = "") -> None:
 @router.get("/catalog")
 async def get_catalog(request: Request, principal: dict = Depends(_console)) -> Response:
     """Every `exa` leaf command with its params, examples, panel and tier (gzip when accepted)."""
-    _require(principal, CLI_RUN)
+    _require(principal, CLI_RUN, request=request)
     cat = await _load_catalog()
     if "gzip" in request.headers.get("accept-encoding", ""):
         return Response(
@@ -196,7 +211,9 @@ async def get_catalog(request: Request, principal: dict = Depends(_console)) -> 
 
 
 @router.post("/runs", status_code=status.HTTP_202_ACCEPTED)
-async def start_run(payload: dict = Body(...), principal: dict = Depends(_console)) -> dict:
+async def start_run(
+    request: Request, payload: dict = Body(...), principal: dict = Depends(_console)
+) -> dict:
     """Run one `exa` command. Body: ``{command, args?, format?: json|text, context?, confirm?}``.
 
     Returns the run record at once (status ``running``); poll ``GET /runs/{id}`` for the output.
@@ -226,7 +243,7 @@ async def start_run(payload: dict = Body(...), principal: dict = Depends(_consol
 
     tier = invocation.tier
     if tier == surface.READ:
-        _require(principal, CLI_RUN)
+        _require(principal, CLI_RUN, request=request)
     else:
         escalated = tier != descriptor["tier"]
         why = (
@@ -235,7 +252,7 @@ async def start_run(payload: dict = Body(...), principal: dict = Depends(_consol
             if escalated
             else f"`exa {command}` is an {tier} command."
         )
-        _require(principal, CLI_WRITE, why)
+        _require(principal, CLI_WRITE, why, request=request)
     if tier == surface.DESTRUCTIVE and str(payload.get("confirm") or "").strip() != command:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -324,6 +341,10 @@ def _max_upload() -> int:
         return 25 * 1024 * 1024
 
 
+#: Most files one listing will return. A workspace with more is reported as truncated.
+_LIST_LIMIT = 2000
+
+
 def _workspace_path(path: str) -> tuple[Path, str]:
     surface = _surface()
     root = cli_runner.workspace_root()
@@ -335,31 +356,38 @@ def _workspace_path(path: str) -> tuple[Path, str]:
 
 
 @router.get("/workspace")
-async def list_workspace(principal: dict = Depends(_console)) -> dict:
+async def list_workspace(request: Request, principal: dict = Depends(_console)) -> dict:
     """Files in the CLI workspace (inputs uploaded for commands, outputs they wrote)."""
-    _require(principal, CLI_WRITE, "The CLI workspace is admin-only.")
+    _require(principal, CLI_WRITE, "The CLI workspace is admin-only.", request=request)
     root = cli_runner.workspace_root()
-    files = []
-    for i, p in enumerate(sorted(root.rglob("*"))):
-        if i >= 2000:
+    files: list[dict[str, Any]] = []
+    truncated = False
+    # The cap is right — this must not stream an unbounded tree — but a truncated answer has to
+    # admit it is one. A full-looking list of 2000 let an operator conclude that the output a
+    # command had just written was never produced.
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.is_symlink():
+            continue
+        if len(files) >= _LIST_LIMIT:
+            truncated = True
             break
-        if p.is_file() and not p.is_symlink():
-            st = p.stat()
-            files.append(
-                {"path": str(p.relative_to(root)), "size": st.st_size, "modified": st.st_mtime}
-            )
-    return {"root": "cli-workspace", "files": files}
+        st = p.stat()
+        files.append(
+            {"path": str(p.relative_to(root)), "size": st.st_size, "modified": st.st_mtime}
+        )
+    return {"root": "cli-workspace", "files": files, "truncated": truncated, "limit": _LIST_LIMIT}
 
 
 @router.post("/workspace", status_code=status.HTTP_201_CREATED)
 async def upload_workspace_file(
+    request: Request,
     file: UploadFile = File(...),
     path: str = Form(""),
     overwrite: bool = Form(False),
     principal: dict = Depends(_console),
 ) -> dict:
     """Upload an input file (e.g. the JSONL for `exa rag ingest --docs`) into the workspace."""
-    _require(principal, CLI_WRITE, "Uploading to the CLI workspace is admin-only.")
+    _require(principal, CLI_WRITE, "Uploading to the CLI workspace is admin-only.", request=request)
     target, rel = _workspace_path(path or (file.filename or ""))
     if target.exists() and not overwrite:
         raise HTTPException(status.HTTP_409_CONFLICT, f"{rel} exists — set overwrite to replace")
@@ -376,8 +404,12 @@ async def upload_workspace_file(
 
 
 @router.get("/workspace/file")
-async def download_workspace_file(path: str, principal: dict = Depends(_console)) -> FileResponse:
-    _require(principal, CLI_WRITE, "Downloading from the CLI workspace is admin-only.")
+async def download_workspace_file(
+    request: Request, path: str, principal: dict = Depends(_console)
+) -> FileResponse:
+    _require(
+        principal, CLI_WRITE, "Downloading from the CLI workspace is admin-only.", request=request
+    )
     target, rel = _workspace_path(path)
     if not target.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"no such file: {rel}")
@@ -385,8 +417,12 @@ async def download_workspace_file(path: str, principal: dict = Depends(_console)
 
 
 @router.delete("/workspace/file")
-async def delete_workspace_file(path: str, principal: dict = Depends(_console)) -> dict:
-    _require(principal, CLI_WRITE, "Deleting from the CLI workspace is admin-only.")
+async def delete_workspace_file(
+    request: Request, path: str, principal: dict = Depends(_console)
+) -> dict:
+    _require(
+        principal, CLI_WRITE, "Deleting from the CLI workspace is admin-only.", request=request
+    )
     target, rel = _workspace_path(path)
     if not target.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"no such file: {rel}")

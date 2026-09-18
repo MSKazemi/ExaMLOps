@@ -32,6 +32,35 @@ import pytest
 # What is never legitimate is reaching *the platform's own service ports on this host*: whether
 # they answer is a property of the developer's machine, not of the code under test.
 
+
+@pytest.fixture(autouse=True)
+def _restore_syspath():
+    """Undo anything a test adds to ``sys.path``, so it cannot shadow a package for later tests.
+
+    `test_control_plane_token_file` inserted the dashboard's backend directory and left it there.
+    That directory contains the dashboard's own ``alembic/`` migrations, so from then on
+    ``import alembic`` resolved to it instead of the installed library, and every later test that
+    reached MLflow's SQLAlchemy store died with "No module named 'alembic.migration'" — 15 of them
+    in the serial Postgres job. Under ``-n auto`` the victims usually landed in other workers, so
+    the suite looked clean and the Postgres gate looked broken.
+
+    It restores rather than fails, for the same reason the ``PLATFORM_DB`` fixture below undoes a
+    direct ``os.environ`` write instead of failing the forty modules that make one: a test often
+    gains a path by *importing* a module that inserts one, which the test cannot control, and the
+    harm — shadowing — is entirely prevented by putting the path back. Prefer
+    ``monkeypatch.syspath_prepend`` in new tests anyway; it says what it does.
+
+    Module-level insertions (the house pattern for putting `platform/cli/src` on the path) happen at
+    import time, not inside a test, so they are left alone.
+    """
+    import sys
+
+    before = list(sys.path)
+    yield
+    if sys.path != before:
+        sys.path[:] = before
+
+
 _LIVE_PORTS = {
     14200: "Prefect",
     15000: "MLflow",

@@ -66,6 +66,9 @@ TIERS: dict[str, str] = {
     "approvals delete": D,
     "approvals list": A,
     "approvals reject": A,
+    "commands cancel": A,
+    "commands list": R,
+    "commands show": R,
     "ask": R,
     "assets declare": A,
     "assets graph": R,
@@ -103,6 +106,7 @@ TIERS: dict[str, str] = {
     "autopilot contract": A,
     "autopilot disable": A,
     "autopilot enable": A,
+    "autopilot follow": X,
     "autopilot interrupt": D,
     "autopilot quarantine": D,
     "autopilot release": A,
@@ -216,6 +220,7 @@ TIERS: dict[str, str] = {
     "events publish": A,
     "events relay": A,
     "events stats": R,
+    "events tail": R,
     "exchange import": D,
     "exchange inspect": A,
     "exchange pack": A,
@@ -455,6 +460,7 @@ TIERS: dict[str, str] = {
     "serve explain explain": R,
     "serve explain history": R,
     "serve infer-check": R,
+    "serve loadtest": A,  # sends sustained traffic at the model server: an operator's decision
     "serve llm args": R,
     "serve llm bench": A,
     "serve llm chat": A,
@@ -473,6 +479,8 @@ TIERS: dict[str, str] = {
     "serve shadow enable": A,
     "serve shadow log": R,
     "serve shadow status": R,
+    "serve snapshot publish": A,
+    "serve snapshot show": R,
     "serve traffic": D,
     "serve traffic-list": R,
     "slo apply": A,
@@ -518,6 +526,9 @@ CLI_ONLY_REASONS: dict[str, str] = {
     "dashboard server's own session token to whoever clicked; use `exa auth token` in a terminal.",
     "chat": "Interactive REPL that reads from a terminal. Use `ask` here (one question, "
     "optional --session) or the Copilot panel for a conversation.",
+    "autopilot follow": "A long-running consumer of the event backbone that runs a model's "
+    "autopilot cycle when its training run completes. Run it as a service on a host with "
+    "`exa autopilot follow`; `autopilot run` is the one-shot equivalent.",
     "mcp serve": "Starts a long-running MCP server process; it is not a request/response "
     "command. Run it on a host with `exa mcp serve`; `mcp tools|resources|prompts` list "
     "what it would expose.",
@@ -629,6 +640,7 @@ _EXTRA_FS: frozenset[tuple[str, str]] = frozenset(
         ("auth verify", "token_file"),
         ("upgrade apply", "backup_dir"),
         ("finops carbon policy evaluate", "trace"),
+        ("serve loadtest", "body"),
     }
 )
 # A path-or-URL parameter: an http(s) value passes through (and is a network target), anything

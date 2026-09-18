@@ -121,13 +121,14 @@ def _canonical_hash(manifest: dict[str, Any]) -> str:
 
 
 def _sign(manifest_hash: str) -> tuple[str | None, str | None]:
-    """Sign the manifest hash with the D3 HMAC key; degrade to unsigned if no key."""
-    try:
-        from examlops.supplychain import _hmac_sign
+    """Sign the manifest hash with the D3 HMAC key; degrade to unsigned when none is configured.
 
-        return _hmac_sign(manifest_hash), "hmac-sha256"
-    except Exception:
-        return None, None
+    A signing *failure* is logged rather than recorded as though it were policy — see
+    :func:`examlops.supplychain.sign_or_explain`.
+    """
+    from examlops.supplychain import sign_or_explain
+
+    return sign_or_explain(manifest_hash, subject=f"reproducibility bundle {manifest_hash[:12]}")
 
 
 def build_bundle(

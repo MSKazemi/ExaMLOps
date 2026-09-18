@@ -44,7 +44,15 @@ from langgraph.types import Command
 from starlette.background import BackgroundTask
 
 from skipper import config, instrument
-from skipper.auth import AgentIdentity, authenticate_bearer, scope_thread_id, server_secret
+from skipper.auth import (
+    MISCONFIGURED_DETAIL,
+    AgentIdentity,
+    auth_misconfigured,
+    authenticate_bearer,
+    credential_config_problems,
+    scope_thread_id,
+    server_secret,
+)
 from skipper.turns import TurnBusy, TurnCoordinationUnavailable, TurnLease, acquire_turn
 
 router = APIRouter()
@@ -61,6 +69,8 @@ _EPHEMERAL_ACTION_SECRET = secrets.token_bytes(32)
 
 def _check_auth(authorization: str | None) -> AgentIdentity:
     """Resolve the verified bearer credential to its server-owned principal."""
+    if auth_misconfigured():
+        raise HTTPException(status_code=503, detail=MISCONFIGURED_DETAIL)
     identity = authenticate_bearer(authorization)
     if identity is None:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
@@ -492,6 +502,13 @@ async def _stream_completion(
 
 @router.get("/healthz")
 async def healthz():
+    # A partly-rejected credential map leaves the agent serving — the principals that parsed still
+    # work — so this is `degraded`, not an outage. It is reported as a *count*: /healthz is
+    # unauthenticated, and which principals a centre provisions is not something it should tell a
+    # caller. The reasons, naming each principal, go to the log.
+    problems = credential_config_problems()
+    if problems:
+        return {"status": "degraded", "credential_config_problems": len(problems)}
     return {"status": "ok"}
 
 

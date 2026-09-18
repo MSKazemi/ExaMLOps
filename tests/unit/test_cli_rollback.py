@@ -215,3 +215,71 @@ def test_rollback_reason_stored():
         row = conn.execute("SELECT reason FROM model_rollbacks WHERE model='JPCP'").fetchone()
     assert row is not None
     assert row["reason"] == "bad metrics"
+
+
+def test_fetch_versions_follows_mlflows_page_token():
+    """`_fetch_versions` promises *all* versions, and rollback is what needs the old ones.
+
+    MLflow pages `model-versions/search`. Reading one page and stopping caps how far back a
+    rollback can reach — on exactly the operation whose whole purpose is to reach backwards — and
+    it does it silently: the older versions are simply absent from the candidate list, so the
+    command reports the target version does not exist.
+    """
+    pages = [
+        {
+            "model_versions": [{"version": "9", "status": "READY"}],
+            "next_page_token": "p2",
+        },
+        {
+            "model_versions": [{"version": "8", "status": "READY"}],
+            "next_page_token": "p3",
+        },
+        {"model_versions": [{"version": "3", "status": "READY"}]},
+    ]
+    seen_tokens = []
+
+    def _urlopen(req, timeout=10):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        token = None
+        if "page_token=" in url:
+            token = url.split("page_token=")[1].split("&")[0]
+        seen_tokens.append(token)
+        payload = json.dumps(pages[len(seen_tokens) - 1]).encode()
+        ctx = MagicMock()
+        ctx.__enter__ = lambda s: MagicMock(read=lambda: payload)
+        ctx.__exit__ = MagicMock(return_value=False)
+        return ctx
+
+    cfg = MagicMock(mlflow_url="http://mlflow")
+    with patch("urllib.request.urlopen", side_effect=_urlopen):
+        versions = rollback_cmd._fetch_versions(cfg, "jpcp")
+
+    assert [v["version"] for v in versions] == ["9", "8", "3"], versions
+    assert seen_tokens == [None, "p2", "p3"], seen_tokens
+
+
+def test_fetch_versions_refuses_a_registry_that_repeats_its_page_token():
+    """A token that never advances must end the loop loudly, not quietly.
+
+    Returning the pages read so far would be the original short-list bug wearing a loop, and
+    looping forever would hang the command. `_output.error` exits non-zero, which is the honest
+    answer: the registry is misbehaving and the rollback candidates cannot be trusted.
+    """
+    calls = []
+
+    def _urlopen(req, timeout=10):
+        calls.append(req.full_url)
+        payload = json.dumps(
+            {"model_versions": [{"version": "9", "status": "READY"}], "next_page_token": "same"}
+        ).encode()
+        ctx = MagicMock()
+        ctx.__enter__ = lambda s: MagicMock(read=lambda: payload)
+        ctx.__exit__ = MagicMock(return_value=False)
+        return ctx
+
+    cfg = MagicMock(mlflow_url="http://mlflow")
+    import typer
+
+    with patch("urllib.request.urlopen", side_effect=_urlopen), pytest.raises(typer.Exit):
+        rollback_cmd._fetch_versions(cfg, "jpcp")
+    assert len(calls) == 2, calls  # the first page, then the repeat that is caught

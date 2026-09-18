@@ -70,7 +70,12 @@ def audit(
     if source:
         query += " AND source=?"
         params.append(source)
-    query += " ORDER BY ts DESC LIMIT ?"
+    # `id` breaks the tie, because `ts` cannot: CURRENT_TIMESTAMP has one-second resolution and a
+    # single retrain or autopilot cycle writes several events inside one second. Left to the query
+    # plan, SQLite scans the tied group forward — so "the most recent 5" returned the five OLDEST
+    # of that second, in ascending order, stably enough to look correct. `id` is the hash chain's
+    # own order, which is the order an auditor is reconstructing.
+    query += " ORDER BY ts DESC, id DESC LIMIT ?"
     params.append(limit)
 
     with get_db() as conn:
@@ -154,6 +159,9 @@ def chain(
 @app.command("autonomy")
 def autonomy(
     last: str = typer.Option("30d", "--last", help="Time window (e.g. 7d, 30d)"),
+    limit: int = typer.Option(
+        500, "--limit", help="How many actions to list (the counts always cover the whole window)"
+    ),
 ) -> None:
     """Every autonomous action in the window, and whether it declared an inverse.
 
@@ -162,16 +170,33 @@ def autonomy(
     ``rollback_ref`` is listed rather than filtered out — ADR 0110 decision 4 calls that a policy
     violation, and hiding them would defeat the point of asking.
     """
-    from examlops.data.audit import autonomous_actions
+    from examlops.data.audit import (
+        autonomous_actions,
+        count_autonomous_actions,
+        count_autonomous_without_rollback,
+    )
 
-    rows = autonomous_actions(since_days=_parse_days(last))
-    if not rows:
+    days = _parse_days(last)
+    # The listing is bounded (nobody reads a hundred thousand rows); the totals are not. Counting
+    # violations by looking at the page would answer "among the newest few hundred" while printing
+    # a sentence that reads as "in the window" — and the compliance pack sends an auditor here.
+    rows = autonomous_actions(since_days=days, limit=limit)
+    total = count_autonomous_actions(since_days=days)
+    without_rollback = count_autonomous_without_rollback(since_days=days)
+    if not total:
         _output.ok(f"No autonomous actions recorded in the last {last}")
         return
-    undoable = sum(1 for r in rows if r["undoable"])
+    undoable = total - without_rollback
     if _output.json_mode:
         _output.print_json(
-            {"window": last, "count": len(rows), "undoable": undoable, "actions": rows}
+            {
+                "window": last,
+                "count": total,
+                "undoable": undoable,
+                "without_rollback": without_rollback,
+                "listed": len(rows),
+                "actions": rows,
+            }
         )
         return
     _output.print_table(
@@ -190,9 +215,14 @@ def autonomy(
             for r in rows
         ],
     )
-    if undoable < len(rows):
+    if len(rows) < total:
         _output.warning(
-            f"{len(rows) - undoable} of {len(rows)} autonomous action(s) declared no inverse. "
+            f"Showing the {len(rows)} most recent of {total} autonomous action(s) in the window. "
+            "The counts below are for the whole window, not this page."
+        )
+    if without_rollback:
+        _output.warning(
+            f"{without_rollback} of {total} autonomous action(s) declared no inverse. "
             "ADR 0110 decision 4 treats a NULL rollback_ref on an autonomous action as a policy "
             "violation; the refusal that enforces it is not built yet, so these are reported."
         )
@@ -204,6 +234,12 @@ def verify() -> None:
     from examlops.data.audit import verify_audit_chain
 
     result = verify_audit_chain()
+    # Said in *both* modes. `_output.warning` writes to stderr, so stdout still carries exactly one
+    # JSON document while a scripted compliance check — and whoever is watching it — is told what
+    # the verifier could not read. A green exit over a partly-read log is the failure this command
+    # exists to prevent, and that is as true of the machine path as of the human one.
+    if result.get("warning"):
+        _output.warning(result["warning"])
     if _output.json_mode:
         _output.print_json(result)
         if not result["ok"]:
@@ -214,11 +250,6 @@ def verify() -> None:
             f"Audit chain verified — {result['count']} chained event(s) intact "
             f"(head {result.get('head_hash', '')[:12]}…)."
         )
-        # Say what was NOT verified. A green tick over a partially-read log is the failure this
-        # exists to prevent: until 2026-09-02 every dashboard-written event was unchained, and
-        # this command reported success with a count that silently excluded all of them.
-        if result.get("unchained"):
-            _output.warning(result["warning"])
     else:
         _output.error(
             f"AUDIT CHAIN BROKEN at event id {result['broken_at_id']}: {result['reason']}. "

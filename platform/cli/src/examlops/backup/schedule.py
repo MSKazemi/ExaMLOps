@@ -61,16 +61,30 @@ def run_cycle(
     except Exception as exc:  # noqa: BLE001
         log.warning("retention prune failed: %r", exc)
     pushed = False
+    push_error: str | None = None
+    push_uri: str | None = None
     if push:
         try:
-            remote.push(res.bundle_dir)
+            push_uri = remote.push(res.bundle_dir).get("uri")
             pushed = True
         except Exception as exc:  # noqa: BLE001 — off-site push never fails the local backup
+            push_error = f"{type(exc).__name__}: {exc}"[:300]
             log.warning("off-site push failed: %r", exc)
+        # Carried on the result, not just logged. A cycle whose replication has never once worked
+        # returned exactly what a fully replicated one returns, and the operator's last line was a
+        # green tick — so a backup that existed only on the host it was taken from looked like a
+        # disaster-recovery backup. The status stays untouched on purpose: the *local* bundle is
+        # fine, and losing it over a broken off-site target would be the worse failure.
+        res.offsite = {"requested": True, "ok": pushed, "error": push_error, "uri": push_uri}
     _audit(
         "backup_schedule_run",
         res.bundle_id,
-        {"status": res.overall_status, "pushed": pushed, "pruned": len(pruned)},
+        {
+            "status": res.overall_status,
+            "pushed": pushed,
+            "push_error": push_error,
+            "pruned": len(pruned),
+        },
     )
     log.info(
         "backup cycle %s → %s (pushed=%s, pruned=%d)",

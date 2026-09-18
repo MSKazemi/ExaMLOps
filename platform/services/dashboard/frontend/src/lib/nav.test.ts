@@ -56,7 +56,6 @@ const KNOWN_ROUTES = new Set([
   '/platform/services',
   '/platform/providers',
   '/platform/config',
-  '/platform/integrations',
   '/platform/jupyter',
   '/platform/flags',
 ])
@@ -126,11 +125,10 @@ describe('ROUTE_REDIRECTS (clean-slate URL migration)', () => {
 
   it('covers every relocated console (old flat path has a redirect)', () => {
     // Every group item that moved under a lifecycle prefix should have a back-compat redirect,
-    // except the two whose flat name differs (seanerbus→integrations, status→self-obs) — covered explicitly.
+    // except the one whose flat name differs (status→self-obs) — covered explicitly.
     expect(ROUTE_REDIRECTS['/models']).toBe('/build/models')
     expect(ROUTE_REDIRECTS['/drift']).toBe('/operate/drift')
     expect(ROUTE_REDIRECTS['/governance']).toBe('/govern/governance')
-    expect(ROUTE_REDIRECTS['/seanerbus']).toBe('/platform/integrations')
     expect(ROUTE_REDIRECTS['/status']).toBe('/operate/self-obs')
     expect(ROUTE_REDIRECTS['/next-gen']).toBe('/serve/nextgen')
   })
@@ -154,7 +152,7 @@ describe('activeSectionId', () => {
     expect(activeSectionId('/operate/drift')).toBe('operate')
     expect(activeSectionId('/govern/audit')).toBe('govern')
     expect(activeSectionId('/build/models/JPCP')).toBe('build')
-    expect(activeSectionId('/platform/integrations')).toBe('platform')
+    expect(activeSectionId('/platform/jupyter')).toBe('platform')
   })
 
   it('returns null for Home, utility and unknown routes', () => {

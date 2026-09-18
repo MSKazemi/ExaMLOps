@@ -6,11 +6,15 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
+import os
 import secrets
 import time
 from dataclasses import dataclass
 
 from skipper import config
+
+logger = logging.getLogger(__name__)
 
 _COOKIE_VERSION = "v1"
 _EPHEMERAL_SECRET = secrets.token_bytes(32)
@@ -24,29 +28,108 @@ class AgentIdentity:
     tenant: str
 
 
-def _credentials() -> dict[str, str]:
+# `_credentials()` runs on every authenticated request; log each distinct problem once so a broken
+# map is visible in the log without flooding it.
+_REPORTED_PROBLEMS: set[str] = set()
+
+
+def reset_reported_credential_problems() -> None:
+    """Forget what has already been logged, so the next read reports afresh (tests, reload)."""
+    _REPORTED_PROBLEMS.clear()
+
+
+def _parse_credentials() -> tuple[dict[str, str], list[str]]:
+    """The credential map, plus every entry that was refused and why.
+
+    Refusing a malformed entry is right — `auth_required` deliberately stays on for a broken map,
+    so nothing is opened up. What was wrong was doing it **silently**: an operator who provisions
+    five principals and gets three has no signal anywhere that the other two were rejected, and
+    their 401s are indistinguishable from a wrong token. The reasons name the principal only;
+    credential material never appears in a message.
+    """
     credentials: dict[str, str] = {}
+    problems: list[str] = []
     if config.AGENT_API_KEY:
         credentials["primary"] = config.AGENT_API_KEY
     if config.AGENT_API_KEYS_JSON:
         try:
             configured = json.loads(config.AGENT_API_KEYS_JSON)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
             configured = {}
-        if isinstance(configured, dict):
-            credentials.update(
-                {
-                    str(principal): token
-                    for principal, token in configured.items()
-                    if principal and isinstance(token, str) and token
-                }
+            problems.append(
+                f"AGENT_API_KEYS_JSON could not be parsed as JSON ({type(exc).__name__})"
             )
+        if isinstance(configured, dict):
+            for principal, token in configured.items():
+                if not principal:
+                    problems.append("an entry with an empty principal name was ignored")
+                elif not isinstance(token, str):
+                    problems.append(
+                        f"principal {str(principal)!r} was ignored: its value is "
+                        f"{type(token).__name__}, not a string"
+                    )
+                elif not token:
+                    problems.append(f"principal {str(principal)!r} was ignored: its value is empty")
+                else:
+                    credentials[str(principal)] = token
+        elif not problems:
+            problems.append(
+                f"AGENT_API_KEYS_JSON is a {type(configured).__name__}, not an object of "
+                "principal → token; every entry was ignored"
+            )
+    return credentials, problems
+
+
+def credential_config_problems() -> list[str]:
+    """Credential-map entries the server refused. Empty when the map applied cleanly."""
+    return _parse_credentials()[1]
+
+
+def _credentials() -> dict[str, str]:
+    credentials, problems = _parse_credentials()
+    for problem in problems:
+        if problem not in _REPORTED_PROBLEMS:
+            _REPORTED_PROBLEMS.add(problem)
+            logger.warning("Agent credential configuration rejected: %s", problem)
     return credentials
 
 
-def auth_required() -> bool:
-    # A malformed explicit credential map must fail closed, not turn authentication off.
+_LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def credentials_configured() -> bool:
     return bool(config.AGENT_API_KEY or config.AGENT_API_KEYS_JSON)
+
+
+def unauthenticated_permitted() -> bool:
+    """Whether the anonymous ``local`` identity may be used at all.
+
+    Only for an agent bound to loopback, or with an explicit development opt-out. The compose
+    service binds 0.0.0.0 inside the stack network, where every container — JupyterHub notebooks
+    included — can reach it, and the agent holds a write-capable control-plane credential. An unset
+    ``AGENT_API_KEY`` there used to mean "everyone is `local`" (plan P0.7 / finding S5).
+    """
+    host = os.getenv("AGENT_SERVER_HOST", "127.0.0.1").strip().lower()
+    opted_out = os.getenv("AGENT_ALLOW_UNAUTHENTICATED", "").strip().lower() in _TRUTHY
+    return host in _LOOPBACK or opted_out
+
+
+def auth_required() -> bool:
+    # A malformed explicit credential map must fail closed, not turn authentication off; so must a
+    # network-exposed agent with no credential at all.
+    return credentials_configured() or not unauthenticated_permitted()
+
+
+def auth_misconfigured() -> bool:
+    """Exposed beyond loopback with no credential: every request is refused until one is set."""
+    return not credentials_configured() and not unauthenticated_permitted()
+
+
+MISCONFIGURED_DETAIL = (
+    "Agent authentication is not configured: set AGENT_API_KEY or AGENT_API_KEYS_JSON "
+    "(or bind AGENT_SERVER_HOST=127.0.0.1)"
+)
 
 
 def local_identity() -> AgentIdentity:

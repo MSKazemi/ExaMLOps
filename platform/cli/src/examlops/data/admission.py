@@ -58,7 +58,7 @@ def claim_next_admission(
     """
 
     def _claim() -> dict[str, Any] | None:
-        with _immediate_write() as conn:
+        with _immediate_write("admission") as conn:
             # Recycle crashed 'running' items whose lease expired.
             conn.execute(
                 "UPDATE admission_queue SET state='queued', started_at=NULL "
@@ -122,13 +122,32 @@ def complete_admission(item_id: int, *, state: str = "done", reason: str | None 
     write_retry(_done)
 
 
-def admission_stats() -> dict[str, int]:
-    """Counts per state for monitoring the admission queue."""
+def admission_stats() -> dict[str, Any]:
+    """Counts per state, plus how long the oldest queued item has been waiting.
+
+    Counts alone cannot tell a busy queue from a **stranded** one. This facade does not dispatch:
+    ``worker_step`` takes an injected ``dispatch`` and something has to call it, so an item
+    submitted where nothing drains waits forever — and ``{"queued": 1}`` looks exactly like a queue
+    that is simply busy this second. ``oldest_queued_age_s`` is the number that distinguishes them;
+    it is ``None`` when nothing is queued.
+    """
     with get_db() as conn:
         rows = conn.execute(
             "SELECT state, COUNT(*) AS c FROM admission_queue GROUP BY state"
         ).fetchall()
-    out = {"queued": 0, "running": 0, "done": 0, "rejected": 0, "failed": 0}
+        waiting = conn.execute(
+            "SELECT MIN(enqueued_at) AS oldest FROM admission_queue WHERE state='queued'"
+        ).fetchone()
+        age = None
+        if waiting and waiting["oldest"]:
+            age_row = conn.execute(
+                "SELECT CAST(strftime('%s', CURRENT_TIMESTAMP) AS INTEGER) "
+                "- CAST(strftime('%s', ?) AS INTEGER) AS age",
+                (waiting["oldest"],),
+            ).fetchone()
+            age = max(0, int(age_row["age"] or 0))
+    out: dict[str, Any] = {"queued": 0, "running": 0, "done": 0, "rejected": 0, "failed": 0}
     for r in rows:
         out[r["state"]] = r["c"]
+    out["oldest_queued_age_s"] = age
     return out

@@ -58,7 +58,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "sum(rate(ray_examlops_predict_requests_total{status=\"error\"}[5m])) / sum(rate(ray_examlops_predict_requests_total[5m]))",
+          "expr": "sum(rate(ray_examlops_predict_requests_total{status=~\"error|timeout|deadline_exceeded\"}[5m])) / sum(rate(ray_examlops_predict_requests_total{status=~\"success|error|timeout|deadline_exceeded\"}[5m]))",
           "legendFormat": "",
           "refId": "A"
         }
@@ -146,7 +146,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "1 - sum(increase(ray_examlops_predict_requests_total{status=\"error\"}[30d])) / clamp_min(sum(increase(ray_examlops_predict_requests_total[30d])), 1)",
+          "expr": "1 - sum(increase(ray_examlops_predict_requests_total{status=~\"error|timeout|deadline_exceeded\"}[30d])) / clamp_min(sum(increase(ray_examlops_predict_requests_total{status=~\"success|error|timeout|deadline_exceeded\"}[30d])), 1)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -170,7 +170,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "1 - clamp_min(sum(increase(ray_examlops_predict_requests_total{status=\"error\"}[30d])) / (0.005 * clamp_min(sum(increase(ray_examlops_predict_requests_total[30d])), 1)), 0)",
+          "expr": "1 - clamp_min(sum(increase(ray_examlops_predict_requests_total{status=~\"error|timeout|deadline_exceeded\"}[30d])) / (0.005 * clamp_min(sum(increase(ray_examlops_predict_requests_total{status=~\"success|error|timeout|deadline_exceeded\"}[30d])), 1)), 0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -195,17 +195,17 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "sum(rate(ray_examlops_predict_requests_total{status=\"error\"}[1h])) / (0.005 / (30 * 24))",
+          "expr": "sum(rate(ray_examlops_predict_requests_total{status=~\"error|timeout|deadline_exceeded\"}[1h])) / clamp_min(sum(rate(ray_examlops_predict_requests_total{status=~\"success|error|timeout|deadline_exceeded\"}[1h])), 0.001) / 0.005",
           "legendFormat": "burn_rate_1h",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(ray_examlops_predict_requests_total{status=\"error\"}[6h])) / (0.005 / (30 * 24))",
+          "expr": "sum(rate(ray_examlops_predict_requests_total{status=~\"error|timeout|deadline_exceeded\"}[6h])) / clamp_min(sum(rate(ray_examlops_predict_requests_total{status=~\"success|error|timeout|deadline_exceeded\"}[6h])), 0.001) / 0.005",
           "legendFormat": "burn_rate_6h",
           "refId": "B"
         },
         {
-          "expr": "sum(rate(ray_examlops_predict_requests_total{status=\"error\"}[24h])) / (0.005 / (30 * 24))",
+          "expr": "sum(rate(ray_examlops_predict_requests_total{status=~\"error|timeout|deadline_exceeded\"}[24h])) / clamp_min(sum(rate(ray_examlops_predict_requests_total{status=~\"success|error|timeout|deadline_exceeded\"}[24h])), 0.001) / 0.005",
           "legendFormat": "burn_rate_24h",
           "refId": "C"
         }
@@ -234,12 +234,13 @@
     {
       "id": 10,
       "type": "timeseries",
-      "title": "Request Rate by Model (success vs error)",
+      "title": "Request Rate by Model (served vs failed vs refused)",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"expr": "sum by(model_name) (rate(ray_examlops_predict_requests_total{status=\"success\"}[1m]))", "legendFormat": "{{model_name}} ✓", "refId": "A"},
-        {"expr": "sum by(model_name) (rate(ray_examlops_predict_requests_total{status=\"error\"}[1m]))",   "legendFormat": "{{model_name}} ✗", "refId": "B"}
+        {"expr": "sum by(model_name) (rate(ray_examlops_predict_requests_total{status=~\"error|timeout|deadline_exceeded\"}[1m]))",   "legendFormat": "{{model_name}} ✗", "refId": "B"},
+        {"expr": "sum by(model_name) (rate(ray_examlops_predict_requests_total{status=~\"invalid|not_found\"}[1m]))",   "legendFormat": "{{model_name}} refused (client)", "refId": "C"}
       ],
       "options": {
         "tooltip": {"mode": "multi", "sort": "desc"},
@@ -269,7 +270,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "sum by(model_name) (rate(ray_examlops_predict_requests_total{status=\"error\"}[5m])) / sum by(model_name) (rate(ray_examlops_predict_requests_total[5m])) * 100",
+          "expr": "sum by(model_name) (rate(ray_examlops_predict_requests_total{status=~\"error|timeout|deadline_exceeded\"}[5m])) / sum by(model_name) (rate(ray_examlops_predict_requests_total{status=~\"success|error|timeout|deadline_exceeded\"}[5m])) * 100",
           "legendFormat": "{{model_name}}",
           "refId": "A"
         }

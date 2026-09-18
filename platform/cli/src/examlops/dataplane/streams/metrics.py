@@ -17,8 +17,14 @@ Label rules (controller rulings R7 and R9.5):
 * ``dataplane_stream_telemetry_failed_total`` — **no labels**: fed by the spool's ``on_fail`` hook,
   and a sink failure is process-wide (the database is down), not a property of one stream.
 * ``dataplane_stream_consumer_lag{project,stream,partition}`` — the Kafka connector's distance
-  from each owned partition's high watermark, read from the broker's *cached* watermark (no extra
-  round trip) and cleared when the partition is revoked.
+  from each owned partition's high watermark, and cleared when the partition is revoked. The
+  watermark is librdkafka's cached one, refreshed by a real query on a bounded schedule
+  (``kafka_stream.WATERMARK_REFRESH_INTERVAL_S``): the cache is fed by fetch responses only, so a
+  paused or retry-parked partition would otherwise report no lag exactly while its backlog grows.
+* ``dataplane_stream_connector_state{project,stream,state}`` — one-hot, and cleared outright by
+  :func:`clear_connector_state` when the supervisor stops supervising the stream (it was deleted,
+  or became a push stream): a series nothing owns any more reports nothing, rather than reporting
+  ``stopped`` for ever.
 * ``dataplane_stream_embedding_{norm,mean,std}{model}`` — set by the ingress from the request's
   embedding summary; ``…_baseline{model}`` — set by :func:`on_baseline` from the stats keys
   ``norm_mean``/``mean_mean``/``std_mean``, exactly as the SeanerBUS bridge reads them.
@@ -38,8 +44,11 @@ _METRICS: dict[str, Any] | None = None
 _METRICS_LOCK = threading.Lock()
 
 # The last state each (project, stream)'s one-hot ``connector_state`` gauge was set to, so a state
-# change zeroes the previous series instead of leaving two states at 1.
+# change zeroes the previous series instead of leaving two states at 1, and every state it has ever
+# published, so :func:`clear_connector_state` can take the whole stream off the gauge — the zeroed
+# ones included — when the stream stops being supervised.
 _CONNECTOR_STATES: dict[tuple[str, str], str] = {}
+_CONNECTOR_SERIES: dict[tuple[str, str], set[str]] = {}
 _STATES_LOCK = threading.Lock()
 
 
@@ -276,9 +285,34 @@ def set_connector_state(project: str, stream: str, state: str) -> None:
     with _STATES_LOCK:
         previous = _CONNECTOR_STATES.get((project, stream))
         _CONNECTOR_STATES[(project, stream)] = state
+        _CONNECTOR_SERIES.setdefault((project, stream), set()).add(state)
         if previous is not None and previous != state:
             gauge.labels(project=project, stream=stream, state=previous).set(0)
         gauge.labels(project=project, stream=stream, state=state).set(1)
+
+
+def clear_connector_state(project: str, stream: str) -> None:
+    """Forget a stream's ``connector_state`` series entirely — every state it ever published, not
+    only the one at 1.
+
+    A stream deleted from the catalog, or one this process no longer supervises, otherwise keeps
+    reporting ``state="stopped" 1`` until the process restarts (live finding D8): a deleted stream
+    goes on looking like a stream that is down, and a dashboard counting stopped streams counts
+    one that no longer exists. The lag series already behave this way on revoke
+    (:func:`clear_consumer_lag`); this is the same rule for the state gauge.
+    """
+    m = _metrics()
+    with _STATES_LOCK:
+        _CONNECTOR_STATES.pop((project, stream), None)
+        states = _CONNECTOR_SERIES.pop((project, stream), set())
+    if not m:
+        return
+    gauge = m["connector_state"]
+    for state in states:
+        try:
+            gauge.remove(project, stream, state)
+        except KeyError:  # never published (another registry, or already removed)
+            pass
 
 
 def spool_hooks() -> tuple[Callable[[], None], Callable[[], None]]:
@@ -298,6 +332,7 @@ __all__ = [
     "DEAD_LETTER_OTHER_REASON",
     "DEAD_LETTER_REASONS",
     "SPOOL_STREAM_LABEL",
+    "clear_connector_state",
     "clear_consumer_lag",
     "dead_letter",
     "dead_letter_reason",

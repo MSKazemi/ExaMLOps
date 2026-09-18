@@ -14,7 +14,7 @@ Reads are viewer-gated; writes require ``platform.manage`` (admin).
 from __future__ import annotations
 
 from auth import require_role
-from capabilities import PLATFORM_MANAGE, can, deny_reason
+from capabilities import PLATFORM_MANAGE, can, deny_reason, require_capability
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 router = APIRouter(prefix="/v1/platform-ops", tags=["platform-ops"])
@@ -100,6 +100,11 @@ async def providers(project: str = Query("platform-ops"), _=Depends(_viewer)) ->
 async def set_cost(
     body: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PLATFORM_MANAGE)),
 ) -> dict:
     """Set the compute-node cost rate card. Governed + audited (source=dashboard)."""
     _require_manage(principal)
@@ -118,6 +123,11 @@ async def set_cost(
 async def deploy_provider(
     body: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PLATFORM_MANAGE)),
 ) -> dict:
     """Deploy (AST-gate + activate) a calculation provider authored in the browser. Governed + audited."""
     _require_manage(principal)
@@ -141,6 +151,11 @@ async def deploy_provider(
 async def set_knob(
     body: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(PLATFORM_MANAGE)),
 ) -> dict:
     """Set a platform.db knob (traffic/autoscale) for a model. Governed + audited."""
     _require_manage(principal)

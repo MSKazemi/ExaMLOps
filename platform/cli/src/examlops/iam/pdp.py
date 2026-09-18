@@ -50,6 +50,8 @@ ACTION_MIN_ROLE: dict[str, str] = {
     "search": "viewer",
     "api.read": "viewer",
     "cli.run": "viewer",
+    # Calling a served model through the serving gateway (ADR 0126): any authenticated role.
+    "serving.infer": "viewer",
     "api.write": "operator",
     "retrain.trigger": "operator",
     "model.promote": "operator",

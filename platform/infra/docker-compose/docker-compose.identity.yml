@@ -1,0 +1,197 @@
+# Workload identities for the platform's services — SPIRE on this Docker host (ADR 0125).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.identity.yml up -d
+#   (add --profile events / --profile seanerbus as usual; their helpers follow the same profiles)
+#
+# Every service that calls the control plane gets a spiffe-helper carrying its identity label. The
+# helper keeps a five-minute JWT-SVID in a volume the service reads through CONTROL_PLANE_TOKEN_FILE
+# on every call. The control plane checks it against the trust bundle its own helper keeps, and maps
+# each SPIFFE ID to the principal and scopes its static credential had, so audit and commands name
+# the same service either way.
+#
+# Nothing waits on SPIRE: until a helper has written its file, the service sends its static
+# credential. Once every service shows up by SPIFFE ID in the audit trail, retire the static
+# secrets (docs/components/control-plane.md, "Workload identities (SPIFFE)").
+#
+# To change the mapping, override CONTROL_PLANE_WORKLOAD_IDENTITIES_JSON in a further -f file:
+# Compose cannot put JSON in a variable's default.
+#
+# Every hop to the model server is mutual TLS (ADR 0125 phases 2 and 3). The model server listens
+# on loopback only (RAY_SERVE_HOST=127.0.0.1, port 18001 no longer published), and a `serving-mtls`
+# Envoy in its network namespace is the one way in: it presents …/ray-serving and accepts the
+# gateway, the control plane, the dashboard, the agent and the SeanerBUS bridge by their X.509-SVIDs.
+# The gateway (with the `gateway` profile) speaks mutual TLS itself. Each other caller gets a
+# `serving-egress-<caller>` Envoy in its own network namespace. The caller sends plain HTTP to
+# 127.0.0.1:8001 and the sidecar carries it to ray-serving:8443 under the caller's identity. Only
+# the control plane, the dashboard and the agent may use the admin routes (reload, traffic rules).
+# Every Envoy takes its certificates from the SPIRE agent over SDS.
+#
+# Nothing else reaches the model server directly any more: host tools, notebooks and the Prefect
+# runner call the gateway (:18088) with a virtual key. After a training run the model server
+# picks up a promoted version from the serving snapshot the control plane recompiles (or, with no
+# snapshot, from its MLflow poll), not from the runner's reload webhook.
+
+include:
+  - identity/compose.yml
+
+# A caller's egress sidecar: plain HTTP in on the caller's loopback, mutual TLS out.
+x-serving-egress: &serving-egress
+  image: envoyproxy/envoy:v1.39.1@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4
+  command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
+  volumes:
+    - ./identity/serving-egress-envoy.yaml:/etc/envoy/envoy.yaml:ro
+    - spire_agent_socket:/run/spire/sockets:ro
+  # Envoy's own user. Started as root, the image's entrypoint chowns /dev/stdout and switches user,
+  # which fails without capabilities and the container exits.
+  user: "101:101"
+  mem_limit: 128m
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
+services:
+  control-plane:
+    environment:
+      EXAMLOPS_SPIFFE_TRUST_DOMAIN: ${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}
+      EXAMLOPS_SPIFFE_BUNDLE: /run/spire/svid/jwt-bundle.json
+      RAY_SERVE_URL: http://127.0.0.1:8001   # its egress sidecar
+      CONTROL_PLANE_WORKLOAD_IDENTITIES_JSON: >-
+        {"spiffe://${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}/seanerbus-bridge":
+        {"principal": "seanerbus-bridge", "tenant": "default", "scopes": ["retrain"]},
+        "spiffe://${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}/autopilot":
+        {"principal": "autopilot", "tenant": "default", "scopes": ["read", "retrain"]},
+        "spiffe://${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}/skipper":
+        {"principal": "skipper", "tenant": "default", "scopes": ["read", "retrain"]},
+        "spiffe://${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}/dashboard":
+        {"principal": "dashboard", "tenant": "default", "scopes": ["read", "write"]}}
+    volumes:
+      - svid_control_plane:/run/spire/svid:ro
+
+  dashboard:
+    environment:
+      CONTROL_PLANE_TOKEN_FILE: /run/spire/svid/control-plane.jwt
+      RAY_SERVE_URL: http://127.0.0.1:8001   # its egress sidecar
+    volumes:
+      - svid_dashboard:/run/spire/svid:ro
+
+  agent:
+    environment:
+      CONTROL_PLANE_TOKEN_FILE: /run/spire/svid/control-plane.jwt
+      RAY_SERVE_URL: http://127.0.0.1:8001   # its egress sidecar
+    volumes:
+      - svid_skipper:/run/spire/svid:ro
+
+  autopilot-follower:
+    environment:
+      CONTROL_PLANE_TOKEN_FILE: /run/spire/svid/control-plane.jwt
+    volumes:
+      - svid_autopilot:/run/spire/svid:ro
+
+  seanerbus-bridge:
+    environment:
+      CONTROL_PLANE_TOKEN_FILE: /run/spire/svid/control-plane.jwt
+      RAY_SERVE_URL: http://127.0.0.1:8001   # its egress sidecar
+    volumes:
+      - svid_seanerbus_bridge:/run/spire/svid:ro
+
+  # ── Every hop to the model server is mutual TLS (ADR 0125 phases 2 and 3) ─────────────────
+  ray-serving:
+    environment:
+      RAY_SERVE_HOST: 127.0.0.1   # reachable only from its own network namespace: serving-mtls
+    # Publishing 8001 (REST) or 8081 (gRPC) would forward to a port nothing listens on: both bind
+    # loopback here, and the gateway is the way in.
+    ports: !override
+      - "127.0.0.1:18265:8265"   # Ray dashboard
+      - "18080:8080"             # Ray metrics (Prometheus)
+
+  gateway:
+    labels:
+      examlops.spiffe: gateway
+    volumes:
+      - ./gateway/envoy-mtls.yaml:/etc/envoy/envoy.yaml:ro   # replaces envoy.yaml
+      - spire_agent_socket:/run/spire/sockets:ro
+    depends_on:
+      serving-mtls:
+        condition: service_started
+
+  serving-mtls:
+    image: envoyproxy/envoy:v1.39.1@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4
+    # In ray-serving's network namespace: listens on ray-serving:8443 and reaches the model server
+    # on 127.0.0.1:8001, so the forwarded hop never crosses a network. Restarted with ray-serving.
+    network_mode: service:ray-serving
+    labels:
+      examlops.spiffe: ray-serving
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
+    volumes:
+      - ./identity/serving-mtls-envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - spire_agent_socket:/run/spire/sockets:ro
+    user: "101:101"   # as the egress sidecars: root without capabilities fails in the entrypoint
+    mem_limit: 128m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      ray-serving:
+        condition: service_started
+        restart: true
+      spire-agent:
+        condition: service_healthy
+    restart: unless-stopped
+
+  serving-egress-control-plane:
+    <<: *serving-egress
+    network_mode: service:control-plane
+    labels:
+      examlops.spiffe: control-plane
+    depends_on:
+      control-plane:
+        condition: service_started
+        restart: true
+      spire-agent:
+        condition: service_healthy
+      serving-mtls:
+        condition: service_started
+
+  serving-egress-dashboard:
+    <<: *serving-egress
+    network_mode: service:dashboard
+    labels:
+      examlops.spiffe: dashboard
+    depends_on:
+      dashboard:
+        condition: service_started
+        restart: true
+      spire-agent:
+        condition: service_healthy
+      serving-mtls:
+        condition: service_started
+
+  serving-egress-agent:
+    <<: *serving-egress
+    network_mode: service:agent
+    labels:
+      examlops.spiffe: skipper
+    depends_on:
+      agent:
+        condition: service_started
+        restart: true
+      spire-agent:
+        condition: service_healthy
+      serving-mtls:
+        condition: service_started
+
+  serving-egress-seanerbus-bridge:
+    <<: *serving-egress
+    profiles: [seanerbus]
+    network_mode: service:seanerbus-bridge
+    labels:
+      examlops.spiffe: seanerbus-bridge
+    depends_on:
+      seanerbus-bridge:
+        condition: service_started
+        restart: true
+      spire-agent:
+        condition: service_healthy
+      serving-mtls:
+        condition: service_started

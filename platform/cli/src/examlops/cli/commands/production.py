@@ -13,6 +13,7 @@ from typing import Any
 
 import typer
 
+from examlops import control_plane_api, retrain_command
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
 from examlops.cli._enums import EnvOverlay
@@ -64,7 +65,7 @@ def _count_stale_models(modelzoo: dict[str, Any]) -> int:
 
 def _modelzoo_models(cfg) -> list[dict[str, Any]]:
     reachable, data, message = _safe_get(
-        f"{cfg.control_plane_url}/modelzoo/status", token=cfg.control_plane_token
+        f"{cfg.control_plane_url}/v1/modelzoo/status", token=cfg.control_plane_token
     )
     if not reachable or not isinstance(data, dict):
         _output.error(f"Unable to read ModelZoo status: {message}")
@@ -155,6 +156,9 @@ def _set_production_alias(cfg, model_name: str, version: str) -> dict[str, str]:
     mlflow.set_tracking_uri(cfg.mlflow_url)
     client = mlflow.MlflowClient()
     client.set_registered_model_alias(model_name, "Production", version)
+    from examlops import events
+
+    events.alias_changed(model_name, "Production", version, via="exa-production-rollback")
     return {"model": model_name, "alias": "Production", "version": version}
 
 
@@ -235,7 +239,9 @@ def _rollback(deploy_id: str, *, execute: bool) -> None:
     record["alias_results"] = alias_results
 
     try:
-        reload_result = _client.post(f"{cfg.ray_serve_url}/reload", {})
+        reload_result = _client.post(
+            f"{cfg.ray_serve_url}/reload", {}, token=cfg.ray_serve_admin_token
+        )
     except _client.ClientError as exc:
         fail_record("reload", str(exc))
         _output.error(f"Ray Serve reload failed: {exc}")
@@ -373,7 +379,7 @@ def _check_ray_serve(cfg) -> CheckResult:
 
 def _check_modelzoo(cfg) -> CheckResult:
     reachable, data, message = _safe_get(
-        f"{cfg.control_plane_url}/modelzoo/status", token=cfg.control_plane_token
+        f"{cfg.control_plane_url}/v1/modelzoo/status", token=cfg.control_plane_token
     )
     stale = _count_stale_models(data) if isinstance(data, dict) else 0
     total = len(data.get("models", [])) if isinstance(data, dict) else 0
@@ -438,8 +444,8 @@ def reload() -> None:
     """Hot-reload the control plane's model registry and re-run its startup checks (no restart)."""
     cfg = load_config()
     try:
-        result = _client.post(
-            f"{cfg.control_plane_url}/admin/reload", {}, token=cfg.control_plane_token
+        result = control_plane_api.reload_registry(
+            base=cfg.control_plane_url, token=cfg.control_plane_token
         )
     except _client.ClientError as exc:
         _output.error(
@@ -613,18 +619,27 @@ def deploy(
             "backend_name": None,
         }
         try:
-            result = _client.post(
-                f"{cfg.control_plane_url}/retrain", body, token=cfg.control_plane_token
+            result = retrain_command.submit(
+                body, base=cfg.control_plane_url, token=cfg.control_plane_token
             )
         except _client.ClientError as exc:
             fail_record(f"retrain:{model}", str(exc))
             _output.error(f"Retrain failed for {model}: {exc}")
             return
-        retrain_results.append({"model": model, "flow_run_id": result.get("flow_run_id")})
+        retrain_results.append(
+            {
+                "model": model,
+                "flow_run_id": result.get("flow_run_id"),
+                "command_id": result.get("command_id"),
+                "state": result.get("state"),
+            }
+        )
     deploy_record["retrain_results"] = retrain_results
 
     try:
-        reload_result = _client.post(f"{cfg.ray_serve_url}/reload", {})
+        reload_result = _client.post(
+            f"{cfg.ray_serve_url}/reload", {}, token=cfg.ray_serve_admin_token
+        )
     except _client.ClientError as exc:
         fail_record("reload", str(exc))
         _output.error(f"Ray Serve reload failed: {exc}")

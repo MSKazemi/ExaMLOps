@@ -14,6 +14,7 @@ the built-in default — nothing breaks when the user has configured nothing.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -21,6 +22,32 @@ from typing import Any
 
 from .base import Provider
 from .registry import get_provider
+
+logger = logging.getLogger(__name__)
+
+
+def degraded_to_default(domain: str, exc: BaseException, *, configured: str | None = None) -> None:
+    """Say that a provider failed and the built-in default is being used instead.
+
+    Falling back to the default is the documented behaviour of this layer (ADR 0074) and it is
+    right: a calculation must not stop because a site's plugin is broken. But **"nothing is
+    configured" and "what you configured is broken" are different events**, and every resolver
+    reported them the same way — by silently using the default. A site that had configured a
+    stricter promotion gate, a different carbon coefficient or its own placement score got the
+    platform's answer instead, with nothing anywhere to say so.
+
+    So the quiet path stays quiet, and this one is audible. It does not raise: the caller's work
+    continues on the default, which is the invariant this layer promises.
+    """
+    logger.warning(
+        "%s provider%s failed (%s: %s) — falling back to the built-in default. This is NOT the "
+        "same as configuring no provider: the answer you are getting is the platform's, not the "
+        "one this site configured.",
+        domain,
+        f" {configured!r}" if configured else "",
+        type(exc).__name__,
+        exc,
+    )
 
 
 def _config_dir() -> Path:

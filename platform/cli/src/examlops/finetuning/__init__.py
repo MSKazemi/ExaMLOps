@@ -19,11 +19,14 @@ register adapters, enforce the eval-gate, or exercise the routing + LRU semantic
 
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
 from examlops import data as platform_db
+
+logger = logging.getLogger(__name__)
 
 VALID_METHODS = ("lora", "qlora", "full")
 
@@ -52,14 +55,15 @@ class EvalGateError(RuntimeError):
 def _sign(
     adapter_id: str, base_ref: str, dataset_revision: str | None
 ) -> tuple[str | None, str | None]:
-    """Sign the adapter identity with the D3 HMAC key; degrade to unsigned if no key."""
-    try:
-        from examlops.supplychain import _hmac_sign
+    """Sign the adapter identity with the D3 HMAC key; degrade to unsigned when none is configured.
 
-        payload = f"{adapter_id}|{base_ref}|{dataset_revision or ''}"
-        return _hmac_sign(payload), "hmac-sha256"
-    except Exception:
-        return None, None
+    The distinction between "no key" and "signing broke" lives in
+    :func:`examlops.supplychain.sign_or_explain`, which both signing callers share.
+    """
+    from examlops.supplychain import sign_or_explain
+
+    payload = f"{adapter_id}|{base_ref}|{dataset_revision or ''}"
+    return sign_or_explain(payload, subject=f"adapter {adapter_id}")
 
 
 def finetune(

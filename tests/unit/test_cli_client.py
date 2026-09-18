@@ -121,3 +121,43 @@ def test_a_body_with_nothing_useful_falls_back_to_the_old_message():
         with pytest.raises(ClientError) as exc:
             post("http://localhost:18002/retrain", {}, token="tok")
     assert str(exc.value) == "HTTP 400 from http://localhost:18002/retrain"
+
+
+def test_a_401_names_the_token_of_the_service_that_refused(monkeypatch):
+    """Live pass 2: this helper serves every command, and its 401 named Skipper's `AGENT_API_KEY`
+    whatever had answered — so `exa dataplane pull --remote`, which needs
+    `EXAMLOPS_DATAPLANE_TOKEN`, pointed operators at a variable it does not read."""
+    from examlops.cli import _client
+
+    monkeypatch.setenv("EXAMLOPS_DATAPLANE_URL", "http://localhost:18010")
+    with patch("urllib.request.urlopen", side_effect=_http_error(401, "")):
+        with pytest.raises(ClientError) as exc:
+            post("http://localhost:18010/sources/pm100/pull", {}, token="tok")
+    message = str(exc.value)
+    assert "EXAMLOPS_DATAPLANE_TOKEN" in message
+    assert "exa config set dataplane_token" in message
+    assert "AGENT_API_KEY" not in message and "agent_token" not in message
+    assert exc.value.status == 401
+
+    # …and the agent still gets its own, from the same table.
+    monkeypatch.setenv("AGENT_URL", "http://localhost:18004")
+    with patch("urllib.request.urlopen", side_effect=_http_error(401, "")):
+        with pytest.raises(ClientError) as agent_exc:
+            post("http://localhost:18004/v1/chat/completions", {}, token="tok")
+    assert "AGENT_API_KEY" in str(agent_exc.value)
+
+    # A URL belonging to no configured service still says something useful, and nothing wrong.
+    assert _client._auth_hint("http://elsewhere.invalid/x") == ""
+
+
+def test_the_401_hint_survives_an_unreadable_config(monkeypatch):
+    """A config this CLI cannot read must not replace the authentication error with its own."""
+
+    def _broken():
+        raise RuntimeError("config is a directory")
+
+    monkeypatch.setattr("examlops.cli._config.load_config", _broken)
+    with patch("urllib.request.urlopen", side_effect=_http_error(401, "")):
+        with pytest.raises(ClientError) as exc:
+            post("http://localhost:18010/sources/pm100/pull", {}, token="tok")
+    assert "Authentication required" in str(exc.value)

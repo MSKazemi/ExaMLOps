@@ -10,6 +10,7 @@ import audit_write
 import httpx
 from auth import require_role
 from capabilities import MODEL_PROMOTE, principal_from_claims, require_capability
+from control_plane_auth import control_plane_token, signed_image_path, verify_image_signature
 from control_plane_client import ControlPlaneClient
 from database import get_db
 from dbconn import connect, platform_db_path
@@ -29,7 +30,9 @@ router = APIRouter(prefix="/models")
 
 def _control_plane() -> ControlPlaneClient:
     """Module-level factory so tests can monkeypatch this with a fake."""
-    return ControlPlaneClient(base_url=settings.control_plane_url)
+    return ControlPlaneClient(
+        base_url=settings.control_plane_url, token_provider=control_plane_token
+    )
 
 
 # Short-lived cache so a hard browser refresh (which clears the client cache and
@@ -79,7 +82,10 @@ async def list_registry(
 
 def _mlflow_client() -> httpx.AsyncClient:
     """Module-level factory; tests monkeypatch this with a MockTransport."""
-    return httpx.AsyncClient(base_url=settings.mlflow_url, timeout=5.0)
+    from examlops.service_auth import mlflow_headers
+
+    # MLflow basic-auth / token when the server requires it (plan P3.6).
+    return httpx.AsyncClient(base_url=settings.mlflow_url, timeout=5.0, headers=mlflow_headers())
 
 
 def _pick_alias(aliases: list[str]) -> str | None:
@@ -88,6 +94,12 @@ def _pick_alias(aliases: list[str]) -> str | None:
         if a in aliases:
             return a
     return None
+
+
+#: Pages of `model-versions/search` this router will follow before refusing. At 1000 versions per
+#: page this is far past any real model's history; it exists so a registry that never stops paging
+#: cannot pin a request worker.
+_MAX_VERSION_PAGES = 50
 
 
 @router.get("/{name}/versions")
@@ -129,15 +141,40 @@ async def list_versions(
                 v = str(entry["version"])
                 version_aliases.setdefault(v, []).append(entry["alias"])
 
-        # Fetch all model versions.
-        ver_r = await mlflow.get(
-            "/api/2.0/mlflow/model-versions/search",
-            params={"filter": f"name='{model_id}'"},
-        )
-        if ver_r.status_code == 404:
-            return []
-        ver_r.raise_for_status()
-        raw = ver_r.json().get("model_versions", [])
+        # Fetch all model versions, following `next_page_token` — the same "by design" loop as
+        # `examlops.serving_snapshot._registered_models`, which this platform already wrote once
+        # for the 100-model bug. Reading only the first page loses whole versions, and the loss is
+        # not cosmetic: the aliases are resolved from this list, so a Production alias pointing at
+        # a version that fell off the page makes the dashboard report no production model at all.
+        raw: list[dict] = []
+        page_token: str | None = None
+        seen_tokens: set[str] = set()
+        for _ in range(_MAX_VERSION_PAGES):
+            params: dict[str, str] = {"filter": f"name='{model_id}'", "max_results": "1000"}
+            if page_token:
+                params["page_token"] = page_token
+            ver_r = await mlflow.get("/api/2.0/mlflow/model-versions/search", params=params)
+            if ver_r.status_code == 404:
+                return []
+            ver_r.raise_for_status()
+            body = ver_r.json()
+            raw.extend(body.get("model_versions", []))
+            page_token = body.get("next_page_token")
+            if not page_token:
+                break
+            # A token that repeats never advances: without this the loop pins a worker forever
+            # on a registry that keeps handing back the same page.
+            if page_token in seen_tokens:
+                raise HTTPException(502, detail="MLflow repeated a version page token")
+            seen_tokens.add(page_token)
+        else:
+            # Refuse rather than return a silently short list — returning what we happened to read
+            # is how this bug worked in the first place.
+            raise HTTPException(
+                502,
+                detail=f"MLflow returned more than {_MAX_VERSION_PAGES} pages of versions "
+                f"for {model_id!r}",
+            )
 
         # Fetch metrics for all versions concurrently.
         run_ids = [v.get("run_id", "") for v in raw]
@@ -203,6 +240,31 @@ def _promotion_gate_outcome(model_id: str, version: str) -> tuple[int, str] | No
     return None
 
 
+def _announce_alias(
+    model_id: str,
+    alias: str,
+    version: str | None,
+    previous: str | None,
+    actor: str,
+    *,
+    removed: bool = False,
+) -> None:
+    """``model.alias_changed`` on the event backbone (P2.4) — the same event the CLI emits."""
+    try:
+        from examlops import events  # type: ignore
+    except ImportError:
+        return
+    events.alias_changed(
+        model_id,
+        alias,
+        version,
+        previous_version=previous,
+        removed=removed,
+        actor=actor,
+        via="dashboard",
+    )
+
+
 @router.put("/{name}/versions/{version}/alias")
 async def set_version_alias(
     name: str,
@@ -237,6 +299,7 @@ async def set_version_alias(
             )
             raise HTTPException(status_code=code, detail=reason)
 
+    cleared: list[str] = []  # live aliases an Archived move takes off this version
     async with _mlflow_client() as mlflow:
         prev_version: str | None = None
         if body.alias == "Production":
@@ -264,6 +327,7 @@ async def set_version_alias(
                             content=_json.dumps({"name": model_id, "alias": a}).encode(),
                             headers={"Content-Type": "application/json"},
                         )
+                        cleared.append(a)
 
         set_r = await mlflow.post(
             "/api/2.0/mlflow/registered-models/alias",
@@ -281,9 +345,10 @@ async def set_version_alias(
                 json={"name": model_id, "alias": "Archived", "version": prev_version},
             )
 
+    actor = principal_from_claims(claims)["sub"]
     await asyncio.to_thread(
         audit_write.audit,
-        principal_from_claims(claims)["sub"],
+        actor,
         "model_promoted" if body.alias == "Production" else "model_alias_set",
         name,
         {
@@ -293,6 +358,13 @@ async def set_version_alias(
             "via": "dashboard",
         },
     )
+    await asyncio.to_thread(
+        _announce_alias, model_id, body.alias, version, prev_version, actor, removed=False
+    )
+    if body.alias == "Production" and prev_version is not None:
+        await asyncio.to_thread(_announce_alias, model_id, "Archived", prev_version, None, actor)
+    for a in cleared:
+        await asyncio.to_thread(_announce_alias, model_id, a, None, version, actor, removed=True)
     return await _fetch_versions_for_model(name, claims)
 
 
@@ -343,13 +415,15 @@ async def delete_version_alias(
         if del_r.status_code not in (200, 204):
             raise HTTPException(status_code=502, detail=f"MLflow error: {del_r.text[:200]}")
 
+    actor = principal_from_claims(claims)["sub"]
     await asyncio.to_thread(
         audit_write.audit,
-        principal_from_claims(claims)["sub"],
+        actor,
         "model_alias_deleted",
         name,
         {"alias": alias, "version": version, "via": "dashboard"},
     )
+    await asyncio.to_thread(_announce_alias, model_id, alias, None, version, actor, removed=True)
     return await _fetch_versions_for_model(name, claims)
 
 
@@ -434,7 +508,7 @@ async def get_model_detail(
         images.append(
             {
                 "id": None,
-                "url": cp.bundled_image_url(name, filename),
+                "url": signed_image_path(name, filename),
                 "placeholder": f"images/{filename}",
                 "source": "filesystem",
             }
@@ -529,6 +603,37 @@ def _ray_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=settings.ray_serve_url, timeout=15.0)
 
 
+@router.get("/{name}/bundled-images/{filename}", include_in_schema=False)
+async def bundled_image(name: str, filename: str, exp: int, sig: str) -> Response:
+    """A README image bundled with the model, behind a short-lived signed URL.
+
+    Authenticated by the HMAC signature the model detail endpoint issued, not by a session: an
+    ``<img>`` tag cannot send the dashboard's bearer token. The image is fetched from the control
+    plane server-side with the dashboard's own credential, which never reaches the browser.
+    """
+    if not verify_image_signature(name, filename, exp, sig):
+        raise HTTPException(status_code=403, detail="Image link is invalid or has expired")
+    try:
+        data, content_type = await _control_plane().get_bundled_image(name, filename)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Image not found") from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=dashboard_status(exc.response.status_code), detail="Image unavailable"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Control plane unavailable") from exc
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=502, detail="Control plane returned a non-image")
+    # The signature, not the session, authorises this response, so it may be cached privately
+    # until the link expires — never by a shared cache.
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"},
+    )
+
+
 @router.post("/{name}/predict")
 async def predict(
     name: str,
@@ -542,14 +647,27 @@ async def predict(
         params["stage"] = stage
     if version:
         params["version"] = version
+    from examlops import oip_client
+
+    # Open Inference Protocol v2 (ADR 0126). `stage` and `version` went as query parameters to
+    # /predict, which reads neither, so the stage and version a user picked were never applied.
+    features = payload.get("features", payload)
+    alias = stage or payload.get("alias")
+    pinned = version or payload.get("version")
     async with _ray_client() as ray:
         try:
-            r = await ray.post(f"/predict/{name}", json=payload, params=params)
+            r = await ray.post(
+                oip_client.infer_path(name, pinned),
+                json=oip_client.features_request(features, alias=None if pinned else alias),
+            )
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Ray Serve unavailable: {exc}") from exc
     if r.status_code >= 400:
         raise HTTPException(status_code=dashboard_status(r.status_code), detail=r.text)
-    return r.json()
+    try:
+        return oip_client.result(r.json())
+    except ValueError as exc:  # the model server answered, but not with an inference answer
+        raise HTTPException(status_code=502, detail=f"Ray Serve: {exc}") from exc
 
 
 class DescriptionUpdate(BaseModel):

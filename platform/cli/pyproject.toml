@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "examlops"
-version = "0.59.1"
+version = "0.60.0"
 requires-python = ">=3.12"
 description = "ExaMLOps shared schemas and the `exa` operator CLI."
 # The PyPI project page. The repo README links relatively into docs/, which PyPI cannot
@@ -129,6 +129,11 @@ vector = [
 coordination = [
     "redis>=8.1.0",
 ]
+# Event backbone (ADR 0124): NATS JetStream publisher + durable consumers. Lazily imported;
+# the default `log` publisher needs nothing.
+events = [
+    "nats-py>=2.15",
+]
 # Synthetic data generation (`exa data synth`, Next-Gen 40 · A7, ADR 0042). SDV is lazily
 # imported by examlops.synth.generators; without it a pure-python Gaussian-copula fallback
 # keeps every subcommand — including the fidelity/privacy release gate — working offline.
@@ -194,6 +199,7 @@ where = ["src"]
 # D2 NIST AI RMF catalogue (and any other in-package data files) must ship in wheels.
 examlops = [
     "governance/*.yaml",
+    "events/event-contract.json",
     # ADR 0142 d4: the pinned KServe CRD schemas every KServe render is validated against.
     "serving/substrates/kserve_crds/*/*",
 ]

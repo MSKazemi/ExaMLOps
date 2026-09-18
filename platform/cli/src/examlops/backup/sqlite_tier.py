@@ -52,12 +52,24 @@ def _platform_is_postgres() -> bool:
 def _resolve_db_path(spec: dict[str, str]) -> str:
     if spec["name"] == "platform":
         return os.getenv("PLATFORM_DB") or _default_db_path()
+    if spec["name"] == "approvals":
+        # The control plane resolves its store as CONTROL_PLANE_DB, else PLATFORM_DB (control
+        # plane app.py). Mirroring that — rather than defaulting to /data/approvals.db — is what
+        # keeps this tier pointed at the file the service actually writes (plan P0.9 / finding B6).
+        return os.getenv("CONTROL_PLANE_DB") or os.getenv("PLATFORM_DB") or spec["default"]
     if spec["env"].startswith("AGENT_") and not os.getenv(spec["env"]):
         # The agent's files follow the instance-data root like the agent itself does (ADR 0128).
         from examlops.lifecycle.datadir import agent_db_default
 
         return agent_db_default(Path(spec["default"]).name)
     return os.getenv(spec["env"], spec["default"])
+
+
+def _same_file(a: str, b: str) -> bool:
+    try:
+        return bool(a and b) and os.path.realpath(a) == os.path.realpath(b)
+    except OSError:
+        return False
 
 
 # ── shared low-level helpers (moved verbatim from the old module) ──────────────
@@ -168,7 +180,7 @@ def _verify_db_file(path: str) -> dict[str, Any]:
     Recomputes the audit hash chain against the snapshot using the same canonicalisation the
     live DB uses, so a tampered/torn audit log is caught in the backup as it would be live.
     """
-    conn = _rdb.connect(path)
+    conn = _rdb.connect_snapshot(path)
     try:
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         chain_ok = True
@@ -339,7 +351,33 @@ def backup_sqlite_tier(dest_dir: Path) -> TierResult:
                 }
             )
             continue
+        if spec["name"] == "approvals" and _platform_is_postgres():
+            items.append(
+                {
+                    "name": "approvals",
+                    "db_env": spec["env"],
+                    "status": SKIPPED,
+                    "reason": "EXAMLOPS_DB_BACKEND=postgres — control-plane state is in the "
+                    "postgres tier",
+                }
+            )
+            continue
         src = _resolve_db_path(spec)
+        if spec["name"] == "approvals" and _same_file(
+            src, _resolve_db_path({"name": "platform", "env": "PLATFORM_DB", "default": ""})
+        ):
+            # Since the control plane moved onto the shared store, its tables live inside
+            # platform.db; snapshotting the same file twice would double the bundle and suggest two
+            # independent datastores.
+            items.append(
+                {
+                    "name": "approvals",
+                    "db_env": spec["env"],
+                    "status": SKIPPED,
+                    "reason": "control-plane state is inside the platform DB (backed up above)",
+                }
+            )
+            continue
         if not src or not Path(src).exists():
             items.append(
                 {

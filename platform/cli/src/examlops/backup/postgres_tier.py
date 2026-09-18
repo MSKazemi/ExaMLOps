@@ -42,7 +42,9 @@ _CONN_ERROR_MARKERS = (
 
 def _pg_databases() -> list[str]:
     raw = os.getenv("EXAMLOPS_BACKUP_PG_DBS", "mlflow,prefect")
-    return [d.strip() for d in raw.split(",") if d.strip()]
+    # Order kept, repeats dropped: Compose lists the dashboard's database, which is `mlflow` until
+    # the dashboard has its own (plan P3.4), and one database is dumped once.
+    return list(dict.fromkeys(d.strip() for d in raw.split(",") if d.strip()))
 
 
 def _first(*vals: str | None, default: str) -> str:

@@ -27,6 +27,7 @@ from examlops.cli.commands import (
     cards_a6_cmd,
     cards_cmd,
     challenger_cmd,
+    commands_cmd,
     compliance_cmd,
     config_cmd,
     connection_cmd,
@@ -88,6 +89,7 @@ from examlops.cli.commands import (
     serve,
     shadow_cmd,
     slo_cmd,
+    snapshot_cmd,
     stack,
     status,
     supplychain_cmd,
@@ -136,7 +138,7 @@ _ROOT_PANELS: list[tuple[str, list[str]]] = [
     ("Getting Started", ["status", "doctor", "explain", "env", "docs", "config", "plugins"]),
     (
         "Training & Pipelines",
-        ["pipeline", "retrain", "retrain-status", "scaffold", "finetune", "reproduce"],
+        ["pipeline", "retrain", "retrain-status", "commands", "scaffold", "finetune", "reproduce"],
     ),
     ("Data & Features", ["data", "dataplane", "feature", "features", "assets", "cards"]),
     ("Models & Registry", ["models", "modelzoo", "embedding"]),
@@ -278,6 +280,9 @@ app.command(
 )(agent_cmd.chat)
 app.add_typer(approvals.app, name="approvals", help="Sysadmin approval gate")
 app.add_typer(
+    commands_cmd.app, name="commands", help="Follow asynchronous control-plane commands (/v1)"
+)
+app.add_typer(
     autopilot_cmd.app,
     name="autopilot",
     help="Self-driving MLOps closed loop (detect→retrain→promote, policy-governed)",
@@ -341,6 +346,9 @@ serve.app.add_typer(
     llm_serve_cmd.app, name="llm", help="LLM/VLM endpoints — vLLM lifecycle (Track V)"
 )
 serve.app.add_typer(shadow_cmd.app, name="shadow", help="Shadow deployment traffic mirroring")
+serve.app.add_typer(
+    snapshot_cmd.app, name="snapshot", help="The serving snapshot replicas act on (ADR 0127)"
+)
 serve.app.add_typer(
     challenger_cmd.app, name="challenger", help="Champion-challenger scoreboard & promotion"
 )

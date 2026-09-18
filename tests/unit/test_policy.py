@@ -76,7 +76,23 @@ def test_decision_is_audited(monkeypatch):
     """decide(audit=True) writes exactly one audit_events row with the effect + rule."""
     calls = []
 
-    monkeypatch.setattr("examlops.data.audit.write_audit_event", lambda **kw: calls.append(kw))
+    # Positional, because `_audit` now goes through `audit_best_effort`, which forwards
+    # positionally. A `**kw`-only fake raised TypeError here, the helper counted it as a lost
+    # audit event, and the list stayed empty — a fake that cannot be called is indistinguishable
+    # from an audit that was never attempted.
+    def record(source, actor, action, target, details=None, **kw):
+        calls.append(
+            {
+                "source": source,
+                "actor": actor,
+                "action": action,
+                "target": target,
+                "details": details,
+                **kw,
+            }
+        )
+
+    monkeypatch.setattr("examlops.data.audit.write_audit_event", record)
     rules = [{"action": "retrain", "effect": "deny", "name": "block"}]
     decide("retrain", {"model": "JPCP"}, policies=rules, audit=True)
     assert len(calls) == 1
@@ -87,7 +103,7 @@ def test_decision_is_audited(monkeypatch):
 
 
 def test_audit_failure_never_raises(monkeypatch):
-    def boom(**kw):
+    def boom(*a, **kw):
         raise RuntimeError("db down")
 
     monkeypatch.setattr("examlops.data.audit.write_audit_event", boom)

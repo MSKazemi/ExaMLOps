@@ -14,7 +14,7 @@ import sqlite3
 
 import audit_write
 from auth import require_role
-from capabilities import GATEWAY_MANAGE, can, deny_reason
+from capabilities import GATEWAY_MANAGE, can, deny_reason, require_capability, scope_to_tenant
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
@@ -52,8 +52,12 @@ def _examlops_gateway():
 
 
 @router.get("/keys")
-async def list_keys(_=Depends(_viewer)) -> list[dict]:
-    """Virtual keys — stored fields only (hash, scope, budget, spend, revoked). Never the raw key."""
+async def list_keys(principal: dict = Depends(_viewer)) -> list[dict]:
+    """Virtual keys — stored fields only (hash, scope, budget, spend, revoked). Never the raw key.
+
+    Scoped to the caller's tenant (F15 R4). The raw key was never returned, but the project a
+    key belongs to and what it has spent were visible to every other tenant.
+    """
     try:
         conn = connect(_db_path())
         try:
@@ -68,7 +72,7 @@ async def list_keys(_=Depends(_viewer)) -> list[dict]:
                 d["models"] = json.loads(d.pop("models_json") or "[]")
                 d["revoked"] = bool(d["revoked"])
                 out.append(d)
-            return out
+            return scope_to_tenant(principal, out)
         finally:
             conn.close()
     except sqlite3.OperationalError as exc:
@@ -87,6 +91,11 @@ async def list_keys(_=Depends(_viewer)) -> list[dict]:
 async def issue_key(
     payload: dict = Body(...),
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(GATEWAY_MANAGE)),
 ) -> dict:
     """Issue a virtual key (admin; audited). Returns the raw key **once** — it is never stored.
 
@@ -123,6 +132,11 @@ async def issue_key(
 async def revoke_key(
     key_hash: str,
     principal: dict = Depends(_admin),
+    # Through the enforcing dependency as well, so the centre's PDP is asked about this
+    # *capability* and not only the coarse `api.write` that `require_role` sends. Added
+    # alongside the existing role dependency, never in place of it: `require_capability`
+    # admits operators, and widening who may act is not this change's business.
+    _gate: dict = Depends(require_capability(GATEWAY_MANAGE)),
 ) -> dict:
     """Revoke a virtual key by its hash (admin; audited). Mirrors ``exa gateway key revoke``."""
     _require_manage(principal)

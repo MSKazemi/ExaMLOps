@@ -133,3 +133,97 @@ def test_concurrent_claims_respect_cap(db):
 
     assert len(claimed) == 5  # global cap honored under concurrency
     assert len(set(claimed)) == 5  # no item claimed twice
+
+
+# ── a queue nobody drains must not look like a queue that is moving ──────────
+
+
+def test_stats_reports_how_long_the_oldest_item_has_been_waiting(db):
+    """Counts alone cannot distinguish a busy queue from a stranded one.
+
+    `exa admission submit` enqueues durably and something else must claim the item — the dispatch
+    is injected by whatever embeds this facade. If nothing does, the item waits forever and
+    `{"queued": 1}` looks exactly like a queue that is simply busy right now. The age of the oldest
+    queued item is the one number that tells them apart.
+    """
+    from examlops import admission
+
+    admission.submit("retrain", {"model": "JPCP"}, tenant="team-a")
+    stats = admission.stats()
+    assert stats["queued"] == 1
+    assert "oldest_queued_age_s" in stats, "the stats cannot show a stranded queue"
+    assert stats["oldest_queued_age_s"] >= 0
+
+
+def test_an_empty_queue_reports_no_age(db):
+    """Anti-vacuity: the field must reflect the queue, not always be present with a number."""
+    from examlops import admission
+
+    assert admission.stats()["oldest_queued_age_s"] is None
+
+
+def test_a_claimed_item_stops_counting_as_waiting(db):
+    """Once something claims the item it is no longer waiting for a worker."""
+    from examlops import admission
+    from examlops.data.admission import claim_next_admission
+
+    admission.submit("retrain", {"model": "JPCP"}, tenant="team-a")
+    assert claim_next_admission() is not None
+    stats = admission.stats()
+    assert stats["queued"] == 0 and stats["running"] == 1
+    assert stats["oldest_queued_age_s"] is None
+
+
+def test_submit_says_the_item_waits_for_a_worker(db):
+    """`submit` promised work would be "drained under the caps" — by whom was never said.
+
+    Nothing in the platform calls `worker_step`/`drain`: the dispatch is injected, and the control
+    plane runs its own admission accounting on this table rather than through this facade. So an
+    item submitted here waits until something claims it, and the operator should be told that at
+    the moment they submit rather than discovering it from a queue depth that never falls.
+    """
+    from typer.testing import CliRunner
+
+    from examlops.cli.main import app
+
+    result = CliRunner().invoke(
+        app, ["admission", "submit", "retrain", "-p", '{"model":"JPCP"}', "--tenant", "team-a"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "worker" in result.output.lower(), (
+        f"submit implies the work will be done and does not say by what:\n{result.output}"
+    )
+
+
+def test_stats_shows_the_wait_so_a_stranded_queue_is_visible(db):
+    """The operator's follow-up question — "is anything moving?" — must be answerable."""
+    from typer.testing import CliRunner
+
+    from examlops import admission
+    from examlops.cli.main import app
+
+    admission.submit("retrain", {"model": "JPCP"}, tenant="team-a")
+    result = CliRunner().invoke(app, ["admission", "stats"])
+    assert result.exit_code == 0, result.output
+    assert "waiting" in result.output.lower() or "oldest" in result.output.lower(), (
+        f"stats shows counts only, so a stranded queue looks like a busy one:\n{result.output}"
+    )
+
+
+def test_stats_declares_the_mixed_value_space_it_returns(db):
+    """The annotation must not promise ints while returning a duration that can be None.
+
+    `stats()` said `dict[str, int]` and returned `{"oldest_queued_age_s": None}` on an empty queue.
+    mypy could not see it — the helper it delegates to returns `dict[str, Any]` — so the lie reached
+    a consumer, which summed the values and raised. Pinned here because a type checker cannot.
+    """
+    import typing
+
+    from examlops import admission
+
+    hints = typing.get_type_hints(admission.stats)
+    assert hints["return"] is not dict[str, int], (
+        "stats() promises int values but returns a duration that is None on an empty queue"
+    )
+    value = admission.stats()["oldest_queued_age_s"]
+    assert value is None, "the empty-queue value the annotation has to admit to"
