@@ -17,6 +17,10 @@ Helm chart, `.env.example`, and the `examlops.*` config seams).
 Path A. For a *brand-new multi-node enterprise cluster* the pieces exist as seams and a partial Helm
 chart, but there is real gap-closing work (below) before it is a turnkey, HA, multi-tenant install.
 
+A/B/C all assume a Docker (or Kubernetes) daemon. On an **HPC login or compute node with neither**,
+pull and run one released image at a time with Apptainer instead — see
+[Run images with Apptainer](apptainer.md).
+
 ## Three layers — what an install is made of
 
 Whatever the path, an install is three layers ([Core · deployment · instance data](three-layer-architecture.md)):

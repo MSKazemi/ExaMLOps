@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — Apptainer guide for HPC nodes with no Docker daemon
+
+- `docs/guides/apptainer.md`: how to pull a released ExaMLOps image by digest and run it with
+  `apptainer exec` on an HPC login or compute node, including the `examlops-backup` image
+  (`ENTRYPOINT ["exa"]`) as a no-network, no-`pip` way to get the CLI on shared storage. Not a
+  replacement for the Compose bundle or Helm chart — Apptainer runs one image at a time, with no
+  service graph and no port publishing — and cross-links the platform's existing Apptainer path
+  (vLLM serving on Slurm/Flux) rather than duplicating it.
+
 ### Fixed — release verification no longer depends on a third-party cosign installer
 
 - `.github/workflows/release-verify.yml` installed cosign with `sigstore/cosign-installer`, which
