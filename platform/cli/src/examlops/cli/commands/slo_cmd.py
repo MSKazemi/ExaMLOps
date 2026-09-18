@@ -137,10 +137,14 @@ def status(
         return
     _output.print_table(
         f"SLO Status — {model}",
-        ["SLO", "Target", "SLI", "Budget Left", "Burn", "Status"],
+        ["SLO", "Window", "Target", "SLI", "Budget Left", "Burn", "Status"],
         [
             [
                 s.name,
+                # Every number in the row is "over this window", and two SLOs on one model may
+                # declare different ones — reading "NO DATA" without it says nothing about how
+                # long the model has been unwatched.
+                s.window,
                 f"{s.target:.3f}",
                 f"{s.sli:.4f}" if s.measured else "—",
                 f"{s.budget_remaining:.0%}" if s.measured else "—",

@@ -246,8 +246,23 @@ exa slo status JPCP                        # SLI, budget left, burn rate, OK/BRE
 exa slo burn JPCP                          # only SLOs actively burning budget
 ```
 
-`exa slo status` shows, per SLO: target, observed SLI, **budget left** (100% = untouched,
-negative = exhausted), **burn rate**, and OK/BREACH.
+`exa slo status` shows, per SLO: its **window**, target, observed SLI, **budget left** (100% =
+untouched, negative = exhausted), **burn rate**, and OK/BREACH.
+
+**Every number in the row is measured over the spec's own `--window`.** A `30d` SLO answers "how
+did the last thirty days go"; a `24h` one answers about today, and the two can disagree about the
+same model at the same moment — that is the point of declaring a window. Samples older than it are
+not counted, so a breach that ended a month ago no longer holds the budget down, no longer burns,
+and no longer blocks a promotion; and an SLO whose window contains no samples reads **NO DATA**
+rather than a perfect score. A spec with no window, or one nobody can parse (`last month`), is
+measured over **30d** and says so in the `Window` column, rather than silently measuring something
+else.
+
+A row cap still bounds how much is read (the newest 1000 samples in the window), so a very busy SLO
+measures a representative sample of its window rather than all of it. It is a bound on the read,
+not the definition of the window — that distinction is what this used to get wrong: the status
+summed the newest 1000 samples *whatever their age*, which is an hour on a busy SLO and half a year
+on a quiet one.
 
 ## Promotion gating (C3)
 

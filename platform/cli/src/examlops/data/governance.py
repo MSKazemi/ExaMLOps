@@ -406,17 +406,32 @@ def set_fairness_config(
 
 
 def slo_sli_ratio(
-    model: str, name: str, *, tenant: str = "default", last_n: int = 1000
+    model: str,
+    name: str,
+    *,
+    tenant: str = "default",
+    since: str | None = None,
+    last_n: int = 1000,
 ) -> tuple[float, float]:
-    """Aggregate (good, total) over the most recent samples for an SLO."""
+    """Aggregate (good, total) for an SLO over the samples inside its window.
+
+    ``since`` is the start of the SLO's rolling window (ADR 0023: "a target for an SLI over a
+    window"). Without it the sum is over the most recent ``last_n`` samples whatever their age,
+    which is a count, not a window — a 30-day SLO then measured the last thousand samples, an hour
+    on a busy service and half a year on a quiet one.
+
+    ``last_n`` stays as a bound on how much is read, not as the definition of the window.
+    """
     init_db()
+    clause = " AND ts >= ?" if since else ""
+    params: tuple = (model, tenant, name) + ((since,) if since else ()) + (last_n,)
     with get_db() as conn:
         row = conn.execute(
-            """SELECT COALESCE(SUM(good),0) AS good, COALESCE(SUM(total),0) AS total
+            f"""SELECT COALESCE(SUM(good),0) AS good, COALESCE(SUM(total),0) AS total
                FROM (SELECT good, total FROM slo_samples
-                     WHERE model=? AND tenant=? AND name=?
+                     WHERE model=? AND tenant=? AND name=?{clause}
                      ORDER BY id DESC LIMIT ?)""",
-            (model, tenant, name, last_n),
+            params,
         ).fetchone()
     return float(row["good"]), float(row["total"])
 

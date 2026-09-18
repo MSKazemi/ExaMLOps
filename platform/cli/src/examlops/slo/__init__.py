@@ -34,6 +34,10 @@ BURN_RATE_WINDOWS = [
 ]
 
 
+#: The window a spec gets when it names none — the same default `exa slo set` writes.
+DEFAULT_WINDOW = "30d"
+
+
 @dataclass
 class SLOStatus:
     model: str
@@ -47,6 +51,8 @@ class SLOStatus:
     ok: bool | None  # sli >= target; None when nothing has been measured
     n: int
     measured: bool  # n > 0 — whether any of the numbers above rest on evidence
+    window: str = DEFAULT_WINDOW  # the spec's rolling window these numbers cover
+    window_start: str | None = None  # when it begins (UTC); None ⇒ every sample was counted
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -61,6 +67,8 @@ class SLOStatus:
             "ok": self.ok,
             "n": self.n,
             "measured": self.measured,
+            "window": self.window,
+            "window_start": self.window_start,
         }
 
 
@@ -182,7 +190,17 @@ def slo_status(model: str, name: str | None = None, *, tenant: str = "default") 
         specs = [s for s in specs if s["name"] == name]
     out: list[SLOStatus] = []
     for spec in specs:
-        good, total = platform_db.slo_sli_ratio(model, spec["name"], tenant=tenant)
+        # The spec's own window decides which samples count (ADR 0023). Reading the newest N rows
+        # instead made the SLI, the budget and the burn rate describe an arbitrary period — and
+        # `exa pipeline promote` refuses a release on exactly those numbers.
+        window = str(spec.get("window") or DEFAULT_WINDOW)
+        window_start = _window_start(window)
+        if window_start is None:  # a window nothing can parse: say so, and fall back to the default
+            window = DEFAULT_WINDOW
+            window_start = _window_start(DEFAULT_WINDOW)
+        good, total = platform_db.slo_sli_ratio(
+            model, spec["name"], tenant=tenant, since=window_start
+        )
         # With no samples this ratio has no value to report. It is left at 1.0 so the numeric
         # fields keep their shape for existing readers, but `measured` is what says whether any
         # of them rest on evidence — without it, "we have not looked" and "it is perfect" are
@@ -211,6 +229,8 @@ def slo_status(model: str, name: str | None = None, *, tenant: str = "default") 
                 ok=(sli >= target) if measured else None,
                 n=int(total),
                 measured=measured,
+                window=window,
+                window_start=window_start,
             )
         )
     return out
