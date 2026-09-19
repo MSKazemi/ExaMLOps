@@ -7,14 +7,23 @@ topic/tool allow-list, per-tenant policies, and `off | monitor | enforce` modes 
 
 The production PII engine is Presidio and moderation is a hosted/LLM classifier; the
 **fallback** is a set of regex detectors + the D7 secret scanner, so guardrails work with no
-external service.
+external service. Presidio is an **additive, opt-in supplement** to the regex detectors, not a
+replacement for them (:func:`_ner_engine`): it adds the one class of PII a regex structurally
+cannot find — a person's name, a place — while the regex patterns keep owning email/phone/SSN/
+credit-card/IBAN/IP, which they already detect correctly and which Presidio's own bundled
+recognizers do not reliably improve on (verified 2026-09-19: Presidio's `UsSsnRecognizer` missed
+a plain hyphenated SSN it should match, a defect in Presidio itself, not this fallback).
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
+
+log = logging.getLogger("examlops.guardrails")
 
 # ── detectors (regex fallback; Presidio in production) ────────────────────────
 
@@ -72,6 +81,77 @@ def _matches(name: str, pat: re.Pattern[str], text: str) -> list[str]:
 _TOXIC = re.compile(r"\b(kill yourself|i hate you|slur1|slur2)\b", re.IGNORECASE)
 
 
+# ── Presidio NER supplement (ADR 0026 clause 1; additive, opt-in) ─────────────────────────────
+# The entity types NER adds *on top of* the regex detectors above — deliberately only the ones a
+# regex cannot find at all. Presidio also ships pattern-based recognizers for email/phone/SSN/
+# credit-card/IBAN/IP; those are not surfaced here because the regex detectors above already own
+# them, tested and validated against known edge cases (a MAC address, a timecode, a documentation
+# slug). Duplicating that ground through Presidio's own pattern recognizers would trade a checked
+# detector for an unchecked one — verified 2026-09-19 that this is not hypothetical: Presidio's
+# bundled `UsSsnRecognizer` failed to match a plain `123-45-6789` even at `score_threshold=0.0`.
+_NER_ENTITY_TYPES = ("PERSON", "LOCATION", "NRP")
+
+_ner_cache: dict[str, Any] = {}
+
+
+def _ner_engine() -> Any | None:
+    """The Presidio analyzer, built once and cached; ``None`` when NER is off or unavailable.
+
+    Off by default (`EXAMLOPS_GUARDRAIL_PII_NER`): Presidio + a spaCy model are a real, if
+    modest, dependency (`examlops[guardrails-presidio]`, plus one manual spaCy model install —
+    see `docs/guides/guardrails.md`), so this never becomes a surprise startup cost for a
+    deployment that has not opted in. Any failure to construct the engine (package missing, no
+    model installed) degrades to ``None`` — regex-only detection, exactly today's behaviour —
+    logged once rather than raised, the same shape as :mod:`examlops.semantic_cache`'s embedder
+    fallback.
+    """
+    if os.getenv("EXAMLOPS_GUARDRAIL_PII_NER", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return None
+    if "engine" in _ner_cache:
+        return _ner_cache["engine"]
+    engine: Any | None = None
+    try:
+        from presidio_analyzer import AnalyzerEngine  # noqa: PLC0415
+        from presidio_analyzer.nlp_engine import NlpEngineProvider  # noqa: PLC0415
+
+        model = os.getenv("EXAMLOPS_GUARDRAIL_PRESIDIO_MODEL", "en_core_web_lg").strip()
+        nlp_engine = NlpEngineProvider(
+            nlp_configuration={
+                "nlp_engine_name": "spacy",
+                "models": [{"lang_code": "en", "model_name": model}],
+            }
+        ).create_engine()
+        engine = AnalyzerEngine(nlp_engine=nlp_engine)
+    except Exception as exc:  # noqa: BLE001 - unavailable NER must never break a guardrail check
+        log.warning(
+            "EXAMLOPS_GUARDRAIL_PII_NER is set but Presidio is unavailable (%s) — falling back "
+            "to regex-only PII detection. Install examlops[guardrails-presidio] and a spaCy "
+            "model; see docs/guides/guardrails.md.",
+            exc,
+        )
+        engine = None
+    _ner_cache["engine"] = engine
+    return engine
+
+
+def _ner_findings(text: str) -> list[tuple[str, int, int]]:
+    """``(lowercase entity type, start, end)`` for every NER-only match, or ``[]`` if NER is off."""
+    engine = _ner_engine()
+    if engine is None:
+        return []
+    try:
+        results = engine.analyze(text=text, language="en", entities=list(_NER_ENTITY_TYPES))
+    except Exception as exc:  # noqa: BLE001 - a bad call must degrade, never break the guardrail
+        log.warning("Presidio NER analysis failed (%s) — this call falls back to regex-only", exc)
+        return []
+    return [(r.entity_type.lower(), r.start, r.end) for r in results]
+
+
 @dataclass
 class GuardResult:
     action: str  # allow | redact | block
@@ -97,6 +177,8 @@ def detect_pii(text: str) -> dict[str, list[str]]:
         found = _matches(name, pat, text)
         if found:
             out[name] = found
+    for name, start, end in _ner_findings(text):
+        out.setdefault(name, []).append(text[start:end])
     return out
 
 
@@ -123,6 +205,13 @@ def redact_pii(text: str) -> tuple[str, list[str]]:
 
         redacted = pat.sub(_sub, redacted)
         if hit:
+            findings.append(name)
+    # NER runs last, over the already-regex-redacted text: offsets below are computed against
+    # (and applied to) that same string, so the two passes never disagree about positions.
+    ner = _ner_findings(redacted)
+    for name, start, end in sorted(ner, key=lambda hit: hit[1], reverse=True):
+        redacted = redacted[:start] + f"[redacted-{name}]" + redacted[end:]
+        if name not in findings:
             findings.append(name)
     return redacted, findings
 

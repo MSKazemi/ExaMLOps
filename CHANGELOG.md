@@ -5,6 +5,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — Presidio NER as an opt-in supplement to the regex PII detectors (ADR 0026)
+
+`examlops.guardrails` always ran regex PII detectors (email/phone/SSN/credit-card/IBAN/IP); the
+one class of PII a regex structurally cannot find — a person's name, a place — needed named-entity
+recognition, which is exactly what the ADR named Presidio for and nothing had adopted.
+
+- New optional extra `examlops[guardrails-presidio]`. Off by default
+  (`EXAMLOPS_GUARDRAIL_PII_NER`); a separate one-time spaCy model install is required (not pulled
+  in by the extra, since spaCy models are not ordinary PyPI packages) —
+  `EXAMLOPS_GUARDRAIL_PRESIDIO_MODEL` picks it (default `en_core_web_lg`).
+- **Additive, not a replacement:** Presidio only supplies `PERSON`/`LOCATION`/`NRP` — entity
+  types regex cannot find at all. Its own bundled pattern recognizers for email/phone/SSN/
+  credit-card/IBAN/IP are never used; verified live that Presidio's `UsSsnRecognizer` fails to
+  match a plain `123-45-6789` even at `score_threshold=0.0`, so the regex detectors keep owning
+  that ground regardless of whether Presidio is installed.
+- Unavailable or misconfigured Presidio degrades to regex-only, logged once, never raised — a
+  deployment that has not opted in sees no behavior change at all.
+- `tests/unit/test_guardrails_ner.py`: 10 tests against a stub engine (always run) + 1 `-m live`
+  test against the real library, verified passing in a throwaway venv with `presidio-analyzer`
+  and `en_core_web_sm` actually installed.
+- ADR 0026 clause 1 (PII detection) is now built; clause 3 (an OSS policy-composition framework)
+  remains a separate, unbuilt requirement.
+
 ### Docs — ADR 0018 (semantic caching) corrected to Accepted; two docs stopped describing an unbuilt backend as production
 
 Clause 2 named LiteLLM-over-Redis/Qdrant as the semantic cache's backend; nothing ever called any

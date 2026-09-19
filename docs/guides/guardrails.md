@@ -10,19 +10,59 @@ Design: ADR 0026 · spec `design/vision/specs/D8-guardrails-safety-pii.md`.
 
 ## Graceful degrade
 
-The production PII engine is **Presidio** and moderation is a hosted/LLM classifier; the
-fallback is a set of regex detectors + the D7 secret scanner — so guardrails work with **no
-external service**.
+Moderation is a hosted/LLM classifier in production, not built; the regex detectors + the D7
+secret scanner are what every deployment runs by default — so guardrails work with **no
+external service**. That makes their exact coverage worth stating rather than leaving to the
+word "PII":
 
-**Presidio is in no manifest in this repository, so the fallback is what your deployment runs.**
-That makes its exact coverage worth stating rather than leaving to the word "PII":
+| Detected (always, regex) | Detected (opt-in, Presidio NER — see below) | Not detected |
+|---|---|---|
+| email · phone · US-style SSN · credit-card number · **IPv4** · **IPv6** · **IBAN** | a person's **name** · **location** · nationality/religious/political group (**NRP**) | national identifiers (an Italian fiscal code, a passport number) · file paths |
 
-| Detected | Not detected |
-|---|---|
-| email · phone · US-style SSN · credit-card number · **IPv4** · **IPv6** · **IBAN** | a person's **name** · national identifiers (an Italian fiscal code, a passport number) · file paths |
+## Presidio (opt-in NER supplement, ADR 0026 clause 1)
 
-Names are the important absence: they need named-entity recognition, which is precisely what
-Presidio would bring and a regex cannot.
+Names and places need named-entity recognition, which a regex structurally cannot do — this is
+what **Presidio** adds, as a *supplement* to the regex detectors above, never a replacement for
+them:
+
+```bash
+pip install 'examlops[guardrails-presidio]'   # presidio-analyzer + spaCy (no model)
+
+# One-time model install — plain pip works; a `uv`-managed venv (no `pip` binary) needs the
+# wheel URL directly (verified 2026-09-19; `python -m spacy download` silently no-ops there):
+python -m spacy download en_core_web_lg   # plain venv
+# or, inside a uv venv:
+uv pip install "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl"
+
+export EXAMLOPS_GUARDRAIL_PII_NER=1   # off by default — see below for why
+```
+
+- **Additive, not a switch.** `detect_pii`/`redact_pii` always run the regex detectors; Presidio,
+  when enabled, adds only the entity types a regex cannot find at all (`PERSON`, `LOCATION`,
+  `NRP`). Presidio's own bundled recognizers for email/phone/SSN/credit-card/IBAN/IP are never
+  used — the regex detectors above already own that ground, tested against real edge cases (a
+  MAC address, a timecode, a documentation slug that looks like a credential). This is not a
+  hypothetical caution: verified 2026-09-19 that Presidio's own `UsSsnRecognizer` **fails to
+  match a plain `123-45-6789`** even at its lowest score threshold — a defect in Presidio itself,
+  not a reason to trust it less than the fallback it would replace.
+- **Off by default.** Presidio + a spaCy model is a real, if modest, dependency — the model is a
+  separate download this extra deliberately does not pull in (spaCy models are not ordinary PyPI
+  packages). A deployment that has not opted in gets exactly today's regex-only behaviour, at
+  zero extra startup cost.
+- **Model choice is an honest accuracy trade, not a default to fight.** `EXAMLOPS_GUARDRAIL_PRESIDIO_MODEL`
+  (default `en_core_web_lg`, Presidio's own recommendation) selects the spaCy model. The small
+  model (`en_core_web_sm`, ~13 MB) works and is what the opt-in test suite verifies against, but
+  is measurably less accurate: verified 2026-09-19 that it mistagged a person's name and a street
+  address as `ORGANIZATION` in the same sentence a `PERSON`/`LOCATION` pair it *did* get right
+  moments earlier — spaCy's small model trades entity-type precision for size. Use the large
+  model in production; the small one is for evaluating the feature without a 380 MB download.
+- **Never breaks the guardrail.** Any failure to construct the engine (package missing, model not
+  installed, a bad call) degrades to `None` — regex-only — logged once, never raised. `exa
+  guardrails` and the gateway boundary behave identically whether or not Presidio is installed;
+  enabling it only ever adds findings, never removes the regex ones.
+
+`tests/unit/test_guardrails_ner.py` covers the wiring with a stub engine (always runs) and
+re-verifies against the real library, `-m live`, skipped unless it is actually installed.
 
 **Credentials are the secret scanner's half**, and the guardrail runs it on every input and output.
 That half had a hole worth knowing about: until 2026-09-13 it recognised AWS keys, Slack tokens,

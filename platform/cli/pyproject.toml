@@ -117,6 +117,16 @@ postgres = [
 fairness = [
     "fairlearn>=0.14",
 ]
+# Presidio NER supplement for PII detection (ADR 0026 clause 1). examlops.guardrails always runs
+# its own regex detectors (email/phone/SSN/credit-card/IBAN/IP); Presidio, when installed AND
+# opted into (EXAMLOPS_GUARDRAIL_PII_NER=1), ADDS the one class of PII a regex cannot find — a
+# person's name, a place — via spaCy NER. Off by default: unavailable or unconfigured degrades
+# to regex-only, exactly today's behaviour. A spaCy model (e.g. en_core_web_lg, Presidio's own
+# default) is a separate one-time install this extra does not pull in — see
+# docs/guides/guardrails.md.
+guardrails-presidio = [
+    "presidio-analyzer>=2.2",
+]
 # pgvector vector store (EXAMLOPS_VECTOR_BACKEND=pgvector, ADR 0020). Same driver as the
 # `postgres` extra, named separately because the two are independent choices: the vector store can
 # run on pgvector while platform state stays on SQLite, and the reverse.

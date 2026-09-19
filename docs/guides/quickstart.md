@@ -53,6 +53,7 @@ install rather than failing with a traceback:
 | `examlops[events]` | Publish to and consume from the NATS JetStream event backbone — `exa events tail`, `EventConsumer` |
 | `examlops[fairness]` | Fairlearn's `MetricFrame` for fairness slice metrics — `exa fairness` (a pure-Python fallback gives the same numbers without it) |
 | `examlops[finops]` | YAML/expression calculation providers — user-authored cost and carbon formulas |
+| `examlops[guardrails-presidio]` | Presidio NER (person/place PII detection) as a supplement to the built-in regex PII detectors — needs a separate one-time spaCy model install |
 | `examlops[mcp]` | Serve the platform to LLM agents — `exa mcp serve` |
 | `examlops[oidc]` | Validate OIDC access tokens (RS256 against a JWKS) |
 | `examlops[postgres]` | Talk to a Postgres datastore instead of SQLite |

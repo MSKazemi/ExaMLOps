@@ -33,6 +33,7 @@ enough for an HPC login node:
 | `examlops[events]` | NATS JetStream event backbone (the default `log` publisher needs nothing) |
 | `examlops[vector]` | pgvector vector store, independent of where platform state lives |
 | `examlops[fairness]` | Fairlearn's `MetricFrame` for fairness slice metrics (a pure-Python fallback computes the same numbers without it) |
+| `examlops[guardrails-presidio]` | Presidio NER (person/place PII detection) as a supplement to the built-in regex PII detectors — needs a separate one-time spaCy model install, see `docs/guides/guardrails.md` |
 | `examlops[synth]` | synthetic dataset generation |
 | `examlops[serving-vllm]` / `examlops[serving-sglang]` | in-process vLLM / SGLang engines (GPU host) |
 | `examlops[dataplane]` | pull external data into versioned snapshots — the union of the four extras below |

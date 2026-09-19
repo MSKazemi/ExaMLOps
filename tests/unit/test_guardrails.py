@@ -177,16 +177,21 @@ def test_these_are_left_alone(label, text):
     ],
 )
 def test_these_are_not_detected_and_that_is_known(label, text):
-    """The limits, written down, because an undocumented limit reads as coverage.
+    """The limits of the *default* configuration, written down, because an undocumented limit
+    reads as coverage.
 
-    Names need NER, not a regex — the ADR names Presidio for exactly this and Presidio is not
-    installed. Fiscal codes and passport numbers are national formats whose patterns collide with
-    ordinary identifiers. API tokens are the D7 secret scanner's job, and the guardrail runs it
-    separately. `::1` is deliberate: matching a leading `::` would also redact `abc::def`, which is
-    valid C++ *and* a valid IPv6 address, and prompts here carry code. Loopback identifies nobody.
+    Names need NER, not a regex — the ADR names Presidio for exactly this, and it is now wired
+    in as an opt-in supplement (`EXAMLOPS_GUARDRAIL_PII_NER`, see `test_ner_supplement.py`) that
+    is **off by default**, so this test (no env var set) still exercises regex-only behaviour.
+    Fiscal codes and passport numbers are national formats whose patterns collide with ordinary
+    identifiers, and are also not among the entity types the NER supplement adds (see the module
+    docstring on `_NER_ENTITY_TYPES` for why). API tokens are the D7 secret scanner's job, and the
+    guardrail runs it separately. `::1` is deliberate: matching a leading `::` would also redact
+    `abc::def`, which is valid C++ *and* a valid IPv6 address, and prompts here carry code.
+    Loopback identifies nobody.
 
-    If one of these starts being detected, this test fails — update it rather than deleting it, so
-    the list keeps saying what is true.
+    If one of these starts being detected under the default configuration, this test fails —
+    update it rather than deleting it, so the list keeps saying what is true.
     """
     from examlops.guardrails import redact_pii
 
