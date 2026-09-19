@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 462,
+ "total_commands": 463,
  "total_groups": 69,
  "panels": [
   {
@@ -1785,6 +1785,13 @@
      "cmd": "exa drift concept",
      "group": "drift",
      "help": "Concept-drift test on realized error as delayed labels arrive (C5·R1).",
+     "anchor": "exa-drift-prediction-input-concept-drift-detection",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift consume-telemetry",
+     "group": "drift",
+     "help": "Write drift/input-embedding snapshots published by a bridge running with EXAMLOPS_TELEMETRY_VIA_EVENTBUS=1 (ADR 0123 decision 4). A long-running consumer of serving.inference_telemetry on the NATS event backbone (durable name drift-telemetry: several copies share the work). Run this wherever platform.db is reachable — the serving plane no longer needs to be. Stop with Ctrl-C or SIGTERM. Without a bridge publishing this way, there is nothing to consume; the direct-write path (the default) needs no consumer at all.",
      "anchor": "exa-drift-prediction-input-concept-drift-detection",
      "guide": "guides/drift-advanced.md"
     },

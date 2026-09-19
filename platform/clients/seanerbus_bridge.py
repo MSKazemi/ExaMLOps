@@ -276,6 +276,11 @@ _TELEMETRY_DEPTH = Gauge(
     "seanerbus_telemetry_queue_depth",
     "Inference telemetry records waiting to be written",
 )
+_TELEMETRY_EVENTBUS_FAILURES = Counter(
+    "seanerbus_telemetry_eventbus_publish_failures_total",
+    "Inference telemetry events that failed to publish to the event backbone "
+    "(EXAMLOPS_TELEMETRY_VIA_EVENTBUS) and were dropped rather than written directly",
+)
 
 # Input-embedding drift (phase 21). The bridge already computes norm/mean/std on every
 # inference to write `input_snapshots`; it just never exported them, so the three Grafana
@@ -689,6 +694,51 @@ class _TelemetrySpool:
 _telemetry_spool = _TelemetrySpool(int(os.getenv("SEANERBUS_TELEMETRY_QUEUE_MAX", "1000")))
 
 
+def _telemetry_via_eventbus() -> bool:
+    return os.getenv("EXAMLOPS_TELEMETRY_VIA_EVENTBUS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _publish_inference_telemetry_event(
+    model_name: str,
+    alias: str,
+    prediction: float | None,
+    job_id: str,
+    embedding_stats: dict[str, float] | None,
+) -> None:
+    """Publish, never write directly (ADR 0123 decision 4): the serving plane crosses the
+    boundary to the control plane only as an event, never a transactional database write.
+
+    Deliberately **not** the durable outbox (:func:`examlops.events.publish`) that
+    ``model.alias_changed`` and similar events use: that path itself writes to ``platform.db``
+    first (it enqueues, a relay drains it later), which would defeat the point — the bridge would
+    still need database connectivity. This publishes straight to NATS JetStream, the same direct
+    call :mod:`examlops.serving_snapshot` already makes for its own high-volume, best-effort data.
+    A publish failure is counted and the record is dropped, exactly like a full spool today: these
+    are windowed aggregates, so a lost sample shifts nothing an operator acts on, and falling back
+    to a direct database write here would silently re-couple the serving plane to platform.db the
+    moment NATS has a bad moment — the one thing this mode exists to avoid.
+    """
+    from examlops.events import NatsPublisher  # noqa: PLC0415
+
+    payload: dict[str, object] = {"model": model_name, "alias": alias, "job_id": job_id}
+    if prediction is not None:
+        payload["prediction"] = prediction
+    if embedding_stats is not None:
+        payload["embedding_stats"] = embedding_stats
+    try:
+        NatsPublisher().publish(
+            "serving.inference_telemetry", payload, event_id=f"telemetry:{job_id}"
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry must never take the bridge down
+        _TELEMETRY_EVENTBUS_FAILURES.inc()
+        log.warning("Inference telemetry event publish failed (dropped, not retried): %s", exc)
+
+
 def _persist_inference_telemetry(
     model_name: str,
     alias: str,
@@ -702,9 +752,15 @@ def _persist_inference_telemetry(
     row to the hash-chained audit log for every prediction: nothing read those rows, retention
     excludes the audit chain so they were never pruned, and each append took the platform-wide
     audit lock on the hot path. The audit log records decisions; request volume is
-    ``seanerbus_inferences_total``."""
-    if prediction is not None:
-        write_drift_snapshot(model_name, alias, float(prediction), job_id)
+    ``seanerbus_inferences_total``.
+
+    ``EXAMLOPS_TELEMETRY_VIA_EVENTBUS`` (default off) routes the database writes through the
+    event backbone instead of calling them here directly — see
+    :func:`_publish_inference_telemetry_event`. Gauges and the input-drift baseline publish stay
+    local regardless: they are this process's own instrumentation, not a control-plane write.
+    """
+    via_eventbus = _telemetry_via_eventbus()
+    embedding_stats: dict[str, float] | None = None
     if embedding:
         import math as _math
 
@@ -713,11 +769,17 @@ def _persist_inference_telemetry(
         emb_mean = sum(vals) / n
         emb_std = _math.sqrt(sum((v - emb_mean) ** 2 for v in vals) / n) if n > 1 else 0.0
         emb_norm = _math.sqrt(sum(v * v for v in vals))
-        write_input_snapshot(model_name, alias, emb_norm, emb_mean, emb_std, job_id)
+        embedding_stats = {"norm": emb_norm, "mean": emb_mean, "std": emb_std}
+        if not via_eventbus:
+            write_input_snapshot(model_name, alias, emb_norm, emb_mean, emb_std, job_id)
         _EMB_NORM.labels(model=model_name).set(emb_norm)
         _EMB_MEAN.labels(model=model_name).set(emb_mean)
         _EMB_STD.labels(model=model_name).set(emb_std)
         _publish_input_baseline(model_name)
+    if not via_eventbus and prediction is not None:
+        write_drift_snapshot(model_name, alias, float(prediction), job_id)
+    if via_eventbus and (prediction is not None or embedding_stats is not None):
+        _publish_inference_telemetry_event(model_name, alias, prediction, job_id, embedding_stats)
 
 
 # ── pubsub handler ─────────────────────────────────────────────────────────────

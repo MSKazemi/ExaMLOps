@@ -736,6 +736,56 @@
     "title": "retrain.scheduled",
     "type": "object"
   },
+  "serving.inference_telemetry": {
+    "$id": "urn:examlops:event-schema:serving.inference_telemetry",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "alias": {
+        "type": "string"
+      },
+      "embedding_stats": {
+        "properties": {
+          "mean": {
+            "type": "number"
+          },
+          "norm": {
+            "type": "number"
+          },
+          "std": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "norm",
+          "mean",
+          "std"
+        ],
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "job_id": {
+        "type": "string"
+      },
+      "model": {
+        "type": "string"
+      },
+      "prediction": {
+        "type": [
+          "number",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "alias",
+      "job_id",
+      "model"
+    ],
+    "title": "serving.inference_telemetry",
+    "type": "object"
+  },
   "serving.shadow_changed": {
     "$id": "urn:examlops:event-schema:serving.shadow_changed",
     "$schema": "https://json-schema.org/draft/2020-12/schema",

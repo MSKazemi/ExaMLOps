@@ -541,6 +541,116 @@ def test_persist_skips_input_snapshot_without_embedding(monkeypatch):
     assert seen["input"] == 0  # no embedding ⇒ no input snapshot
 
 
+# ── EXAMLOPS_TELEMETRY_VIA_EVENTBUS: publish instead of writing directly (ADR 0123 d4) ──
+
+
+def test_via_eventbus_publishes_instead_of_writing_directly(monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_TELEMETRY_VIA_EVENTBUS", "1")
+    monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: pytest.fail("must not write"))
+    monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: pytest.fail("must not write"))
+    published: dict[str, object] = {}
+
+    class _FakePublisher:
+        def publish(self, topic, payload, *, event_id):
+            published["topic"] = topic
+            published["payload"] = payload
+            published["event_id"] = event_id
+
+    monkeypatch.setattr("examlops.events.NatsPublisher", _FakePublisher)
+
+    bridge._persist_inference_telemetry("JPCP", "Production", 42.0, [3.0, 4.0], "job-9")
+
+    assert published["topic"] == "serving.inference_telemetry"
+    assert published["payload"]["model"] == "JPCP"
+    assert published["payload"]["alias"] == "Production"
+    assert published["payload"]["job_id"] == "job-9"
+    assert published["payload"]["prediction"] == 42.0
+    stats = published["payload"]["embedding_stats"]
+    assert round(stats["norm"], 6) == 5.0 and stats["mean"] == 3.5 and stats["std"] == 0.5
+    assert published["event_id"] == "telemetry:job-9"
+
+
+def test_via_eventbus_gauges_and_baseline_still_run_locally(monkeypatch):
+    """Process-local instrumentation is not a control-plane write — it stays regardless."""
+    monkeypatch.setenv("EXAMLOPS_TELEMETRY_VIA_EVENTBUS", "1")
+    monkeypatch.setattr(
+        "examlops.events.NatsPublisher", lambda: type("_P", (), {"publish": lambda *a, **k: None})()
+    )
+    baseline_calls = []
+    monkeypatch.setattr(bridge, "_publish_input_baseline", baseline_calls.append)
+
+    bridge._persist_inference_telemetry("JPCP", "Production", 1.0, [3.0, 4.0], "job-10")
+
+    assert baseline_calls == ["JPCP"]
+    assert _gauge("seanerbus_embedding_norm", "JPCP") == 5.0
+
+
+def test_via_eventbus_a_publish_failure_is_counted_and_dropped(monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_TELEMETRY_VIA_EVENTBUS", "1")
+    monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: pytest.fail("must not write"))
+
+    def _boom():
+        raise ConnectionError("no servers available")
+
+    monkeypatch.setattr("examlops.events.NatsPublisher", _boom)
+    before = bridge._TELEMETRY_EVENTBUS_FAILURES._value.get()
+
+    bridge._persist_inference_telemetry(
+        "JPCP", "Production", 42.0, None, "job-11"
+    )  # must not raise
+
+    assert bridge._TELEMETRY_EVENTBUS_FAILURES._value.get() == before + 1
+
+
+def test_via_eventbus_is_off_by_default(monkeypatch):
+    monkeypatch.delenv("EXAMLOPS_TELEMETRY_VIA_EVENTBUS", raising=False)
+    assert bridge._telemetry_via_eventbus() is False
+
+
+# ── the consumer side of serving.inference_telemetry (ADR 0123 d4) ──────────────
+
+
+def test_handle_inference_telemetry_event_writes_both_snapshots(monkeypatch, tmp_path):
+    from examlops.data.drift import handle_inference_telemetry_event
+    from examlops.platform_db import init_db
+
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "consumer.db"))
+    init_db()
+    event = {
+        "data": {
+            "model": "JPCP",
+            "alias": "Production",
+            "job_id": "job-1",
+            "prediction": 42.0,
+            "embedding_stats": {"norm": 5.0, "mean": 3.5, "std": 0.5},
+        }
+    }
+    handle_inference_telemetry_event(event)
+
+    from examlops.platform_db import get_db
+
+    with get_db() as conn:
+        drift = conn.execute("SELECT * FROM drift_snapshots WHERE model='JPCP'").fetchone()
+        inp = conn.execute("SELECT * FROM input_snapshots WHERE model='JPCP'").fetchone()
+    assert drift["prediction"] == 42.0
+    assert inp["emb_norm"] == 5.0 and inp["emb_mean"] == 3.5 and inp["emb_std"] == 0.5
+
+
+def test_handle_inference_telemetry_event_ignores_a_malformed_event(tmp_path, monkeypatch):
+    from examlops.data.drift import handle_inference_telemetry_event
+    from examlops.platform_db import get_db, init_db
+
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "consumer2.db"))
+    init_db()
+    handle_inference_telemetry_event({"data": {"prediction": 1.0}})  # no model/alias
+    handle_inference_telemetry_event({})  # no data at all — must not raise
+
+    with get_db() as conn:
+        drift_rows = conn.execute("SELECT COUNT(*) AS c FROM drift_snapshots").fetchone()["c"]
+        input_rows = conn.execute("SELECT COUNT(*) AS c FROM input_snapshots").fetchone()["c"]
+    assert drift_rows == 0 and input_rows == 0
+
+
 # ── the input-drift panels had nothing to draw ───────────────────────────────
 #
 # The bridge computed norm/mean/std on every inference to write `input_snapshots`, but never

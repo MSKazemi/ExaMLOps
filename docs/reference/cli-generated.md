@@ -975,6 +975,19 @@ Concept-drift test on realized error as delayed labels arrive (C5·R1).
 - `--alias` — Restrict to one serving alias
 - `--window` — Recent window size (samples)
 
+### `exa drift consume-telemetry`
+
+Write drift/input-embedding snapshots published by a bridge running with
+EXAMLOPS_TELEMETRY_VIA_EVENTBUS=1 (ADR 0123 decision 4).
+
+A long-running consumer of ``serving.inference_telemetry`` on the NATS event backbone
+(durable name ``drift-telemetry``: several copies share the work). Run this wherever
+platform.db is reachable — the serving plane no longer needs to be. Stop with Ctrl-C or
+SIGTERM. Without a bridge publishing this way, there is nothing to consume; the direct-write
+path (the default) needs no consumer at all.
+
+- `--wait` — Seconds a fetch waits for new events
+
 ### `exa drift corruption`
 
 #### `exa drift corruption baseline`

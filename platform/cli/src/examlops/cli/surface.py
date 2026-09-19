@@ -180,6 +180,7 @@ TIERS: dict[str, str] = {
     "drift auto-retrain status": R,
     "drift baseline": A,
     "drift concept": R,
+    "drift consume-telemetry": X,
     "drift corruption baseline": A,
     "drift corruption classify": R,
     "drift corruption selftest": R,
@@ -529,6 +530,10 @@ CLI_ONLY_REASONS: dict[str, str] = {
     "autopilot follow": "A long-running consumer of the event backbone that runs a model's "
     "autopilot cycle when its training run completes. Run it as a service on a host with "
     "`exa autopilot follow`; `autopilot run` is the one-shot equivalent.",
+    "drift consume-telemetry": "A long-running consumer of the event backbone that writes "
+    "drift/input-embedding snapshots published by a bridge running with "
+    "EXAMLOPS_TELEMETRY_VIA_EVENTBUS=1. Run it as a service on a host with "
+    "`exa drift consume-telemetry`; without that bridge mode there is nothing to consume.",
     "mcp serve": "Starts a long-running MCP server process; it is not a request/response "
     "command. Run it on a host with `exa mcp serve`; `mcp tools|resources|prompts` list "
     "what it would expose.",

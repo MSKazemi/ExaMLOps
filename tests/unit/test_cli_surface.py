@@ -89,7 +89,9 @@ def test_cli_only_is_the_exception_and_always_says_why():
     # bearer credential) have no safe browser form — the dashboard signs users in its own way.
     # 13 since ADR 0124's first consumers: `autopilot follow` is a long-running event consumer,
     # unrunnable as a request/response command exactly as `mcp serve` is.
-    assert len(cli_only) <= 13, (
+    # 14 since ADR 0123 decision 4: `drift consume-telemetry` is the same shape of long-running
+    # event consumer as `autopilot follow`, for the serving-plane telemetry event instead.
+    assert len(cli_only) <= 14, (
         f"{len(cli_only)} cli_only commands — is each one really unrunnable?"
     )
 

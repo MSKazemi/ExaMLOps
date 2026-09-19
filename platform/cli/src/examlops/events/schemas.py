@@ -161,6 +161,27 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "alert.cost": _ALERT,
     "alert.drift": _ALERT,
     "alert.retrain": _ALERT,
+    # Per-inference drift + input-embedding stats, opt-in (ADR 0123 decision 4,
+    # EXAMLOPS_TELEMETRY_VIA_EVENTBUS): the serving plane publishes instead of writing
+    # `drift_snapshots`/`input_snapshots` directly, so it never needs platform.db connectivity.
+    # `examlops.drift.consume_telemetry` is the consumer that performs those writes. Best-effort
+    # like the direct-write path it replaces — these are windowed aggregates, so a lost sample
+    # shifts nothing an operator acts on; `embedding_stats` is therefore optional, not required.
+    "serving.inference_telemetry": _object(
+        {"model": _STR, "alias": _STR, "job_id": _STR},
+        {
+            "prediction": {"type": ["number", "null"]},
+            "embedding_stats": {
+                "type": ["object", "null"],
+                "properties": {
+                    "norm": {"type": "number"},
+                    "mean": {"type": "number"},
+                    "std": {"type": "number"},
+                },
+                "required": ["norm", "mean", "std"],
+            },
+        },
+    ),
 }
 
 

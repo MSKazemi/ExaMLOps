@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — per-inference telemetry can cross the serving/control-plane boundary as an event, not a database write (ADR 0123 decision 4)
+
+The SeanerBUS bridge always wrote drift and input-embedding snapshots straight to `platform.db`.
+`EXAMLOPS_TELEMETRY_VIA_EVENTBUS=1` now routes them through the NATS event backbone instead
+(`serving.inference_telemetry`), so the bridge no longer needs database connectivity under that
+mode — the actual point of the control-plane/serving-plane separation this ADR names.
+
+- New `exa drift consume-telemetry`: a long-running consumer (matching `exa autopilot follow`'s
+  shape) that performs the `drift_snapshots`/`input_snapshots` writes wherever it runs.
+- Published directly to NATS JetStream, not the durable outbox other events use — that path
+  itself writes `platform.db` first, which would defeat the point. A publish failure is counted
+  and the sample dropped, matching the drop-on-full behavior of the direct-write path it
+  replaces: these are windowed aggregates, so a lost sample shifts nothing an operator acts on.
+- Off by default; the direct-write path is unchanged and needs no consumer.
+- Verified end to end against a real NATS server
+  (`tests/integration/test_nats_backbone_live.py`), not just mocked.
+
 ### Added — Presidio NER as an opt-in supplement to the regex PII detectors (ADR 0026)
 
 `examlops.guardrails` always ran regex PII detectors (email/phone/SSN/credit-card/IBAN/IP); the

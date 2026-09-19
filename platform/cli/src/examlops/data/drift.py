@@ -245,6 +245,31 @@ def write_input_snapshot(
         )
 
 
+def handle_inference_telemetry_event(event: dict[str, Any]) -> None:
+    """The consumer side of ``serving.inference_telemetry`` (ADR 0123 decision 4).
+
+    The serving plane (`platform/clients/seanerbus_bridge.py`, ``EXAMLOPS_TELEMETRY_VIA_EVENTBUS``)
+    publishes instead of writing here directly; this performs the same
+    ``write_drift_snapshot``/``write_input_snapshot`` calls it used to make inline, on whichever
+    process runs the consumer (``exa drift consume-telemetry``) — which is where platform.db
+    connectivity now needs to live, not on the request path.
+    """
+    data = event.get("data") or {}
+    model = data.get("model")
+    alias = data.get("alias")
+    job_id = data.get("job_id")
+    if not model or not alias:
+        return  # malformed event; nothing to record against
+    prediction = data.get("prediction")
+    if prediction is not None:
+        write_drift_snapshot(model, alias, float(prediction), job_id)
+    stats = data.get("embedding_stats")
+    if stats:
+        write_input_snapshot(
+            model, alias, float(stats["norm"]), float(stats["mean"]), float(stats["std"]), job_id
+        )
+
+
 def drift_models() -> list[str]:
     """Every model that has drift snapshots."""
     init_db()

@@ -229,3 +229,47 @@ def test_a_broadcast_watch_sees_every_new_event_and_no_old_ones(js):
 
     assert [e["data"]["n"] for e in seen_a] == ["after"]  # new events only
     assert [e["data"]["n"] for e in seen_b] == ["after"]  # and every watcher gets each one
+
+
+def test_inference_telemetry_round_trips_bridge_to_consumer(js, tmp_path, monkeypatch):
+    """The actual ADR 0123 decision-4 path, end to end: the bridge's publish call (not a fake)
+    through a real NATS server to `handle_inference_telemetry_event` (not a fake), landing the
+    same rows `write_drift_snapshot`/`write_input_snapshot` would have written directly.
+
+    Publishes through `NatsPublisher` directly rather than importing the real bridge module,
+    which needs the (not installed here) `seanerbus` client SDK and is unit-tested against a
+    stub for exactly that reason (`test_seanerbus_bridge.py`). What that unit suite does not
+    cover — and this does — is that the payload it hands `NatsPublisher` actually survives a
+    real NATS round trip into `handle_inference_telemetry_event`.
+    """
+    from examlops.data.drift import handle_inference_telemetry_event
+    from examlops.events import NatsPublisher
+    from examlops.events.consumer import EventConsumer
+    from examlops.platform_db import get_db, init_db
+
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "telemetry.db"))
+    init_db()
+
+    NatsPublisher(js).publish(
+        "serving.inference_telemetry",
+        {
+            "model": "JPCP",
+            "alias": "Production",
+            "job_id": "job-live-1",
+            "prediction": 42.0,
+            "embedding_stats": {"norm": 5.0, "mean": 3.5, "std": 0.5},
+        },
+        event_id="telemetry:job-live-1",
+    )
+
+    consumer = EventConsumer(
+        "telemetry-live-test", handle_inference_telemetry_event, stream=js, wait=2.0
+    )
+    result = consumer.run_once()
+
+    assert result["handled"] == 1
+    with get_db() as conn:
+        drift = conn.execute("SELECT * FROM drift_snapshots WHERE model='JPCP'").fetchone()
+        inp = conn.execute("SELECT * FROM input_snapshots WHERE model='JPCP'").fetchone()
+    assert drift is not None and drift["prediction"] == 42.0
+    assert inp is not None and round(inp["emb_norm"], 6) == 5.0

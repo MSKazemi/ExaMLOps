@@ -28,7 +28,7 @@ from examlops.rollback import AutonomousActionRefused, require_rollback
 _PANELS: list[tuple[str, list[str]]] = [
     ("Detection", ["status", "snapshots", "concept", "estimate", "profile", "forecast", "events"]),
     ("Baselines", ["baseline", "reset"]),
-    ("Response", ["trigger", "auto-retrain", "input", "corruption"]),
+    ("Response", ["trigger", "auto-retrain", "input", "corruption", "consume-telemetry"]),
 ]
 
 app = typer.Typer(
@@ -181,6 +181,55 @@ def reset(
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
     write_audit_event("cli", actor, "drift_reset", model, audit_details({"cleared": n}, reason))
     _output.ok(f"Cleared {n} drift snapshot(s) for {model}")
+
+
+_EXAMPLES_CONSUME_TELEMETRY = (
+    "Examples:\n\n"
+    "  exa drift consume-telemetry\n\n"
+    "  EXAMLOPS_TELEMETRY_VIA_EVENTBUS=1 exa drift consume-telemetry --wait 2\n"
+)
+
+
+@app.command("consume-telemetry", epilog=_EXAMPLES_CONSUME_TELEMETRY)
+def consume_telemetry(
+    wait: float = typer.Option(5.0, "--wait", help="Seconds a fetch waits for new events"),
+) -> None:
+    """Write drift/input-embedding snapshots published by a bridge running with
+    EXAMLOPS_TELEMETRY_VIA_EVENTBUS=1 (ADR 0123 decision 4).
+
+    A long-running consumer of ``serving.inference_telemetry`` on the NATS event backbone
+    (durable name ``drift-telemetry``: several copies share the work). Run this wherever
+    platform.db is reachable — the serving plane no longer needs to be. Stop with Ctrl-C or
+    SIGTERM. Without a bridge publishing this way, there is nothing to consume; the direct-write
+    path (the default) needs no consumer at all.
+    """
+    import signal
+    import threading
+
+    from examlops.data.drift import handle_inference_telemetry_event
+    from examlops.events.consumer import EventConsumer
+    from examlops.events.nats_backend import subject_for
+
+    if not os.getenv("EXAMLOPS_NATS_URL", "").strip():
+        _output.error(
+            "exa drift consume-telemetry reads the NATS event backbone, which is not configured",
+            hint="Set EXAMLOPS_NATS_URL. Nothing publishes here unless the bridge also runs with "
+            "EXAMLOPS_TELEMETRY_VIA_EVENTBUS=1 — without it, the bridge writes directly and no "
+            "consumer is needed.",
+        )
+        return
+    init_db()
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.set())
+    consumer = EventConsumer(
+        "drift-telemetry",
+        handle_inference_telemetry_event,
+        subjects=subject_for("serving.inference_telemetry"),
+        wait=wait,
+    )
+    _output.info("Following serving.inference_telemetry — writing drift/input snapshots")
+    consumer.run_forever(stop)
 
 
 # ---------------------------------------------------------------------------
