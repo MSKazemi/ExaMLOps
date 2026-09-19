@@ -398,13 +398,21 @@ def principal_kind() -> str:
     )
 
 
-def confirm(prompt: str, default: bool = False) -> bool:
+def confirm(prompt: str, default: bool = False, auto_yes: bool = False) -> bool:
     """Prompt for confirmation — auto-yes under ``--yes`` or structured output, for humans only.
 
     ``-o json`` is an output format, not consent. For a human's script it has always meant "don't
     prompt", and still does. An **agent** principal never gets implicit consent: it is refused
     with a structured ``plan_required`` error, because the consent an agent needs is an approved
     plan (plan/apply, ADR 0147 d2 — USAR I9), not a flag it can set on itself.
+
+    ``auto_yes`` is for a command's *own* ``--yes``/``--force``-style option, which is distinct
+    from the global ``--yes`` (``yes_mode``). Pass it here rather than skipping this call —
+    several commands used to guard the call itself (``if not yes and not confirm(...)``), which
+    skipped the agent check above along with the prompt whenever that local flag was set (ADR
+    0147 d2 finding: an agent passing a command's own ``--yes`` slipped through ungated). This is
+    the one place that decides, so a bypass flag can only shorten a human's prompt, never an
+    agent's.
     """
     if principal_kind() == "agent":
         error(
@@ -412,7 +420,7 @@ def confirm(prompt: str, default: bool = False) -> bool:
             hint="agent mutations need an approved plan (plan/apply, ADR 0147); a human can run "
             "this command, or unset EXAMLOPS_PRINCIPAL_KIND for a human-driven script",
         )
-    if yes_mode or json_mode:
+    if auto_yes or yes_mode or json_mode:
         return True
     return typer.confirm(prompt, default=default)
 

@@ -754,7 +754,7 @@ def archive(
 ) -> None:
     """Archive a project (marks ARCHIVED; data is preserved)."""
     init_db()
-    if not yes and not _output.confirm(f"Archive project '{name}'?"):
+    if not _output.confirm(f"Archive project '{name}'?", auto_yes=yes):
         _output.info("Cancelled.")
         return
     ok = archive_project(name)
@@ -772,8 +772,9 @@ def delete(
 ) -> None:
     """Delete a project and remove all its model assignments (irreversible)."""
     init_db()
-    if not yes and not _output.confirm(
-        f"[bold red]Delete[/bold red] project '{name}' and all its assignments? This is irreversible."
+    if not _output.confirm(
+        f"[bold red]Delete[/bold red] project '{name}' and all its assignments? This is irreversible.",
+        auto_yes=yes,
     ):
         _output.info("Cancelled.")
         return

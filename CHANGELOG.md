@@ -5,6 +5,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — a command's own `--yes` bypassed the agent-mutation gate entirely (ADR 0147)
+
+`_output.confirm()` refuses an agent principal (`EXAMLOPS_PRINCIPAL_KIND=agent`) outright — but
+only for commands that actually call it. Six commands guarded the *call* behind a local flag
+instead: `if not yes and not _output.confirm(...)`, so passing that flag (a command's own
+`--yes`, or the global `--yes`/`-o json` re-checked redundantly) skipped the prompt **and** the
+agent check hiding inside it, silently reopening the exact gap decision 2's first half had just
+closed.
+
+- `hpc approve`, `modules reset`, `project archive`, `project delete`, `connection delete`,
+  `workbench delete` — every real site found via a full-tree scan — now always call `confirm()`;
+  a command's own bypass flag is passed through the new `auto_yes=` parameter instead of
+  guarding the call, so it can shorten a human's prompt but never skip the agent check.
+- Static guard `test_no_command_guards_the_confirm_call_itself` fails the build if the pattern
+  returns (`dry_run` exempted — those calls guard a genuine no-op for every caller, verified
+  against the functions they protect).
+- Human behavior is unchanged: `--yes`/`-o json` still auto-confirm exactly as before.
+
 ### Fixed — a raising policy engine granted permission instead of refusing it (ADR 0085/0079, BL-080)
 
 `policy.decide()` deliberately defaults to `allow` when no policy file exists — a documented,

@@ -240,7 +240,7 @@ def reset() -> None:
     """Delete the site profile — every module on again (preset 'full')."""
     from examlops.lifecycle import modules
 
-    if not _output.yes_mode and not _output.confirm("Delete the site profile (all modules on)?"):
+    if not _output.confirm("Delete the site profile (all modules on)?"):
         _output.error("Aborted — nothing changed.")
     removed = modules.reset_site_file()
     _audit("modules_reset", {"removed": removed})

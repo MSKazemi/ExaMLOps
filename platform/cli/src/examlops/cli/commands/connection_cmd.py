@@ -168,7 +168,7 @@ def delete(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:
     """Delete a connection (the referenced secret is left intact)."""
-    if not yes and not _output.confirm(f"Delete connection '{name}'?"):
+    if not _output.confirm(f"Delete connection '{name}'?", auto_yes=yes):
         _output.info("Cancelled.")
         return
     if not delete_connection(name, project=project):

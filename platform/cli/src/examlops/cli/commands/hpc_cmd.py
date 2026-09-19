@@ -380,12 +380,11 @@ def approve(
     if merged is None:
         _output.error(f"Unknown cluster: {name}", hint="exa hpc clusters")
         return
-    if not _output.yes_mode and not _output.json_mode:
-        if not _output.confirm(
-            f"Approve cluster '{name}' ({merged['scheduler']} @ {merged['host']}) for scheduling?"
-        ):
-            _output.info("Aborted — cluster left unchanged.")
-            return
+    if not _output.confirm(
+        f"Approve cluster '{name}' ({merged['scheduler']} @ {merged['host']}) for scheduling?"
+    ):
+        _output.info("Aborted — cluster left unchanged.")
+        return
     set_cluster_state(name, "ACTIVE", approved_by=_actor())
     write_audit_event("exa-hpc", _actor(), "cluster_approved", name, {"host": merged.get("host")})
     _output.ok(f"Cluster {name} is now ACTIVE — jobs may be scheduled on it.")
