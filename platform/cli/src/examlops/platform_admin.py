@@ -127,10 +127,14 @@ def _run(
         )
 
     # 2. Policy-as-code (ADR 0079). policy.decide writes its own audit row.
-    from examlops.policy import decide
+    # `decide_safe`, not `decide`: an engine bug used to raise here uncaught, crashing the
+    # workbench/dashboard call before RBAC's own audit row (above) was the only trace left —
+    # nothing said policy was ever consulted. Now it denies (a notebook has no human confirming
+    # a require_approval prompt, same reasoning as autopilot) and is itself durably audited (BL-080).
+    from examlops.policy import DENY, decide_safe
 
     ctx = {"actor": actor, "target": target or "", "action_kind": action, **(details or {})}
-    decision = decide(f"platform_admin:{action}", ctx)
+    decision = decide_safe(f"platform_admin:{action}", ctx, default_effect=DENY)
     if decision.denied:
         raise PlatformAdminDenied(f"policy denied {action!r}: {decision.reason}")
     if decision.requires_approval and not approve:

@@ -107,6 +107,25 @@ def test_a_policy_decision_from_the_other_policy_module_is_counted(monkeypatch):
     assert any(k.startswith("policy:") for k in dropped_audit_events()), dropped_audit_events()
 
 
+def test_a_policy_unavailable_event_that_could_not_be_audited_is_counted(monkeypatch):
+    """BL-080's fix (`policy.decide_safe`) records that the engine itself was unavailable — a
+    NEW audit site, so it needs the same proof as any other: a loss there must still be counted,
+    not silently vanish behind the very outage it exists to record."""
+    from examlops.data.audit import dropped_audit_events
+    from examlops.policy import decide_safe
+
+    _break_the_audit_log(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("engine broke")
+
+    monkeypatch.setattr("examlops.policy.decide", boom)
+    decide_safe("retrain", {"model": "JPCP"})
+    assert any(k.startswith("policy_unavailable:") for k in dropped_audit_events()), (
+        dropped_audit_events()
+    )
+
+
 def test_an_upgrade_that_could_not_be_audited_is_counted(monkeypatch):
     """`exa upgrade apply` migrates the instance's data format.
 
@@ -275,6 +294,9 @@ COVERED_AUDIT_SITES = {
     ("examlops/supplychain/__init__.py", "_audit"): "test_a_governance_audit_loss_is_counted",
     ("examlops/policy/__init__.py", "_audit"): (
         "test_a_policy_decision_from_the_other_policy_module_is_counted"
+    ),
+    ("examlops/policy/__init__.py", "decide_safe"): (
+        "test_a_policy_unavailable_event_that_could_not_be_audited_is_counted"
     ),
     ("examlops/policy_engine/__init__.py", "_audit"): (
         "test_a_policy_decision_that_is_not_logged_is_counted"

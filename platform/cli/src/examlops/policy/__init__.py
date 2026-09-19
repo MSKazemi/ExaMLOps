@@ -9,7 +9,11 @@ written to ``audit_events`` (EU AI Act Art. 12 alignment).
 
 Backward-compatible by design: with **no policy file** (or no matching rule) the decision is
 ``allow`` — so existing Phase-29 confirms and the sysadmin approval gate keep running exactly as
-before, and policies are *additional* constraints layered on top.
+before, and policies are *additional* constraints layered on top. That default lives inside
+:func:`decide` itself and is not a failure — it never raises for a missing/malformed file. A
+call site that wants to survive the *engine itself* misbehaving (a bug, not a missing file) uses
+:func:`decide_safe` instead, which fails to a caller-chosen default (deny, for anything acting
+without a human) and always audits the fact that policy was unavailable.
 
 Example ``policy.yaml``::
 
@@ -83,6 +87,11 @@ class Decision:
     effect: str
     rule: str | None
     reason: str
+    unavailable: bool = False
+    """Set only by :func:`decide_safe`'s fallback path: the engine raised, ``effect`` is the
+    caller's chosen default rather than a rule the policy author wrote. A caller that needs to
+    tell "the engine said deny" from "the engine broke, so we assumed deny" checks this — not
+    the `reason` text, which is for humans/logs and may change."""
 
     @property
     def allowed(self) -> bool:
@@ -191,6 +200,54 @@ def decide(
     if audit:
         _audit(action, ctx, decision)
     return decision
+
+
+def decide_safe(
+    action: str,
+    context: Mapping[str, Any] | None = None,
+    *,
+    default_effect: str = DENY,
+    **kwargs: Any,
+) -> Decision:
+    """:func:`decide`, but a bug in the engine itself never grants a decision by accident.
+
+    ``decide()`` already never raises for a missing or malformed ``policy.yaml`` — that is a
+    legitimate, ADR-0079-decision-2 "no file → allow" default, handled internally. What it does
+    NOT decide is what happens if the engine *code* itself raises (a bug, not a config problem) —
+    and every call site used to answer that question differently: the MCP write-gate failed
+    closed, ``exa retrain`` and ``PlatformAdmin`` let the exception crash the caller (accidentally
+    safe, since nothing then proceeds, but with no audit trail and an ugly traceback), and the
+    autopilot cycle — the one component that acts with no human at the keyboard — caught it and
+    defaulted to **allow**, silently disabling both of its policy gates (found live, not
+    theoretical: a raising engine let the autopilot fire a real retrain with zero record that
+    policy was ever consulted).
+
+    A raising engine is not one whose "allow" can be trusted, so this fails to ``default_effect``
+    (deny unless the caller has a specific, documented reason to pick otherwise) and — unlike the
+    silent-log-only paths this replaces — durably records that policy was unavailable, satisfying
+    decision 5 ("every decision is audited") even for the decision that could not be made.
+    """
+    try:
+        return decide(action, context, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — the engine broke; never let that grant a permission
+        ctx = dict(context or {})
+        log.warning(
+            "policy check for %r unavailable (%s) — defaulting to %s", action, exc, default_effect
+        )
+        try:
+            from examlops.data.audit import audit_best_effort
+            from examlops.platform_db import _actor
+
+            audit_best_effort(
+                "exa-policy",
+                _actor(),
+                f"policy_unavailable:{action}",
+                str(ctx.get("model") or ctx.get("target") or ""),
+                {"error": str(exc), "default_effect": default_effect},
+            )
+        except Exception:  # noqa: BLE001 — a broken audit path must not compound a broken policy
+            log.warning("could not audit the policy-unavailable event for %r", action)
+        return Decision(default_effect, None, f"policy-unavailable: {exc}", unavailable=True)
 
 
 def _audit(action: str, context: Mapping[str, Any], decision: Decision) -> None:

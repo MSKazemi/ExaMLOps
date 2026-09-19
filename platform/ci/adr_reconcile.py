@@ -48,6 +48,13 @@ SKIP_DIRS = {
     "build",
     "dist",
     "htmlcov",
+    # Dev-tooling replay/scratch snapshots (subagent-driven-development), tracked private-only
+    # since 2026-09-19. They hold OLD COPIES of real source files under snapshot directory names
+    # like `.superpowers/sdd/<task>/snap-N/platform/...` — a suffix-matching artifact search that
+    # doesn't skip them treats a 2026-09-19 replay-snapshot commit of `mcp/tools.py` as if it were
+    # the real file's first appearance, which broke `test_the_sweep_claim_is_still_true` the same
+    # day the directory was pushed (a stale sweep note miscalled as newly-false for 0081/0082/0091).
+    ".superpowers",
 }
 
 

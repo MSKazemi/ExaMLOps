@@ -5,6 +5,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — a raising policy engine granted permission instead of refusing it (ADR 0085/0079, BL-080)
+
+`policy.decide()` deliberately defaults to `allow` when no policy file exists — a documented,
+tested config-state default (ADR 0079 decision 2, byte-compatible). Four call sites conflated
+that with a second, very different failure: the policy *engine itself* raising an exception (a
+bug, not a missing file). Reproduced live: a raising engine let the autopilot fire a real retrain
+with both of its policy gates silently disabled and the cycle summary reporting `policy_blocks:
+0` — indistinguishable from a properly gated action.
+
+- New `examlops.policy.decide_safe()` — `decide()`, but any exception from the engine itself
+  fails to a caller-chosen default (deny unless documented otherwise) and durably audits the
+  unavailability (`policy_unavailable:<action>` in `audit_events`), where the previous fallbacks
+  only logged a warning.
+- **`exa autopilot`** (`_policy_decide`) now denies instead of allowing when the engine raises —
+  it is the one component that acts with no human at the keyboard, the same reasoning that
+  already made the MCP write-gate fail closed.
+- **`exa retrain`** and **`examlops.platform_admin`** (the workbench/dashboard governance façade)
+  had no `try`/`except` around `policy.decide` at all — an engine bug crashed the caller with a
+  bare traceback (accidentally safe, since nothing then proceeded, but with no audit row and an
+  unreadable failure). Both now refuse cleanly and are durably audited.
+- The MCP write-gate (`_agent_write_gate`) already failed closed but never audited the
+  unavailable case either — fixed for consistency; its refused-and-audited behavior is unchanged.
+- `Decision` gained an `unavailable: bool` field so a caller can tell "the engine said deny" from
+  "the engine broke, so we assumed deny" without depending on `reason` text.
+- ADR 0085 corrected: it stated "`policy.py` unavailable → default allow (same rule as INC-3)",
+  which was the bug, not a decision — ADR 0079 never decided what a *raising engine* should do,
+  only what "no file" should do.
+
 ## [0.60.0] - 2026-09-18
 
 ### Added — every published page is loaded in a browser, and the site is whole

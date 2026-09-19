@@ -149,6 +149,26 @@ def test_policy_deny_blocks_before_write(_env, tmp_path):
     assert not (tmp_path / "finops.yaml").exists()  # nothing written
 
 
+def test_a_broken_policy_engine_denies_instead_of_crashing(_env, monkeypatch):
+    """BL-080: this call site used to have no try/except around `decide` at all, so a bug in the
+    policy engine crashed the caller with a bare traceback — accidentally safe (nothing then
+    wrote), but with no audit row and no clean error. `decide_safe` fails closed the same as the
+    MCP write-gate (a notebook/dashboard call has no human confirming a require_approval prompt,
+    same reasoning as autopilot) and is itself durably audited."""
+    import examlops.policy as policy
+
+    def boom(*a, **k):
+        raise RuntimeError("policy exploded")
+
+    monkeypatch.setattr(policy, "decide", boom)
+    with pytest.raises(pa.PlatformAdminDenied, match="policy exploded"):
+        pa.set_compute_cost(gpu_per_hour=9.99)
+
+    rows = _audit_rows("policy_unavailable:platform_admin:set_compute_cost")
+    assert rows, "no audit_events row recorded when the policy engine raised"
+    assert "policy exploded" in rows[0]["details"]
+
+
 def test_policy_require_approval_then_approve(_env, tmp_path):
     _write_policy(
         tmp_path, [{"action": "platform_admin:set_compute_cost", "effect": "require_approval"}]

@@ -112,6 +112,81 @@ def test_audit_failure_never_raises(monkeypatch):
     assert d.allowed
 
 
+# ── decide_safe: a raising engine is not one whose "allow" can be trusted (BL-080) ──────────────
+
+
+def test_decide_safe_passes_through_a_normal_decision_unchanged():
+    """The common path: the engine doesn't raise, so `decide_safe` is just `decide`."""
+    rules = [{"action": "retrain", "effect": "deny", "name": "block"}]
+    d = policy.decide_safe("retrain", {"model": "JPCP"}, policies=rules, audit=False)
+    assert d.denied and not d.unavailable
+    assert d.rule == "block"
+
+
+def test_decide_safe_defaults_to_deny_when_the_engine_raises(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("engine broke")
+
+    monkeypatch.setattr(policy, "decide", boom)
+    d = policy.decide_safe("retrain", {"model": "JPCP"})
+    assert d.denied
+    assert d.unavailable
+    assert "engine broke" in d.reason
+
+
+def test_decide_safe_honours_a_caller_chosen_default(monkeypatch):
+    """Not every caller wants deny — a caller may document a specific reason to pick otherwise."""
+
+    def boom(*a, **k):
+        raise RuntimeError("engine broke")
+
+    monkeypatch.setattr(policy, "decide", boom)
+    d = policy.decide_safe("retrain", {}, default_effect=policy.ALLOW)
+    assert d.allowed and d.unavailable
+
+
+def test_decide_safe_durably_audits_the_unavailable_decision(monkeypatch):
+    """Unlike a bare `except: log.warning(...)`, this must leave a row in `audit_events` — the
+    gap BL-080 found: the old fallback was invisible to any review of the audit chain."""
+    calls = []
+
+    def record(source, actor, action, target, details=None, **kw):
+        calls.append({"source": source, "action": action, "target": target, "details": details})
+
+    monkeypatch.setattr("examlops.data.audit.write_audit_event", record)
+
+    def boom(*a, **k):
+        raise RuntimeError("engine broke")
+
+    monkeypatch.setattr(policy, "decide", boom)
+    policy.decide_safe("retrain", {"model": "JPCP"})
+
+    assert len(calls) == 1
+    assert calls[0]["action"] == "policy_unavailable:retrain"
+    assert calls[0]["target"] == "JPCP"
+    assert calls[0]["details"]["error"] == "engine broke"
+    assert calls[0]["details"]["default_effect"] == "deny"
+
+
+def test_decide_safe_survives_a_broken_audit_path_too(monkeypatch):
+    """A broken policy engine AND a broken audit path must still return a decision, not raise.
+    `audit_best_effort` already swallows a broken `write_audit_event` on its own (this is really
+    an integration check that the two failures compose safely), but `decide_safe` carries its own
+    belt-and-braces `except` around the audit call too, matching this codebase's habit of never
+    trusting a single layer to be the only thing standing between a bug and a crash."""
+
+    def boom(*a, **k):
+        raise RuntimeError("engine broke")
+
+    def audit_boom(*a, **k):
+        raise RuntimeError("audit down too")
+
+    monkeypatch.setattr(policy, "decide", boom)
+    monkeypatch.setattr("examlops.data.audit.write_audit_event", audit_boom)
+    d = policy.decide_safe("retrain", {"model": "JPCP"})
+    assert d.denied and d.unavailable
+
+
 def test_load_policies_missing_file(tmp_path):
     assert policy._load_policies(tmp_path / "nope.yaml") == []
 

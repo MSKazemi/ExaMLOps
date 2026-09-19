@@ -100,10 +100,17 @@ def retrain(
             )
         return
 
-    # ── Policy-as-code gate (ADR 0079): default allow ⇒ unchanged behaviour ────
+    # ── Policy-as-code gate (ADR 0079): no file/no match ⇒ unchanged (allow) behaviour.
+    # `decide_safe` (not `decide`) so a bug in the engine itself denies and is durably audited
+    # instead of crashing this command with an unhandled traceback and no record of what
+    # happened (BL-080) — a human is at the keyboard here, but the traceback told them nothing.
     from examlops import policy
 
-    decision = policy.decide("retrain", {"model": model, "dataset": dataset_name, "dummy": dummy})
+    decision = policy.decide_safe(
+        "retrain",
+        {"model": model, "dataset": dataset_name, "dummy": dummy},
+        default_effect=policy.DENY,
+    )
     if decision.denied:
         _output.error(
             f"Policy denied retrain of {model}: {decision.reason}",

@@ -856,8 +856,15 @@ class TestPolicyDecideItself:
             got, _ = autopilot_cmd._policy_decide("autopilot_trigger", {"model": JPCP})
             assert got == effect
 
-    def test_a_broken_policy_layer_fails_open_but_says_why(self, monkeypatch):
-        """Fail-open is the design (ADR 0079) — silence is what let this bug live."""
+    def test_a_broken_policy_layer_fails_closed_and_says_why(self, monkeypatch):
+        """ADR 0079 decision 2 only ever decided "no file/no match → allow" — a config state,
+        handled inside `decide()` itself, which never raises for it. It never decided what an
+        autopilot cycle should do if the engine *code* raises (a bug, not a config problem); this
+        used to reuse the same "allow" for both, which is what let the autopilot fire a real
+        retrain with its policy gates silently disabled (BL-080). Autopilot acts with no human at
+        the keyboard — same reasoning as the MCP write-gate, which already failed closed — so a
+        raising engine now denies here too, and (unlike before) is durably audited, not just logged.
+        """
         import examlops.policy as policy
 
         def boom(*a, **k):
@@ -865,8 +872,32 @@ class TestPolicyDecideItself:
 
         monkeypatch.setattr(policy, "decide", boom)
         effect, reason = autopilot_cmd._policy_decide("autopilot_trigger", {"model": JPCP})
-        assert effect == "allow"
+        assert effect == "deny"
         assert "policy exploded" in reason
+
+    def test_a_broken_policy_layer_is_durably_audited_not_just_logged(self, monkeypatch):
+        """The gap `test_a_broken_policy_layer_fails_closed_and_says_why` doesn't cover: BL-080
+        found the old fallback wrote nothing to `audit_events` — only a Python log line, which a
+        governance review of the audit chain would never see."""
+        import json
+
+        import examlops.policy as policy
+        from examlops.platform_db import get_db
+
+        def boom(*a, **k):
+            raise RuntimeError("policy exploded")
+
+        monkeypatch.setattr(policy, "decide", boom)
+        autopilot_cmd._policy_decide("autopilot_trigger", {"model": JPCP})
+
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT details FROM audit_events WHERE action='policy_unavailable:autopilot_trigger'"
+            ).fetchall()
+        assert rows, "no audit_events row recorded when the policy engine raised"
+        details = json.loads(rows[0]["details"])
+        assert "policy exploded" in details["error"]
+        assert details["default_effect"] == "deny"
 
 
 class TestPolicyReachesTheRealCycle:

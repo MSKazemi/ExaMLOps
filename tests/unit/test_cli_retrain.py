@@ -51,6 +51,37 @@ def test_retrain_dry_run_does_not_post():
     assert "Dry run" in result.output
 
 
+def test_retrain_denies_and_never_posts_when_the_policy_engine_raises(tmp_path, monkeypatch):
+    """BL-080: this call site had NO try/except around `policy.decide` at all — a bug in the
+    engine crashed `exa retrain` with a bare traceback (accidentally safe, since the command
+    then never posted, but with no audit row and an unreadable failure for the operator at the
+    keyboard). `decide_safe` turns that into a clean, denied, and durably audited refusal."""
+    import examlops.policy as policy
+    from examlops.platform_db import get_db
+
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "platform.db"))
+
+    def boom(*a, **k):
+        raise RuntimeError("policy exploded")
+
+    with (
+        patch.object(policy, "decide", boom),
+        patch("examlops.cli.commands.retrain._client.post") as mock_post,
+    ):
+        result = runner.invoke(app, ["--yes", "retrain", "JPCP", "--dataset", "PM100Dataset"])
+
+    assert result.exit_code == 1, result.output
+    assert "Policy denied" in result.output
+    mock_post.assert_not_called()
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT details FROM audit_events WHERE action='policy_unavailable:retrain'"
+        ).fetchall()
+    assert rows, "no audit_events row recorded when the policy engine raised"
+    assert "policy exploded" in rows[0]["details"]
+
+
 def test_retrain_dry_run_json():
     result = runner.invoke(app, ["--json", "retrain", "JPCP", "--dry-run"])
     assert result.exit_code == 0, result.output

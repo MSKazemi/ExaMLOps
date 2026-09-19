@@ -111,24 +111,26 @@ def _is_enabled() -> bool:
 
 
 def _policy_decide(action: str, context: dict[str, Any]) -> tuple[str, str]:
-    """Return ``(effect, reason)`` from ``policy.decide``, defaulting to ``("allow", …)``.
+    """Return ``(effect, reason)`` from ``policy.decide_safe``, defaulting to ``("deny", …)``.
 
     Read ``decision.effect``. This used to read ``decision.action``, which :class:`Decision` has
     never had — so every call raised ``AttributeError`` into the ``except`` below and returned
     ``allow``. That silently disabled **both** autopilot gates: a `deny` on ``autopilot_trigger``
     or ``autopilot_promote`` was ignored, and so was ``require_approval`` — the human-in-the-loop
-    hold on the one component that acts without a human. Fail-open is the deliberate design
-    (ADR 0079: a broken policy file must not wedge a mutation path), but it must not swallow a
-    *bug*, so the fallback now says which action it could not decide.
-    """
-    try:
-        from examlops.policy import decide
+    hold on the one component that acts without a human.
 
-        decision = decide(action, context)
-        return decision.effect, decision.reason or ""
-    except Exception as exc:  # noqa: BLE001 — fail-open, but never silently
-        log.warning("policy check for %r unavailable (%s) — defaulting to allow", action, exc)
-        return "allow", f"policy-unavailable: {exc}"
+    Fixing the typo surfaced the real question ADR 0079 never answered: what should happen if
+    the policy *engine* itself raises (a bug, not a missing/malformed file — that case already
+    defaults to allow, inside ``decide()`` itself, by design)? Autopilot is the one component
+    that acts without a human at the keyboard — the same reasoning that makes the MCP write-gate
+    fail closed applies here even more, so this now denies (via ``policy.decide_safe``) rather
+    than allows, and durably audits the fact that policy was unavailable instead of only logging
+    it (BL-080).
+    """
+    from examlops.policy import DENY, decide_safe
+
+    decision = decide_safe(action, context, default_effect=DENY)
+    return decision.effect, decision.reason or ""
 
 
 # ── injectable helpers (monkeypatched in tests) ─────────────────────────────
