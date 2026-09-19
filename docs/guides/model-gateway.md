@@ -185,9 +185,11 @@ via the `cache_lookup`/`cache_store` hooks — no change to the caller API. Desi
 spec `design/vision/specs/B3-semantic-caching.md`.
 
 - **Similarity**: the prompt is embedded and cosine-compared against stored entries; a hit
-  requires similarity ≥ threshold (conservative default 0.85). Production uses a local
-  embedder + Redis/Qdrant (B5); the fallback is an in-process cosine search over a
-  deterministic token-hash embedding (no vector DB needed).
+  requires similarity ≥ threshold (conservative default 0.85). The store is in-process by
+  design (ADR 0018) — a shared Redis/Qdrant-backed cache is deferred until the gateway runs
+  as multiple replicas needing one cache between them. The embedder is pluggable
+  (`EXAMLOPS_CACHE_EMBED_BACKEND` for a local model), falling back to a deterministic
+  token-hash embedding so the cache works with no embedding service at all.
 - **Isolation** (R3): the namespace is `tenant :: model | params`, where *params* are every part
   of the request that changes the answer — `temperature`, `max_tokens`, `top_p`, `stop`, `seed`
   and the `response_schema` (as a digest, so two spellings of one schema are one namespace). A

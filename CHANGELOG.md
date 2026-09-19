@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Docs — ADR 0018 (semantic caching) corrected to Accepted; two docs stopped describing an unbuilt backend as production
+
+Clause 2 named LiteLLM-over-Redis/Qdrant as the semantic cache's backend; nothing ever called any
+of the three. The module's own docstring and `docs/guides/model-gateway.md` both described that
+backend as "production" anyway — a plan written down as if it were the built system. Corrected
+both docs to describe what is actually built (an in-process cosine cache over a pluggable
+embedder) and rewrote the ADR's Decision/Alternatives to match: a distributed backend is now a
+recorded, reasoned rejection (no benefit until the gateway runs multiple replicas sharing one
+cache) rather than an unfinished to-do. Every artifact the Decision now names exists; ADR 0018 →
+**Accepted**. No functional code changed.
+
 ### Fixed — a command's own `--yes` bypassed the agent-mutation gate entirely (ADR 0147)
 
 `_output.confirm()` refuses an agent principal (`EXAMLOPS_PRINCIPAL_KIND=agent`) outright — but

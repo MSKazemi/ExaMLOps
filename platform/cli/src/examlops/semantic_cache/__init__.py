@@ -2,10 +2,13 @@
 
 Returns a stored completion for an embedding-**similar**, cacheable prompt, with
 per-tenant + per-params isolation, safe bypass, TTL/size eviction, and measured savings.
-The production embedder is a local model (Ollama `nomic-embed` / sentence-transformers, as
-in Phase 25) and the ANN store is Redis/Qdrant (B5); the **fallback** is an in-process
-cosine search over a deterministic token-hash embedding, so the cache logic is exercisable
-with no vector DB and no embedding service.
+The store is an **in-process** cosine index — deliberately, not a stopgap: a shared Redis/
+Qdrant-backed cache only pays for itself once the gateway runs as multiple replicas needing
+one cache between them, which it does not yet (ADR 0018's decision 2 records this). The
+embedder is pluggable — a local model via `EXAMLOPS_CACHE_EMBED_BACKEND` (Ollama
+`nomic-embed` / sentence-transformers, as in Phase 25) when configured, falling back to a
+deterministic token-hash vector so the cache logic is exercisable with no embedding service
+at all.
 
 Wires into the B2 gateway via its existing ``cache_lookup``/``cache_store`` hooks
 (:func:`bind_to_gateway`).
