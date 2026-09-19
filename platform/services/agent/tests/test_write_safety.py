@@ -50,6 +50,7 @@ def test_write_gate_blocks_when_policy_denies(monkeypatch, tmp_path):
     class _Denied:
         denied = True
         requires_approval = False
+        unavailable = False
         reason = "test-deny"
 
     import examlops.policy as policy
