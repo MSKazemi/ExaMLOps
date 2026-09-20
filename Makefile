@@ -71,7 +71,7 @@ endif
 .DEFAULT_GOAL := help
 
 .PHONY: images helm-package \
-	prometheus-live pgvector-live nats-live redis-live ray-live postgres-roles-live spire-live iam-live lineage-live helm-kind-live
+	prometheus-live pgvector-live nats-live redis-live ray-live postgres-roles-live spire-live iam-live lineage-live helm-kind-live kserve-live
 
 .PHONY: help \
         full-up stop-all rebuild rebuild-all lxp-rebuild \
@@ -856,6 +856,11 @@ spire-live: install-dev ## SPIFFE/SPIRE attestation and model-server mTLS (needs
 	  tests/integration/test_spire_compose_attestation_live.py \
 	  tests/integration/test_workload_identity_spire_live.py \
 	  tests/integration/test_serving_gateway_mtls_live.py
+
+kserve-live: install-dev ## The KServe substrate's real, live apply on a throwaway kind cluster (ADR 0142 d6)
+	@command -v kind >/dev/null || { printf "$(RED)kind is not installed$(RESET)\n"; exit 1; }
+	EXAMLOPS_KIND_KSERVE_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	  tests/integration/test_kserve_live_apply_kind_live.py
 
 iam-live: install-dev ## Federated identity against a real Keycloak + OPA (set EXAMLOPS_IAM_LIVE_KEYCLOAK_URL etc.)
 	@# `${VAR:-}`, not `$$VAR`: this Makefile runs bash with `-u`, so an unset variable would
