@@ -542,6 +542,8 @@ Budget, account, and inspect reasoning (thinking) vs output tokens separately (B
 | `exa gateway reasoning budget REQUESTED` | Shows how a reasoning budget caps a request (`--max`). | Preview the effect of a thinking-token cap. | `exa gateway reasoning budget 8000 --max 4000` |
 | `exa gateway reasoning account MODEL` | Accounts reasoning vs output tokens/cost separately (`--reasoning`, `--output`, `--reasoning-rate`, `--output-rate`, `--tenant`). | Attribute cost to thinking vs answer tokens. **mutation** | `exa gateway reasoning account JPCP --reasoning 3000 --output 500 --reasoning-rate 0.000003` |
 | `exa gateway reasoning stats` | Shows the reasoning-vs-output token/cost split + structured-output outcomes (`--model`, `--tenant`). | Analyze reasoning-token spend across the fleet. | `exa gateway reasoning stats --tenant acme` |
+| `exa gateway reasoning set-budget MAX_THINKING` | Sets (or `--remove`s) a gateway reasoning budget for one `--model`, `--project` or `--key-hash` (`--tenant`); the tightest applicable cap wins. | Bound how much a model may think per request; the gateway refuses a response over budget. **mutation** | `exa gateway reasoning set-budget 2000 --model qwen3` |
+| `exa gateway reasoning budgets` | Lists configured reasoning budgets, or with `--events` what the gateway observed against them (`--outcome within\|exceeded\|unknown\|refused`, `--tenant`). | Audit budget breaches and backends that report no reasoning usage. | `exa gateway reasoning budgets --events --outcome exceeded` |
 
 #### Structured output (`exa gateway schema`)
 

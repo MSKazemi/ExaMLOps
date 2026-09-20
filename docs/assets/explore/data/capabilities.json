@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 468,
+ "total_commands": 470,
  "total_groups": 70,
  "panels": [
   {
@@ -1325,6 +1325,20 @@
      "cmd": "exa gateway reasoning budget",
      "group": "gateway",
      "help": "Show how a reasoning budget caps a request (R4).",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway reasoning budgets",
+     "group": "gateway",
+     "help": "List configured reasoning budgets, or (--events) what the gateway observed against them.",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway reasoning set-budget",
+     "group": "gateway",
+     "help": "Set (or --remove) a gateway reasoning budget; the tightest applicable cap wins (ADR 0035).",
      "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
      "guide": "guides/model-gateway.md"
     },

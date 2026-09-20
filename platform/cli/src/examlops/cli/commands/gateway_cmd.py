@@ -288,3 +288,54 @@ def reasoning_stats(
             "structured_failed": outcomes.get("failed", 0),
         }
     )
+
+
+@reasoning_app.command("set-budget")
+def reasoning_set_budget(
+    max_thinking: int = typer.Argument(..., min=0, help="Max thinking tokens per request"),
+    model: str = typer.Option(None, "--model", help="Cap for this logical model"),
+    project: str = typer.Option(None, "--project", help="Cap for this project's virtual keys"),
+    key_hash: str = typer.Option(None, "--key-hash", help="Cap for one virtual key (its hash)"),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
+    remove: bool = typer.Option(False, "--remove", help="Delete the cap instead of setting it"),
+) -> None:
+    """Set (or --remove) a gateway reasoning budget; the tightest applicable cap wins (ADR 0035)."""
+    from examlops.data import reasoning_budgets as store
+
+    chosen = [(s, r) for s, r in (("model", model), ("project", project), ("key", key_hash)) if r]
+    if len(chosen) != 1:
+        _output.error("Pass exactly one of --model, --project, --key-hash.")
+        raise typer.Exit(2)
+    scope, ref = chosen[0]
+    if remove:
+        result = "removed" if store.remove(scope, ref, tenant) else "not_found"
+    else:
+        result = store.put(scope, ref, max_thinking, tenant)
+    if _output.json_mode:
+        _output.print_json(
+            {"scope": scope, "ref": ref, "tenant": tenant, "max": max_thinking, "result": result}
+        )
+        return
+    _output.ok(f"{scope} {ref} ({tenant}): {result}, max {max_thinking} thinking tokens")
+
+
+@reasoning_app.command("budgets")
+def reasoning_budgets(
+    tenant: str = typer.Option(None, "--tenant", help="Filter by tenant"),
+    events: bool = typer.Option(False, "--events", help="Show recent budget outcomes instead"),
+    outcome: str = typer.Option(
+        None, "--outcome", help="With --events: within|exceeded|unknown|refused"
+    ),
+) -> None:
+    """List configured reasoning budgets, or (--events) what the gateway observed against them."""
+    from examlops.data import reasoning_budgets as store
+
+    rows = store.list_events(outcome=outcome) if events else store.list_budgets(tenant)
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    if not rows:
+        _output.info("No reasoning budget events." if events else "No reasoning budgets set.")
+        return
+    for row in rows:
+        _output.info("  ".join(f"{k}={v}" for k, v in row.items() if v is not None))

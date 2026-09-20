@@ -97,10 +97,54 @@ exa gateway reasoning account llama3.1-8b --reasoning 1000 --output 200 \
 exa gateway reasoning stats --model llama3.1-8b
 ```
 
+### Gateway enforcement (ADR 0035 clause 2)
+
+`GatewayClient.chat` resolves a reasoning budget for every request and enforces it. Nothing
+changes for a request with no budget.
+
+**Where a budget comes from** - the *tightest* applicable one wins, so a narrow scope can tighten
+a broad one but never loosen it:
+
+| Scope | Set with |
+|---|---|
+| the call | `chat(..., reasoning_budget=N)` |
+| a virtual key | `exa gateway reasoning set-budget N --key-hash H` |
+| a project | `exa gateway reasoning set-budget N --project P` (applies to that project's keys) |
+| a model | `exa gateway reasoning set-budget N --model M` |
+| everything | `EXAMLOPS_REASONING_BUDGET_DEFAULT=N` |
+
+`exa gateway reasoning budgets` lists them; `--events` shows what the gateway observed
+(`within` / `exceeded` / `unknown` / `refused`).
+
+**The cap on the wire.** A thinking cap is sent to a backend only if its engine block declares the
+request field that server accepts, e.g. `reasoning_cap_param: thinking_token_budget`. Unset (the
+default) sends nothing: the platform does not guess a provider's parameter name. Either way the
+response is judged afterwards from the usage the server reports
+(`usage.completion_tokens_details.reasoning_tokens`).
+
+**Over budget.** `EXAMLOPS_REASONING_BUDGET_MODE`: `enforce` (default) withholds the response with
+`ReasoningBudgetExceeded`; `strict` also refuses a response whose backend reported no reasoning
+usage; `flag` serves it and records the breach; `off` disables the gate. The tokens were already
+spent, so the call stays in the cost ledger and the split accounting; the response is not cached,
+and an `audit_events` row (`reasoning_budget_exceeded`) is written.
+
+**Unknown is not zero.** A backend that reports no reasoning usage yields `reasoning_status =
+"unknown"`, recorded as its own outcome - it never passes as "0 thinking tokens".
+
+**Accounting.** Whenever a backend reports reasoning tokens, `reasoning_usage` records the split
+(reasoning vs. the rest of `completion_tokens`, both at the output rate, since providers bill
+thinking as output), and the GenAI span carries `examlops.usage.reasoning_tokens`.
+
+**Not covered:** `GatewayClient` has no streaming path, so there is nothing to bypass the gate; a
+streaming path added later must route through it (a test pins this).
+
 ### Redacted, TTL'd, tenant-scoped traces
 
-Where a reasoning trace is exposed, capturing it for observability (C4) must not leak PII or
-retain it forever:
+Reasoning traces are content. `capture_reasoning_trace` redacts through the tenant telemetry
+redactor (`guardrails.telemetry_redactor`, ADR 0148 d2), stamps the tenant and a TTL, and **fails
+closed**: if redaction fails nothing is stored. The gateway captures a backend-returned trace only
+when `EXAMLOPS_REASONING_TRACE_CAPTURE=1` (TTL `EXAMLOPS_REASONING_TRACE_TTL_SECONDS`, default
+86400), and never returns the raw trace to the caller.
 
 ```python
 from examlops.structured import capture_reasoning_trace, get_reasoning_trace
@@ -109,12 +153,9 @@ capture_reasoning_trace("req-42", trace_text, tenant="acme", ttl_seconds=3600)
 get_reasoning_trace("req-42")   # redacted trace, or None once the TTL passes
 ```
 
-The trace is **redacted** through the D8 guardrail PII redactor before storage, stamped with
-the tenant, and expires after its TTL (R6 / GWT-6).
-
 ## Related
 
 - **B2 / E2** — the gateway + engine that perform constrained decoding in production.
 - **C1** telemetry / **FinOps** — the reasoning-vs-output cost split feeds both.
 - **C4** AgentOps — reasoning traces are captured here for session analysis.
-- **D8** guardrails — the PII redactor applied to traces.
+- **D8** guardrails — the telemetry redactor applied to traces.

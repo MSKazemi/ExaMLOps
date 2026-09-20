@@ -269,6 +269,8 @@ TIERS: dict[str, str] = {
     "gateway key revoke": D,
     "gateway reasoning account": A,
     "gateway reasoning budget": R,
+    "gateway reasoning budgets": R,
+    "gateway reasoning set-budget": A,
     "gateway reasoning stats": R,
     "gateway schema test": A,
     "genai check": R,

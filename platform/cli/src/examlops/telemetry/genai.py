@@ -305,6 +305,7 @@ def record_usage(
     input_tokens: int = 0,
     output_tokens: int = 0,
     finish_reasons: Sequence[str] | None = None,
+    reasoning_tokens: int | None = None,
 ) -> float:
     """Record token usage + derived cost on ``span`` (spec R1, R7).
 
@@ -317,6 +318,10 @@ def record_usage(
     span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
     if finish_reasons:
         span.set_attribute("gen_ai.response.finish_reasons", list(finish_reasons))
+    if reasoning_tokens is not None:
+        # ADR 0035 clause 2: thinking tokens are part of output_tokens; this says how many.
+        # Absent when the backend did not report them - unknown is not zero.
+        span.set_attribute("examlops.usage.reasoning_tokens", reasoning_tokens)
     span.set_attribute("examlops.cost.usd", cost)
     return cost
 

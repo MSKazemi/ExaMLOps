@@ -33,6 +33,10 @@ class Completion:
     ttft_s: float = 0.0
     total_s: float = 0.0
     image_count: int = 0
+    # ADR 0035 clause 2. ``None`` = the server did not report reasoning usage (never 0, which
+    # would read as "reasoned for free"); ``reasoning_text`` is the raw trace and is content.
+    reasoning_tokens: int | None = None
+    reasoning_text: str | None = None
 
 
 @runtime_checkable
@@ -141,6 +145,11 @@ class EngineConfig:
     enable_chunked_prefill: bool | None = None
     swap_space_gb: int | None = None
     multimodal: MultimodalConfig = field(default_factory=MultimodalConfig)
+    # ADR 0035 clause 2: the request field this server accepts to cap thinking tokens (for
+    # example ``thinking_token_budget`` where the deployed vLLM supports it). Unset = the gateway
+    # sends no cap and enforces after the fact from the reported usage; the platform never guesses
+    # a provider parameter name.
+    reasoning_cap_param: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EngineConfig:
@@ -167,6 +176,9 @@ class EngineConfig:
             enable_chunked_prefill=d.get("enable_chunked_prefill"),
             swap_space_gb=d.get("swap_space_gb"),
             multimodal=MultimodalConfig.from_dict(d.get("multimodal")),
+            reasoning_cap_param=(
+                str(d["reasoning_cap_param"]) if d.get("reasoning_cap_param") else None
+            ),
         )
 
 
@@ -219,6 +231,10 @@ def validate_engine_block(block: dict[str, Any]) -> list[str]:
     if base_url is not None and not str(base_url).startswith(("http://", "https://")):
         errors.append("base_url must be an http(s) URL")
 
+    cap = block.get("reasoning_cap_param")
+    if cap is not None and not (isinstance(cap, str) and cap.isidentifier()):
+        errors.append("reasoning_cap_param must be a request-field name (an identifier)")
+
     errors.extend(_validate_multimodal(block.get("multimodal")))
     return errors
 
@@ -266,6 +282,24 @@ def _validate_multimodal(mm: Any) -> list[str]:
 # vLLM's ``SamplingParams``. Kept as a covered pure-python helper so the passthrough
 # logic is testable without a GPU (the vLLM call itself stays GPU-only / pragma).
 _SAMPLING_KEYS = ("temperature", "max_tokens", "top_p", "stop", "seed")
+
+
+def reasoning_tokens_from_usage(usage: Any) -> int | None:
+    """Reasoning tokens from an OpenAI-compatible ``usage`` block, or ``None`` when not reported.
+
+    ``usage.completion_tokens_details.reasoning_tokens`` is the field OpenAI-compatible servers
+    use. ``None`` means *the backend did not say* - it is never coerced to 0, because a budget
+    that passes on an absent count is a budget that passes everything.
+    """
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("completion_tokens_details")
+    if not isinstance(details, dict):
+        return None
+    value = details.get("reasoning_tokens")
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        return None
+    return int(value)
 
 
 def _sampling_kwargs(kw: dict[str, Any]) -> dict[str, Any]:

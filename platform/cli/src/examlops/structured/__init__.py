@@ -18,12 +18,14 @@ no LLM, engine, or provider API required to validate, repair, budget, or account
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC
 from typing import Any
 
 from examlops import data as platform_db
+from examlops.engines.config import reasoning_tokens_from_usage
 
 
 class StructuredOutputError(RuntimeError):
@@ -193,12 +195,19 @@ def capture_reasoning_trace(
     tenant: str = "default",
     ttl_seconds: float | None = None,
     now_ts: float | None = None,
-) -> str:
-    """Capture a reasoning trace **redacted** (D8), TTL'd + tenant-scoped (R6/GWT-6).
+) -> str | None:
+    """Capture a reasoning trace **redacted** (ADR 0148 d2), TTL'd + tenant-scoped (R6/GWT-6).
 
-    Returns the redacted trace. ``now_ts`` is injectable for testing.
+    A reasoning trace is content, so it leaves through the same tenant redaction policy as span
+    prompts and completions (``guardrails.telemetry_redactor``). **Fail closed:** if the redactor
+    cannot be built or raises, nothing is stored, the loss is counted with the other dropped
+    captures (``genai.redaction_failures()``) and ``None`` is returned - an unredacted trace is
+    never written because the thing meant to clean it broke. Returns the redacted trace.
+    ``now_ts`` is injectable for testing.
     """
-    redacted = _redact(trace)
+    redacted = _redact(trace, tenant)
+    if redacted is None:
+        return None
     expires_at = None
     if ttl_seconds is not None:
         base = now_ts if now_ts is not None else _now()
@@ -220,14 +229,22 @@ def get_reasoning_trace(request_id: str, *, now_ts: float | None = None) -> str 
     return row["redacted_trace"]
 
 
-def _redact(text: str) -> str:
+def _redact(text: str, tenant: str = "default") -> str | None:
     try:
-        from examlops.guardrails import redact_pii
+        from examlops.guardrails import telemetry_redactor
 
-        redacted, _found = redact_pii(text)
-        return redacted
-    except Exception:
-        return text
+        out = telemetry_redactor(tenant)(text)
+        if isinstance(out, str):
+            return out
+    except Exception:  # noqa: BLE001 - fail closed, counted
+        pass
+    try:
+        from examlops.telemetry import genai
+
+        genai.note_redaction_failure()
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def _now() -> float:
@@ -236,9 +253,85 @@ def _now() -> float:
     return datetime.now(UTC).timestamp()
 
 
+# -- Gateway enforcement (ADR 0035 clause 2) ------------------------------------------------
+
+#: ``enforce`` (default) refuses a response that spent more thinking than its budget allows;
+#: ``strict`` also refuses one whose backend reported no reasoning usage at all; ``flag`` serves it
+#: and records the breach; ``off`` records nothing and refuses nothing. It only ever acts on a
+#: request that has a budget - with none configured the gateway behaves exactly as before.
+_MODES = ("enforce", "strict", "flag", "off")
+
+
+def reasoning_budget_mode() -> str:
+    """The over-budget policy. An unrecognised value falls back to ``enforce``, never ``off``."""
+    mode = os.getenv("EXAMLOPS_REASONING_BUDGET_MODE", "enforce").strip().lower()
+    return mode if mode in _MODES else "enforce"
+
+
+@dataclass(frozen=True)
+class ResolvedBudget:
+    max_thinking_tokens: int
+    source: str  # request | key | project | model | default
+
+
+def resolve_reasoning_budget(
+    model: str,
+    *,
+    tenant: str = "default",
+    key_hash: str | None = None,
+    project: str | None = None,
+    requested: int | None = None,
+) -> ResolvedBudget | None:
+    """The applicable budget for one request, or ``None`` when nothing constrains it.
+
+    Candidates: the caller's own ``requested`` cap, a cap on the virtual key, on its project, on
+    the model, and the ``EXAMLOPS_REASONING_BUDGET_DEFAULT`` floor. **The tightest wins** - a
+    narrower scope can tighten a broader one but never loosen it, so a per-key exception cannot
+    quietly lift a model-wide limit. A store that cannot be read is skipped, not fatal: the
+    request is served and the unenforced budget is the visible cost of an unreadable store.
+    """
+    from examlops.data import reasoning_budgets as store
+
+    candidates: list[ResolvedBudget] = []
+    if requested is not None and requested >= 0:
+        candidates.append(ResolvedBudget(int(requested), "request"))
+    try:
+        for row in store.applicable(tenant, key_hash=key_hash, project=project, model=model):
+            candidates.append(ResolvedBudget(int(row["max_thinking_tokens"]), row["scope"]))
+    except Exception:  # noqa: BLE001
+        pass
+    default = os.getenv("EXAMLOPS_REASONING_BUDGET_DEFAULT", "").strip()
+    if default.isdigit():
+        candidates.append(ResolvedBudget(int(default), "default"))
+    return min(candidates, key=lambda c: c.max_thinking_tokens) if candidates else None
+
+
+def judge_reasoning(
+    budget: ResolvedBudget | None, observed: int | None, mode: str
+) -> tuple[str, bool]:
+    """Classify one response against its budget: ``(outcome, refuse)``.
+
+    Outcomes: ``none`` (no budget or mode off), ``within``, ``exceeded``, ``unknown`` (the backend
+    reported no reasoning usage). ``unknown`` is never a pass: it is recorded as its own outcome
+    and, under ``strict``, refused.
+    """
+    if budget is None or mode == "off":
+        return "none", False
+    if observed is None:
+        return "unknown", mode == "strict"
+    if observed > budget.max_thinking_tokens:
+        return "exceeded", mode in ("enforce", "strict")
+    return "within", False
+
+
 __all__ = [
     "StructuredOutputError",
     "ReasoningBudget",
+    "ResolvedBudget",
+    "judge_reasoning",
+    "reasoning_budget_mode",
+    "reasoning_tokens_from_usage",
+    "resolve_reasoning_budget",
     "validate_object",
     "repair_object",
     "generate_structured",

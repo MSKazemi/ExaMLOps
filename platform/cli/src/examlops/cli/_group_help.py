@@ -381,6 +381,8 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     ],
     "gateway reasoning": [
         ("Reasoning-vs-output token/cost split", "exa gateway reasoning stats"),
+        ("Cap a model's thinking tokens", "exa gateway reasoning set-budget 2000 --model qwen3"),
+        ("Budget breaches the gateway saw", "exa gateway reasoning budgets --events"),
     ],
     "hpc gpu-share": [
         ("Fractional GPU accounting", "exa hpc gpu-share accounting"),

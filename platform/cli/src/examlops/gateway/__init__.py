@@ -63,6 +63,21 @@ class GuardrailBlocked(GatewayError):
         super().__init__(f"guardrail blocked the {direction}: {reason} ({', '.join(findings)})")
 
 
+class ReasoningBudgetExceeded(GatewayError):
+    """A response spent more thinking tokens than its reasoning budget allows (ADR 0035 cl. 2).
+
+    Raised *after* the tokens were paid for and accounted - the call happened - so the response
+    is withheld, not the bill. Not a backend failure: another backend would be judged the same
+    way, so the gateway does not fail over on it.
+    """
+
+    def __init__(self, observed: int | None, budget: int, source: str) -> None:
+        self.observed, self.budget, self.source = observed, budget, source
+        super().__init__(
+            f"reasoning budget exceeded: {observed} thinking tokens > {budget} ({source} budget)"
+        )
+
+
 class MediaNotAllowed(GatewayError):
     """A multimodal content part failed validation before dispatch (R-V5).
 
@@ -83,6 +98,14 @@ class Completion:
     #: The schema-validated object, when ``chat(..., response_schema=…)`` was used (ADR 0035
     #: clause 1). ``None`` means no schema was requested — never "it failed", which raises.
     parsed: Any = None
+    #: ADR 0035 clause 2. Thinking tokens the backend reported, ``None`` when it reported none -
+    #: unknown, never 0. Already included in ``completion_tokens`` (providers bill them as output).
+    reasoning_tokens: int | None = None
+    #: The raw reasoning trace, if the backend returned one. Content: the gateway captures it
+    #: redacted and clears it here, so it never rides back to a caller unscanned.
+    reasoning_text: str | None = None
+    #: within | exceeded | unknown | None (no budget applied) - see ``structured.judge_reasoning``.
+    reasoning_status: str | None = None
 
 
 # A backend is any callable: (model, messages, **kw) -> Completion-ish.
@@ -453,6 +476,10 @@ def _call_cache_hook(hook: Any, *args: Any, params: dict[str, Any]) -> Any:
     return hook(*args, params=params) if _hook_takes_params(hook) else hook(*args)
 
 
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _cacheable(messages: list[dict[str, Any]]) -> bool:
     """Whether the semantic cache can key this request: every message is plain text.
 
@@ -496,6 +523,7 @@ class GatewayClient:
         response_schema: dict[str, Any] | None = None,
         max_repairs: int = 1,
         no_cache: bool = False,
+        reasoning_budget: int | None = None,
         **kw: Any,
     ) -> Completion:
         """Route one chat request.
@@ -517,8 +545,22 @@ class GatewayClient:
 
         started = time.perf_counter()  # ADR 0023 c1: what the caller waits for, guardrail included
         key_hash = _hash_key(self.virtual_key) if self.virtual_key else None
+        key_rec: dict[str, Any] = {}
         if self.virtual_key:
-            authorize(self.virtual_key, model)  # raises typed errors before any backend call
+            # raises typed errors before any backend call
+            key_rec = authorize(self.virtual_key, model)
+        project = key_rec.get("project") or None
+        # ADR 0035 clause 2: the applicable reasoning budget, resolved once per request. ``None``
+        # (nothing configured, nothing asked) leaves every line below it inert.
+        from examlops.structured import resolve_reasoning_budget
+
+        budget = resolve_reasoning_budget(
+            model,
+            tenant=self.tenant,
+            key_hash=key_hash,
+            project=project,
+            requested=reasoning_budget,
+        )
 
         prompt_version: str | None = None
         template: str | None = None
@@ -574,6 +616,11 @@ class GatewayClient:
                 getattr(backend, "constrains_schema", False)
             )
             call_kw = {**kw, "response_schema": response_schema} if constrained else kw
+            # ADR 0035 clause 2: the cap is handed only to a backend that declared it accepts one
+            # (``reasoning_cap_param``). Anything else is not sent a parameter it may reject or,
+            # worse, silently ignore - it is enforced below from what it reports instead.
+            if budget is not None and getattr(backend, "reasoning_cap_param", None):
+                call_kw = {**call_kw, "reasoning_budget": budget.max_thinking_tokens}
             try:
                 raw = backend(model, messages, **call_kw)
                 comp = _coerce(raw, model, name)
@@ -590,6 +637,7 @@ class GatewayClient:
             )
             # C1 span (best-effort) + FinOps cost (R8).
             _emit_span(model, self.tenant, comp, prompt_version=prompt_version, messages=messages)
+            reasoning_refusal = self._reasoning_gate(comp, budget, key_hash, project)
             _account(
                 "usage",
                 record_gateway_call,
@@ -603,6 +651,8 @@ class GatewayClient:
             )
             if key_hash:
                 _account("key spend", add_key_spend, key_hash, comp.cost_usd)
+            if reasoning_refusal is not None:
+                raise reasoning_refusal
 
             # D8 outbound scan. After the accounting on purpose: the tokens were spent and the
             # money is owed whatever the guardrail decides, so a blocked response that vanished
@@ -644,6 +694,102 @@ class GatewayClient:
         )
         raise AllBackendsFailed("; ".join(errors) or f"no backend for model '{model}'")
 
+    def _reasoning_gate(
+        self,
+        comp: Completion,
+        budget: Any,
+        key_hash: str | None,
+        project: str | None,
+    ) -> ReasoningBudgetExceeded | None:
+        """Account, judge and record one response's reasoning (ADR 0035 clause 2).
+
+        Runs after the call and never raises: a refusal is *returned* so the caller can finish
+        the money accounting first (the tokens were spent whatever we decide). The raw trace is
+        captured through the tenant telemetry redactor - a trace is content - and cleared from
+        the completion either way, so it never reaches a caller unscanned.
+        """
+        import uuid
+
+        from examlops.structured import (
+            account_reasoning,
+            capture_reasoning_trace,
+            judge_reasoning,
+            reasoning_budget_mode,
+        )
+
+        request_id = uuid.uuid4().hex
+        trace, comp.reasoning_text = comp.reasoning_text, None
+        try:
+            observed = comp.reasoning_tokens
+            if observed is not None:
+                # Providers bill thinking at the output rate and count it inside
+                # ``completion_tokens``; the split reports how much of that output was thinking.
+                rate = _estimate_cost(comp.model, 0, 1000) / 1000.0
+                _account(
+                    "reasoning usage",
+                    account_reasoning,
+                    comp.model,
+                    observed,
+                    max(comp.completion_tokens - observed, 0),
+                    reasoning_rate=rate,
+                    output_rate=rate,
+                    tenant=self.tenant,
+                    request_id=request_id,
+                )
+            if trace and _truthy(os.getenv("EXAMLOPS_REASONING_TRACE_CAPTURE")):
+                ttl = float(os.getenv("EXAMLOPS_REASONING_TRACE_TTL_SECONDS", "86400"))
+                _account(
+                    "reasoning trace",
+                    capture_reasoning_trace,
+                    request_id,
+                    trace,
+                    tenant=self.tenant,
+                    ttl_seconds=ttl,
+                )
+            outcome, refuse = judge_reasoning(budget, observed, reasoning_budget_mode())
+            comp.reasoning_status = None if outcome == "none" else outcome
+            if outcome == "none":
+                return None
+            from examlops.data.reasoning_budgets import record_event
+
+            _account(
+                "reasoning event",
+                record_event,
+                model=comp.model,
+                tenant=self.tenant,
+                outcome="refused" if refuse else outcome,
+                budget_tokens=budget.max_thinking_tokens,
+                observed_tokens=observed,
+                source=budget.source,
+                key_hash=key_hash,
+                project=project,
+                request_id=request_id,
+            )
+            if outcome in ("exceeded", "unknown") and (refuse or outcome == "exceeded"):
+                from examlops.data.audit import write_audit_event
+
+                _account(
+                    "reasoning audit",
+                    write_audit_event,
+                    "exa-gateway",
+                    key_hash or self.tenant,
+                    "reasoning_budget_exceeded" if outcome == "exceeded" else "reasoning_unknown",
+                    comp.model,
+                    {
+                        "budget_tokens": budget.max_thinking_tokens,
+                        "observed_tokens": observed,
+                        "source": budget.source,
+                        "refused": refuse,
+                        "request_id": request_id,
+                    },
+                    tenant=self.tenant,
+                )
+            if refuse:
+                return ReasoningBudgetExceeded(observed, budget.max_thinking_tokens, budget.source)
+        except Exception as exc:  # noqa: BLE001 - enforcement bookkeeping never breaks the call
+            logger.warning("reasoning gate failed: %s", exc)
+        return None
+
     def health(self) -> dict[str, bool]:
         """Readiness of every routed backend (R-A3), reachable through the gateway.
 
@@ -673,8 +819,20 @@ def _coerce(raw: Any, model: str, backend: str) -> Completion:
             prompt_tokens=int(raw.get("prompt_tokens", 0)),
             completion_tokens=int(raw.get("completion_tokens", 0)),
             cost_usd=float(raw.get("cost_usd", 0.0)),
+            reasoning_tokens=_reasoning_from_dict(raw),
+            reasoning_text=raw.get("reasoning_text"),
         )
     return Completion(text=str(raw), model=model, backend=backend)
+
+
+def _reasoning_from_dict(raw: dict[str, Any]) -> int | None:
+    """Reasoning tokens from a dict backend result: a flat field or an OpenAI ``usage`` block."""
+    from examlops.engines.config import reasoning_tokens_from_usage
+
+    flat = raw.get("reasoning_tokens")
+    if isinstance(flat, int) and not isinstance(flat, bool) and flat >= 0:
+        return flat
+    return reasoning_tokens_from_usage(raw.get("usage"))
 
 
 def _messages_text(messages: list[dict[str, Any]] | None) -> str:
@@ -715,6 +873,7 @@ def _emit_span(
                 model=model,
                 input_tokens=comp.prompt_tokens,
                 output_tokens=comp.completion_tokens,
+                reasoning_tokens=comp.reasoning_tokens,
             )
             if genai.content_capture_enabled():
                 # ADR 0148 d2: content leaves only through the tenant redaction policy. Building
@@ -871,6 +1030,10 @@ def engine_backend(model_name: str, config: Any = None, *, label: str | None = N
         # can act on it — this filter is otherwise where a constraint silently disappears.
         if kw.get("response_schema") is not None and getattr(engine, "constrains_schema", False):
             sampling["response_schema"] = kw["response_schema"]
+        # ADR 0035 clause 2: the same rule for a thinking cap - only to an engine that declared
+        # the request field it accepts.
+        if kw.get("reasoning_budget") is not None and getattr(engine, "reasoning_cap_param", None):
+            sampling["reasoning_budget"] = kw["reasoning_budget"]
         try:
             if supports_chat(engine):
                 # R-V4: a chat-capable engine receives the messages untouched, so
@@ -888,8 +1051,11 @@ def engine_backend(model_name: str, config: Any = None, *, label: str | None = N
             backend=label or engine.name,
             prompt_tokens=ec.prompt_tokens,
             completion_tokens=ec.completion_tokens,
+            reasoning_tokens=getattr(ec, "reasoning_tokens", None),
+            reasoning_text=getattr(ec, "reasoning_text", None),
         )
 
+    _backend.reasoning_cap_param = getattr(engine, "reasoning_cap_param", None)  # type: ignore[attr-defined]
     _backend.health = engine.health  # type: ignore[attr-defined]
     _backend.engine = engine  # type: ignore[attr-defined]
     # ADR 0035 clause 1: whether this engine can hold the model to a JSON schema while decoding.

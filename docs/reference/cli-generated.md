@@ -1813,6 +1813,24 @@ Show how a reasoning budget caps a request (R4).
 
 - `--max` — Reasoning budget (max thinking tokens)
 
+#### `exa gateway reasoning budgets`
+
+List configured reasoning budgets, or (--events) what the gateway observed against them.
+
+- `--tenant` — Filter by tenant
+- `--events` — Show recent budget outcomes instead
+- `--outcome` — With --events: within|exceeded|unknown|refused
+
+#### `exa gateway reasoning set-budget`
+
+Set (or --remove) a gateway reasoning budget; the tightest applicable cap wins (ADR 0035).
+
+- `--model` — Cap for this logical model
+- `--project` — Cap for this project's virtual keys
+- `--key-hash` — Cap for one virtual key (its hash)
+- `--tenant` — Tenant scope
+- `--remove` — Delete the cap instead of setting it
+
 #### `exa gateway reasoning stats`
 
 Reasoning-vs-output token/cost split + structured-output outcomes.

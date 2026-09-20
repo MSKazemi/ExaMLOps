@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - the gateway enforces a reasoning budget and accounts thinking separately (ADR 0035 clause 2)
+
+`GatewayClient.chat` now resolves a reasoning budget per request (per call, virtual key, project,
+model, or `EXAMLOPS_REASONING_BUDGET_DEFAULT`; the tightest wins) and enforces it after the call from
+the reported `usage.completion_tokens_details.reasoning_tokens`. Over budget: `enforce` (default)
+raises `ReasoningBudgetExceeded` (tokens stay in the cost ledger, nothing is cached), `strict` also
+refuses a backend that reported no reasoning usage, `flag` serves and records; each breach writes an
+`audit_events` row and a `reasoning_budget_events` row. A missing count is `unknown`, never 0. The cap
+is put on the wire only for an engine block that declares `reasoning_cap_param`. Reasoning tokens are
+split out in `reasoning_usage` and on the GenAI span (`examlops.usage.reasoning_tokens`); reasoning
+traces go through the ADR 0148 d2 telemetry redactor and fail closed (`EXAMLOPS_REASONING_TRACE_CAPTURE`).
+New: `exa gateway reasoning set-budget|budgets`, tables `reasoning_budgets` /
+`reasoning_budget_events` (`examlops.data.reasoning_budgets`). Unchanged with no budget configured.
+ADR 0035 status not changed here; clause 3 (default schemas) remains unbuilt.
+
 ### Added — paired (TTFT, TPOT) serving SLOs (ADR 0117 decision 2)
 
 A first-class latency pair replaces "one number": `exa slo pair-set MODEL NAME --ttft-ms N

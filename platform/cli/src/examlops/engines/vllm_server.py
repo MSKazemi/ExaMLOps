@@ -32,6 +32,7 @@ from examlops.engines.config import (
     Completion,
     EngineConfig,
     _sampling_kwargs,
+    reasoning_tokens_from_usage,
     schema_response_format,
 )
 from examlops.engines.media import flatten_messages, normalize_content
@@ -129,6 +130,10 @@ class VLLMServerEngine:
 
     # ── payload ───────────────────────────────────────────────────────────────
 
+    @property
+    def reasoning_cap_param(self) -> str | None:
+        return self.config.reasoning_cap_param
+
     def _payload(self, messages: list[dict[str, Any]], kw: dict[str, Any]) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.config.served_model_name or self.model,
@@ -138,6 +143,11 @@ class VLLMServerEngine:
         schema = kw.get("response_schema")
         if schema is not None:  # ADR 0035 clause 1: constrain the decoder, do not ask nicely
             body["response_format"] = schema_response_format(schema)
+        # ADR 0035 clause 2: a thinking cap goes on the wire only under the field name the
+        # operator declared this server accepts. No declared name, nothing sent.
+        cap = kw.get("reasoning_budget")
+        if cap is not None and self.reasoning_cap_param:
+            body[self.reasoning_cap_param] = int(cap)
         return body
 
     # ── chat (R-V3: media parts forwarded verbatim) ───────────────────────────
@@ -271,7 +281,10 @@ def _completion_from_response(data: dict[str, Any], image_count: int, elapsed: f
     message = choices[0].get("message") or {}
     text = message.get("content") or choices[0].get("text") or ""
     usage = data.get("usage") or {}
+    trace = message.get("reasoning_content") or message.get("reasoning")
     return Completion(
+        reasoning_tokens=reasoning_tokens_from_usage(usage),
+        reasoning_text=trace if isinstance(trace, str) and trace else None,
         text=str(text),
         prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
         completion_tokens=int(usage.get("completion_tokens", 0) or 0),

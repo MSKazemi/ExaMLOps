@@ -894,6 +894,30 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 applied_by    TEXT,
                 result_json   TEXT
             );
+            -- ADR 0035 clause 2 — gateway reasoning budgets (`examlops.structured`). A cap per
+            -- (scope, ref, tenant), scope in key|project|model; the tightest applicable one wins.
+            CREATE TABLE IF NOT EXISTS reasoning_budgets (
+                scope               TEXT NOT NULL,
+                ref                 TEXT NOT NULL,
+                tenant              TEXT NOT NULL DEFAULT 'default',
+                max_thinking_tokens INTEGER NOT NULL,
+                updated_at          REAL NOT NULL,
+                PRIMARY KEY (scope, ref, tenant)
+            );
+            -- What the gateway observed against a budget: within|exceeded|unknown|refused.
+            CREATE TABLE IF NOT EXISTS reasoning_budget_events (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts              REAL NOT NULL,
+                model           TEXT NOT NULL,
+                tenant          TEXT NOT NULL DEFAULT 'default',
+                key_hash        TEXT,
+                project         TEXT,
+                outcome         TEXT NOT NULL,
+                budget_tokens   INTEGER,
+                observed_tokens INTEGER,
+                source          TEXT,
+                request_id      TEXT
+            );
             -- ADR 0117 decision 2 — paired (TTFT, TPOT) serving SLOs (`examlops.slo.pairs`). One row
             -- per (model, name, tenant); `tight` names which dimension is the binding one.
             CREATE TABLE IF NOT EXISTS slo_pairs (
