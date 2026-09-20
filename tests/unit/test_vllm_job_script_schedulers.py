@@ -195,3 +195,39 @@ def test_a_hostlist_longer_than_a_pipe_buffer_does_not_end_the_job(tmp_path, clu
     assert proc.returncode == 0, (proc.returncode, proc.stderr[-400:])
     assert "(head=gpu-node-0000)" in proc.stdout
     assert any("vllm serve" in c for c in calls)
+
+
+# ── BL-097: a malicious model id cannot break out of the generated script ───
+
+
+def test_a_malicious_hf_model_id_cannot_inject_a_command(tmp_path, cluster):
+    """Every placeholder used to land inside the template's OWN double quotes
+    (``MODEL="@@MODEL@@"``), so a value containing a bare ``"`` closed the assignment early and
+    anything after it ran as a second command — and even without breaking the quoting, bash still
+    expands ``$(...)``/backticks inside double quotes. The renderer now shlex.quote()s every
+    value and the template carries no quotes of its own, so this must execute as one inert
+    string, never as shell syntax."""
+    bin_dir, log = cluster
+    marker = tmp_path / "pwned"
+    payload = f'Qwen/Qwen3-8B"; touch {marker}; echo "$(touch {marker})`touch {marker}`'
+    spec = EndpointSpec(model="qwen", hf_model_id=payload, nodes=1, gpus=0, work_dir=str(tmp_path))
+    script = tmp_path / "run.sh"
+    script.write_text(HpcLauncher(scheduler="flux").render_script(spec))
+    base = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "FLUX_"))}
+    proc = subprocess.run(
+        ["bash", str(script)],
+        env={
+            **base,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "SHIM_LOG": str(log),
+            **_flux_env(),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not marker.exists(), "the injected touch executed — quoting regressed"
+    (serve,) = [c for c in log.read_text().splitlines() if "vllm serve" in c]
+    assert payload in serve, "the payload must still reach vllm serve, just as inert text"

@@ -3,6 +3,11 @@
 #
 # Rendered by examlops.llm_endpoints.HpcLauncher. Placeholders are @@NAME@@ rather than
 # ${NAME} or {name} so they can never collide with shell expansion or a brace in the argv.
+# The assignment lines below carry NO surrounding quotes on purpose: the renderer passes every
+# value through shlex.quote() before substitution, so the quoting (or lack of it, for a plain
+# alphanumeric value) is already correct in the substituted text. Adding template-side quotes
+# back would let a value containing `"`, `$(...)` or a backtick break out or execute, even
+# though it looks safely quoted here.
 #
 # Follows the documented European-HPC pattern (LuxProvide MeluXina, Bristol Isambard):
 # Apptainer for the container runtime, a Ray cluster across the allocation, tensor-parallel
@@ -23,14 +28,14 @@
 
 set -euo pipefail
 
-MODEL="@@MODEL@@"
-IMAGE="@@IMAGE@@"
-SIF="@@SIF_PATH@@"
-PORT="@@PORT@@"
-NODES="@@NODES@@"
-ENDPOINT_FILE="@@ENDPOINT_FILE@@"
-RAY_PORT="@@RAY_PORT@@"
-GPUS_PER_NODE="@@GPUS_PER_NODE@@"
+MODEL=@@MODEL@@
+IMAGE=@@IMAGE@@
+SIF=@@SIF_PATH@@
+PORT=@@PORT@@
+NODES=@@NODES@@
+ENDPOINT_FILE=@@ENDPOINT_FILE@@
+RAY_PORT=@@RAY_PORT@@
+GPUS_PER_NODE=@@GPUS_PER_NODE@@
 
 @@MODULE_LOADS@@
 

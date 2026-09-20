@@ -17,6 +17,7 @@ because it starts nothing.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -221,17 +222,22 @@ class HpcLauncher:
             "\n".join(f"module load {m}" for m in modules.split(",") if m.strip())
             or "# no modules configured (EXAMLOPS_VLLM_MODULES)"
         )
+        # Every value below lands in a bash assignment or argv the job actually runs — quoted
+        # here, not by the template (see the template's own header comment), so a model id or
+        # image ref carrying shell metacharacters can never break out or execute. VLLM_ARGS is
+        # a sequence of separate argv tokens (flag, value, flag, value, …), so it is joined with
+        # shlex.join rather than quoted as one string, which would collapse it into a single arg.
         replacements = {
-            "@@MODEL@@": spec.hf_model_id,
-            "@@IMAGE@@": spec.image,
-            "@@SIF_PATH@@": str(sif),
-            "@@PORT@@": str(spec.port),
-            "@@NODES@@": str(spec.nodes),
-            "@@ENDPOINT_FILE@@": str(self._endpoint_file(spec)),
-            "@@RAY_PORT@@": str(_RAY_PORT),
-            "@@GPUS_PER_NODE@@": str(int(spec.gpus or 0)),
+            "@@MODEL@@": shlex.quote(spec.hf_model_id),
+            "@@IMAGE@@": shlex.quote(spec.image),
+            "@@SIF_PATH@@": shlex.quote(str(sif)),
+            "@@PORT@@": shlex.quote(str(spec.port)),
+            "@@NODES@@": shlex.quote(str(spec.nodes)),
+            "@@ENDPOINT_FILE@@": shlex.quote(str(self._endpoint_file(spec))),
+            "@@RAY_PORT@@": shlex.quote(str(_RAY_PORT)),
+            "@@GPUS_PER_NODE@@": shlex.quote(str(int(spec.gpus or 0))),
             "@@MODULE_LOADS@@": module_loads,
-            "@@VLLM_ARGS@@": " ".join(to_vllm_args(spec.config)),
+            "@@VLLM_ARGS@@": shlex.join(to_vllm_args(spec.config)),
         }
         script = _TEMPLATE.read_text()
         for key, value in replacements.items():

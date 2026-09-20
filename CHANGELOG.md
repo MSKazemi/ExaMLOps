@@ -24,10 +24,19 @@ working directory directly into the script text — a value carrying shell metac
 `shlex.quote()` before interpolation. Verified with a real `bash` execution of a script generated
 from a deliberately malicious model name: the payload appears only as a single quoted argument to
 `python`, never executes. No behavior change for ordinary registry names (`shlex.quote` is a
-no-op on plain alphanumeric strings). A sibling instance in the HPC vLLM-serving job template
-(`platform/infra/slurm-adapter/templates/vllm_serve.sh.tmpl`) is tracked separately (deserves its
-own careful pass, not a rushed edit to a battle-tested production script) — see `BL-097` in
-`.claude/plans/BACKLOG.md`.
+no-op on plain alphanumeric strings). **The sibling instance in the HPC vLLM-serving job template
+is fixed too (BL-097):** `platform/infra/slurm-adapter/templates/vllm_serve.sh.tmpl`, rendered by
+`examlops.llm_endpoints.HpcLauncher.render_script`, pre-wrapped every placeholder in the
+template's OWN double quotes (`MODEL="@@MODEL@@"`), so a `--hf-model` value carrying a bare `"`
+could close the assignment early and run a second command — and even without breaking the
+quoting, bash still expands `$(...)`/backticks inside double quotes. The template's assignments
+no longer carry their own quotes; `render_script()` now `shlex.quote()`s every value before
+substitution (and `shlex.join()`s `VLLM_ARGS`, a sequence of separate argv tokens rather than one
+string, so quoting it as a whole would have collapsed multiple flags into one malformed
+argument). Verified the same way: a real `bash` execution of a script generated from a payload
+designed to close the old quoting and run `touch`/`$(...)`/backtick commands shows the payload
+reaching `vllm serve` as one inert string; the new regression test fails against the pre-fix
+code (confirmed) and passes against the fix.
 
 ### Added — a generative canary now renders as two co-routed KServe objects (ADR 0142 decision 5)
 
