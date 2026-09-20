@@ -488,3 +488,55 @@ def carbon_report(
             ["Embodied CO2e", EMBODIED_UNAVAILABLE],
         ],
     )
+
+
+_EX_ECONOMICS = (
+    "Examples:\n\n"
+    "  exa finops economics\n\n"
+    "  exa finops economics --kind agentic --days 7\n\n"
+    "  exa --json finops economics --kind generative\n\n"
+    "Kinds are never summed. A unit cost is blank (with a reason) when there are too few\n"
+    "outcomes or the cost is not metered; agent per-task cost is a lower bound (model calls\n"
+    "only). Threshold: EXAMLOPS_ECONOMICS_MIN_SAMPLES."
+)
+
+
+@app.command("economics", epilog=_EX_ECONOMICS)
+def economics_cmd(
+    kind: str | None = typer.Option(
+        None, "--kind", "-k", help="predictive | generative | agentic (default: all three)"
+    ),
+    days: float | None = typer.Option(None, "--days", help="Only the last N days (default: all)"),
+) -> None:
+    """Unit economics per workload kind (per prediction / per token / per agent task)."""
+    from examlops.finops.economics import economics
+
+    init_db()
+    try:
+        out = economics(kind, days)
+    except ValueError as exc:
+        _output.error(str(exc), exit_code=2)
+    if _output.json_mode:
+        _output.print_json(out)
+        return
+
+    def _f(u: dict) -> str:
+        return f"{u['value']:.6g}" if u["value"] is not None else f"- ({u['reason']})"
+
+    rows = []
+    for k in out["kinds"]:
+        rows.append(
+            [
+                k["kind"],
+                k["unit"],
+                str(k["n"]),
+                "-" if k["cost_usd"] is None else f"{k['cost_usd']:.6g}",
+                _f(k["cost_per_unit_usd"]),
+                "yes" if k["complete"] else "no (lower bound / partial)",
+            ]
+        )
+    _output.print_table(
+        "Unit economics by kind",
+        ["Kind", "Unit", "N", "Cost USD", "USD / unit", "Complete"],
+        rows,
+    )

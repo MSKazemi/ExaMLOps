@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 478,
+ "total_commands": 479,
  "total_groups": 71,
  "panels": [
   {
@@ -2487,6 +2487,13 @@
      "cmd": "exa finops cost providers",
      "group": "finops",
      "help": "List the available cost providers (rate cards) — built-ins + entry-point plugins.",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa finops economics",
+     "group": "finops",
+     "help": "Unit economics per workload kind (per prediction / per token / per agent task).",
      "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
      "guide": "guides/finops-providers.md"
     },

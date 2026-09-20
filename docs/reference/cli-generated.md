@@ -1731,6 +1731,13 @@ HPC cost providers (pluggable rate cards). Estimation runs via 'exa models cost'
 
 List the available cost providers (rate cards) — built-ins + entry-point plugins.
 
+### `exa finops economics`
+
+Unit economics per workload kind (per prediction / per token / per agent task).
+
+- `--kind, -k` — predictive | generative | agentic (default: all three)
+- `--days` — Only the last N days (default: all)
+
 ## `exa fleet`
 
 Fleet Digital Twin — what-if simulation

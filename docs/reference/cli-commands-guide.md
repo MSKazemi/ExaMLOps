@@ -935,6 +935,7 @@ Per-project GPU-hour/cost budgets, pluggable carbon and cost providers (built-in
 | `exa finops carbon policy list [policy]` | Lists recorded carbon-policy evaluations, newest first (from the audit chain), with advantage, what shipped, benefit, retirement and whether each is synthetic. | Audit the evidence behind carbon-aware placement, and see when a re-test is due (R-ed). | `exa finops carbon policy list carbon-aware` |
 | `exa finops carbon policy sample` | Writes a deterministic synthetic trace (3 regions with a daily solar dip, mixed rigid and flexible jobs) to `--out`. Evaluations over it are marked synthetic. | Try the evaluation method without real grid data. **writes a file** | `exa finops carbon policy sample --out trace.json --days 14 --jobs 60` |
 | `exa finops cost providers` | Lists available cost providers (rate cards) — built-ins + entry-point plugins. (Estimation itself runs via `exa models cost`.) | Discover which cost rate cards are installed. | `exa finops cost providers` |
+| `exa finops economics` | Unit economics per workload kind: per prediction, per 1k tokens / successful call, per agent task (model calls only, a labelled lower bound). Kinds are never summed; unmeasured units show a reason, never zero (ADR 0148 d4). | See what a token, a task or a prediction costs. | `exa finops economics --kind agentic --days 7` |
 
 ### `exa report` — Offline cost/carbon/SLA reports
 

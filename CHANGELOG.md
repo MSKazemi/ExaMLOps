@@ -5,6 +5,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - unit economics per workload kind: `exa finops economics` (ADR 0148 decision 4, first slice)
+
+The cost unit is decided by kind, read from the ledgers the platform already keeps, never summed
+across kinds (an agent's model calls also sit in the gateway ledger): per **prediction**
+(`predictions` + energy rows), per **1k tokens** and per successful call (`gateway_calls`, with the
+reasoning share from `reasoning_usage`), per **task** (ended `agent_sessions`). Absent is not zero:
+no rows -> `no_data`, fewer than `EXAMLOPS_ECONOMICS_MIN_SAMPLES` (5) outcomes ->
+`insufficient_samples`, no cost figure -> `not_metered`. Agent per-task cost is labelled a **lower
+bound** (`complete: false`): sandbox-seconds, idle-state GB-hours and hot-pool standby are listed as
+unmetered components rather than counted as zero. Not built: per-kind pluggable providers, the
+sandbox/idle metering itself, and the rest of ADR 0148 (1, 3, 5-7).
+
 ### Added - operation handles for long-running work: `exa ops`, `operation_status`/`operation_cancel` (ADR 0147 decision 5)
 
 Long-running work returns a handle instead of blocking, and the handle is the control plane's own

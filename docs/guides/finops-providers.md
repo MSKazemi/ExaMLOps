@@ -265,3 +265,15 @@ finops:
 
 The default reproduces the platform's original cost arithmetic exactly, so `exa models cost` is unchanged
 until you opt in. Drift-score and promotion-policy domains can follow the same pattern. See ADR 0074.
+
+## Unit economics per workload kind (ADR 0148 d4)
+
+`exa finops economics [--kind predictive|generative|agentic] [--days N]` reports one unit cost per
+workload kind from ledgers that already exist: **per prediction**, **per 1k tokens** (and per
+successful call) and **per agent task**. The kinds are shown side by side and never summed.
+
+A number is only printed when it is supported: no rows gives `no_data`, fewer than
+`EXAMLOPS_ECONOMICS_MIN_SAMPLES` outcomes gives `insufficient_samples`, and a missing cost gives
+`not_metered`. Predictive inference has no metered USD cost, so its USD unit is blank. Agent
+per-task cost covers model calls only (`complete: false`, a **lower bound**); sandbox-seconds,
+idle-state GB-hours and hot-pool standby are not metered yet and are listed as such.

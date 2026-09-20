@@ -1061,6 +1061,12 @@ Docker Compose picks up `.env` automatically. The pipeline and services also rea
 
 **On the command line:**
 ```bash
+## Unit economics per workload kind (ADR 0148 d4)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_ECONOMICS_MIN_SAMPLES` | `5` | Fewest outcomes (predictions / gateway calls / ended agent sessions) a per-kind unit cost in `exa finops economics` (ADR 0148 d4) may rest on; fewer states `insufficient_samples`, never a number. |
+
 EXAMLOPS_SLURM_MODE=slurm exa pipeline run --dummy
 BACKEND=minio exa pipeline run --model JPCP
 ```

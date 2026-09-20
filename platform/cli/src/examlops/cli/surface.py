@@ -260,6 +260,7 @@ TIERS: dict[str, str] = {
     "finops carbon report": R,
     "finops carbon signal": R,
     "finops cost providers": R,
+    "finops economics": R,
     "fleet heatmap": R,
     "fleet simulate": R,
     "gateway cache stats": R,
