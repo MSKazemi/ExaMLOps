@@ -396,6 +396,10 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_CARBON_POLICY_RETIRE_BELOW_PCT` | `2.0` | **R-ed** — a shipped carbon policy saving less than this share of emissions is retired: carbon leaves placement. |
 | `EXAMLOPS_CARBON_POLICY_GATE` | `enforce` | `enforce` applies the R-ec/R-ed gate; `warn` lets the requested policy run and records what `enforce` would have done. |
 | `EXAMLOPS_GATEWAY_DEFAULT_MODEL` | `default` | **B2** logical model name for the default gateway route. |
+| `EXAMLOPS_LLM_OLLAMA_URL` | unset | Base URL of an Ollama server (or the container relay, e.g. `http://host.docker.internal:11436`). When set, every chat model it reports becomes a gateway route under its own name (ADR 0152). Unset ⇒ no Ollama routes. An unreachable server or a refused address is logged and skipped; the gateway keeps serving its other routes. |
+| `EXAMLOPS_LLM_OLLAMA_NAME` | `ollama` | Provider name shown as the backend on completions and in health for the server at `EXAMLOPS_LLM_OLLAMA_URL`. |
+| `EXAMLOPS_GATEWAY_ALLOWED_HOSTS` | unset | Comma-separated hosts an **`external`** gateway provider may use even though they are private or platform-internal (ADR 0154 d2). Deliberate, operator-set; local and site providers do not need it. |
+| `EXAMLOPS_GATEWAY_DENY_HOSTS` | unset | Comma-separated host suffixes the gateway refuses to send prompts to, added to the built-in list (Azure endpoints, cloud-metadata targets). It can only add to the deny-list, never reduce it (ADR 0154 d5). |
 | `EXAMLOPS_CACHE_EMBED_BACKEND` | unset | **B3** semantic cache — use a real local embedder instead of the token-hash fallback. |
 
 ---
@@ -490,12 +494,12 @@ Selection is per-pipeline-run via `--backend` CLI flag or `backend_name` Prefect
 | `RAY_VERSION_CACHE_SIZE` | `8` | LRU cache size for raw-version (`/predict` with `version=`) lookups |
 | `RAY_RELOAD_POLL_SECONDS` | `60` | Background MLflow alias-poll interval in seconds; `0` disables polling. With a serving snapshot published (`RAY_SNAPSHOT_MODE=auto`), replicas do not poll MLflow at all; this interval applies only while no snapshot exists. |
 | `RAY_SNAPSHOT_MODE` | `auto` | `auto`: replicas serve the serving snapshot the control plane publishes (ADR 0127), and the inference router takes traffic splits from it; both fall back to their own MLflow scan or table read only while no snapshot exists. `off`: the legacy paths only. |
+| `RAY_INPUT_SCHEMA` | `enforce` | `enforce`: a replica refuses a request that does not fit the input schema the serving snapshot carries for the model (422 naming the field). `off`: only the loaded model's own signature applies. A model with no snapshot schema is unchecked either way (ADR 0123 decision 3). |
+| `EXAMLOPS_SNAPSHOT_INPUT_SCHEMAS` | `1` | Control plane: compile each model version's MLflow signature into the serving snapshot. `0`/`off` stops reading `MLmodel` artifacts and publishes snapshots without schemas. |
 | `RAY_SNAPSHOT_POLL_SECONDS` | `2` | How often a replica looks for a newer serving-snapshot generation (minimum 0.5). |
 | `RAY_ARTIFACT_CACHE` | unset (off; Compose: a volume) | Directory of content-addressed local copies of the model versions this replica serves. Each version is fetched once, by version, and its files' SHA-256 digests are re-checked on every use (a corrupted copy is refetched). With the serving snapshot, this is what lets a replica restart and serve while MLflow is down. Signature verification (`EXAMLOPS_SERVING_VERIFY`) runs against the cached bytes. |
 | `RAY_ARTIFACT_CACHE_MAX_GB` | `20` | Size bound for `RAY_ARTIFACT_CACHE`; least-recently-used versions are evicted beyond it (`0` = unbounded). |
 | `RAY_SNAPSHOT_CACHE` | `<tmp>/examlops-serving-snapshot.json` (Compose: a volume) | The replica's last-known-good snapshot, served when NATS, the database and the control plane are all unreachable at start. Used only when no source answers; a reachable database that has no snapshot is never overridden by an old file. |
-| `RAY_INPUT_SCHEMA` | `enforce` | `enforce`: a replica refuses a request that does not fit the input schema the serving snapshot carries for the model (422 naming the field). `off`: only the loaded model's own signature applies. A model with no snapshot schema is unchecked either way (ADR 0123 decision 3). |
-| `EXAMLOPS_SNAPSHOT_INPUT_SCHEMAS` | `1` | Control plane: compile each model version's MLflow signature into the serving snapshot. `0`/`off` stops reading `MLmodel` artifacts and publishes snapshots without schemas. |
 | `RAY_SERVE_ADMIN_TOKEN` | unset (admin routes closed) | Bearer required by Ray Serve's admin routes: `POST /reload`, `/reload/{model}` and `/infer-pipeline/traffic-rules/{model}`. Unset or a placeholder makes them answer 503; inference is unaffected, and alias moves still reload within `RAY_RELOAD_POLL_SECONDS`. Callers send it from the same variable: `exa serve reload` / `exa serve traffic` (config key `ray_serve_admin_token`), the agent, and the pipeline's promotion webhook. |
 | `EXAMLOPS_SERVING_VERIFY` | `warn` | Verify-before-load for Ray Serve: `off`, `warn` (check every load and audit a failure as `model_verify_failed`, never refuse) or `enforce` (refuse an unsigned, tampered, untrusted or unverifiable artifact and keep serving the last-known-good version). Serving loads exactly the bytes it verified, against the signature record the serving snapshot carries. `enforce` needs every served version signed (at registration, or `exa models sign`) and the signer's public key in `EXAMLOPS_SIGNING_PUBLIC_KEYS`. The default was `off` until registration signed models (plan P4.10). |
 | `MINIO_SERVING_ACCESS_KEY` / `MINIO_SERVING_SECRET_KEY` | unset | Read-only MinIO credential for Ray Serve on `mlflow-artifacts`, created by `minio-init` when both are set. Serving only downloads models; unset falls back to the root credential. |
@@ -1032,16 +1036,16 @@ Unset ⇒ the carbon provider uses its static coefficient rather than a live gri
 
 ---
 
-## Setting Variables
-
-**`.env` file at the project root (recommended for local dev):**
-
 ## Operation handles (ADR 0147 decision 5)
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_OPS_WAIT_TIMEOUT` | `300` | Seconds `exa ops wait` (and `operations.wait`) polls before returning `timed_out` (exit code 124). Never above 3600. `--timeout` overrides it per call; `0` looks once. |
 | `EXAMLOPS_OPS_WAIT_INTERVAL` | `2` | Seconds between polls of `exa ops wait`. `--interval` overrides it per call. |
+
+## Setting Variables
+
+**`.env` file at the project root (recommended for local dev):**
 
 ```bash
 # Required secrets
@@ -1057,16 +1061,16 @@ PREFECT_API_URL=http://localhost:14200/api
 EXAMLOPS_SLURM_MODE=mock
 ```
 
-Docker Compose picks up `.env` automatically. The pipeline and services also read it when running outside Docker.
-
-**On the command line:**
-```bash
 ## Unit economics per workload kind (ADR 0148 d4)
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_ECONOMICS_MIN_SAMPLES` | `5` | Fewest outcomes (predictions / gateway calls / ended agent sessions) a per-kind unit cost in `exa finops economics` (ADR 0148 d4) may rest on; fewer states `insufficient_samples`, never a number. |
 
+Docker Compose picks up `.env` automatically. The pipeline and services also read it when running outside Docker.
+
+**On the command line:**
+```bash
 EXAMLOPS_SLURM_MODE=slurm exa pipeline run --dummy
 BACKEND=minio exa pipeline run --model JPCP
 ```

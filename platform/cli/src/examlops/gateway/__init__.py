@@ -914,8 +914,26 @@ def build_default_router(*, endpoints: bool = True) -> Router:
     default_model = os.getenv("EXAMLOPS_GATEWAY_DEFAULT_MODEL", "default")
     router.add_route(default_model, [("echo", _echo)])
     if endpoints:
+        add_ollama_routes(router)
         add_endpoint_routes(router)
     return router
+
+
+def add_ollama_routes(router: Router) -> list[str]:
+    """Route every chat model of the Ollama at ``EXAMLOPS_LLM_OLLAMA_URL`` (ADR 0152); none if unset.
+
+    Opt-in and fail-soft like :func:`add_endpoint_routes`: an unset variable, a refused address
+    (ADR 0154 egress) or an unreachable server leaves the table as it was — and says why, so a
+    configured model that answers "unknown model" has a reason in the log.
+    """
+    try:
+        from examlops.gateway.providers import add_provider_routes, ollama_from_env
+
+        provider = ollama_from_env()
+        return add_provider_routes(router, provider) if provider is not None else []
+    except Exception as exc:  # noqa: BLE001 - the gateway must keep serving what it already routes
+        logger.warning("ollama routes not added (%s: %s)", type(exc).__name__, exc)
+        return []
 
 
 def add_endpoint_routes(router: Router) -> list[str]:

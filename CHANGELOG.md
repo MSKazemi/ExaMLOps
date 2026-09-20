@@ -5,6 +5,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)
+
+The model gateway's routes were the echo backend plus registered `exa serve llm` endpoints — no
+route talked to an actual local/site LLM server directly. `examlops.gateway.providers` adds an
+async `Provider` protocol (chat/stream/embed/list_models/probe) and a first implementation,
+`OllamaProvider`, bridged into the existing synchronous `GatewayClient`/`Router` as an ordinary
+`Backend` — so keys, budgets, guardrails, cache, cost and spans all apply to it unchanged.
+
+- `EXAMLOPS_LLM_OLLAMA_URL` (unset ⇒ no Ollama routes) makes every chat-capable model the server
+  reports a gateway route under its own name; discovery failure is a logged warning, never a
+  crash — the gateway keeps serving what it already has (`add_ollama_routes` in
+  `examlops.gateway`, called from `build_default_router`).
+- **Egress control (ADR 0154 d2/d5):** `examlops.gateway.egress.validate_base_url` checks a
+  provider's `base_url` before it is ever built — scheme, no embedded credentials, no
+  cloud-metadata/link-local targets, and an `external`-locality provider may not point at a
+  platform-internal or private address unless the operator lists it in
+  `EXAMLOPS_GATEWAY_ALLOWED_HOSTS`. `EXAMLOPS_GATEWAY_DENY_HOSTS` can only *add* to the built-in
+  deny-list (Azure endpoints, cloud metadata) — never remove from it, matching the platform's
+  standing no-Azure rule directly in code, not just in developer docs.
+- New env vars documented: `EXAMLOPS_LLM_OLLAMA_URL`, `EXAMLOPS_LLM_OLLAMA_NAME`,
+  `EXAMLOPS_GATEWAY_ALLOWED_HOSTS`, `EXAMLOPS_GATEWAY_DENY_HOSTS`.
+- Tests: `tests/unit/test_gateway_ollama_provider.py` (unit, no network) +
+  `tests/integration/test_gateway_ollama_live.py` (opt-in, a real Ollama server).
+
 ### Added - unit economics per workload kind: `exa finops economics` (ADR 0148 decision 4, first slice)
 
 The cost unit is decided by kind, read from the ledgers the platform already keeps, never summed
