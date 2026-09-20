@@ -306,6 +306,7 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     "serve autoscale": [
         ("Autoscale policy + recent events", "exa serve autoscale status JPCP"),
         ("Estimate scale-to-zero savings", "exa serve autoscale savings JPCP"),
+        ("Preview one controller cycle (dry run)", "exa serve autoscale run --once"),
     ],
     "serve routing": [
         ("Prefix-cache hit rate", "exa serve routing stats JPCP"),

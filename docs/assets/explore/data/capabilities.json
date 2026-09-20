@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 473,
+ "total_commands": 474,
  "total_groups": 70,
  "panels": [
   {
@@ -961,6 +961,13 @@
      "cmd": "exa serve autoscale record",
      "group": "serve",
      "help": "Record an executed scale event (audited D4).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve autoscale run",
+     "group": "serve",
+     "help": "Run the autoscale controller: signals -> decide_scale -> apply (audited, dry run by default).",
      "anchor": "exa-serve-ray-serve-operations",
      "guide": "components/ray-serve.md"
     },

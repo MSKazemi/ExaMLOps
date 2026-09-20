@@ -450,6 +450,7 @@ TIERS: dict[str, str] = {
     "serve adapter promote": D,
     "serve adapter route": A,
     "serve autoscale record": A,
+    "serve autoscale run": A,  # dry run by default, but `--apply` scales; the verb is mutating
     "serve autoscale savings": R,
     "serve autoscale set": A,
     "serve autoscale simulate": R,
@@ -578,6 +579,7 @@ BLOCKED_PARAMS: dict[str, frozenset[str]] = {
     "stack logs": frozenset({"follow"}),
     "secrets get": frozenset({"reveal"}),
     "backup schedule": frozenset({"once", "interval"}),
+    "serve autoscale run": frozenset({"once", "interval"}),
 }
 
 # Arguments always appended so a run terminates: `stack logs` follows by default and `backup
@@ -585,6 +587,7 @@ BLOCKED_PARAMS: dict[str, frozenset[str]] = {
 FORCED_ARGS: dict[str, tuple[str, ...]] = {
     "stack logs": ("--no-follow",),
     "backup schedule": ("--once",),
+    "serve autoscale run": ("--once",),
 }
 
 # Values the command would otherwise *prompt* for. stdin is /dev/null in the console, so a prompt

@@ -5,6 +5,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - autoscale controller executes `decide_scale` (ADR 0031 clauses 1, 4, 5, in part)
+
+Nothing called `decide_scale` except the CLI's own subcommands, so a scaling decision was computed
+on request and applied by a human. `examlops.autoscale.controller` closes that loop:
+
+* `exa serve autoscale run [--once] [--apply] [--applier record|ray]`. **Dry run by default**;
+  `--apply` needs `EXAMLOPS_AUTOSCALE_ENABLED=1` (default off), takes a distributed lease so one
+  controller acts, and is capped at `EXAMLOPS_AUTOSCALE_MAX_CHANGES` per cycle.
+* Signals come from the Prometheus series Ray Serve already exports (`rps`, `p95`). `queue_depth`
+  and `gpu_util` have no per-model source, so a policy targeting them holds. An absent signal or an
+  unreachable Prometheus holds the model (audited once per reason); it is never read as 0.
+* A scale below `min_replicas` (scale-to-zero) needs idleness *measured* over the policy window.
+  `decide_scale` alone reads an observed metric of 0 as "scale to zero" before the window elapses.
+* Applied, refused, dry-run and failed decisions are audited; an applier error is counted and
+  retried next cycle. Anti-thrash windows are honoured across cycles from the recorded events.
+* **Not built:** a real actuator. `--applier record` writes the scale event and audit only; the
+  `ray` applier refuses (Ray Serve scales one deployment at deploy time, no per-model admin route).
+  KEDA/Knative, the cold-start activator and the warm pool remain unimplemented. Guide:
+  `docs/guides/autoscaling.md`.
+
 ### Added - per-tenant quotas travel in the serving snapshot (ADR 0123 decision 3, in part)
 
 The gateway's per-tenant request quota was one process-wide number in an environment variable, so

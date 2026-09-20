@@ -175,3 +175,69 @@ def record(
     decision = ScaleDecision(to_replicas, from_replicas, reason, from_replicas != to_replicas)
     apply_scale(model, from_replicas, decision, tenant=tenant, cold_start_s=cold_start, actor=actor)
     _output.ok(f"Recorded scale {from_replicas}→{to_replicas} for {model}.")
+
+
+_RUN_EXAMPLES = (
+    "Examples:\n\n"
+    "  exa serve autoscale run --once                # preview one cycle (dry run, the default)\n\n"
+    "  EXAMLOPS_AUTOSCALE_ENABLED=1 exa serve autoscale run --apply --once\n\n"
+    "  EXAMLOPS_AUTOSCALE_ENABLED=1 exa serve autoscale run --apply   # loop until stopped"
+)
+
+
+@app.command("run", epilog=_RUN_EXAMPLES)
+def run(
+    once: bool = typer.Option(False, "--once", help="Run one cycle and exit (default: loop)"),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Execute decisions (needs EXAMLOPS_AUTOSCALE_ENABLED=1). Default: dry run",
+    ),
+    applier: str = typer.Option(
+        "record", "--applier", help="record (ledger only) | ray (not built: refuses)"
+    ),
+    interval: int = typer.Option(0, "--interval", help="Seconds between cycles (0 = env/30)"),
+) -> None:
+    """Run the autoscale controller: signals -> decide_scale -> apply (audited, dry run by default)."""
+    from examlops.autoscale.controller import (
+        AutoscaleController,
+        CycleReport,
+        PrometheusSignals,
+        interval_s,
+        make_applier,
+    )
+
+    try:
+        chosen = make_applier(applier)
+    except ValueError as exc:
+        _output.error(str(exc))
+        raise typer.Exit(2) from exc
+    ctl = AutoscaleController(PrometheusSignals(), chosen, dry_run=not apply)
+
+    def show(rep: CycleReport) -> None:
+        if _output.json_mode:
+            _output.print_json(rep.to_dict())
+            return
+        mode = "dry run" if rep.dry_run else "apply"
+        if not rep.ran:
+            _output.warning(f"autoscale ({mode}): not run — {rep.note}")
+            return
+        counts = ", ".join(f"{k}={v}" for k, v in rep.to_dict()["counts"].items() if v)
+        _output.info(f"autoscale ({mode}, applier={applier}): {counts or 'no policies'}")
+        for r in rep.results:
+            if r.outcome != "steady":
+                _output.info(f"  {r.model}: {r.outcome} - {r.reason}")
+
+    if once:
+        rep = ctl.run_cycle()
+        show(rep)
+        if not rep.ran or rep.count("failed"):
+            raise typer.Exit(1)
+        return
+    if _output.json_mode:
+        _output.error("--json needs --once (a loop prints one document per cycle)")
+        raise typer.Exit(2)
+    try:
+        ctl.run_forever(interval=interval or interval_s(), on_cycle=show)
+    except KeyboardInterrupt:
+        _output.info("autoscale controller stopped.")

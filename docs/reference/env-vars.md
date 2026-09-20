@@ -118,6 +118,16 @@ the usual cause of "it works from the CLI but not in the dashboard".
 | `EXAMLOPS_CONTRACTS_FILE` | unset | YAML overlay for the ADR-0113 blast-radius contracts. May only NARROW the built-ins (autonomy toward REVIEW/DISABLED, extra `may_not_change` entries, smaller extent caps); widening is a code change. |
 | `EXAMLOPS_AUTOPILOT_MAX_RETRAINS` | `1` | Per-cycle cap on retrains, so a storm of drift cannot become a storm of jobs. |
 
+### Autoscale controller
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_AUTOSCALE_ENABLED` | unset (off) | Kill-switch for `exa serve autoscale run --apply`. Only a truthy value (`1`/`true`/`yes`/`on`) arms it; a dry run never needs it. |
+| `EXAMLOPS_AUTOSCALE_MAX_CHANGES` | `5` | Storm cap: the most scale changes one controller cycle will attempt; the rest are refused and audited. |
+| `EXAMLOPS_AUTOSCALE_LEASE_TTL` | `120` | TTL (s) of the controller lease (`autoscale-controller` lock) so only one controller acts; a crashed holder's lease expires. |
+| `EXAMLOPS_AUTOSCALE_INTERVAL` | `30` | Seconds between cycles when the controller loops (no `--once`). |
+| `EXAMLOPS_AUTOSCALE_PROBE_TIMEOUT` | `5` | Seconds the controller waits for Prometheus per signal query; a source that cannot answer holds the model. |
+
 ### Data versioning & fleet
 
 | Variable | Default | Purpose |

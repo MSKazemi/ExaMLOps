@@ -456,6 +456,7 @@ Declare per-model replica policies, simulate decisions, and account the FinOps s
 | `exa serve autoscale simulate MODEL` | Computes the scaling decision for a given state — pure, anti-thrash aware (`--replicas`, `--observed`, `--idle`, `--since-last`). | Dry-run a scaling decision before trusting the policy. | `exa serve autoscale simulate JPCP --replicas 2 --observed 350 --idle 0 --since-last 120` |
 | `exa serve autoscale record MODEL FROM_REPLICAS` | Records an executed scale event (audited); `--reason`, `--cold-start`, `--tenant`. | Log a real scale action for later analysis. **mutation** | `exa serve autoscale record JPCP 2 --reason "p95 breach" --cold-start 8.3` |
 | `exa serve autoscale savings MODEL` | Estimates FinOps savings from scale-to-zero (`--gpu-cost` per hour). | Quantify the cost saved by idling replicas. | `exa serve autoscale savings JPCP --gpu-cost 2.5` |
+| `exa serve autoscale run` | Runs the autoscale controller: Prometheus signals -> `decide_scale` -> apply, every decision audited. Dry run by default; `--apply` needs `EXAMLOPS_AUTOSCALE_ENABLED=1`, takes a lease, honours a per-cycle storm cap; `--once`, `--applier record\|ray` (`ray` is not built and refuses), `--interval`. | Make scaling decisions execute instead of only being computed on request. **mutation with `--apply`** | `exa serve autoscale run --once` |
 
 #### Multi-LoRA adapters (`exa serve adapter`)
 

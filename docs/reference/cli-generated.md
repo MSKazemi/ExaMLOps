@@ -3139,6 +3139,15 @@ Record an executed scale event (audited D4).
 - `--cold-start` — Measured cold-start seconds
 - `--tenant` — Tenant scope
 
+#### `exa serve autoscale run`
+
+Run the autoscale controller: signals -> decide_scale -> apply (audited, dry run by default).
+
+- `--once` — Run one cycle and exit (default: loop)
+- `--apply` — Execute decisions (needs EXAMLOPS_AUTOSCALE_ENABLED=1). Default: dry run
+- `--applier` — record (ledger only) | ray (not built: refuses)
+- `--interval` — Seconds between cycles (0 = env/30)
+
 #### `exa serve autoscale savings`
 
 Estimate FinOps savings from scale-to-zero (R7).

@@ -59,6 +59,38 @@ exa serve autoscale simulate JPCP --replicas 1 --observed 0 --idle 400
 `--json` returns `{desired_replicas, current_replicas, changed, reason, blocked_by}` for a
 controller to act on.
 
+## The controller (`exa serve autoscale run`)
+
+The controller is the loop that turns `decide_scale` into an executed change. Each cycle, for every
+model with a policy: read signals -> `decide_scale` -> apply -> audit.
+
+```bash
+exa serve autoscale run --once                       # dry run (default): audits, changes nothing
+EXAMLOPS_AUTOSCALE_ENABLED=1 exa serve autoscale run --apply --once
+EXAMLOPS_AUTOSCALE_ENABLED=1 exa serve autoscale run --apply        # loop every 30 s
+```
+
+| Safety | Behaviour |
+|---|---|
+| Kill-switch | `EXAMLOPS_AUTOSCALE_ENABLED` (default off). Off: `--apply` is refused and audited. |
+| Dry run | Default. No lease, no applier call, no scale event; the would-be decision is audited. |
+| Lease | One controller acts at a time (`EXAMLOPS_AUTOSCALE_LEASE_TTL`). |
+| Storm cap | `EXAMLOPS_AUTOSCALE_MAX_CHANGES` changes per cycle; extras are refused, audited. |
+| Absent signal | Held and audited. Absent is never 0. Same for an unreachable Prometheus. |
+| Below min | Only when idleness over `scale_to_zero_after_s` was measured as exactly zero traffic. |
+| Applier error | Audited (`autoscale_apply_failed`), counted, retried next cycle; no scale event. |
+| Anti-thrash | Stabilization/cooldown read from the recorded scale events, across cycles. |
+
+**Signals.** `rps` and `p95` are read from Prometheus (`PROMETHEUS_URL`) from
+`examlops_predict_requests_total` / `examlops_predict_latency_seconds`. `queue_depth` and `gpu_util`
+have no per-model source in the platform, so a policy that targets them holds until one exists.
+
+**Appliers.** `record` writes the scale event and audit and touches no serving substrate; the change
+is then made by an operator or an external system. Current replicas are the last recorded
+`to_replicas`, so seed a model once with `exa serve autoscale record MODEL 1 1`; an unseeded model
+holds. `ray` is **not built**: Ray Serve here scales one deployment (every model in it) at deploy
+time via `RAY_AUTOSCALE_MAX_REPLICAS`, and no admin route changes one model's replicas, so it refuses.
+
 ## Recording executed scales
 
 A controller (or a test) records what it actually did; the event is audited and, if a cold
