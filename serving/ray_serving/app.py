@@ -31,6 +31,9 @@ Env vars:
                                                                 serving snapshot; off = legacy)
     RAY_SNAPSHOT_POLL_SECONDS   default: 2                     (how often a newer generation is
                                                                 looked for)
+    RAY_INPUT_SCHEMA            default: enforce               (check requests against the input
+                                                                schema the snapshot carries; off
+                                                                = the model's own signature only)
     RAY_SNAPSHOT_CACHE          default: <tmp>/examlops-serving-snapshot.json (last-known-good)
     RAY_ARTIFACT_CACHE          default: off                   (directory of content-addressed
                                                                 model versions)
@@ -157,6 +160,10 @@ from serving.ray_serving.snapshot import SnapshotReader  # noqa: E402
 # publishes whenever one exists and falls back to scanning MLflow when none does; `off` keeps the
 # legacy per-replica MLflow polling only.
 SNAPSHOT_MODE = os.getenv("RAY_SNAPSHOT_MODE", "auto").strip().lower()
+# Input schemas the snapshot carries (ADR 0123 d3), `RAY_INPUT_SCHEMA` (read per request, see
+# `_snapshot_signature`): `enforce` (default) refuses a request that does not fit with a 422 naming
+# the field; `off` ignores them. A model whose snapshot entry has no schema — or a malformed one —
+# is served exactly as before either way (fail open).
 SNAPSHOT_POLL_SECONDS = max(0.5, float(os.getenv("RAY_SNAPSHOT_POLL_SECONDS", "2")))
 # Ray 2.55 exports a gauge only for the report interval in which it was set, so the replica
 # publishes its gauges again on this cadence (see MultiModelServer._publish_gauges). 0 disables.
@@ -754,8 +761,10 @@ class MultiModelServer:
             wanted = set(_get_serve_aliases_for(name))
             for alias, facts in aliases.items():
                 previous = current.get((name, alias))
+                schema = facts.get("input_schema")
                 if previous is not None and previous["version"] == facts["version"]:
-                    new_hot[(name, alias)] = previous
+                    # Same version, but the schema comes from the snapshot: follow it.
+                    new_hot[(name, alias)] = {**previous, "input_schema": schema}
                     continue
                 if alias not in wanted:
                     continue  # a cold alias whose version moved is reloaded on its next request
@@ -769,6 +778,7 @@ class MultiModelServer:
                         "model": self._load_by_flavour(name, None, mv),
                         "version": str(facts["version"]),
                         "run_id": facts.get("run_id"),
+                        "input_schema": schema,
                     }
                     moved.add(name)
                     logger.info("Loaded '%s'@%s (v%s) from snapshot", name, alias, facts["version"])
@@ -975,6 +985,14 @@ class MultiModelServer:
             if version is not None and key not in self._hot:
                 changed.add(key[0])
         return changed
+
+    @staticmethod
+    def _snapshot_signature(resolved: dict[str, Any]) -> oip.Signature | None:
+        """The signature the serving snapshot gave this entry, or None (unchecked / off)."""
+        # Read per call (an env lookup): the ingress wrapper freezes module globals in methods.
+        if os.getenv("RAY_INPUT_SCHEMA", "enforce").strip().lower() == "off":
+            return None
+        return oip.signature_from_schema(resolved.get("input_schema"))
 
     def _hot_get(self, model_name: str, alias: str) -> dict[str, Any] | None:
         """Look up the hot set, tolerating model-name case.
@@ -1499,7 +1517,16 @@ class MultiModelServer:
         # that also pollutes the error-rate metric.
         # A model with a column signature gets its features by name, in the signature's order:
         # MLflow refuses an unnamed array for it, so /predict answered 500 on every such model.
-        signature = oip.signature_of(model)
+        snapshot_signature = self._snapshot_signature(resolved)
+        if snapshot_signature is not None:
+            try:
+                oip.check_features(request.features, snapshot_signature)
+            except oip.ProtocolError as exc:
+                self._req_counter.inc(
+                    tags={"model_name": model_name, "alias": alias or "", "status": "invalid"}
+                )
+                raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        signature = snapshot_signature or oip.signature_of(model)
         row: list = []
         if signature is not None and signature.columns:
             missing = [n for n in signature.names if n not in request.features]
@@ -1618,7 +1645,7 @@ class MultiModelServer:
             model_name,
             [str(resolved["version"])],
             "mlflow",
-            oip.signature_of(resolved["model"]),
+            self._snapshot_signature(resolved) or oip.signature_of(resolved["model"]),
         )
 
     def _v2_infer(self, model_name: str, version: str | None, body: Any, budget_ms: Any) -> Any:
@@ -1638,7 +1665,7 @@ class MultiModelServer:
                 tags={"model_name": model_name, "alias": alias or "", "status": "not_found"}
             )
             return _oip_error(str(exc.detail), exc.status_code)
-        signature = oip.signature_of(resolved["model"])
+        signature = self._snapshot_signature(resolved) or oip.signature_of(resolved["model"])
         try:
             array = oip.to_array(body, signature)
         except oip.ProtocolError as exc:

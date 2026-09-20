@@ -104,6 +104,36 @@ table on the request path, refuses a snapshot that fails its digest, and keeps t
 read if the datastore goes away. A gateway that starts with the datastore down and has read no
 snapshot enforces only the default. Snapshots published before this section existed still verify.
 
+## Input schemas
+
+Each aliased model version in the snapshot can carry `input_schema`: the column names and types (OIP
+v2 datatypes) of its MLflow signature, and the feature count per row.
+
+```json
+{"kind": "columns", "inputs": [{"name": "cpu", "type": "FP64"}, {"name": "mem", "type": "FP64"}], "width": 2}
+```
+
+- **Where it comes from.** The `MLmodel` signature, read by the compiler through the MLflow
+  tracking server (`/get-artifact`, or the logged-model route for `models:/m-<id>` sources). The
+  use-case pack's model YAML is *not* used: the control-plane image does not contain the pack. A
+  version's schema is read once and cached (versions are immutable). No signature means no
+  `input_schema` key, so such a model hashes exactly as it did before schemas existed.
+- **Artifact store down at compile time.** The schema the previous snapshot held for that same
+  version is kept, and the alias moves still publish. It is not read as "no schema".
+- **On the replica.** `/predict` checks the feature dict against the entry the request resolved to,
+  and answers **422** naming the field: `missing features ['nodes']…`, `feature 'mem' must be a
+  finite number (FP64), got 'fast'`, or a wrong value count for tensor models. Extra keys are ignored.
+  `/v2/models/{name}/infer` validates tensor names and shapes against it, and
+  `GET /v2/models/{name}` reports it. Nothing is read from a database on the way.
+- **Fail open, deliberately.** A model with no schema, a schema the replica cannot interpret, or
+  `RAY_INPUT_SCHEMA=off` is served by its own signature exactly as before. A schema is a
+  convenience the platform adds, and a bug in it must not become an outage (ADR 0123 invariant 2).
+  A schema that *is* present and verified is enforced (fail closed for that model).
+- **Integrity.** It sits inside `models`, so the digest covers it. Snapshots without it (published
+  before this) verify unchanged. A new version with a different schema is a new generation.
+- **Limits.** Aliases outside `RAY_PRELOAD_ALIASES` and raw-version requests load lazily from
+  MLflow and are not checked by the snapshot schema; OIP v2 schema errors keep status 400.
+
 ## Operating it
 
 ```bash

@@ -105,6 +105,69 @@ def signature_of(model: Any) -> Signature | None:
     return Signature(tuple(names), tuple(types), width or None, columns) if names else None
 
 
+def signature_from_schema(schema: Any) -> Signature | None:
+    """The :class:`Signature` a serving-snapshot input schema describes, or None.
+
+    None when there is no schema or it is malformed: the caller then falls back to the loaded
+    model's own signature, so a schema the replica cannot interpret never becomes a gate.
+    """
+    from examlops.serving_schema import normalize  # noqa: PLC0415
+
+    valid = normalize(schema)
+    if valid is None:
+        return None
+    inputs = valid["inputs"]
+    return Signature(
+        tuple(i["name"] for i in inputs),
+        tuple(i["type"] for i in inputs),
+        valid.get("width"),
+        valid["kind"] == "columns",
+    )
+
+
+def _finite_number(value: Any) -> bool:
+    """A JSON number numpy can take as a float (a bool counts; a string or NaN does not)."""
+    return isinstance(value, (int, float)) and math.isfinite(float(value))
+
+
+def check_features(features: Any, signature: Signature) -> None:
+    """Refuse a ``/predict`` feature dict that does not fit a snapshot input schema (status 422).
+
+    The message names the offending field. Extra keys are ignored, as ``/predict`` always has: a
+    client that sends more than the model takes is not wrong, only chatty. Columns typed ``BYTES``
+    are not numeric features this server can take and are not type-checked here.
+    """
+    if not isinstance(features, dict):
+        raise ProtocolError("features must be an object", 422)
+    if signature.columns:
+        missing = [n for n in signature.names if n not in features]
+        if missing:
+            raise ProtocolError(
+                f"missing features {missing}; the model takes {list(signature.names)}", 422
+            )
+        for name, dtype in zip(signature.names, signature.datatypes, strict=True):
+            value = features[name]
+            if dtype == "BYTES":
+                continue
+            if _finite_number(value):
+                continue
+            raise ProtocolError(
+                f"feature '{name}' must be a finite number ({dtype}), got {value!r}", 422
+            )
+        return
+    count = 0
+    for name, value in features.items():
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            if not _finite_number(item):
+                raise ProtocolError(f"feature '{name}' must be numeric, got {item!r}", 422)
+        count += len(items)
+    if signature.width is not None and count != signature.width:
+        raise ProtocolError(
+            f"the model takes {signature.width} values per row; the request has {count}", 422
+        )
+
+
 def model_input(array: np.ndarray, signature: Signature | None) -> Any:
     """What to hand the model: a DataFrame with the signature's column names for a column-based
     signature (MLflow enforces the names), the plain array otherwise."""

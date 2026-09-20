@@ -20,6 +20,10 @@ Now one compiler, run by the control plane, produces a snapshot::
 * ``quotas`` are per-tenant request limits (requests per minute; ``0`` = unlimited for that tenant)
   the serving gateway enforces in place of its own default (ADR 0123 decision 3). A tenant with no
   entry keeps the gateway's ``EXAMLOPS_GATEWAY_TENANT_RPM``.
+* ``input_schema`` (optional, inside an alias entry) is the input schema of that model version, from
+  its MLflow signature (:mod:`examlops.serving_schema`). A replica checks requests against it
+  without reading anything. It is inside ``models``, so the digest already covers it; a version
+  with no signature has no key.
 * ``generation`` is monotonic and only moves when the content (``digest``) does, so a replica can
   report exactly which configuration it is serving and lag is a subtraction.
 * Snapshots are stored in ``serving_snapshots`` (the replica's pull path, and last-known-good for
@@ -63,6 +67,10 @@ _KEEP = 50  # snapshot rows retained; older generations are pruned on publish
 # life of the process: a recompile after one promotion costs one model-version lookup, not N.
 _version_cache: dict[tuple[str, str, str], dict[str, Any]] = {}
 _version_cache_lock = threading.Lock()
+# The input schema of a version, likewise immutable. Only a *definite* answer is cached — a schema,
+# or "this version declares none" — never a failed read, which would otherwise pin "no schema" (and
+# so drop the check from every replica) until the process restarts.
+_schema_cache: dict[tuple[str, str, str], dict[str, Any] | None] = {}
 
 
 def _mlflow_url() -> str:
@@ -109,8 +117,60 @@ def _version_facts(client: Any, base: str, name: str, version: str) -> dict[str,
     return facts
 
 
+def _previous_schemas() -> dict[tuple[str, str], dict[str, Any]]:
+    """``(model key, version) -> input schema`` in the newest published snapshot (best effort)."""
+    try:
+        previous = latest() or {}
+    except Exception:  # noqa: BLE001 - no previous snapshot is a fine answer
+        return {}
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, entry in (previous.get("models") or {}).items():
+        for facts in (entry.get("aliases") or {}).values():
+            if isinstance(facts, dict) and facts.get("input_schema"):
+                found[(key, str(facts.get("version")))] = facts["input_schema"]
+    return found
+
+
+def _version_schema(
+    client: Any, base: str, name: str, facts: dict[str, Any], prior: dict[tuple, Any]
+) -> dict[str, Any] | None:
+    """The input schema of one model version, from the ``MLmodel`` signature MLflow serves.
+
+    A version without a readable signature has no schema and is served unchecked. A read that
+    *fails* (the artifact store is down) is not "no schema": the schema the previous snapshot
+    carried for this same immutable version is kept, so an artifact-store blip cannot lift the
+    check on every replica and then restore it a minute later as two spurious generations.
+    """
+    from examlops import serving_schema  # noqa: PLC0415
+
+    if os.getenv("EXAMLOPS_SNAPSHOT_INPUT_SCHEMAS", "1").strip().lower() in ("0", "false", "off"):
+        return None
+    key = (base, name, facts["version"])
+    with _version_cache_lock:
+        if key in _schema_cache:
+            return _schema_cache[key]
+    where = serving_schema.mlmodel_location(facts.get("source"), facts.get("run_id"))
+    schema: dict[str, Any] | None = None
+    if where is not None:
+        route, params = where
+        try:
+            r = client.get(base + route, params=params)
+            if getattr(r, "status_code", 200) == 404:
+                pass  # the artifact is definitely absent: the version has no schema
+            else:
+                r.raise_for_status()
+                schema = serving_schema.parse_mlmodel(getattr(r, "text", "") or "")
+        except Exception as exc:  # noqa: BLE001 - transient: keep what the last snapshot knew
+            logger.warning("Input schema of %s v%s unreadable: %s", name, facts["version"], exc)
+            return prior.get((name.strip().lower(), str(facts["version"])))
+    with _version_cache_lock:
+        _schema_cache[key] = schema
+    return schema
+
+
 def _compile_models(client: Any, base: str) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
+    prior: dict[tuple, Any] | None = None
     for rm in _registered_models(client, base):
         name = rm.get("name")
         if not name:
@@ -119,7 +179,12 @@ def _compile_models(client: Any, base: str) -> dict[str, dict[str, Any]]:
         for a in rm.get("aliases", []) or []:
             alias, version = a.get("alias"), a.get("version")
             if alias and version is not None:
-                aliases[alias] = _version_facts(client, base, name, str(version))
+                facts = _version_facts(client, base, name, str(version))
+                if prior is None:
+                    prior = _previous_schemas()
+                schema = _version_schema(client, base, name, facts, prior)
+                # No schema => no key, so a model without one hashes exactly as it always did.
+                aliases[alias] = {**facts, "input_schema": schema} if schema else facts
         out[name.strip().lower()] = {"name": name, "aliases": dict(sorted(aliases.items()))}
     return dict(sorted(out.items()))
 

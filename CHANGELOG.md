@@ -5,6 +5,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - input schemas travel in the serving snapshot and are checked on the replica (ADR 0123 decision 3)
+
+The last unbuilt piece of decision 3. The control plane compiles each aliased model version's
+input schema into the snapshot (`models.<key>.aliases.<alias>.input_schema`) and a replica checks
+requests against it with no database, MLflow or artifact-store read on the reply path.
+
+* **Source:** the MLflow model signature (`MLmodel`), read through the tracking server's artifact
+  route. The use-case pack's `inference.input_schema` is not in the control-plane image, so it is
+  not used. Versions are immutable, so a schema is read once per version; a version with no
+  signature has no key and hashes exactly as before. A failed read keeps the schema the previous
+  snapshot held for that version rather than lifting the check (no spurious generations).
+* **Enforcement:** `/predict` answers 422 naming the field (missing, non-numeric, NaN, wrong value
+  count). Extra keys are still ignored. **Fail open:** no schema, a malformed one, or
+  `RAY_INPUT_SCHEMA=off` means the model's own signature decides, as before.
+* `GET /v2/models/{name}` describes the model from the snapshot schema; `/v2/.../infer` validates
+  against it.
+* The section is inside `models`, so the digest covers it: a tampered schema is refused, and
+  snapshots published earlier still verify. `EXAMLOPS_SNAPSHOT_INPUT_SCHEMAS=0` stops compiling them.
+* **Not built:** schemas for aliases outside `RAY_PRELOAD_ALIASES` and raw-version requests (loaded
+  lazily from MLflow, unchecked); the OIP v2 error status stays 400.
+  Guide: `docs/guides/serving-snapshot.md`.
+
 ### Added - autoscale controller executes `decide_scale` (ADR 0031 clauses 1, 4, 5, in part)
 
 Nothing called `decide_scale` except the CLI's own subcommands, so a scaling decision was computed
