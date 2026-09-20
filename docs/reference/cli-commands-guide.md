@@ -203,7 +203,7 @@ Capture a signed manifest of a model version's inputs (dataset revision, seed, h
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa reproduce build` | Captures and signs a reproducibility bundle for a model version (**mutation** — writes a signed manifest). | Freeze the exact recipe behind a trained model version. | `exa reproduce build JPCP 17 --dataset PM100Dataset --revision <rev> --seed 42 --metrics '{"rmse":4.9}'` |
-| `exa reproduce run` | Rebuilds the recorded plan and metric-matches observed vs recorded within tolerance. | Confirm a model can be reproduced from its bundle. | `exa reproduce run JPCP 17 --observed '{"rmse":4.9}'` |
+| `exa reproduce run` | Rebuild plan + metric-match within tolerance; with `--execute` really rebuilds in five checked steps: detached worktree at the bundle's commit, dataset revision check, lockfile-hash check, re-training in the checkout, metric comparison (`--rtol`); exit 1 on any failure. | Confirm a model can be reproduced from its bundle. | `exa reproduce run JPCP 17 --execute --dummy --rtol 0.05` |
 | `exa reproduce verify` | Checks that referenced inputs still exist and hashes match; exit 1 if rotted (R5/GWT-4). | Detect bit-rot / drift of a bundle's inputs (CI gate). | `exa reproduce verify JPCP 17` |
 | `exa reproduce list` | Lists reproducibility bundles (optionally for one model). | Review which model versions have bundles. | `exa reproduce list JPCP` |
 

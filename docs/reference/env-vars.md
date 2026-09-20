@@ -386,6 +386,7 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_SLURM_MODE` | `mock` | `mock` runs training inline (safe for dev/Docker); `slurm` submits via `sbatch` |
+| `EXAMLOPS_SEED` | unset | RNG seed the `exa reproduce run --execute` training subprocess receives (the bundle's recorded `global` seed); read by the training code, not set by anything else |
 | `EXAMLOPS_SLURM_PARTITION` | unset | Slurm partition name (real Slurm mode only) |
 | `EXAMLOPS_SLURM_TIME` | `2:00:00` | Wall-clock time limit for Slurm jobs |
 | `EXAMLOPS_SLURM_NODES` | `1` | Number of nodes per Slurm job |

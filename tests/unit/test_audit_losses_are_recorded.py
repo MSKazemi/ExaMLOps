@@ -330,6 +330,9 @@ COVERED_AUDIT_SITES = {
     ("examlops/cli/commands/autopilot_cmd.py", "run_cycle"): (
         "tests/unit/test_autopilot.py::test_the_loss_is_counted_rather_than_hidden"
     ),
+    ("examlops/reproducibility/execute.py", "_audit"): (
+        "tests/unit/test_reproduce_execute.py::test_a_lost_repro_audit_is_counted"
+    ),
     # In the agent suite (`platform/services/agent/tests/`), which has the deps these need.
     (
         "skipper/watch.py",

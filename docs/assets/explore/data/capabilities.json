@@ -330,7 +330,7 @@
     {
      "cmd": "exa reproduce run",
      "group": "reproduce",
-     "help": "Rebuild plan + metric-match within tolerance — never claims bit-exactness (R3/GWT-2).",
+     "help": "Rebuild plan + metric-match within tolerance; --execute performs the rebuild (ADR 0038).",
      "anchor": "exa-reproduce-reproducibility-bundles-a8",
      "guide": "guides/reproducibility-bundles.md"
     },

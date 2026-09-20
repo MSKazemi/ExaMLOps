@@ -68,6 +68,33 @@ exa reproduce run JPCP 17 --observed '{"rmse": 4.9}'
 # Metrics match recorded values within tolerance (not bit-exact).
 ```
 
+## Really rebuild: `--execute` (ADR 0038 clause 2)
+
+Without `--execute`, `run` is a plan (above). With it, `exa reproduce run <model> <version>
+--execute` performs five ordered steps, each a real check reported with its real outcome; the
+first failure stops the run (exit 1) and later steps show `not_run`:
+
+| # | Step | What is actually done | Fails when |
+|---|---|---|---|
+| 1 | `code` | detached `git worktree` at the bundle's commit (`--repo`, default `.`) | no commit recorded, commit not in the repo (never falls back to `HEAD`) |
+| 2 | `dataset` | pinned revision must be recorded; with `--data-path` the local data is hashed against it | revision unrecorded, or data hash differs. Without `--data-path` (or with `--dummy`) content is **not** verified and the step says `skipped` |
+| 3 | `env` | recorded `uv.lock`/`requirements.txt` sha256 vs the file in the checkout | hash differs, or none was captured; `--allow-env-drift` continues and reports `drift_allowed`. A container image digest is shown but cannot be verified here |
+| 4 | `train` | the pipeline training flow runs in a subprocess **inside the worktree**, pinned to the dataset revision and recorded seed (`EXAMLOPS_SEED`), mock scheduler unless set | non-zero exit, timeout, or no `EXAMLOPS_REPRO_METRICS=<json>` line |
+| 5 | `compare` | produced vs recorded metrics, relative tolerance `--rtol` (default: the bundle's, else 0.05) | any recorded metric missing, non-finite or out of tolerance; a bundle with no recorded metrics |
+
+```bash
+exa reproduce run JPCP 17 --execute --dummy --rtol 0.05
+exa reproduce run JPCP 17 --execute --data-path ./data/PM100 --json
+# custom trainer (must print EXAMLOPS_REPRO_METRICS={"rmse": 4.9}); runs in the checkout:
+exa reproduce run JPCP 17 --execute --train-cmd "python train.py"
+```
+
+Limits, stated plainly: the environment step compares lockfile hashes, it does not rebuild or
+diff the installed packages; the code step does not capture uncommitted changes present when
+the bundle was built; the dataset step verifies local content hashes (A1), not remote
+dataplane snapshots (ADR 0130) or lakeFS refs; scheduler resources are not re-requested. The
+default training path needs the pipeline's own runtime (Prefect, MLflow, the use-case pack).
+
 ## Verify a bundle hasn't rotted (CI gate)
 
 ```bash

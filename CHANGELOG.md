@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — `exa reproduce run --execute` (ADR 0038 clause 2, first real rebuild)
+
+`exa reproduce run <model> <version> --execute` now performs, in order, each with a real failure
+path and a reported outcome: (1) detached `git worktree` at the bundle's recorded commit (refuses,
+never uses `HEAD`, when it is unrecorded or unavailable); (2) pinned dataset revision must be
+recorded and, with `--data-path`, the data must hash to it; (3) recorded lockfile hash vs the
+checkout's (`--allow-env-drift` to continue); (4) training through the pipeline flow inside the
+worktree with the recorded seed/revision (or `--train-cmd`); (5) metric comparison with `--rtol`.
+First failure stops the run with exit 1; later steps show `not_run`. Without `--execute` the plan
+output is unchanged. New `examlops.reproducibility.execute`, guard
+`tests/unit/test_reproduce_execute.py`. Not done: package-level environment rebuild, dataplane
+snapshot restore, scheduler-resource replay, and no training path builds a bundle automatically
+(ADR 0038 stays Partially implemented).
+
 ### Added — plan/apply for agent principals (ADR 0147 decision 2, second slice)
 
 New `examlops.plans` and additive `agent_plans` table. An agent principal

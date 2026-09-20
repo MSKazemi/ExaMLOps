@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 
 import typer
 
@@ -25,6 +26,7 @@ _EXAMPLES = (
     "  exa reproduce build JPCP 17 --dataset PM100 --revision <rev>\n\n"
     "  exa reproduce run JPCP 17\n\n"
     "  exa reproduce run JPCP 17 --observed '{\"rmse\": 4.9}'\n\n"
+    "  exa reproduce run JPCP 17 --execute --dummy --rtol 0.05\n\n"
     "  exa reproduce verify JPCP 17\n\n"
     "  exa reproduce list"
 )
@@ -87,8 +89,50 @@ def run(
     observed: str = typer.Option(
         None, "--observed", help="JSON of re-observed metrics to match against recorded"
     ),
+    execute: bool = typer.Option(
+        False,
+        "--execute",
+        help="Really rebuild: checkout code, verify dataset + env, re-train, compare metrics",
+    ),
+    repo: str = typer.Option(
+        ".", "--repo", help="[--execute] Git repo holding the bundle's commit"
+    ),
+    data_path: str = typer.Option(
+        None, "--data-path", help="[--execute] Local data to verify against the pinned revision"
+    ),
+    dummy: bool = typer.Option(False, "--dummy", help="[--execute] Train on dummy data"),
+    allow_env_drift: bool = typer.Option(
+        False, "--allow-env-drift", help="[--execute] Continue when the lockfile hash drifted"
+    ),
+    rtol: float = typer.Option(
+        None, "--rtol", help="[--execute] Relative metric tolerance (default: bundle's, else 0.05)"
+    ),
+    train_cmd: str = typer.Option(
+        None,
+        "--train-cmd",
+        help="[--execute] Custom training command run in the checkout; must print "
+        "'EXAMLOPS_REPRO_METRICS=<json>' (default: the pipeline training flow)",
+    ),
+    timeout: int = typer.Option(3600, "--timeout", help="[--execute] Training timeout, seconds"),
+    keep_worktree: bool = typer.Option(
+        False, "--keep-worktree", help="[--execute] Keep the detached worktree for inspection"
+    ),
 ) -> None:
-    """Rebuild plan + metric-match within tolerance — never claims bit-exactness (R3/GWT-2)."""
+    """Rebuild plan + metric-match within tolerance; --execute performs the rebuild (ADR 0038)."""
+    if execute:
+        _run_execute(
+            model,
+            version,
+            repo=repo,
+            data_path=data_path,
+            dummy=dummy,
+            allow_env_drift=allow_env_drift,
+            rtol=rtol,
+            train_cmd=train_cmd,
+            timeout=timeout,
+            keep_worktree=keep_worktree,
+        )
+        return
     from examlops.reproducibility import reproduce
 
     obs = json.loads(observed) if observed else None
@@ -116,6 +160,47 @@ def run(
         _output.error("Metrics DO NOT match within tolerance.")
     else:
         _output.info("No re-observed metrics supplied — plan + input verification only.")
+
+
+def _run_execute(model: str, version: str, **opts: Any) -> None:
+    import shlex
+
+    from examlops.reproducibility.execute import StepResult, execute_reproduction
+
+    def show(step: StepResult) -> None:
+        if not _output.json_mode:
+            _output.info(f"[{step.step}] {step.status}: {step.detail}")
+
+    cmd = opts.pop("train_cmd")
+    res = execute_reproduction(
+        model,
+        version,
+        train_cmd=shlex.split(cmd) if cmd else None,
+        on_step=show,
+        **opts,
+    )
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "model": res.model,
+                "version": res.version,
+                "ok": res.ok,
+                "bit_exact": res.bit_exact,
+                "rtol": res.rtol,
+                "worktree": res.worktree,
+                "produced_metrics": res.produced_metrics,
+                "steps": [
+                    {"step": s.step, "status": s.status, "detail": s.detail} for s in res.steps
+                ],
+            }
+        )
+        raise typer.Exit(0 if res.ok else 1)
+    for s in res.steps:
+        if s.status == "not_run":
+            _output.info(f"[{s.step}] not_run: {s.detail}")
+    if not res.ok:
+        _output.error("Reproduction FAILED.", exit_code=1)
+    _output.ok("Reproduced within tolerance (not bit-exact).")
 
 
 @app.command("verify")

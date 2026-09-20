@@ -2932,9 +2932,18 @@ List reproducibility bundles.
 
 ### `exa reproduce run`
 
-Rebuild plan + metric-match within tolerance — never claims bit-exactness (R3/GWT-2).
+Rebuild plan + metric-match within tolerance; --execute performs the rebuild (ADR 0038).
 
 - `--observed` — JSON of re-observed metrics to match against recorded
+- `--execute` — Really rebuild: checkout code, verify dataset + env, re-train, compare metrics
+- `--repo` — [--execute] Git repo holding the bundle's commit
+- `--data-path` — [--execute] Local data to verify against the pinned revision
+- `--dummy` — [--execute] Train on dummy data
+- `--allow-env-drift` — [--execute] Continue when the lockfile hash drifted
+- `--rtol` — [--execute] Relative metric tolerance (default: bundle's, else 0.05)
+- `--train-cmd` — [--execute] Custom training command run in the checkout; must print 'EXAMLOPS_REPRO_METRICS=<json>' (default: the pipeline training flow)
+- `--timeout` — [--execute] Training timeout, seconds
+- `--keep-worktree` — [--execute] Keep the detached worktree for inspection
 
 ### `exa reproduce verify`
 
