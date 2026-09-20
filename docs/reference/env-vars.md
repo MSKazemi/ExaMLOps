@@ -1114,3 +1114,10 @@ environment:
 | `EXAMLOPS_DRIFT_ADVANCED_INTERVAL` | `300` | Seconds between sweeps when `exa drift run-advanced` runs as a loop (no `--once`). |
 | `EXAMLOPS_DRIFT_ADVANCED_LEASE_TTL` | `600` | TTL of the distributed lease that lets only one advanced-drift scheduler act; a crashed holder's lease expires after this. |
 | `EXAMLOPS_DRIFT_CONCEPT_DETECTOR` | `builtin` | Concept-drift detector: `builtin` (mean-shift z-test) or `river-adwin` (River ADWIN, lazy import). A missing library or an unknown name falls back to `builtin` and records `detector_fallback` in the event. |
+
+## Reproducibility bundles (ADR 0038)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_REPRO_AUTO_BUNDLE` | unset (off) | When truthy (`1`/`true`/`yes`/`on`), a reproducibility bundle is built automatically at the end of a successful `training_flow` (once the version is registered) and on `exa pipeline promote` for a version that has none. Off leaves behaviour byte-identical. A bundle failure never fails the run: it is counted, logged and audited as `repro_auto_bundle_failed`. `EXAMLOPS_SEED`, when set, is applied to the process RNGs at the start of `training_flow` and recorded in the bundle. |
+| `EXAMLOPS_REPRO_MLFLOW_URI` | throw-away SQLite store | MLflow tracking URI used by the training subprocess of `exa reproduce run --execute` when no `--train-cmd` is given. Unset, the rebuild uses a temporary SQLite MLflow store and platform DB so it never registers a version in the live registry. |

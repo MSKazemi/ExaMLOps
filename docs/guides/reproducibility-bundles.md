@@ -17,7 +17,9 @@ model version, so that months later you can answer two questions with evidence:
 | Code | `git rev-parse HEAD` commit SHA |
 | Dataset | A1 dataset revision id (`<name>@<rev>`) |
 | Features | A3 feature-view versions |
-| Environment | `uv.lock` SHA-256 + container image digest |
+| Environment | `uv.lock` SHA-256, the installed package set (`name==version`), Python version, container image digest |
+| Code state | `code_dirty` — whether tracked files differed from the commit (`null` = unknown) |
+| Dataset source | for a dataplane snapshot, the source key (`dataset_source`) |
 | Hyperparameters | recorded key/values |
 | Compute | scheduler resources + hardware (phase 23) |
 | Determinism | RNG seeds |
@@ -78,7 +80,7 @@ first failure stops the run (exit 1) and later steps show `not_run`:
 |---|---|---|---|
 | 1 | `code` | detached `git worktree` at the bundle's commit (`--repo`, default `.`) | no commit recorded, commit not in the repo (never falls back to `HEAD`) |
 | 2 | `dataset` | pinned revision must be recorded; with `--data-path` the local data is hashed against it | revision unrecorded, or data hash differs. Without `--data-path` (or with `--dummy`) content is **not** verified and the step says `skipped` |
-| 3 | `env` | recorded `uv.lock`/`requirements.txt` sha256 vs the file in the checkout | hash differs, or none was captured; `--allow-env-drift` continues and reports `drift_allowed`. A container image digest is shown but cannot be verified here |
+| 3 | `env` | recorded `uv.lock`/`requirements.txt` sha256 vs the file in the checkout, plus the recorded package set vs this interpreter | hash or a package differs, or no lock hash was captured; `--allow-env-drift` continues and reports `drift_allowed`. A container image digest is shown but cannot be verified here |
 | 4 | `train` | the pipeline training flow runs in a subprocess **inside the worktree**, pinned to the dataset revision and recorded seed (`EXAMLOPS_SEED`), mock scheduler unless set | non-zero exit, timeout, or no `EXAMLOPS_REPRO_METRICS=<json>` line |
 | 5 | `compare` | produced vs recorded metrics, relative tolerance `--rtol` (default: the bundle's, else 0.05) | any recorded metric missing, non-finite or out of tolerance; a bundle with no recorded metrics |
 
@@ -89,11 +91,45 @@ exa reproduce run JPCP 17 --execute --data-path ./data/PM100 --json
 exa reproduce run JPCP 17 --execute --train-cmd "python train.py"
 ```
 
-Limits, stated plainly: the environment step compares lockfile hashes, it does not rebuild or
-diff the installed packages; the code step does not capture uncommitted changes present when
-the bundle was built; the dataset step verifies local content hashes (A1), not remote
-dataplane snapshots (ADR 0130) or lakeFS refs; scheduler resources are not re-requested. The
-default training path needs the pipeline's own runtime (Prefect, MLflow, the use-case pack).
+### Dataset and environment checks (what "verified" means)
+
+- **Dataplane snapshot** (ADR 0130): a bundle whose `dataset_source` is a dataplane snapshot is
+  verified against the snapshot manifest — the revision id must hash back from the manifest's
+  digests and every part is downloaded and checksummed (the same `materialize` check training
+  runs). A missing snapshot, an unreachable store or a modified part fails (exit 1); nothing is
+  reported `ok` without that check. The download goes to a temporary directory. This is done even
+  with `--dummy`.
+- **Package level**: the recorded package set is compared with the current interpreter, per
+  package (`changed`, `missing`; extra packages are reported, not drift). Drift fails `verify` and
+  the `env` step unless `--allow-env-drift`, then it is a warning / `drift_allowed`. A bundle from
+  before this feature has no package set and only gets the lockfile check.
+- **Dirty code**: a bundle built from a dirty tree (`code_dirty: true`) cannot be rebuilt from its
+  commit; `--execute` fails the `code` step unless `--allow-dirty-code`, and `verify` warns.
+
+### Automatic bundles
+
+Set `EXAMLOPS_REPRO_AUTO_BUNDLE=1` and the pipeline builds a bundle itself — at the end of a
+successful training run (recording metrics, dataset pin, `EXAMLOPS_SEED` if set — applied to
+`random`/NumPy/PyTorch at the start of the flow — and the invocation) and, for a version without one,
+on `exa pipeline promote`. A promotion-time bundle captures the *promoting* checkout, not the one
+that trained the version (`trigger: promote` says so). Off by default. A failure to build never
+fails the run: it increments `examlops.reproducibility.auto.failures()`, is logged and audited
+as `repro_auto_bundle_failed`. Inspect with `exa reproduce list` / `exa reproduce show <model> <ver>`.
+
+### Default training path
+
+Without `--train-cmd` the rebuild runs the real `training_flow` (the bundle's `run_spec`) in the
+worktree, against a temporary SQLite MLflow store and platform DB so the live registry is never
+touched (`EXAMLOPS_REPRO_MLFLOW_URI` overrides). It needs no Prefect/MLflow server. Verified: the
+opt-in test `test_live_default_path_end_to_end` (`make reproduce-live`, `EXAMLOPS_REPRO_LIVE=1`, ~30 s) runs bundle →
+`--execute --dummy` end to end on this repo; it is not in the default suite because it trains a model.
+
+Limits, stated plainly: lakeFS refs are not restored or verified (only the recorded revision is
+checked); the container image digest is recorded, never verified; the upstream modelzoo version is
+not captured (a rebuild uses the modelzoo on disk); scheduler resources are not re-requested; a
+rebuild trains on the mock scheduler unless `EXAMLOPS_SLURM_MODE` is set; seeds only take effect
+where the code reads `EXAMLOPS_SEED` (the pipeline flow and custom trainers); results are compared
+within tolerance, never bit-exact.
 
 ## Verify a bundle hasn't rotted (CI gate)
 

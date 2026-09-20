@@ -854,11 +854,50 @@ def promote(
     events.alias_changed(model, to_alias, version, actor=actor, via="exa-pipeline-promote")
 
     _emit_promotion_lineage(model, str(version), from_alias, to_alias, metric, metric_val)
+    _auto_bundle_on_promote(model, str(version), metrics, run_data)
 
     if save:
         set_promotion_rule(model, metric, operator, threshold, from_alias, to_alias)
 
     _output.ok(f"Promoted {model} v{version} → {to_alias}  ({status_str})")
+
+
+def _auto_bundle_on_promote(model: str, version: str, metrics: dict, run_data: dict) -> None:
+    """ADR 0038 cl. 4: bundle a promoted version that has none yet. Off unless armed; fail-open.
+
+    Captured at promotion, so the commit / lockfile / packages are those of *this* checkout, not
+    of the run that trained the version — the manifest says so (``trigger: promote``). A training
+    run that already built a bundle is left alone (``skip_if_exists``).
+    """
+    try:
+        from examlops.reproducibility import auto
+
+        if not auto.enabled():
+            return
+        raw = run_data.get("run", {}).get("data", {}).get("tags", [])
+        tags = {t["key"]: t["value"] for t in raw} if isinstance(raw, list) else dict(raw or {})
+        rawp = run_data.get("run", {}).get("data", {}).get("params", [])
+        params = (
+            {t["key"]: t["value"] for t in rawp} if isinstance(rawp, list) else dict(rawp or {})
+        )
+        revision = tags.get("dataset_revision") or None
+        if revision == "unknown":
+            revision = None
+        source = None
+        if tags.get("dataset_backend") == "dataplane" and tags.get("dataplane.source"):
+            source = {"kind": "dataplane", "source_key": tags["dataplane.source"]}
+        auto.auto_bundle(
+            model,
+            version,
+            trigger="promote",
+            metrics=metrics,
+            dataset_name=params.get("dataset"),
+            dataset_revision=revision,
+            dataset_source=source,
+            skip_if_exists=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - a bundle failure never fails a promotion
+        _output.warning(f"reproducibility bundle skipped: {exc}")
 
 
 def _enforce_promotion_engine_gates(model: str, version: str) -> None:

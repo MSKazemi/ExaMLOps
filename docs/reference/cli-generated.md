@@ -3077,14 +3077,21 @@ Rebuild plan + metric-match within tolerance; --execute performs the rebuild (AD
 - `--data-path` — [--execute] Local data to verify against the pinned revision
 - `--dummy` — [--execute] Train on dummy data
 - `--allow-env-drift` — [--execute] Continue when the lockfile hash drifted
+- `--allow-dirty-code` — [--execute] Rebuild even though the bundle was built from a dirty git tree
 - `--rtol` — [--execute] Relative metric tolerance (default: bundle's, else 0.05)
 - `--train-cmd` — [--execute] Custom training command run in the checkout; must print 'EXAMLOPS_REPRO_METRICS=<json>' (default: the pipeline training flow)
 - `--timeout` — [--execute] Training timeout, seconds
 - `--keep-worktree` — [--execute] Keep the detached worktree for inspection
 
+### `exa reproduce show`
+
+Show the latest bundle manifest for a model version (read-only).
+
 ### `exa reproduce verify`
 
 Check referenced inputs still exist + hashes match (R5/GWT-4). Exit 1 if rotted.
+
+- `--allow-env-drift` — Report installed-package drift as a warning, not a failure
 
 ## `exa retrain`
 

@@ -437,6 +437,7 @@ TIERS: dict[str, str] = {
     "reproduce build": A,
     "reproduce list": R,
     "reproduce run": A,
+    "reproduce show": R,
     "reproduce verify": R,
     "retrain": A,
     "retrain-status": R,

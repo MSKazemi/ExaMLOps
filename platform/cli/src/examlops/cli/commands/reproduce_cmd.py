@@ -28,6 +28,7 @@ _EXAMPLES = (
     "  exa reproduce run JPCP 17 --observed '{\"rmse\": 4.9}'\n\n"
     "  exa reproduce run JPCP 17 --execute --dummy --rtol 0.05\n\n"
     "  exa reproduce verify JPCP 17\n\n"
+    "  exa reproduce show JPCP 17\n\n"
     "  exa reproduce list"
 )
 
@@ -104,6 +105,11 @@ def run(
     allow_env_drift: bool = typer.Option(
         False, "--allow-env-drift", help="[--execute] Continue when the lockfile hash drifted"
     ),
+    allow_dirty_code: bool = typer.Option(
+        False,
+        "--allow-dirty-code",
+        help="[--execute] Rebuild even though the bundle was built from a dirty git tree",
+    ),
     rtol: float = typer.Option(
         None, "--rtol", help="[--execute] Relative metric tolerance (default: bundle's, else 0.05)"
     ),
@@ -127,6 +133,7 @@ def run(
             data_path=data_path,
             dummy=dummy,
             allow_env_drift=allow_env_drift,
+            allow_dirty_code=allow_dirty_code,
             rtol=rtol,
             train_cmd=train_cmd,
             timeout=timeout,
@@ -207,11 +214,16 @@ def _run_execute(model: str, version: str, **opts: Any) -> None:
 def verify(
     model: str = typer.Argument(..., help="Model name"),
     version: str = typer.Argument(..., help="Model version"),
+    allow_env_drift: bool = typer.Option(
+        False,
+        "--allow-env-drift",
+        help="Report installed-package drift as a warning, not a failure",
+    ),
 ) -> None:
     """Check referenced inputs still exist + hashes match (R5/GWT-4). Exit 1 if rotted."""
     from examlops.reproducibility import verify_bundle
 
-    result = verify_bundle(model, version)
+    result = verify_bundle(model, version, allow_env_drift=allow_env_drift)
     if _output.json_mode:
         _output.print_json(
             {
@@ -220,9 +232,12 @@ def verify(
                 "reproducible": result.reproducible,
                 "inputs": result.inputs,
                 "problems": result.problems,
+                "warnings": result.warnings,
             }
         )
         raise typer.Exit(0 if result.reproducible else 1)
+    for w in result.warnings:
+        _output.warning(w)
     if result.reproducible:
         _output.ok(f"{model}/{version} is reproducible — all inputs present + hashes match.")
     else:
@@ -237,6 +252,40 @@ def verify(
             ],
         )
     raise typer.Exit(0 if result.reproducible else 1)
+
+
+@app.command("show")
+def show(
+    model: str = typer.Argument(..., help="Model name"),
+    version: str = typer.Argument(..., help="Model version"),
+) -> None:
+    """Show the latest bundle manifest for a model version (read-only)."""
+    from examlops.data.data_assets import get_repro_bundle
+
+    row = get_repro_bundle(model, version)
+    if not row:
+        _output.error(f"No bundle for {model}/{version}.", exit_code=1)
+        return
+    m = dict(row["manifest"])
+    pkgs = (m.get("environment") or {}).get("packages") or {}
+    if pkgs:  # the package set is bulky; the count is what a reader wants (--json keeps it all)
+        summary = dict(m["environment"], packages=f"{len(pkgs)} recorded")
+        shown = dict(m, environment=summary) if not _output.json_mode else m
+    else:
+        shown = m
+    doc = {
+        "model": row["model"],
+        "version": row["version"],
+        "bundle_version": row["bundle_version"],
+        "manifest_hash": row["manifest_hash"],
+        "signed": bool(row.get("signature")),
+        "created_at": str(row.get("created_at")),
+        "manifest": shown,
+    }
+    if _output.json_mode:
+        _output.print_json(doc)
+        return
+    _output.info(json.dumps(doc, indent=2, default=str))
 
 
 @app.command("list")

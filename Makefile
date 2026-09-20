@@ -71,7 +71,7 @@ endif
 .DEFAULT_GOAL := help
 
 .PHONY: images helm-package \
-	prometheus-live pgvector-live nats-live redis-live ray-live postgres-roles-live spire-live iam-live lineage-live helm-kind-live kserve-live
+	prometheus-live pgvector-live nats-live redis-live ray-live postgres-roles-live spire-live iam-live lineage-live helm-kind-live kserve-live reproduce-live
 
 .PHONY: help \
         full-up stop-all rebuild rebuild-all lxp-rebuild \
@@ -841,6 +841,10 @@ redis-live: install-dev ## Cross-replica coordination against a real Redis (star
 prometheus-live: install-dev ## Prometheus keeps a stopped DNS-discovered target (needs the monitoring stack)
 	EXAMLOPS_PROMETHEUS_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
 	  tests/integration/test_prometheus_optional_targets_live.py
+
+reproduce-live: install-dev ## ADR 0038: `exa reproduce run --execute` on the REAL training_flow (~30 s, no server needed)
+	EXAMLOPS_REPRO_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \
+	  tests/unit/test_reproduce_auto.py -k live
 
 ray-live: install-dev ## Ray Serve's real metric export and replica failover (needs the serving stack)
 	EXAMLOPS_RAY_LIVE=1 $(VENV)/bin/pytest -q -s -p no:randomly \

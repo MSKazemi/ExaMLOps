@@ -5,14 +5,18 @@ failing step stops the run and every later step is reported ``not_run`` (never a
 
 1. **code**  — the bundle's recorded git commit is checked out into a detached ``git worktree``.
    An unrecorded or unreachable sha is a failure; ``HEAD`` is never substituted.
-2. **dataset** — the pinned revision must be recorded, and, when ``--data-path`` is given, the
-   local data must hash to it (``versioning.content_revision``). Without a path only the record
-   is checked and the step says so (``skipped`` for ``--dummy`` or a bundle with no dataset).
+2. **dataset** — a bundle pinned to a dataplane snapshot (ADR 0130) is verified against the
+   snapshot manifest and part checksums (the training-time check). Otherwise the pinned revision
+   must be recorded and, when ``--data-path`` is given, the local data must hash to it
+   (``versioning.content_revision``); without a path only the record is checked and the step
+   says so (``skipped`` for ``--dummy`` or a bundle with no dataset).
 3. **env**   — the lockfile hash recorded in the bundle is compared with the lockfile in the
-   checkout. Drift (or an uncaptured hash) fails unless ``allow_env_drift``. A container image
-   digest is reported but cannot be verified here.
+   checkout, and the recorded package set with this interpreter's, package by package. Drift (or
+   an uncaptured lock hash) fails unless ``allow_env_drift``. A container image digest is
+   reported but cannot be verified here.
 4. **train** — training runs in a subprocess *inside the worktree* (the checked-out code, not the
-   caller's), pinned to the dataset revision and recorded seed.
+   caller's), pinned to the dataset revision and recorded seed. Without a custom command this is
+   the real ``training_flow`` against a throw-away MLflow store + platform DB.
 5. **compare** — produced metrics vs recorded metrics within a relative tolerance. A bundle that
    records no metrics, a missing metric or a non-finite value is a divergence, not a pass.
 
@@ -38,8 +42,12 @@ from examlops.reproducibility import (
     DEFAULT_TOLERANCE,
     NONDETERMINISM_CAVEAT,
     _canonical_hash,
+    _dataplane_source,
     _file_sha256,
     _rel_diff,
+    compare_packages,
+    describe_package_drift,
+    verify_dataplane_snapshot,
 )
 
 METRICS_MARKER = "EXAMLOPS_REPRO_METRICS="
@@ -50,7 +58,8 @@ DEFAULT_RTOL = float(cast("float", DEFAULT_TOLERANCE["rel"]))
 _DRIVER = (
     "import json, sys\n"
     "from pipelines.pipeline_generator import training_flow\n"
-    "r = training_flow(sys.argv[1], sys.argv[2], is_dummy=sys.argv[3] == '1')\n"
+    "r = training_flow(sys.argv[1], sys.argv[2], is_dummy=sys.argv[3] == '1',\n"
+    "                  backend_name=sys.argv[4] or None)\n"
     f"print('{METRICS_MARKER}' + json.dumps(r['metrics']))\n"
 )
 
@@ -87,9 +96,18 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _step_code(repo: Path, sha: str | None, wt: Path) -> StepResult:
+def _step_code(
+    repo: Path, sha: str | None, wt: Path, *, dirty: bool | None = None, allow_dirty: bool = False
+) -> StepResult:
     if not sha:
         return StepResult("code", "failed", "bundle records no code commit — refusing to use HEAD")
+    if dirty and not allow_dirty:
+        return StepResult(
+            "code",
+            "failed",
+            "bundle was built from a dirty tree: the recorded commit does NOT contain the code "
+            "that ran, so it cannot be rebuilt (--allow-dirty-code to rebuild the commit anyway)",
+        )
     if _git(repo, "rev-parse", "--is-inside-work-tree").returncode != 0:
         return StepResult("code", "failed", f"{repo} is not a git repository")
     if _git(repo, "cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
@@ -102,7 +120,8 @@ def _step_code(repo: Path, sha: str | None, wt: Path) -> StepResult:
     head = _git(wt, "rev-parse", "HEAD").stdout.strip()
     if head != sha:
         return StepResult("code", "failed", f"worktree is at {head[:12]}, expected {sha[:12]}")
-    return StepResult("code", "ok", f"detached worktree {wt} at {sha[:12]}")
+    note = " (bundle was dirty — allowed)" if dirty else ""
+    return StepResult("code", "ok", f"detached worktree {wt} at {sha[:12]}{note}")
 
 
 def _step_dataset(manifest: dict[str, Any], data_path: str | None, dummy: bool) -> StepResult:
@@ -111,6 +130,17 @@ def _step_dataset(manifest: dict[str, Any], data_path: str | None, dummy: bool) 
         return StepResult("dataset", "skipped", "bundle pins no dataset revision")
     if not name:
         return StepResult("dataset", "failed", "bundle pins a revision but no dataset name")
+    plane = _dataplane_source(manifest)
+    if plane:
+        # A dataplane snapshot is verified against its manifest + part checksums — the same
+        # check training runs. Done even under --dummy: the bundle pins the snapshot, and an
+        # unverifiable pin is a bundle problem whether or not this rebuild reads the data.
+        why = verify_dataplane_snapshot(plane, str(rev))
+        if why:
+            return StepResult("dataset", "failed", why)
+        return StepResult(
+            "dataset", "ok", f"dataplane snapshot {plane}@{str(rev)[:16]} verified against manifest"
+        )
     if platform_db.get_dataset_revision(name, rev) is None:
         return StepResult("dataset", "failed", f"revision {rev[:16]} of {name} is not recorded")
     if not data_path:
@@ -147,6 +177,15 @@ def _step_env(manifest: dict[str, Any], wt: Path, allow_drift: bool) -> StepResu
             problem = f"{lock_path} not present in the checked-out commit"
         elif got != want:
             problem = f"{lock_path} differs: recorded {str(want)[:12]}, checkout {got[:12]}"
+    pkgs = env.get("packages")
+    pkg_note = " (package set not captured — package-level check not possible)"
+    if pkgs:
+        cmp = compare_packages(pkgs)
+        if cmp["drift"]:
+            pkg_problem = describe_package_drift(cmp)
+            problem = f"{problem}; {pkg_problem}" if problem else pkg_problem
+        pkg_note = f"; {len(pkgs)} packages compared" if not cmp["drift"] else ""
+    note += pkg_note
     if problem is None:
         return StepResult(
             "env", "ok", f"{lock_path} sha256 matches recorded {str(want)[:12]}{note}"
@@ -163,6 +202,8 @@ def _run_train(
     dummy: bool,
     train_cmd: list[str] | None,
     timeout: int,
+    scratch: Path | None = None,
+    repo: Path | None = None,
 ) -> tuple[StepResult, dict[str, float]]:
     env = dict(os.environ)
     extra = os.pathsep.join([str(wt), str(wt / "platform" / "cli" / "src")])
@@ -177,14 +218,23 @@ def _run_train(
     if train_cmd:
         cmd = train_cmd
     else:
+        spec = manifest.get("run_spec") or {}
         cmd = [
             sys.executable,
             "-c",
             _DRIVER,
-            str(manifest.get("model")),
-            str(manifest.get("dataset_name") or ""),
+            str(spec.get("registry_model") or manifest.get("model")),
+            str(spec.get("dataset") or manifest.get("dataset_name") or ""),
             "1" if dummy else "0",
+            str(spec.get("backend") or ""),
         ]
+        _isolate_default_run(env, scratch)
+        # The upstream model library is not part of the public tree, so a checkout of the bundle's
+        # commit may not carry it: use the caller's (EXAMLOPS_MODELZOO_DIR wins). NOT captured in
+        # the bundle — a rebuild uses whatever modelzoo version is on disk.
+        if not env.get("EXAMLOPS_MODELZOO_DIR") and not (wt / "modelzoo").is_dir():
+            if repo is not None and (repo / "modelzoo").is_dir():
+                env["EXAMLOPS_MODELZOO_DIR"] = str(repo / "modelzoo")
     try:
         done = subprocess.run(cmd, cwd=wt, env=env, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -201,6 +251,20 @@ def _run_train(
     except (ValueError, TypeError, AttributeError) as exc:
         return StepResult("train", "failed", f"unparseable metrics line: {exc}"), {}
     return StepResult("train", "ok", f"training exited 0 in {wt}; {len(metrics)} metrics"), metrics
+
+
+def _isolate_default_run(env: dict[str, str], scratch: Path | None) -> None:
+    """Keep a rebuild from touching the live platform: the default path really runs the training
+    flow, which registers a model version and writes audit/lineage rows. Point it at a throw-away
+    SQLite MLflow store and platform DB (``EXAMLOPS_REPRO_MLFLOW_URI`` opts into another store)
+    and switch automatic bundling off inside it."""
+    base = scratch or Path(tempfile.mkdtemp(prefix="exa-repro-run-"))
+    env["MLFLOW_TRACKING_URI"] = os.getenv("EXAMLOPS_REPRO_MLFLOW_URI") or (
+        f"sqlite:///{base / 'mlflow.db'}"
+    )
+    env["PLATFORM_DB"] = str(base / "platform.db")
+    env["EXAMLOPS_REPRO_AUTO_BUNDLE"] = "0"
+    env.pop("EXAMLOPS_DATA_DIR", None)
 
 
 def _step_compare(recorded: dict[str, Any], produced: dict[str, float], rtol: float) -> StepResult:
@@ -234,6 +298,7 @@ def execute_reproduction(
     data_path: str | None = None,
     dummy: bool = False,
     allow_env_drift: bool = False,
+    allow_dirty_code: bool = False,
     rtol: float | None = None,
     train_cmd: list[str] | None = None,
     timeout: int = 3600,
@@ -272,14 +337,29 @@ def execute_reproduction(
     wt = tmp / "worktree"
     repo_p = Path(repo).resolve()
     try:
-        if not record(_step_code(repo_p, manifest.get("code_commit"), wt)):
+        code = _step_code(
+            repo_p,
+            manifest.get("code_commit"),
+            wt,
+            dirty=manifest.get("code_dirty"),
+            allow_dirty=allow_dirty_code,
+        )
+        if not record(code):
             return finish()
         res.worktree = str(wt) if keep_worktree else None
         if not record(_step_dataset(manifest, data_path, dummy)):
             return finish()
         if not record(_step_env(manifest, wt, allow_env_drift)):
             return finish()
-        step, produced = _run_train(manifest, wt, dummy=dummy, train_cmd=train_cmd, timeout=timeout)
+        step, produced = _run_train(
+            manifest,
+            wt,
+            dummy=dummy,
+            train_cmd=train_cmd,
+            timeout=timeout,
+            scratch=tmp,
+            repo=repo_p,
+        )
         if not record(step):
             return finish()
         res.produced_metrics = produced

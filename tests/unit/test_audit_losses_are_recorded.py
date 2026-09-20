@@ -343,6 +343,12 @@ COVERED_AUDIT_SITES = {
     ("examlops/cli/commands/autopilot_cmd.py", "run_cycle"): (
         "tests/unit/test_autopilot.py::test_the_loss_is_counted_rather_than_hidden"
     ),
+    ("examlops/reproducibility/__init__.py", "_audit"): (
+        "tests/unit/test_reproduce_auto.py::test_a_lost_bundle_built_audit_is_counted"
+    ),
+    ("examlops/reproducibility/auto.py", "_record_failure"): (
+        "tests/unit/test_reproduce_auto.py::test_a_lost_failure_audit_is_counted_too"
+    ),
     ("examlops/reproducibility/execute.py", "_audit"): (
         "tests/unit/test_reproduce_execute.py::test_a_lost_repro_audit_is_counted"
     ),
@@ -474,7 +480,7 @@ def test_every_converted_site_has_a_test_that_its_loss_is_counted():
 #: hands the cause back to its caller (`mcp._audit` returns "action succeeded but was not
 #: audited: …"), and a narrow `except ImportError` falling through to a documented alternative.
 #: `log.debug` does not count as disclosure — it is invisible at any production log level.
-SWALLOWED_AUDIT_WRITES_CEILING = 17
+SWALLOWED_AUDIT_WRITES_CEILING = 16
 
 
 def _blanket(handler: ast.ExceptHandler) -> bool:

@@ -78,6 +78,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   that degrades to the built-in test and records why. Evidently, NannyML and whylogs are not adapted.
 - Docs: OTLP export of agent spans to Langfuse / Phoenix over the standard `OTEL_*` variables.
 
+### Added - reproducibility bundles: automatic creation, dataplane and package-level verification (ADR 0038)
+
+- `EXAMLOPS_REPRO_AUTO_BUNDLE=1` builds a bundle at the end of a successful `training_flow` and on
+  `exa pipeline promote` for a version without one. Default off (byte-identical); a bundle failure
+  never fails the run and is counted + audited (`repro_auto_bundle_failed`).
+- Bundles now record `code_dirty` (a dirty tree is recorded, never hidden), the installed package
+  set (`name==version`, bounded), the pipeline invocation (`run_spec`) and the dataplane source.
+  `exa reproduce run --execute` refuses a dirty bundle unless `--allow-dirty-code`.
+- A bundle pinned to a dataplane snapshot is verified against the snapshot manifest and part
+  checksums in `exa reproduce verify` and the `--execute` dataset step (exit 1 on mismatch).
+- Package-level env verification (per-package drift) beside the lockfile hash;
+  `--allow-env-drift` on `verify` and `run --execute`.
+- `--execute` without `--train-cmd` runs the real `training_flow` (against a throw-away MLflow
+  store/platform DB); `EXAMLOPS_SEED` is now applied by the flow. New `exa reproduce show`.
+
 ## [0.61.0] - 2026-09-20
 
 ### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)

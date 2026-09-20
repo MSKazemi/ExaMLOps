@@ -1360,6 +1360,60 @@ def _emit_training_lineage(
         print(f"[pipeline] lineage emit skipped: {exc}")
 
 
+def _auto_repro_bundle(
+    model_name: str,
+    dataset: str,
+    registration: dict,
+    metrics: dict,
+    backend_name: str | None,
+    *,
+    seed: int | None,
+    is_dummy: bool,
+) -> None:
+    """ADR 0038 cl. 4: build the reproducibility bundle for a registered version. Fail-open.
+
+    Off unless ``EXAMLOPS_REPRO_AUTO_BUNDLE`` is truthy, so the default run is untouched. When
+    armed, nothing here can fail the run: ``auto_bundle`` swallows, counts and audits every error,
+    and the surrounding ``try`` covers the dataset lookup that precedes it.
+    """
+    try:
+        from examlops.reproducibility import auto  # noqa: PLC0415
+
+        if not auto.enabled() or not registration.get("version"):
+            return
+        model_id = _lineage_model_id(model_name)
+        pin = None if is_dummy else _run_pin(model_name, dataset, backend_name)
+        revision: str | None = None
+        source: dict[str, Any] | None = None
+        if pin is not None:
+            revision, source = pin.revision, {"kind": "dataplane", "source_key": pin.source_key}
+        elif not is_dummy:
+            revision = os.getenv("EXAMLOPS_DATASET_REVISION", "").strip() or None
+            if revision is None and registration.get("run_id"):
+                tag = mlflow.MlflowClient().get_run(registration["run_id"]).data.tags
+                revision = tag.get("dataset_revision") or None
+            if revision == "unknown":
+                revision = None  # an unresolved revision pins nothing; never record it as one
+        auto.auto_bundle(
+            model_id,
+            registration["version"],
+            trigger="training",
+            metrics=metrics,
+            dataset_name=dataset,
+            dataset_revision=revision,
+            dataset_source=source,
+            seed=seed,
+            run_spec={
+                "registry_model": model_name,
+                "dataset": dataset,
+                "backend": backend_name,
+                "dummy": bool(is_dummy),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - never fail a completed training run
+        print(f"[pipeline] reproducibility bundle skipped: {exc}")
+
+
 def _training_lineage_run_id(registration: dict, model: str, dataset: str) -> tuple[str, bool]:
     """``(run id, inside a flow run)`` for this training run's lineage.
 
@@ -1940,6 +1994,11 @@ def training_flow(
 
     forget_pin(model_name, dataset_cls_name)
 
+    # ADR 0038 cl. 4: an EXAMLOPS_SEED, when set, is applied (and later recorded in the bundle).
+    from examlops.reproducibility.auto import apply_seed  # noqa: PLC0415
+
+    applied_seed = apply_seed()
+
     model_init, loader = data_extraction_task(model_name, dataset_cls_name, is_dummy, backend_name)
     gate = data_contract_gate(
         dataset_cls_name, backend_name, is_dummy=is_dummy, model_name=model_name
@@ -1964,6 +2023,15 @@ def training_flow(
         is_dummy=is_dummy,
     )
     status = promote_task(model_name, registration, metrics)
+    _auto_repro_bundle(
+        model_name,
+        dataset_cls_name,
+        registration,
+        metrics,
+        backend_name,
+        seed=applied_seed,
+        is_dummy=is_dummy,
+    )
 
     return {
         "model": model_name,
