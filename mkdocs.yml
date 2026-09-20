@@ -208,6 +208,7 @@ nav:
       - Dataplane: runbooks/dataplane.md
       - Monitoring stack: runbooks/platform.md
       - LLM serving: runbooks/llm.md
+      - Secrets (OpenBao): runbooks/openbao.md
   - Tutorials:
       - A Tour of Next-Gen 40: tutorials/nextgen-40-tour.md
       - Set up a Project from the Dashboard: tutorials/dashboard-project-setup.md

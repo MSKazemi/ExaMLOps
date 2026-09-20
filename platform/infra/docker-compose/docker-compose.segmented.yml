@@ -107,3 +107,7 @@ services:
     networks: [control, ops]
   gateway-authz:
     networks: [db, control, ops]
+  # Secrets manager (`--profile secrets`): its consumers (control-plane, dashboard, agent,
+  # dataplane) all share `control`, and nothing else needs to reach it.
+  openbao:
+    networks: [control]

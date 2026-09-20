@@ -56,6 +56,9 @@ spec:
               value: /var/lib/examlops-dashboard/config.toml
             - name: EXAMLOPS_DASHBOARD_CLI_WORKSPACE
               value: /var/lib/examlops-dashboard/cli-workspace
+            {{- with (include "examlops.vaultTokenEnv" .) }}
+            {{- . | nindent 12 }}
+            {{- end }}
             {{- if .Values.workloadIdentity.enabled }}
             # Its workload identity (ADR 0125), read on every call; the static credential is the
             # fallback until the sidecar has written the file.

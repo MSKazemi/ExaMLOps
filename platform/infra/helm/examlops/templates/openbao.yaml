@@ -1,0 +1,125 @@
+{{- /*
+The secrets manager (ADR 0011): one file-backed OpenBao server, what Compose runs under the
+`secrets` profile. Off unless secrets.openbao.enabled. ClusterIP only - there is no Ingress for it,
+and tests/unit/test_openbao_deployable.py fails if one appears. The configuration below is the same
+as Compose's openbao/openbao.hcl (asserted by that test). The server starts sealed and
+uninitialised; docs/runbooks/openbao.md is the procedure.
+*/ -}}
+{{- $ob := (.Values.secrets | default dict).openbao | default dict }}
+{{- if $ob.enabled }}
+{{- $root := . }}
+{{- $fullname := include "examlops.fullname" . }}
+{{- $name := printf "%s-openbao" $fullname }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: openbao
+data:
+  openbao.hcl: |
+    ui            = false
+    disable_mlock = true
+    api_addr      = "http://{{ $name }}:8200"
+
+    storage "file" {
+      path = "/openbao/file"
+    }
+
+    listener "tcp" {
+      address     = "0.0.0.0:8200"
+      tls_disable = true
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: openbao
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "examlops.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: openbao
+  ports:
+    - {name: http, port: 8200, targetPort: http}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "examlops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: openbao
+spec:
+  # One node on file storage: it cannot be scaled out (that needs Raft storage, a different
+  # decision). Recovery is the PersistentVolume plus the unseal key.
+  replicas: 1
+  serviceName: {{ $name }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "examlops.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: openbao
+  template:
+    metadata:
+      labels:
+        {{- include "examlops.labels" . | nindent 8 }}
+        app.kubernetes.io/component: openbao
+    spec:
+      serviceAccountName: {{ include "examlops.serviceAccountName" . }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: openbao
+          image: {{ printf "%s:%s" $ob.image.repository $ob.image.tag }}{{ with $ob.image.digest }}@{{ . }}{{ end }}
+          imagePullPolicy: {{ $ob.image.pullPolicy }}
+          # The image's default command is `server -dev` (in-memory, well-known root token).
+          args: ["server", "-config=/openbao/config/openbao.hcl"]
+          env:
+            - {name: BAO_ADDR, value: "http://127.0.0.1:8200"}
+          ports:
+            - {name: http, containerPort: 8200}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml $ob.resources | nindent 12 }}
+          # A sealed or uninitialised server is expected on first start and after a restart, so
+          # readiness only asks that it answers (`bao status` exits 1 on error, 2 when sealed).
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "bao status >/dev/null 2>&1; [ $? -ne 1 ]"]
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "bao status >/dev/null 2>&1; [ $? -ne 1 ]"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - {name: config, mountPath: /openbao/config, readOnly: true}
+            - {name: data, mountPath: /openbao/file}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - {name: tmp, emptyDir: {}}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with $ob.storage.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $ob.storage.size | quote }}
+{{- end }}

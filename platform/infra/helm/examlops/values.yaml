@@ -204,6 +204,33 @@ gateway:
       requests: {cpu: 100m, memory: 256Mi}
       limits: {cpu: "1", memory: 512Mi}
 
+# ── secrets manager: OpenBao (ADR 0011) ──────────────────────────────────────────────────────────
+# Off by default. When enabled the chart deploys one file-backed OpenBao server (a StatefulSet on a
+# PersistentVolumeClaim, ClusterIP only - never an Ingress) and points the control plane, dashboard
+# and agent at it (EXAMLOPS_VAULT_ADDR). Nothing here holds a token: the tiers read it from an
+# existing Secret you create after initialising the server (docs/runbooks/openbao.md). The server
+# starts sealed and uninitialised; until a token exists the tiers keep resolving secrets through the
+# local store and the environment, unless `strict` is set. The listener is plain HTTP inside the
+# cluster - terminate TLS with a service mesh, or leave it off and keep the NetworkPolicy on.
+secrets:
+  openbao:
+    enabled: false
+    image:
+      repository: openbao/openbao
+      tag: "2.6.2"
+      digest: "sha256:11fd73a2102cda9c55d5d881a8c3210303146a7ec1e8ac76f526e175c6d24641"
+      pullPolicy: IfNotPresent
+    strict: false                # EXAMLOPS_VAULT_STRICT: an unreachable vault fails the read
+    tokenSecret:                 # the Secret holding the client token (you create it)
+      name: examlops-openbao-token
+      key: token
+    storage:
+      size: 1Gi
+      storageClassName: ""       # empty = the cluster default
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {cpu: 500m, memory: 256Mi}
+
 # ── workload identities (ADR 0125) ──────────────────────────────────────────────────────────────
 # Each tier proves who it is to the control plane with a five-minute JWT-SVID from SPIRE, instead of
 # only a static secret. SPIRE itself (server, node agents, the SPIFFE CSI driver and the controller

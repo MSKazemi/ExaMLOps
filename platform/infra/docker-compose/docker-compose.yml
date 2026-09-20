@@ -1338,10 +1338,47 @@ services:
       start_period: 600s
       retries: 5
 
+  # Secrets manager (ADR 0011), opt-in: `--profile secrets`. Off by default and not wired to
+  # anything by default - services are pointed at it only by docker-compose.secrets.yml.
+  # 2.6.2 is the newest OpenBao release (2026-08-18); pinned by tag AND digest (the digest is the
+  # multi-arch index). The image's default command is `server -dev` (in-memory, well-known root
+  # token), so the command below is load-bearing: it runs the file-backed server instead.
+  # No `ports:` on purpose: it is reachable only as openbao:8200 on the internal network, and
+  # tests/unit/test_openbao_deployable.py fails on a published port in any shipped file. Direct
+  # access for a sysadmin is `docker compose exec openbao bao ...` (docs/runbooks/openbao.md).
+  # Starts sealed and uninitialised; the healthcheck therefore accepts sealed (exit 2) and fails
+  # only when the server does not answer at all (exit 1).
+  openbao:
+    profiles: ["secrets"]
+    image: openbao/openbao:2.6.2@sha256:11fd73a2102cda9c55d5d881a8c3210303146a7ec1e8ac76f526e175c6d24641
+    container_name: examlops-openbao
+    mem_limit: ${OPENBAO_MEM_LIMIT:-256m}
+    # The image already runs as `openbao`; stated so a change of image cannot make it root.
+    user: openbao
+    command: ["server", "-config=/openbao/config/openbao.hcl"]
+    environment:
+      BAO_ADDR: http://127.0.0.1:8200
+    # Verified serving with a read-only root filesystem, no capabilities and an arbitrary uid.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ./openbao/openbao.hcl:/openbao/config/openbao.hcl:ro
+      - openbao_data:/openbao/file
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bao status >/dev/null 2>&1; [ $$? -ne 1 ]"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
 volumes:
   postgres_data:
   minio_data:
   vllm_cache:
+  openbao_data:
   prometheus_data:
   grafana_data:
   loki_data:

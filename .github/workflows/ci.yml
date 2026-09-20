@@ -347,7 +347,7 @@ jobs:
           python -m pytest tests/unit/test_helm_chart.py tests/unit/test_helm_network_and_schema.py \
             tests/unit/test_helm_agent_scaling.py tests/unit/test_helm_secret_scoping.py \
             tests/unit/test_dashboard_agent_credentials.py tests/unit/test_helm_events.py \
-            tests/unit/test_helm_workload_identity.py tests/unit/test_helm_gateway.py tests/unit/test_engines_not_exposed.py \
+            tests/unit/test_helm_workload_identity.py tests/unit/test_helm_gateway.py tests/unit/test_engines_not_exposed.py tests/unit/test_openbao_deployable.py \
             tests/unit/test_helm_prometheus_rules.py \
             tests/unit/test_dockerfile_build_context.py -q
 

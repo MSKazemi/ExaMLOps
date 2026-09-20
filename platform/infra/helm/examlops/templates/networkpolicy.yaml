@@ -39,6 +39,15 @@ app.kubernetes.io/component: {{ .component }}
 {{- $_ := set $egress "gateway" ($np.egressPorts.gateway | default (list (int $root.Values.gateway.upstream.port))) }}
 {{- $_ := set $egress "gateway-authz" ($np.egressPorts.gatewayAuthz | default (list 5432 6379 443)) }}
 {{- end }}
+{{- /* Secrets manager (ADR 0011): only the three tiers that resolve secrets may reach it, and it
+     may call nothing but DNS. The tiers' egress is by port, so 8200 is added to theirs. */ -}}
+{{- $openbaoOn := (((.Values.secrets | default dict).openbao) | default dict).enabled }}
+{{- if $openbaoOn }}
+{{- $tiers = append $tiers "openbao" }}
+{{- range $t := list "control-plane" "dashboard" "agent" }}
+{{- if has $t $tiers }}{{- $_ := set $egress $t (append (get $egress $t) 8200 | uniq) }}{{- end }}
+{{- end }}
+{{- end }}
 {{- range $tier := $tiers }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -101,6 +110,21 @@ spec:
             matchLabels:
               {{- include "examlops.componentSelector" (dict "root" $root "component" "gateway") | nindent 14 }}
       ports: [{protocol: TCP, port: 8090}]
+    {{- end }}
+    {{- if eq $tier "openbao" }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "examlops.componentSelector" (dict "root" $root "component" "control-plane") | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "examlops.componentSelector" (dict "root" $root "component" "dashboard") | nindent 14 }}
+        {{- if $agentOn }}
+        - podSelector:
+            matchLabels:
+              {{- include "examlops.componentSelector" (dict "root" $root "component" "agent") | nindent 14 }}
+        {{- end }}
+      ports: [{protocol: TCP, port: 8200}]
     {{- end }}
     {{- if eq $tier "agent" }}
     # The dashboard's embedded copilot is the agent's only in-cluster client.

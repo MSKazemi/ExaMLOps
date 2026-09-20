@@ -66,6 +66,9 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            {{- with (include "examlops.vaultTokenEnv" .) }}
+            {{- . | nindent 12 }}
+            {{- end }}
             {{- with .Values.controlPlane.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -116,3 +116,17 @@ securityContext:
 - name: spiffe-helper-config
   configMap: {name: {{ include "examlops.fullname" . }}-spiffe-helper}
 {{- end -}}
+
+{{/* OpenBao (ADR 0011). The client token comes from an existing Secret and is optional, so a pod
+     starts before the server has been initialised; the address itself is in the shared ConfigMap. */}}
+{{- define "examlops.vaultTokenEnv" -}}
+{{- $ob := (.Values.secrets | default dict).openbao | default dict -}}
+{{- if $ob.enabled }}
+- name: EXAMLOPS_VAULT_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ $ob.tokenSecret.name | quote }}
+      key: {{ $ob.tokenSecret.key | quote }}
+      optional: true
+{{- end }}
+{{- end -}}

@@ -528,6 +528,28 @@ Connect external systems and deliver events.
 
 **Guide:** [event backbone](../guides/event-backbone.md)
 
+### OpenBao secrets manager (openbao)
+
+**Port:** 8200 on the internal network only (never published on a host port)  
+**Built on:** `openbao/openbao` 2.6.2 pinned by tag and digest, file storage; Compose profile `secrets`
+
+**What it does**
+
+- Holds credentials that `examlops.secrets` reads first, ahead of the local encrypted store and the
+  environment (ADR 0011)
+- Starts sealed and uninitialised, so an operator initialises and unseals it once; until then the
+  platform keeps resolving secrets as before unless `EXAMLOPS_VAULT_STRICT=1`
+- Is opt-in twice: the profile starts it, and `docker-compose.secrets.yml` is the only file that
+  points `control-plane`, `dashboard`, `agent` and `dataplane` at it
+
+**Talks to:** nothing outbound; its four clients call it over HTTP on the internal network
+
+**Keeps:** volume `openbao_data`
+
+**Operate:** `docker compose -f docker-compose.yml -f docker-compose.secrets.yml --profile secrets up -d openbao ; exa secrets get <path>` (prints which backend served it)
+
+**Guide:** [secrets management](../guides/secrets.md) · [runbook](../runbooks/openbao.md)
+
 ## People and agents
 
 The ways people and agents operate the platform.

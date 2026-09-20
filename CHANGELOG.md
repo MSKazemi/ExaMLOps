@@ -5,6 +5,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - OpenBao is deployable in the shipped configs (ADR 0011 clause 1)
+
+The secrets client has talked to OpenBao through `EXAMLOPS_VAULT_ADDR` since D7, but no shipped
+configuration could run one. Now both can, and both are off by default:
+
+* **Compose:** an `openbao` service under the opt-in `secrets` profile - `openbao/openbao:2.6.2`
+  pinned by tag and digest, file storage on the `openbao_data` volume, non-root, read-only root
+  filesystem, no capabilities, a healthcheck that accepts a sealed server, and **no published
+  port** (internal network only; `docker compose exec openbao bao ...` for an operator). The
+  image's default `server -dev` command is overridden. `docker-compose.secrets.yml` is the overlay
+  that points `control-plane`, `dashboard`, `agent` and `dataplane` at it (address, token and
+  strict flag from `.env`); the segmented overlay puts it on `control`. The default
+  `docker compose config` and the default `helm template` output are byte-identical to before.
+* **Helm:** `secrets.openbao.enabled` (default `false`) renders a ConfigMap, a ClusterIP Service and
+  a one-replica StatefulSet with a PVC, a NetworkPolicy admitting only the three tiers that read
+  secrets, `EXAMLOPS_VAULT_ADDR` in the shared ConfigMap and an optional token `secretKeyRef`.
+* **Guards:** `tests/unit/test_openbao_deployable.py` - no OpenBao service publishes a port in any
+  shipped Compose file, no Ingress or external Service in the chart, the image is pinned (never
+  `latest`), the profile is opt-in, the overlay is the only place services are wired, no secret
+  values in the shipped files.
+* **Docs:** `docs/runbooks/openbao.md` (init, unseal, enable KV v2, issue a scoped token, rotate),
+  a new section in `docs/guides/secrets.md`. New variable `OPENBAO_MEM_LIMIT`.
+
+Still open for ADR 0011: startup injection for services that read `.env` directly, the SOPS + age
+fallback, and the rotate-then-untrack-then-scrub remediation of the tracked `.env`.
+
 ### Added - sampled per-inference embeddings reach the vector store as drift samples (ADR 0020 clause 4)
 
 The bridge's telemetry path kept three scalars per inference (`input_snapshots`) and discarded the

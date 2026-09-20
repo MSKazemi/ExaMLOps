@@ -278,6 +278,48 @@
         }
       }
     },
+    "secrets": {
+      "description": "The secrets manager (ADR 0011): an optional in-cluster OpenBao.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "openbao": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "image": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "repository": {"$ref": "#/definitions/nonEmptyString"},
+                "tag": {"$ref": "#/definitions/nonEmptyString"},
+                "digest": {"type": "string", "pattern": "^$|^sha256:[0-9a-f]{64}$"},
+                "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+              }
+            },
+            "strict": {"type": "boolean"},
+            "tokenSecret": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {"$ref": "#/definitions/nonEmptyString"},
+                "key": {"$ref": "#/definitions/nonEmptyString"}
+              }
+            },
+            "storage": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "size": {"$ref": "#/definitions/nonEmptyString"},
+                "storageClassName": {"type": "string"}
+              }
+            },
+            "resources": {"$ref": "#/definitions/resources"}
+          }
+        }
+      }
+    },
     "workloadIdentity": {
       "description": "SPIFFE workload identities from the cluster's SPIRE (ADR 0125).",
       "type": "object",

@@ -47,7 +47,7 @@ Docker Compose memory ceilings (OOM isolation) are also env-overridable:
 0.85 GiB per server worker, and `MLFLOW_WORKERS`, default `2`, sets how many),
 `ORCHESTRATOR_MEM_LIMIT` (`2g`), `POSTGRES_MEM_LIMIT` (`1g`),
 `CONTROL_PLANE_MEM_LIMIT` (`512m`), `DASHBOARD_MEM_LIMIT` (`1g`),
-`JUPYTERHUB_MEM_LIMIT` (`2g`), `BRIDGE_MEM_LIMIT` (`1g`), `DATAPLANE_MEM_LIMIT` (`2g`), and for the `lineage` profile `MARQUEZ_MEM_LIMIT` (`1g`), `MARQUEZ_WEB_MEM_LIMIT` (`256m`), `MARQUEZ_DB_MEM_LIMIT` (`512m`).
+`JUPYTERHUB_MEM_LIMIT` (`2g`), `BRIDGE_MEM_LIMIT` (`1g`), `DATAPLANE_MEM_LIMIT` (`2g`), and for the `lineage` profile `MARQUEZ_MEM_LIMIT` (`1g`), `MARQUEZ_WEB_MEM_LIMIT` (`256m`), `MARQUEZ_DB_MEM_LIMIT` (`512m`), and for the `secrets` profile `OPENBAO_MEM_LIMIT` (`256m`).
 
 ---
 
@@ -353,6 +353,7 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_TELEMETRY_REDACTION` | `enforce` | **ADR 0148 d2** redaction of prompt/completion content the gateway captures on spans (only when `EXAMLOPS_GENAI_CAPTURE_CONTENT` is on). `enforce` (default) replaces PII and secrets; `monitor` exports unchanged and records what would be redacted to `guardrail_events` (direction `telemetry`); `off` is identity. Unknown value falls back to `enforce`. If redaction fails the content is dropped (fail closed) and counted (`genai.redaction_failures()`). |
 | `OTEL_SEMCONV_STABILITY_OPT_IN` | unset | **C1** OpenTelemetry's comma-separated convention opt-in. Listing `gen_ai_latest_experimental` switches GenAI spans wholesale to the current conventions: `gen_ai.provider.name` instead of `gen_ai.system`, the registry's operation names (`text_completion`, `chat`, `invoke_agent`, `execute_tool`, …), span names `"<operation> <model>"`, and structured `gen_ai.input.messages`/`gen_ai.output.messages` for captured content. Spans then report `examlops.semconv.version = genai@<commit>`, the conventions revision the names were checked against. Absent it, the pinned 1.27.0 attributes keep being emitted unchanged. |
 | `EXAMLOPS_VAULT_ADDR` / `EXAMLOPS_SECRETS_KEY` | unset | **D7** secrets — OpenBao address; else Fernet-local store keyed by `EXAMLOPS_SECRETS_KEY` (or `DASHBOARD_SECRET_KEY`). |
+| `EXAMLOPS_VAULT_ADDR` (Compose overlay) | `http://openbao:8200` | Set on `control-plane`, `dashboard`, `agent` and `dataplane` only by the opt-in `docker-compose.secrets.yml` overlay, which also passes `EXAMLOPS_VAULT_TOKEN` and `EXAMLOPS_VAULT_STRICT` through from `.env`. Without the overlay no service is told about a vault. The Helm chart sets it from `secrets.openbao.enabled`. |
 | `EXAMLOPS_VAULT_STRICT` | unset (fall back) | When truthy, a configured-but-unreachable OpenBao/Vault **fails the read** instead of silently downgrading to the local store or an environment variable. Set it wherever Vault is the system of record. |
 | `EXAMLOPS_SECRET_TENANTS` | unset | **D7** per-tenant secret path-prefix scoping. |
 | `EXAMLOPS_MULTITENANCY` | unset (off) | **D6** RBAC — off ⇒ every `authz.check` allows (single-tenant compat); truthy ⇒ default-deny enforcement. |

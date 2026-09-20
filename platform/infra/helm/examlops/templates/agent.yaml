@@ -80,6 +80,9 @@ spec:
             # fallback until the sidecar has written the file.
             - {name: CONTROL_PLANE_TOKEN_FILE, value: /run/spire/svid/control-plane.jwt}
             {{- end }}
+            {{- with (include "examlops.vaultTokenEnv" .) }}
+            {{- . | nindent 12 }}
+            {{- end }}
             {{- with .Values.agent.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

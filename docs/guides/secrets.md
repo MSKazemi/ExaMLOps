@@ -41,6 +41,38 @@ $ EXAMLOPS_VAULT_ADDR=https://vault.example:8200 exa secrets get control-plane/t
   backend: local
 ```
 
+## Running OpenBao
+
+OpenBao is shipped as an opt-in, and nothing uses it until you say so. It is not started by
+`make stack-up`, no service is told about it by default, and it publishes no port.
+
+**Compose** (from `platform/infra/docker-compose/`):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.secrets.yml --profile secrets up -d openbao
+# initialise and unseal it once: docs/runbooks/openbao.md
+docker compose -f docker-compose.yml -f docker-compose.secrets.yml --profile secrets up -d
+```
+
+The first file defines the server (`openbao/openbao`, pinned by tag and digest, file storage on the
+`openbao_data` volume, non-root, read-only, reachable only as `openbao:8200` on the internal
+network). The second, `docker-compose.secrets.yml`, is the only thing that sets
+`EXAMLOPS_VAULT_ADDR`/`EXAMLOPS_VAULT_TOKEN`/`EXAMLOPS_VAULT_STRICT` on `control-plane`,
+`dashboard`, `agent` and `dataplane`; the token comes from `.env`.
+
+**Helm:** `--set secrets.openbao.enabled=true` deploys a one-replica StatefulSet with a
+PersistentVolumeClaim, a ClusterIP Service and a NetworkPolicy; create the token Secret named by
+`secrets.openbao.tokenSecret` after initialising the server.
+
+The client reads KV version 2 at the mount `secret/`, path `secret/data/<path>`, field `value`, so
+the runbook enables that mount. Confirm which backend is in use with `exa secrets get <path>`,
+which prints `backend: vault|local|env`.
+
+Limits, stated plainly: the listener is plain HTTP (internal network only, put TLS in front before
+exposing it), a single node on file storage is not highly available, and startup injection is
+still per-service - only components that go through `examlops.secrets` read the vault; anything
+that reads `.env` directly still does.
+
 ## CLI
 
 ```bash
