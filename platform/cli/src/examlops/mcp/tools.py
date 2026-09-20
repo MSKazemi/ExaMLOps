@@ -23,6 +23,7 @@ from typing import Any
 
 from examlops.cli import _client
 from examlops.cli._config import Config, load_config
+from examlops.idempotency import idempotent as _idem
 
 # ── envelope helpers ──────────────────────────────────────────────────────────
 
@@ -1241,7 +1242,7 @@ REGISTRY: tuple[ToolSpec, ...] = (
         use_cases=("governance", "incident"),
     ),
     ToolSpec(
-        trigger_retrain,
+        _idem(trigger_retrain),
         mutating=True,
         tags=("write", "training"),
         use_cases=("management",),
@@ -1257,7 +1258,7 @@ REGISTRY: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(hpc_jobs, tags=("read", "hpc", "monitoring"), use_cases=("monitoring",)),
     ToolSpec(
-        hpc_approve_cluster,
+        _idem(hpc_approve_cluster),
         mutating=True,
         tags=("write", "hpc", "governance"),
         use_cases=("governance",),
@@ -1268,14 +1269,14 @@ REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(project_detail, tags=("read", "projects"), use_cases=("management",)),
     ToolSpec(project_cost, tags=("read", "projects", "finops"), use_cases=("finops",)),
     ToolSpec(
-        project_assign_model,
+        _idem(project_assign_model),
         mutating=True,
         tags=("write", "projects"),
         use_cases=("management",),
         tier="A",
     ),
     ToolSpec(
-        project_add_member,
+        _idem(project_add_member),
         mutating=True,
         tags=("write", "projects", "governance"),
         use_cases=("governance",),
@@ -1334,7 +1335,7 @@ REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(dataplane_sources, tags=("read", "data"), use_cases=("management",)),
     ToolSpec(dataplane_snapshots, tags=("read", "data"), use_cases=("management",)),
     ToolSpec(
-        dataplane_pull,
+        _idem(dataplane_pull),
         mutating=True,
         tags=("write", "data"),
         use_cases=("management",),
@@ -1349,35 +1350,35 @@ REGISTRY: tuple[ToolSpec, ...] = (
     ToolSpec(explain_command, tags=("read", "help", "docs"), use_cases=("help",)),
     # ── configuration writes (Phase 5, gated + tiered) ────────────────────────
     ToolSpec(
-        set_traffic_split,
+        _idem(set_traffic_split),
         mutating=True,
         tags=("write", "serving"),
         use_cases=("management",),
         tier="A",
     ),
     ToolSpec(
-        disable_challenger,
+        _idem(disable_challenger),
         mutating=True,
         tags=("write", "serving"),
         use_cases=("management",),
         tier="A",
     ),
     ToolSpec(
-        set_drift_autoretrain,
+        _idem(set_drift_autoretrain),
         mutating=True,
         tags=("write", "drift"),
         use_cases=("management",),
         tier="B",
     ),
     ToolSpec(
-        set_promotion_rule,
+        _idem(set_promotion_rule),
         mutating=True,
         tags=("write", "serving"),
         use_cases=("management",),
         tier="B",
     ),
     ToolSpec(
-        grant_access,
+        _idem(grant_access),
         mutating=True,
         tags=("write", "governance"),
         use_cases=("governance",),

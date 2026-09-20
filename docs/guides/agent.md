@@ -389,6 +389,18 @@ something downstream is broken:
  "audit_warning": "action succeeded but was not audited: audit chain unavailable"}
 ```
 
+### Idempotency keys (ADR 0147 decision 4)
+
+Every mutating tool takes an optional `idempotency_key` (use a UUID). Retrying with the same key and
+the same arguments returns the **original** result with `"replayed": true` and does not act again;
+the same key with different arguments is refused with `code: idempotency_conflict` and never
+applied; a second call that arrives while the first is still running gets
+`idempotency_in_progress` (retry shortly and it becomes a replay). A call that failed releases its
+key, so retrying it is not blocked. Stored results live in the `idempotency_keys` table of
+`platform.db` for `EXAMLOPS_IDEMPOTENCY_TTL` seconds (default 86400); a claim whose caller crashed
+expires after `EXAMLOPS_IDEMPOTENCY_PENDING_TTL` (default 300). Keys are global rather than per
+caller. The CLI `--idempotency-key` option and the HTTP `Idempotency-Key` header are later slices.
+
 ### Safety annotations
 
 Every tool is advertised with the MCP `ToolAnnotations` hints so a client can decide what to

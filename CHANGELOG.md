@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — idempotency keys on mutating MCP tools (ADR 0147 decision 4, first slice)
+
+New `examlops.idempotency` and additive `idempotency_keys` table in `platform.db`. Each of the ten
+mutating MCP tools accepts an optional `idempotency_key`: a repeat with the same key and request
+returns the original result flagged `replayed: true`; the same key with a different request is
+refused (`idempotency_conflict`) and never applied; a concurrent double-submit runs once (atomic
+claim, the loser gets `idempotency_in_progress`). Failed calls release their key. Results expire
+after `EXAMLOPS_IDEMPOTENCY_TTL` (24 h), abandoned claims after `EXAMLOPS_IDEMPOTENCY_PENDING_TTL`.
+`/retrain`'s `X-Idempotency-Key` is unchanged; CLI `--idempotency-key` and the HTTP header follow.
+Guard `tests/unit/test_idempotency.py` (incl. a signature check on every mutating `ToolSpec`).
+
 ### Added — MCP tool safety annotations and `AGENTS.md` (ADR 0147 decisions 1 and 8, first slice)
 
 Every registry tool now carries MCP `ToolAnnotations` (`readOnlyHint`, `destructiveHint`,

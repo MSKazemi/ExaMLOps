@@ -864,6 +864,18 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 window_start DATETIME NOT NULL,
                 count        INTEGER NOT NULL DEFAULT 0
             );
+            -- ADR 0147 decision 4 — result-carrying idempotency keys for agent-callable
+            -- mutating tools (`examlops.idempotency`). Epoch-second REAL timestamps keep the
+            -- expiry arithmetic dialect-neutral (sqlite and the Postgres translation layer).
+            CREATE TABLE IF NOT EXISTS idempotency_keys (
+                key          TEXT PRIMARY KEY,
+                scope        TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                state        TEXT NOT NULL DEFAULT 'pending',  -- pending | done
+                result_json  TEXT,
+                created_at   REAL NOT NULL,
+                expires_at   REAL NOT NULL
+            );
             -- Phase 1 item 1.5 — durable admission-control queue between every trigger
             -- (drift/autopilot/API/webhook) and Prefect. Per-tenant fair-share + a global
             -- concurrency cap stop one tenant (or a fleet-wide drift event) from starving the

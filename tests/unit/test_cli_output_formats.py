@@ -62,7 +62,7 @@ def test_output_csv_renders_csv_table():
     result = runner.invoke(app, ["-o", "csv", "mcp", "tools"])
     assert result.exit_code == 0, result.output
     header = result.output.strip().splitlines()[0]
-    assert header.startswith("Tool,Kind,Tags,Description")
+    assert header.startswith("Tool,Kind,Hints,Tags,Description")
 
 
 def test_output_yaml_renders_yaml():
