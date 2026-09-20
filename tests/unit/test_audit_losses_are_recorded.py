@@ -293,6 +293,9 @@ COVERED_AUDIT_SITES = {
     ("examlops/autoscale/controller.py", "_audit"): (
         "tests/unit/test_autoscale_controller.py::test_a_lost_autoscale_audit_is_counted"
     ),
+    ("examlops/cli/commands/ops_cmd.py", "_audit"): (
+        "tests/unit/test_operations.py::test_a_cancel_request_that_could_not_be_audited_is_counted"
+    ),
     ("examlops/secrets/__init__.py", "_audit"): "test_a_governance_audit_loss_is_counted",
     ("examlops/supplychain/__init__.py", "_audit"): "test_a_governance_audit_loss_is_counted",
     ("examlops/policy/__init__.py", "_audit"): (

@@ -81,6 +81,9 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         {"command_key": _STR, **_WHO},
     ),
     **{f"retrain.run_{s.lower()}": _run_schema(s) for s in _RUN_STATES},
+    # A queued long-running operation was cancelled (ADR 0147 d5); `command_key` is the
+    # operation id `exa ops` and the operation_* MCP tools take.
+    "operation.cancelled": _object({"command_key": _STR, "kind": _STR}, _WHO),
     "approval.approved": _object(
         {"approval_id": _STR, "model_id": _STR, "flow_run_id": _STR},
         {"command_key": _STR, **_WHO},

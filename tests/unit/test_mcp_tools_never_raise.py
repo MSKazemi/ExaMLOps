@@ -25,6 +25,7 @@ from examlops.mcp import tools as T  # noqa: E402
 # One plausible value per parameter name used anywhere in the read surface. Values are deliberately
 # ordinary rather than valid: a tool asked about something that does not exist must still answer.
 SAMPLE_ARGS: dict[str, object] = {
+    "operation_id": "v1:retrain:does-not-exist",
     "model": "jpcp",
     "name": "jpcp",
     "dataset": "FData",

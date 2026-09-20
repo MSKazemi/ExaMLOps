@@ -1,7 +1,7 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 474,
- "total_groups": 70,
+ "total_commands": 478,
+ "total_groups": 71,
  "panels": [
   {
    "title": "Getting Started",
@@ -1562,7 +1562,8 @@
     "agent",
     "agentops",
     "autopilot",
-    "mcp"
+    "mcp",
+    "ops"
    ],
    "commands": [
     {
@@ -1780,6 +1781,34 @@
      "group": "mcp",
      "help": "List the tools ExaMLOps exposes to agents over MCP.",
      "anchor": "exa-mcp-mcp-server-agent-to-agent-a2a-surface",
+     "guide": null
+    },
+    {
+     "cmd": "exa ops cancel",
+     "group": "ops",
+     "help": "Cancel an operation that has not been dispatched yet (queued or awaiting retry).",
+     "anchor": "agents-automation",
+     "guide": null
+    },
+    {
+     "cmd": "exa ops list",
+     "group": "ops",
+     "help": "List operations of your tenant, newest first.",
+     "anchor": "agents-automation",
+     "guide": null
+    },
+    {
+     "cmd": "exa ops status",
+     "group": "ops",
+     "help": "Show one operation's state, flow run and last error.",
+     "anchor": "agents-automation",
+     "guide": null
+    },
+    {
+     "cmd": "exa ops wait",
+     "group": "ops",
+     "help": "Wait for an operation to finish, at most --timeout seconds; never blocks forever.",
+     "anchor": "agents-automation",
      "guide": null
     }
    ]

@@ -92,6 +92,7 @@ CATALOG: tuple[Module, ...] = (
             "auth",
             "audit",
             "plan",
+            "ops",
             "secrets",
             "policy",
             "providers",

@@ -2408,6 +2408,33 @@ Show namespace details and the models assigned to it.
 
 List all namespaces with model counts.
 
+## `exa ops`
+
+Operation handles — status, wait, cancel for long-running work
+
+### `exa ops cancel`
+
+Cancel an operation that has not been dispatched yet (queued or awaiting retry).
+
+### `exa ops list`
+
+List operations of your tenant, newest first.
+
+- `--state` — Filter: working | input_required | completed | failed | cancelled
+- `--kind` — Filter by kind, e.g. retrain
+- `--limit, -n` — Max operations
+
+### `exa ops status`
+
+Show one operation's state, flow run and last error.
+
+### `exa ops wait`
+
+Wait for an operation to finish, at most --timeout seconds; never blocks forever.
+
+- `--timeout` — Seconds to wait (default EXAMLOPS_OPS_WAIT_TIMEOUT, 300; 0 = look once)
+- `--interval` — Seconds between polls (default 2)
+
 ## `exa pipeline`
 
 Prefect training pipeline

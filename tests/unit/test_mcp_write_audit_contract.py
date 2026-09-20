@@ -87,8 +87,9 @@ def test_the_offline_cases_cover_every_mutating_tool_but_the_networked_one():
     # plan/apply/approve delegate to the tools' own gates + audits: tests/unit/test_plan_apply.py.
     mutating = {t.name for t in REGISTRY if t.mutating and t.name not in PLAN_TOOLS}
     covered = {name for name, _ in _cases()}
-    # trigger_retrain is the one that needs a live control plane; it is exercised separately.
-    assert mutating - covered == {"trigger_retrain"}, mutating - covered
+    # trigger_retrain / operation_cancel need a live control plane; they are exercised separately
+    # (tests/unit/test_operations.py runs operation_cancel against the real control-plane app).
+    assert mutating - covered == {"trigger_retrain", "operation_cancel"}, mutating - covered
 
 
 @pytest.mark.parametrize("name", [c[0] for c in _cases()])

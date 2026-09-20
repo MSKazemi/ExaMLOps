@@ -69,6 +69,7 @@ from examlops.cli.commands import (
     modelzoo,
     modules_cmd,
     namespace_cmd,
+    ops_cmd,
     pipeline,
     plan_cmd,
     plugins_cmd,
@@ -152,7 +153,7 @@ _ROOT_PANELS: list[tuple[str, list[str]]] = [
     # category simply had no name, which reads identically to absence.
     # `explain` deliberately stays in Getting Started: it introspects the Click tree and involves
     # no agent, so filing it here would make the panel a lie.
-    ("Agents & Automation", ["ask", "chat", "agent", "agentops", "autopilot", "mcp"]),
+    ("Agents & Automation", ["ask", "chat", "agent", "agentops", "autopilot", "mcp", "ops"]),
     ("Monitoring & Quality", ["drift", "eval", "slo", "fairness"]),
     ("HPC, Fleet & FinOps", ["hpc", "fleet", "hardware", "federated", "finops", "report"]),
     (
@@ -482,6 +483,9 @@ app.command("predict", epilog=predict._EXAMPLES)(predict.predict)
 app.command("scaffold", epilog=scaffold._EXAMPLES)(scaffold.scaffold)
 app.command("status", epilog=status._EXAMPLES)(status.status)
 app.add_typer(audit_cmd.app, name="audit", help="Audit log — tamper-evident, hash-chained (D4)")
+app.add_typer(
+    ops_cmd.app, name="ops", help="Operation handles — status, wait, cancel for long-running work"
+)
 app.add_typer(
     plan_cmd.app, name="plan", help="Agent plans — proposed changes, blast radius, outcome"
 )

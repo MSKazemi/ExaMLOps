@@ -5,6 +5,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - operation handles for long-running work: `exa ops`, `operation_status`/`operation_cancel` (ADR 0147 decision 5)
+
+Long-running work returns a handle instead of blocking, and the handle is the control plane's own
+command record - there is no second store.
+
+* **Library:** `examlops/operations.py` reads, lists, waits on and cancels operations through the
+  control plane's `/v1/commands` routes (so tenancy, RBAC and audit stay put). States are
+  normalised to the MCP Tasks vocabulary (`working`/`input_required`/`completed`/`failed`/
+  `cancelled`) with the control-plane state kept as `raw_state`; a retrying command is `working`,
+  not `failed`, and a dispatched command follows its flow run's state. No state maps to
+  `input_required` yet (approvals wait in their own queue).
+* **CLI:** `exa ops list|status|wait|cancel` (read, read, read, admin). `wait` is bounded
+  (`--timeout`, `EXAMLOPS_OPS_WAIT_TIMEOUT`, default 300 s, cap 1 h; `0` looks once) and exits 0
+  completed / 1 failed or cancelled / 124 timed out.
+* **Honest cancel:** only a queued or awaiting-retry operation is offered to the control plane;
+  anything else is refused up front as `not_cancellable`. `cancelled: true` is reported only when
+  the record read back says so. Every request, including a refused one, is audited
+  (`operation_cancel_requested`).
+* **MCP:** `operation_status` (read) and `operation_cancel` (mutating, tier A, idempotent by key,
+  plan/apply covered with a state precondition, audited, refused directly for an agent principal).
+* **Event backbone:** the control plane publishes `operation.cancelled` in the cancelling
+  transaction (registered schema, contract snapshot updated).
+* **Handle returned:** `trigger_retrain`, `exa retrain` and `exa retrain --async` now carry
+  `operation_id` (= `command_id`) alongside the existing fields.
+* **Not built:** the MCP Tasks protocol extension itself (task-augmented `tools/call`); pipeline
+  runs, HPC jobs, KServe applies, eval runs and agent promotions have no command record, so they do
+  not yet return handles. Guide: `docs/guides/agent.md`.
+
 ### Added - input schemas travel in the serving snapshot and are checked on the replica (ADR 0123 decision 3)
 
 The last unbuilt piece of decision 3. The control plane compiles each aliased model version's

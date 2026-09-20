@@ -3778,6 +3778,20 @@ def cancel_command_v1(
         ).rowcount
         if not cancelled:
             raise HTTPException(409, f"Command {command_id!r} is {row[1]} and cannot be cancelled")
+        # A cancelled operation is a decision like an approval: published in the same
+        # transaction so an agent waiting on it (ADR 0147 d5) can react without polling.
+        enqueue_event(
+            "operation.cancelled",
+            {
+                "command_key": command_id,
+                "kind": row[0],
+                "actor": context.principal,
+                "tenant": context.tenant,
+            },
+            conn=conn,
+            actor=context.principal,
+            tenant=context.tenant,
+        )
         _audit(
             conn,
             context.principal,

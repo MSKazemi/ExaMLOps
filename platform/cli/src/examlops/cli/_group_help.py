@@ -211,6 +211,11 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("Recent audit log (hash-chained)", "exa audit --last 7d"),
         ("Verify chain integrity", "exa audit verify"),
     ],
+    "ops": [
+        ("Operations in flight or finished", "exa ops list"),
+        ("Wait at most 5 minutes for one", "exa ops wait <op-id> --timeout 300"),
+        ("Cancel one that is still queued", "exa ops cancel <op-id>"),
+    ],
     "plan": [
         ("Plans agents have proposed", "exa plan list"),
         ("One plan in full", "exa plan show <plan-hash>"),

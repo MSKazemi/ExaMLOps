@@ -1,6 +1,6 @@
 ---
 title: Every capability
-description: All 474 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
+description: All 478 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
 hide:
   - navigation
 ---
@@ -11,8 +11,8 @@ hide:
 
 # Every capability
 
-Everything ExaMLOps can do is reachable from the `exa` CLI: **474 commands**
-in 70 command groups. They are grouped here the same way `exa --help` groups
+Everything ExaMLOps can do is reachable from the `exa` CLI: **478 commands**
+in 71 command groups. They are grouped here the same way `exa --help` groups
 them, into twelve areas of the model lifecycle. The bar is sized by the number of commands in
 each area; select an area to filter, or search by what you want to do.
 
@@ -30,7 +30,7 @@ The same capabilities are available from the [dashboard](../dashboard/usage-guid
 | Models & Registry | Browse, compare, sign and trace every registered model version. | `models`, `modelzoo`, `embedding` | 29 |
 | Serving & Inference | Serve models, split traffic, call gateways and query RAG. | `serve`, `predict`, `production`, `gateway`, `vector`, `rag` | 79 |
 | GenAI & LLMOps | Manage prompts, trace GenAI calls and enforce guardrails. | `genai`, `prompt`, `guardrails` | 13 |
-| Agents & Automation | Ask Skipper, run the autopilot loop and expose tools over MCP. | `ask`, `chat`, `agent`, `agentops`, `autopilot`, `mcp` | 31 |
+| Agents & Automation | Ask Skipper, run the autopilot loop and expose tools over MCP. | `ask`, `chat`, `agent`, `agentops`, `autopilot`, `mcp`, `ops` | 35 |
 | Monitoring & Quality | Watch drift, evaluate models, track SLOs and fairness. | `drift`, `eval`, `slo`, `fairness` | 53 |
 | HPC, Fleet & FinOps | Discover clusters, place jobs and account for cost and carbon. | `hpc`, `fleet`, `hardware`, `federated`, `finops`, `report` | 41 |
 | Governance & Security | Approve changes, audit actions, manage secrets and policy. | `auth`, `approvals`, `audit`, `plan`, `secrets`, `compliance`, `governance`, `policy`, `providers` | 59 |

@@ -163,6 +163,7 @@ def retrain(
         {
             "flow_run_id": result.get("flow_run_id", "—"),
             "command_id": result.get("command_id", "—"),
+            "operation_id": result.get("operation_id", "—"),
             "model": model,
             "dataset": dataset_name,
             "dummy": dummy,
@@ -258,10 +259,16 @@ def _submit_async(cfg, model: str, dataset_name: str, body: dict) -> None:
         )
         return
     if _output.json_mode:
-        _output.print_json(view)
+        # `operation_id` is the handle of `exa ops status|wait|cancel` (ADR 0147 d5).
+        _output.print_json({**view, "operation_id": view.get("command_id")})
         return
     _output.ok(f"Retrain queued for {model} (dataset: {dataset_name})")
     _output.print_record(
-        {"command_id": view.get("command_id"), "state": view.get("state"), "model": model}
+        {
+            "command_id": view.get("command_id"),
+            "operation_id": view.get("command_id"),
+            "state": view.get("state"),
+            "model": model,
+        }
     )
     _output.info(f"Follow it: exa commands show {view.get('command_id')}")

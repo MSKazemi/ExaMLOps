@@ -1036,6 +1036,13 @@ Unset ⇒ the carbon provider uses its static coefficient rather than a live gri
 
 **`.env` file at the project root (recommended for local dev):**
 
+## Operation handles (ADR 0147 decision 5)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_OPS_WAIT_TIMEOUT` | `300` | Seconds `exa ops wait` (and `operations.wait`) polls before returning `timed_out` (exit code 124). Never above 3600. `--timeout` overrides it per call; `0` looks once. |
+| `EXAMLOPS_OPS_WAIT_INTERVAL` | `2` | Seconds between polls of `exa ops wait`. `--interval` overrides it per call. |
+
 ```bash
 # Required secrets
 DASHBOARD_VIEWER_PASSWORD=viewer-password

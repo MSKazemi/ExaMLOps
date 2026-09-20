@@ -824,6 +824,50 @@ def retrain_status(flow_run_id: str) -> dict[str, Any]:
     return {"ok": True, **_as_dict(res["data"])}
 
 
+def operation_status(operation_id: str) -> dict[str, Any]:
+    """Read a long-running operation by its handle (ADR 0147 d5); poll this, never block.
+
+    The handle is the ``operation_id`` (= ``command_id``) that a starting call such as
+    ``trigger_retrain`` returned. ``state`` is one of working / input_required / completed /
+    failed / cancelled; ``terminal`` says whether it can still change, ``cancellable`` whether
+    ``operation_cancel`` can act on it.
+
+    Args:
+        operation_id: The operation handle returned by the call that started the work.
+    """
+    from examlops import operations
+
+    cfg = _cfg()
+    return operations.status(
+        operation_id, base=cfg.control_plane_url, token=cfg.control_plane_token
+    )
+
+
+def operation_cancel(operation_id: str) -> dict[str, Any]:
+    """Cancel a long-running operation that is still queued (ADR 0147 d5). Mutating; tier A.
+
+    Only an operation the control plane has not dispatched yet can be cancelled; anything else is
+    refused with ``not_cancellable``. ``cancelled`` is true only when the record confirms it.
+
+    Args:
+        operation_id: The operation handle to cancel.
+    """
+    gate = _agent_write_gate("operation_cancel", {"operation_id": operation_id})
+    if gate is not None:
+        return gate
+    from examlops import operations
+
+    cfg = _cfg()
+    out = operations.cancel(operation_id, base=cfg.control_plane_url, token=cfg.control_plane_token)
+    # The request is recorded whether or not the control plane honoured it.
+    return _with_audit(
+        out,
+        "operation_cancel_requested",
+        operation_id,
+        {"cancelled": bool(out.get("cancelled")), "code": out.get("code", "ok")},
+    )
+
+
 # ── registry ──────────────────────────────────────────────────────────────────
 
 
@@ -1377,6 +1421,14 @@ REGISTRY: tuple[ToolSpec, ...] = (
     # ── dataplane (ADR 0130) ──────────────────────────────────────────────────
     ToolSpec(dataplane_sources, tags=("read", "data"), use_cases=("management",)),
     ToolSpec(dataplane_snapshots, tags=("read", "data"), use_cases=("management",)),
+    ToolSpec(operation_status, tags=("read", "training"), use_cases=("management", "monitoring")),
+    ToolSpec(
+        _idem(operation_cancel),
+        mutating=True,
+        tags=("write", "training"),
+        use_cases=("management",),
+        tier="A",
+    ),
     ToolSpec(
         _idem(dataplane_pull),
         mutating=True,
@@ -1463,6 +1515,8 @@ _ANNOTATION_FACTS: dict[str, dict[str, bool]] = {
     "modelzoo_status": {"open_world": True},
     "retrain_status": {"open_world": True},
     "trigger_retrain": {"open_world": True},
+    "operation_status": {"open_world": True},
+    "operation_cancel": {"destructive": True, "idempotent": True, "open_world": True},
     "dataplane_pull": {"open_world": True},
     "set_traffic_split": {"destructive": True, "idempotent": True},
     "set_promotion_rule": {"destructive": True, "idempotent": True},

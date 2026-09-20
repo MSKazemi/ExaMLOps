@@ -448,6 +448,36 @@
     "title": "modelzoo.retrain_scheduled",
     "type": "object"
   },
+  "operation.cancelled": {
+    "$id": "urn:examlops:event-schema:operation.cancelled",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "actor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "command_key": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "tenant": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "command_key",
+      "kind"
+    ],
+    "title": "operation.cancelled",
+    "type": "object"
+  },
   "retrain.run_cancelled": {
     "$id": "urn:examlops:event-schema:retrain.run_cancelled",
     "$schema": "https://json-schema.org/draft/2020-12/schema",

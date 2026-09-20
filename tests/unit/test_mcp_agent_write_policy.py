@@ -90,6 +90,7 @@ import pytest  # noqa: E402
 #: values are never expected to reach a control plane, a database or a cluster.
 WRITE_ARGS: dict[str, dict[str, object]] = {
     "trigger_retrain": {"model_name": "JPCP", "dataset_name": "PM100Dataset", "dummy": True},
+    "operation_cancel": {"operation_id": "guard-operation"},
     "hpc_approve_cluster": {"name": "guard-cluster"},
     "project_assign_model": {"project": "guard-proj", "model": "JPCP"},
     "project_add_member": {"project": "guard-proj", "subject": "guard-user", "role": "viewer"},

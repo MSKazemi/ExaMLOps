@@ -171,6 +171,7 @@ _INTENT: dict[str, Callable[[dict[str, Any]], str]] = {
     "trigger_retrain": lambda a: (
         f"launch a training run of {a['model_name']} on dataset {a['dataset_name']}"
     ),
+    "operation_cancel": lambda a: f"cancel queued operation {a['operation_id']}",
     "hpc_approve_cluster": lambda a: f"mark HPC cluster {a['name']} ACTIVE (schedulable)",
     "project_assign_model": lambda a: f"assign model {a['model']} to project {a['project']}",
     "project_add_member": lambda a: f"add {a['subject']} to project {a['project']} as {a['role']}",
@@ -196,6 +197,12 @@ _BLAST: dict[str, dict[str, Any]] = {
         "extent": "one flow run; consumes cluster/GPU time",
         "reversible": False,
         "rollback": "cancel the run; the model alias is not moved by a retrain alone",
+    },
+    "operation_cancel": {
+        "scope": "one queued control-plane operation (e.g. a retrain not yet dispatched)",
+        "extent": "withdraws the queued work; a dispatched run is not touched",
+        "reversible": False,
+        "rollback": "submit the operation again",
     },
     "hpc_approve_cluster": {
         "scope": "one HPC cluster",
@@ -297,7 +304,14 @@ def _pre_retrain(t: Any, a: dict[str, Any]) -> Any:
     return {"control_plane_configured": bool(t._cfg().control_plane_token)}
 
 
+def _pre_operation(t: Any, a: dict[str, Any]) -> Any:
+    out = t.operation_status(a["operation_id"])
+    op = out.get("operation") or {}
+    return {"found": bool(out.get("ok")), "raw_state": op.get("raw_state")}
+
+
 _PRECONDITIONS: dict[str, Callable[[Any, dict[str, Any]], Any]] = {
+    "operation_cancel": _pre_operation,
     "trigger_retrain": _pre_retrain,
     "hpc_approve_cluster": _pre_cluster,
     "project_assign_model": _pre_project,

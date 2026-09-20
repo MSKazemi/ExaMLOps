@@ -416,6 +416,31 @@ the CLI itself does not yet plan (an agent principal running a mutating `exa` co
 refused with `plan_required`); preconditions cover the state each tool reads, not the whole
 platform.
 
+### Operation handles (ADR 0147 decision 5)
+
+A call that starts long-running work returns a handle instead of blocking. `trigger_retrain`
+returns `operation_id` (the control plane's `command_id`), and two tools follow it:
+
+* `operation_status(operation_id)` (read) - `state` is `working` / `input_required` / `completed` /
+  `failed` / `cancelled`; `terminal` says whether it can still change; `cancellable` whether
+  `operation_cancel` can act; `raw_state` is the control plane's own state (`pending`,
+  `dispatching`, `failed` = retrying, `dead`, `succeeded`, `cancelled`) and `flow_run_id`/
+  `run_state` follow the dispatched run. Poll it; there is deliberately no blocking wait tool.
+* `operation_cancel(operation_id)` (mutating, tier A) - only an operation the control plane has not
+  dispatched can be cancelled. Anything else returns `code: not_cancellable` and
+  `cancelled: false`; `cancelled: true` only when the record confirms it. It goes through
+  plan/apply like every mutation (the plan's precondition is the operation's current state) and
+  every request, including a refused one, is audited as `operation_cancel_requested`.
+
+On the CLI: `exa ops list|status|wait|cancel <op-id>`. `exa ops wait` polls for at most
+`--timeout` seconds (`EXAMLOPS_OPS_WAIT_TIMEOUT`, default 300) and exits 0 completed, 1
+failed/cancelled, 124 timed out - the operation keeps running after a timeout. The control plane
+publishes `operation.cancelled` on the event backbone when a cancel succeeds.
+
+Stated limits: only work that has a control-plane command record has a handle today (retrains);
+pipeline runs, HPC jobs, KServe applies, evaluation runs and agent promotions do not yet. The MCP
+Tasks protocol extension is not implemented - the handle is an ordinary tool result.
+
 ### Idempotency keys (ADR 0147 decision 4)
 
 Every mutating tool takes an optional `idempotency_key` (use a UUID). Retrying with the same key and

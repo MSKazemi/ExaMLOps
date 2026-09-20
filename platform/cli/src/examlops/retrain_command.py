@@ -58,6 +58,8 @@ def outcome(view: dict[str, Any]) -> dict[str, Any]:
         raise RetrainNotDispatched(view)
     out: dict[str, Any] = {
         "command_id": view.get("command_id"),
+        # The handle `exa ops status|wait|cancel` and the operation_* MCP tools take (ADR 0147 d5).
+        "operation_id": view.get("command_id"),
         "state": state,
         "status_url": view.get("status_url"),
     }
