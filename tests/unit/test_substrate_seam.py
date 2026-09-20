@@ -294,6 +294,16 @@ def test_the_agent_substrate_says_it_is_not_built_rather_than_pretending():
         sub.render(AGENT, PRED_REF)
 
 
+def test_a_canary_on_hpc_is_refused_naming_the_capability_it_lacks():
+    # ADR 0142 d5: "rejected with a reason on a substrate that advertises no canary." HpcSubstrate
+    # renders one long-lived allocation; a canary needs two, which is out of scope here.
+    assert registry.get("hpc").capabilities().canary is False
+    with pytest.raises(CapabilityMissing, match="canary"):
+        registry.get("hpc").render(
+            {**GEN, "rollout": {"canary": {"version": "4", "percent": 5}}}, GEN_REF
+        )
+
+
 # ── R-SUB-24: one traffic intent, validated once ─────────────────────────────
 
 

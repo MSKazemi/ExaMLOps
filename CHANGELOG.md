@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — ADR 0142's decision 5/8 status text was stale; decision 8 was already fully built
+
+Re-reading the substrate seam's own test suite before starting new work (this session's
+established habit of verifying an ADR's "not built" claims against the actual code) found decision
+8 ("seam parity is tested, not asserted") already fully implemented and tested —
+`test_every_kserve_fixture_also_renders_on_a_non_kubernetes_substrate` (R-SUB-33) — and decision 5
+("rejected with a reason on a substrate that advertises no canary") mostly built too, missing only
+a dedicated test for HPC's refusal (added:
+`test_a_canary_on_hpc_is_refused_naming_the_capability_it_lacks`). The one real remaining piece of
+decision 5 is narrower than the old status text implied: LLMISVC canary rendering (two services
+sharing `router.route.group`) is not built and is tracked as its own backlog item, not bundled into
+this record correction. No other code changed.
+
 ### Added — `exa serve llm start/stop/status --launcher kserve` now really applies to Kubernetes (ADR 0107, ADR 0142 decision 1)
 
 `KServeLauncher` was the one `EndpointLauncher` that never actually acted — `start` always
