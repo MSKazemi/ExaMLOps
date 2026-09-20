@@ -190,6 +190,35 @@ class TestSlurmSubmitTask:
         assert "FDataDataset" in content
         assert "slurm_train_script.py" in content
 
+    def test_real_slurm_quotes_shell_metacharacters_in_the_generated_script(
+        self, monkeypatch, tmp_path
+    ):
+        # The generated run.sh is executed verbatim by a real scheduler — a model/dataset name
+        # (or any other value threaded through _hpc_train_command) carrying shell metacharacters
+        # must not be able to inject a second command. shlex.quote() must wrap every value.
+        import shlex
+
+        monkeypatch.setenv("EXAMLOPS_SLURM_MODE", "slurm")
+        model = _fake_model()
+        malicious = "x; touch /tmp/pwned"
+
+        fake_adapter = MagicMock()
+        fake_adapter.working_dir = tmp_path
+        fake_adapter.submit_job.return_value = "13579"
+
+        with patch("adapter.get_scheduler_adapter", return_value=fake_adapter):
+            pg.slurm_submit_task.fn(model, _fake_loader(), malicious, "FData")
+
+        script_path = (
+            fake_adapter.submit_job.call_args[1].get("script_path")
+            or fake_adapter.submit_job.call_args[0][0]
+        )
+        content = Path(script_path).read_text()
+        # The malicious value must appear only as one shell-quoted token after --model, never
+        # as a bare, unquoted fragment that a shell would split into a second command.
+        assert f"--model {shlex.quote(malicious)}" in content
+        assert "--model x; touch" not in content
+
     def test_real_hpc_forwards_dummy_flag(self, monkeypatch, tmp_path):
         # A real-scheduler smoke test with --dummy must train on the small dummy split,
         # so the generated run.sh has to pass --dummy through to slurm_train_script.py.

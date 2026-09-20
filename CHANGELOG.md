@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed — shell metacharacters in an HPC job script are now quoted, not interpolated raw
+
+`pipelines/pipeline_generator.py`'s `_hpc_train_command`/`slurm_submit_task` built the real
+`run.sh` a Slurm/Flux scheduler executes on a compute node by f-string-interpolating
+`model_name`/`dataset_cls_name`/`remote_model`/`mlflow_uri`/a dataset-revision pin/the job's
+working directory directly into the script text — a value carrying shell metacharacters (`;`,
+`$()`, backticks) could inject a second command. Every one of those values is now wrapped in
+`shlex.quote()` before interpolation. Verified with a real `bash` execution of a script generated
+from a deliberately malicious model name: the payload appears only as a single quoted argument to
+`python`, never executes. No behavior change for ordinary registry names (`shlex.quote` is a
+no-op on plain alphanumeric strings). A sibling instance in the HPC vLLM-serving job template
+(`platform/infra/slurm-adapter/templates/vllm_serve.sh.tmpl`) is tracked separately (deserves its
+own careful pass, not a rushed edit to a battle-tested production script) — see `BL-097` in
+`.claude/plans/BACKLOG.md`.
+
 ### Added — a generative canary now renders as two co-routed KServe objects (ADR 0142 decision 5)
 
 `LLMInferenceService` has no `spec.canary` field at the pinned KServe version (unlike the

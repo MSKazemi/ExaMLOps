@@ -37,6 +37,7 @@ from __future__ import annotations
 import importlib
 import os
 import re
+import shlex
 import sys
 import tempfile
 import uuid
@@ -824,6 +825,11 @@ def _hpc_train_command(
     compute node trains on the exact snapshot the gate validated and the MLflow run is tagged with.
     The node then needs only the dataset-store env, not ``platform.db`` or source credentials.
     The pin is consulted only for a non-dummy run whose effective backend is dataplane.
+
+    Every value below reaches a generated bash script that a real scheduler executes on a compute
+    node, so each is ``shlex.quote``-d before interpolation — defense in depth against a model or
+    dataset name (or any other value threaded through here) that carries shell metacharacters,
+    even though today's callers only ever pass registry-validated names.
     """
     remote_repo = os.getenv("EXAMLOPS_HPC_REMOTE_REPO", str(_REPO_ROOT))
     remote_python = os.getenv(
@@ -834,15 +840,15 @@ def _hpc_train_command(
     flags = " --dummy" if is_dummy else ""
     pin = None if is_dummy else _run_pin(model_name, dataset_cls_name, backend_name)
     if pin is not None:
-        flags += f" --backend dataplane --dataset-revision {pin.revision}"
+        flags += f" --backend dataplane --dataset-revision {shlex.quote(pin.revision)}"
     elif backend_name:
-        flags += f" --backend {backend_name}"
+        flags += f" --backend {shlex.quote(backend_name)}"
     return (
-        f"{remote_python} {remote_repo}/pipelines/slurm_train_script.py \\\n"
-        f"  --model {model_name} \\\n"
-        f"  --dataset {dataset_cls_name} \\\n"
-        f"  --output {remote_model} \\\n"
-        f"  --mlflow-uri {mlflow_uri}{flags}\n"
+        f"{shlex.quote(remote_python)} {shlex.quote(remote_repo)}/pipelines/slurm_train_script.py \\\n"
+        f"  --model {shlex.quote(model_name)} \\\n"
+        f"  --dataset {shlex.quote(dataset_cls_name)} \\\n"
+        f"  --output {shlex.quote(remote_model)} \\\n"
+        f"  --mlflow-uri {shlex.quote(mlflow_uri)}{flags}\n"
     )
 
 
@@ -905,7 +911,7 @@ def slurm_submit_task(
     bash_script = local_job_dir / "run.sh"
     bash_script.write_text(
         "#!/bin/bash\n"
-        f"mkdir -p {remote_dir}\n"
+        f"mkdir -p {shlex.quote(remote_dir)}\n"
         + _hpc_train_command(
             model_name,
             dataset_cls_name,
