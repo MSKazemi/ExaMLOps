@@ -252,7 +252,13 @@ answerable from the evidence chain alone.
 
 ### `exa audit checkpoint`
 
-Sign the current chain head, producing a detached checkpoint signature (D4·R5).
+Sign the current chain head and anchor it to the WORM store (D4·R5).
+
+This is also the periodic-export hook: run it from cron (``exa audit checkpoint --anchor
+--skip-unchanged``) or call :func:`examlops.audit_worm.checkpoint_and_anchor` from a scheduler.
+
+- `--anchor` — Require the WORM anchor: exit 1 unless the checkpoint was durably anchored (cron-friendly; an S3 failure that degraded to the local fallback counts as a failure)
+- `--skip-unchanged` — Do nothing when the head already has an anchored checkpoint (cheap for cron)
 
 ### `exa audit checkpoints`
 
@@ -266,6 +272,20 @@ Archival export of the audit trail (D4·R4). Append-only — never deletes.
 
 - `--out` — Write the archival JSON export to this file
 - `--before` — Only events before this ISO timestamp
+
+### `exa audit prune`
+
+Prune old audit events under the retention policy WITHOUT breaking the chain (ADR 0028).
+
+Dry run by default. Refused unless EXAMLOPS_AUDIT_RETENTION_DAYS is set, the chain verifies,
+a fresh signed checkpoint is anchored to the WORM store, and the deleted rows are archived.
+A signed prune record keeps ``exa audit verify`` passing over what remains.
+
+- `--before` — Prune events older than this date (YYYY-MM-DD or ISO-8601); never newer than the retention floor (EXAMLOPS_AUDIT_RETENTION_DAYS)
+- `--execute` — Actually delete (default is a dry run that changes nothing)
+- `--archive` — File to write the pruned rows to (required with --execute)
+- `--allow-unanchored` — Prune even though no WORM anchor is configured (the cut is then not off-platform)
+- `--yes, -y` — Skip the confirmation prompt
 
 ### `exa audit review`
 
@@ -2820,6 +2840,12 @@ List all projects with their resource quotas.
 
 List the people who have a role on a project.
 
+### `exa project openfga-sync`
+
+Backfill OpenFGA from the native authz_relations table (idempotent; needs owner rights).
+
+- `--execute` — Write the tuples (default is a dry run that only counts them)
+
 ### `exa project pipelines`
 
 Show the project's two pipeline surfaces: Prefect (training) + Ray Serve (serving) (P7).
@@ -2833,6 +2859,14 @@ Remove a person's role(s) from a project.
 ### `exa project revoke`
 
 Revoke a subject's relation on an object (audited).
+
+### `exa project scope-audit`
+
+Report platform.db tables that carry no project/tenant scope (read-only, ADR 0014).
+
+Every table is classified scoped / model-scoped / exempt (with a reason) / UNSCOPED. Exits 1
+if a table is UNSCOPED or an exemption has gone stale. ``known_gaps`` lists the user-data
+tables that are still not partitioned by project.
 
 ### `exa project set-quota`
 

@@ -56,7 +56,19 @@ from examlops.data.projects import (
 _PANELS: list[tuple[str, list[str]]] = [
     ("Lifecycle", ["create", "list", "show", "use", "current", "archive", "delete"]),
     ("Resources", ["assign", "assign-model", "storage", "pipelines", "compose"]),
-    ("Members & Access", ["members", "add-member", "remove-member", "grant", "revoke", "access"]),
+    (
+        "Members & Access",
+        [
+            "members",
+            "add-member",
+            "remove-member",
+            "grant",
+            "revoke",
+            "access",
+            "scope-audit",
+            "openfga-sync",
+        ],
+    ),
     ("Quota & Cost", ["set-quota", "cost", "budget"]),
 ]
 
@@ -82,6 +94,39 @@ _EXAMPLES_COMPOSE = (
 
 def _actor() -> str:
     return os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+
+
+def _guard(project: str, relation: str) -> None:
+    """ADR 0014 decision 4: refuse (exit 1) unless the acting subject holds ``relation``.
+
+    A no-op unless ``EXAMLOPS_MULTITENANCY`` is on. Runs *before* any lookup so a denied subject
+    learns nothing about whether the project exists.
+    """
+    from examlops.authz.guard import ProjectAccessDenied, require
+
+    try:
+        require(_actor(), relation, project)
+    except ProjectAccessDenied as exc:
+        _output.error(f"Permission denied: {exc}")
+        raise typer.Exit(1) from exc
+
+
+def _guard_object(obj: str) -> None:
+    """Owner-level guard for ``grant``/``revoke``: the project owner, or the object's owner."""
+    from examlops import authz
+    from examlops.authz.guard import ProjectAccessDenied, platform_admins, project_of, require
+
+    if not authz.multitenancy_enabled():
+        return
+    try:
+        project = project_of(obj)
+        if project is not None:
+            require(_actor(), "owner", project)
+        elif _actor() not in platform_admins():
+            authz.require(_actor(), "owner", obj, actor=_actor())
+    except (ProjectAccessDenied, PermissionError) as exc:
+        _output.error(f"Permission denied: {exc}")
+        raise typer.Exit(1) from exc
 
 
 def _memory_str_to_gb(mem_str: str) -> float:
@@ -130,6 +175,9 @@ def create(
         gpu_limit=gpu_limit,
         created_by=_actor(),
     )
+    from examlops.authz.guard import register_creator
+
+    register_creator(_actor(), name)  # multi-tenant: the creator owns what it created
     write_audit_event(
         "cli",
         _actor(),
@@ -158,6 +206,9 @@ def project_list(
     """List all projects with their resource quotas."""
     init_db()
     rows = list_projects(status=status)
+    from examlops.authz.guard import allowed
+
+    rows = [r for r in rows if allowed(_actor(), "viewer", r["name"])]  # multi-tenant: mine only
     if _output.json_mode:
         _output.print_json(rows)
         return
@@ -188,6 +239,7 @@ def show(
 ) -> None:
     """Show the full project anatomy: quota, resources by kind, members, budget, consumption."""
     init_db()
+    _guard(name, "viewer")
     full = get_project_full(name)
     if not full:
         _output.error(f"Project '{name}' not found")
@@ -306,6 +358,7 @@ def storage_cmd(
 ) -> None:
     """Show (or bind/refresh) the project's MinIO storage location (P6)."""
     init_db()
+    _guard(name, "editor")
     if not get_project(name):
         _output.error(f"Project '{name}' not found")
         raise typer.Exit(1)
@@ -345,6 +398,7 @@ def storage_cmd(
 def pipelines_cmd(name: str = typer.Argument(..., help="Project name")) -> None:
     """Show the project's two pipeline surfaces: Prefect (training) + Ray Serve (serving) (P7)."""
     init_db()
+    _guard(name, "viewer")
     if not get_project(name):
         _output.error(f"Project '{name}' not found")
         raise typer.Exit(1)
@@ -389,6 +443,7 @@ def set_quota(
 ) -> None:
     """Update resource quotas for an existing project."""
     init_db()
+    _guard(name, "editor")
     if not any([cpu_limit, memory_gb, storage_gb, gpu_limit is not None, description]):
         _output.error("Specify at least one quota field to update")
         raise typer.Exit(1)
@@ -437,6 +492,7 @@ _EX_ASSIGN = (
 
 def _assign(project: str, kind: str, ref: str) -> None:
     init_db()
+    _guard(project, "editor")
     ok = assign_resource_to_project(project, kind, ref, added_by=_actor())
     if not ok:
         _output.error(f"Project '{project}' not found")
@@ -473,6 +529,7 @@ _EX_ADD_MEMBER = (
 def members(project: str = typer.Argument(..., help="Project name")) -> None:
     """List the people who have a role on a project."""
     init_db()
+    _guard(project, "viewer")
     if not get_project(project):
         _output.error(f"Project '{project}' not found")
         raise typer.Exit(1)
@@ -501,6 +558,7 @@ def add_member(
 ) -> None:
     """Add a person to a project (owner ⊇ editor ⊇ viewer)."""
     init_db()
+    _guard(project, "owner")
     if role not in {"owner", "editor", "viewer"}:
         _output.error("--role must be one of: owner, editor, viewer")
         raise typer.Exit(1)
@@ -522,6 +580,7 @@ def remove_member(
 ) -> None:
     """Remove a person's role(s) from a project."""
     init_db()
+    _guard(project, "owner")
     from examlops.cli._policy_gate import enforce_and_confirm
 
     if not enforce_and_confirm(
@@ -591,6 +650,7 @@ def cost(
     from examlops.project_finops import cost_summary
 
     init_db()
+    _guard(name, "viewer")
     if not get_project(name):
         _output.error(f"Project '{name}' not found")
         raise typer.Exit(1)
@@ -624,6 +684,7 @@ def budget(
     from examlops.project_finops import evaluate_budget
 
     init_db()
+    _guard(name, "viewer")
     if not get_project(name):
         _output.error(f"Project '{name}' not found")
         raise typer.Exit(1)
@@ -665,6 +726,7 @@ def compose(
     - ``memory``: total RAM (e.g. 8589934592 bytes = 8 GB)
     """
     init_db()
+    _guard(name, "viewer")
     project = get_project(name)
     if not project:
         _output.error(f"Project '{name}' not found")
@@ -769,6 +831,7 @@ def archive(
 ) -> None:
     """Archive a project (marks ARCHIVED; data is preserved)."""
     init_db()
+    _guard(name, "owner")
     from examlops.cli._policy_gate import enforce
 
     decision = enforce(
@@ -795,6 +858,7 @@ def delete(
 ) -> None:
     """Delete a project and remove all its model assignments (irreversible)."""
     init_db()
+    _guard(name, "owner")
     from examlops.cli._policy_gate import enforce
 
     decision = enforce(
@@ -840,6 +904,7 @@ def grant(
 
     if relation not in {"owner", "editor", "viewer"}:
         _output.error("relation must be one of: owner, editor, viewer")
+    _guard_object(obj)
     authz_grant(subject, relation, obj, actor=_actor())
     _output.ok(f"Granted {subject} '{relation}' on {obj}")
 
@@ -855,6 +920,7 @@ def revoke(
     """Revoke a subject's relation on an object (audited)."""
     from examlops.authz import revoke as authz_revoke
 
+    _guard_object(obj)
     n = authz_revoke(subject, relation, obj, actor=_actor())
     if n:
         _output.ok(f"Revoked '{relation}' from {subject} on {obj}")
@@ -894,3 +960,77 @@ def access(
             for r in rows
         ],
     )
+
+
+@app.command(
+    "scope-audit",
+    epilog="Examples:\n\n  exa project scope-audit\n\n  exa --json project scope-audit",
+)
+def scope_audit() -> None:
+    """Report platform.db tables that carry no project/tenant scope (read-only, ADR 0014).
+
+    Every table is classified scoped / model-scoped / exempt (with a reason) / UNSCOPED. Exits 1
+    if a table is UNSCOPED or an exemption has gone stale. ``known_gaps`` lists the user-data
+    tables that are still not partitioned by project.
+    """
+    from examlops.authz.scope_audit import ScopeAuditUnavailable, audit_scope
+
+    try:
+        report = audit_scope()
+    except ScopeAuditUnavailable as exc:
+        _output.error(str(exc))
+        raise typer.Exit(1) from exc
+    if _output.json_mode:
+        _output.print_json(report)
+    else:
+        s = report["summary"]
+        _output.print_table(
+            f"Project scope of platform.db ({report['total']} tables)",
+            ["Status", "Tables"],
+            [[k, str(v)] for k, v in sorted(s.items())],
+        )
+        if report["known_gaps"]:
+            _output.warning(
+                f"{len(report['known_gaps'])} user-data table(s) are not partitioned by project: "
+                + ", ".join(report["known_gaps"])
+            )
+        for t in report["unscoped"]:
+            _output.error(f"UNSCOPED: {t} - add a project/tenant column or list it in EXEMPT")
+        for t in report["stale_exemptions"]:
+            _output.error(f"STALE exemption: {t} (table gone, or now scoped) - remove it")
+    if not report["ok"]:
+        raise typer.Exit(1)
+
+
+@app.command(
+    "openfga-sync",
+    epilog="Examples:\n\n  exa project openfga-sync\n\n  exa project openfga-sync --execute",
+)
+def openfga_sync(
+    execute: bool = typer.Option(
+        False, "--execute", help="Write the tuples (default is a dry run that only counts them)"
+    ),
+) -> None:
+    """Backfill OpenFGA from the native authz_relations table (idempotent; needs owner rights)."""
+    from examlops.authz import openfga_client as fga
+    from examlops.authz.guard import platform_admins
+
+    cfg = fga.config_from_env()
+    if cfg is None:
+        _output.error(
+            "OpenFGA is not configured: set EXAMLOPS_OPENFGA_URL and EXAMLOPS_OPENFGA_STORE_ID"
+        )
+        raise typer.Exit(1)
+    if execute and _actor() not in platform_admins():
+        _guard_object("platform:core")
+    try:
+        res = fga.sync_native_grants(cfg, dry_run=not execute)
+    except fga.OpenFgaError as exc:
+        _output.error(f"OpenFGA refused the sync: {exc}")
+        raise typer.Exit(1) from exc
+    if _output.json_mode:
+        _output.print_json(res)
+    elif execute:
+        _output.ok(f"Wrote {res['grants']} grant(s) to OpenFGA.")
+    else:
+        _output.info(f"Dry run: {res['grants']} grant(s) would be written. Add --execute.")

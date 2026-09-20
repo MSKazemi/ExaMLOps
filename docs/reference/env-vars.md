@@ -1087,3 +1087,19 @@ environment:
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_POLICY_GATES` | unset (all gates off) | Arms the policy engine's built-in domain gates at their real decision points and sets each gate's rollout mode: comma-separated `gate=mode`, gates `supply_chain` (verify-before-load and `exa pipeline promote`), `budget` (`exa pipeline run` in a project with a GPU-hour budget), `model_card` (`exa pipeline promote` completeness floor), modes `off` / `monitor` (decision audited as `policy_gate_monitor:<gate>`, never blocks) / `enforce` (a deny blocks; `--force` does not override). Overrides a `gates:` mapping in `policy.yaml`. An unrecognized mode fails closed to `enforce`. Unset and no `gates:` block ⇒ every gate is off and behaviour is unchanged. Example: `supply_chain=enforce,budget=monitor`. |
+
+## Audit retention, S3 WORM anchor and OpenFGA (ADR 0028 / 0014)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_AUDIT_RETENTION_DAYS` | unset (keep forever) | Minimum period audit events are kept. Unset ⇒ `exa audit prune` refuses to delete anything (the previous behaviour). Set ⇒ rows older than this many days may be pruned by `exa audit prune --execute --archive FILE`; a `--before` newer than the floor is clamped. The prune keeps the hash chain verifiable through a signed prune record. |
+| `EXAMLOPS_AUDIT_WORM_PATH` | unset | Where signed audit checkpoints are anchored. A file path = local append-only chain; `s3://bucket/prefix` = one S3 Object-Lock object per entry (see below). Unset ⇒ anchoring is a no-op. |
+| `EXAMLOPS_AUDIT_WORM_S3_MODE` | `GOVERNANCE` | Object Lock mode for S3 anchor objects: `GOVERNANCE` or `COMPLIANCE` (irreversible for the retention period — prefer it in production). Any other value fails the write, which degrades to the fallback file. |
+| `EXAMLOPS_AUDIT_WORM_S3_RETAIN_DAYS` | `365` | Object Lock retain-until horizon, in days, for each anchor object. |
+| `EXAMLOPS_AUDIT_WORM_S3_ENDPOINT` / `EXAMLOPS_AUDIT_WORM_S3_ACCESS_KEY` / `EXAMLOPS_AUDIT_WORM_S3_SECRET_KEY` | `MLFLOW_S3_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Endpoint and credentials for the S3 anchor (boto3, `examlops[backup]`). The bucket must have been created with Object Lock enabled. |
+| `EXAMLOPS_AUDIT_WORM_FALLBACK_PATH` | `$EXAMLOPS_DATA_DIR/audit-worm-fallback.jsonl` (else `./audit-worm-fallback.jsonl`) | Local file an anchor write degrades to when the S3 write fails. The failure is counted and logged at ERROR; the checkpoint is reported as **not** durably anchored. |
+| `EXAMLOPS_OPENFGA_URL` | unset | Base URL of an OpenFGA server. Unset ⇒ authorization uses the native `authz_relations` table. Set together with `EXAMLOPS_OPENFGA_STORE_ID` ⇒ every check, grant and revoke goes to OpenFGA (fail closed: timeout or error = deny). Set without a store id ⇒ native authz plus a loud ERROR log. |
+| `EXAMLOPS_OPENFGA_STORE_ID` / `EXAMLOPS_OPENFGA_MODEL_ID` | unset | OpenFGA store id (required to enable it) and optional authorization-model id (`exa`'s model is exported by `examlops.authz.openfga`). |
+| `EXAMLOPS_OPENFGA_TOKEN` | unset | Bearer token sent to OpenFGA when it is set. |
+| `EXAMLOPS_OPENFGA_TIMEOUT` | `2.0` | Seconds to wait for OpenFGA before denying. |
+| `EXAMLOPS_AUTHZ_ADMINS` | unset | Comma-separated subjects that may act on every project when `EXAMLOPS_MULTITENANCY` is on — the bootstrap path for a fresh multi-tenant deployment. Unset ⇒ no such subjects. |

@@ -114,6 +114,29 @@ def verify_audit_chain() -> dict[str, Any]:
             conn.execute("SELECT COUNT(*) FROM audit_events WHERE hash IS NULL").fetchone()[0]
         )
     prev = "GENESIS"
+    # ADR 0028 decision 4: after an audited retention prune the retained chain starts at the cut,
+    # not at GENESIS. The cut is only trusted when its signed prune record checks out - a forged
+    # record must not be a way to make a rewritten log verify.
+    from examlops.data.audit_retention import check_prune_signature, prune_anchor
+
+    anchor = prune_anchor()
+    prune_note: dict[str, Any] = {}
+    if anchor is not None:
+        sig = check_prune_signature(anchor)
+        if sig == "bad":
+            return {
+                "ok": False,
+                "verified": True,
+                "fully_verified": False,
+                "count": len(rows),
+                "unchained": unchained,
+                "broken_at_id": anchor["cut_id"],
+                "reason": "prune record signature invalid (the retention cut was forged or altered)",
+            }
+        prev = anchor["cut_hash"]
+        prune_note = {"pruned_before_id": anchor["cut_id"] + 1, "pruned_at": anchor["ts"]}
+        if sig == "unverifiable":
+            prune_note["prune_signature"] = "unverifiable (no signing key here)"
     for r in rows:
         # The correlation fields are inside the hash, so verification has to feed them back in.
         # An event written outside any context has them all NULL and canonicalises exactly as it
@@ -155,10 +178,11 @@ def verify_audit_chain() -> dict[str, Any]:
         #   `fully_verified` — every row was checked. False the moment there is a row this could
         #                      not recompute, which is what "is my audit trail sound" means to a
         #                      script reading one field.
-        "fully_verified": unchained == 0,
+        "fully_verified": unchained == 0 and prune_note.get("prune_signature") is None,
         "count": len(rows),
         "unchained": unchained,
         "head_hash": prev,
+        **prune_note,
     }
     if unchained and rows:
         # The oldest chained event dates the migration. An unchained row *after* it is the one

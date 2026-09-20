@@ -24,6 +24,59 @@ _admin = require_role("admin")
 _RESOURCE_KINDS = {"model", "pipeline", "serving_endpoint", "connection", "dataset", "storage"}
 
 
+_REL_RANK = {"viewer": 1, "editor": 2, "owner": 3}
+
+
+def _authz_subject(principal: dict) -> str:
+    """Who the relationship store knows this session as (ADR 0014 decision 4/5).
+
+    A federated principal (``idp`` claim) is its own subject. A shared-password session has no
+    per-user identity, so it maps to the stable ``legacy:<role>`` subject, which holds the
+    migration grants (owner/editor/viewer on project ``default``) and nothing else.
+    """
+    if principal.get("idp"):
+        return str(principal.get("sub") or "?")
+    return f"legacy:{principal.get('role', 'viewer')}"
+
+
+def _project_allowed(principal: dict, relation: str, name: str) -> bool:
+    try:
+        from examlops.authz import guard as _g  # type: ignore
+    except ImportError:  # pragma: no cover - examlops absent: tenancy cannot be on
+        return True
+    projects = principal.get("projects") or {}  # project roles asserted by the IdP (ADR 0120)
+    if _REL_RANK.get(str(projects.get(name, "")), 0) >= _REL_RANK.get(relation, 99):
+        from examlops import authz  # type: ignore
+
+        if authz.multitenancy_enabled():
+            return True
+    return _g.allowed(_authz_subject(principal), relation, name)
+
+
+def _project_guard(principal: dict, relation: str, name: str) -> None:
+    """403 unless the session holds ``relation`` on project ``name``. No-op with tenancy off."""
+    if not _project_allowed(principal, relation, name):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"'{_authz_subject(principal)}' lacks '{relation}' on project '{name}'",
+        )
+
+
+def _fga_sync(kind: str, subject: str, relation: str, obj: str) -> None:
+    """Mirror a membership change into OpenFGA when it is configured (else a no-op)."""
+    try:
+        from examlops.authz import openfga_client as _f  # type: ignore
+    except ImportError:  # pragma: no cover
+        return
+    cfg = _f.config_from_env()
+    if cfg is None:
+        return
+    try:
+        (_f.write_grant if kind == "grant" else _f.delete_grant)(cfg, subject, relation, obj)
+    except _f.OpenFgaError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"OpenFGA refused: {exc}") from exc
+
+
 def _db_path() -> str:
     return platform_db_path()
 
@@ -141,7 +194,7 @@ def _audit(conn: sqlite3.Connection, actor: str, action: str, target: str, detai
 
 
 @router.get("")
-async def list_projects_view(_=Depends(_viewer)) -> list[dict]:
+async def list_projects_view(principal: dict = Depends(_viewer)) -> list[dict]:
     """All projects with quota + resource/member counts (viewer)."""
     try:
         conn = _connect()
@@ -149,6 +202,8 @@ async def list_projects_view(_=Depends(_viewer)) -> list[dict]:
         rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
         out = []
         for r in rows:
+            if not _project_allowed(principal, "viewer", r["name"]):
+                continue  # multi-tenant: a session sees only the projects it may read
             models = _project_models(conn, r["name"])
             res_count = conn.execute(
                 "SELECT COUNT(*) AS n FROM project_resources WHERE project=?", (r["name"],)
@@ -192,8 +247,9 @@ async def zoo_models_view(_=Depends(_viewer)) -> dict:
 
 
 @router.get("/{name}")
-async def project_anatomy(name: str, _=Depends(_viewer)) -> dict:
+async def project_anatomy(name: str, principal: dict = Depends(_viewer)) -> dict:
     """Full anatomy: quota, resources by kind, members, budget, consumption (viewer)."""
+    _project_guard(principal, "viewer", name)
     conn = _connect()
     _ensure_tables(conn)
     p = conn.execute("SELECT * FROM projects WHERE name=?", (name,)).fetchone()
@@ -406,6 +462,7 @@ async def update_project_view(
     code paths as ``exa project`` so the dashboard can never drift from the CLI.
     """
     _require_manage(principal)
+    _project_guard(principal, "editor", name)
     conn = _connect()
     _ensure_tables(conn)
     if not conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
@@ -500,6 +557,9 @@ async def create_project_view(
         gpu_limit=gpu,
         created_by=principal.get("sub"),
     )
+    from examlops.authz.guard import register_creator  # type: ignore
+
+    register_creator(_authz_subject(principal), name)  # multi-tenant: the creator owns it
     _audit(conn, principal.get("sub", "?"), "project_created", name, {"via": "dashboard"})
     conn.commit()
     conn.close()
@@ -519,6 +579,7 @@ async def assign_resource_view(
 ) -> dict:
     """Attach a resource (kind/ref) to a project (admin / project.manage; audited)."""
     _require_manage(principal)
+    _project_guard(principal, "editor", name)
     kind = payload.get("kind", "model")
     ref = (payload.get("ref") or "").strip()
     if kind not in _RESOURCE_KINDS or not ref:
@@ -554,6 +615,7 @@ async def add_member_view(
 ) -> dict:
     """Add a person to a project with owner/editor/viewer role (admin / project.manage; audited)."""
     _require_manage(principal)
+    _project_guard(principal, "owner", name)
     subject = (payload.get("subject") or "").strip()
     role = payload.get("role", "viewer")
     if not subject or role not in {"owner", "editor", "viewer"}:
@@ -563,6 +625,7 @@ async def add_member_view(
     if not conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
         conn.close()
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Project '{name}' not found")
+    _fga_sync("grant", subject, role, f"project:{name}")
     _grant_relation(subject, role, f"project:{name}", actor=principal.get("sub"))
     _audit(
         conn,
@@ -589,11 +652,17 @@ async def remove_member_view(
 ) -> dict:
     """Remove a person from a project (admin / project.manage; audited)."""
     _require_manage(principal)
+    _project_guard(principal, "owner", name)
     conn = _connect()
     _ensure_tables(conn)
     if not conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
         conn.close()
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Project '{name}' not found")
+    for held in conn.execute(
+        "SELECT relation FROM authz_relations WHERE subject=? AND object=?",
+        (subject, f"project:{name}"),
+    ).fetchall():
+        _fga_sync("revoke", subject, held["relation"], f"project:{name}")
     cur = conn.execute(
         "DELETE FROM authz_relations WHERE subject=? AND object=?", (subject, f"project:{name}")
     )
@@ -631,6 +700,7 @@ async def bind_storage_view(
     layout matches ``exa project storage`` exactly. Admin / project.manage; audited.
     """
     _require_manage(principal)
+    _project_guard(principal, "editor", name)
     conn = _connect()
     _ensure_tables(conn)
     if not conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
@@ -691,6 +761,7 @@ async def delete_project_view(
     Does not delete the underlying models or connections themselves — only the project grouping.
     """
     _require_manage(principal)
+    _project_guard(principal, "owner", name)
     # Shared code path (Phase 42): the full cascade — membership, authz grants, budget/storage/
     # pipeline rows — lives in examlops.data.projects.delete_project, the same helper the CLI
     # uses, so the two surfaces can never disagree on a security-relevant cascade again.

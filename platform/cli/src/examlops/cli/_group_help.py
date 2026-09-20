@@ -210,6 +210,8 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     "audit": [
         ("Recent audit log (hash-chained)", "exa audit --last 7d"),
         ("Verify chain integrity", "exa audit verify"),
+        ("Anchor a checkpoint (cron-friendly)", "exa audit checkpoint --anchor --skip-unchanged"),
+        ("Preview a retention prune", "exa audit prune"),
     ],
     "ops": [
         ("Operations in flight or finished", "exa ops list"),
@@ -245,6 +247,7 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("All projects with quotas", "exa project list"),
         ("Full project anatomy", "exa project show minio-demo"),
         ("Show the active project", "exa project current"),
+        ("Tables not scoped to a project", "exa project scope-audit"),
     ],
     "namespace": [
         ("Namespaces + model counts", "exa namespace list"),

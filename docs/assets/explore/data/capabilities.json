@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 481,
+ "total_commands": 484,
  "total_groups": 71,
  "panels": [
   {
@@ -2665,7 +2665,7 @@
     {
      "cmd": "exa audit checkpoint",
      "group": "audit",
-     "help": "Sign the current chain head, producing a detached checkpoint signature (D4·R5).",
+     "help": "Sign the current chain head and anchor it to the WORM store (D4·R5). This is also the periodic-export hook: run it from cron (exa audit checkpoint --anchor --skip-unchanged) or call :func:`examlops.audit_worm.checkpoint_and_anchor` from a scheduler.",
      "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
      "guide": "guides/audit-trail.md"
     },
@@ -2680,6 +2680,13 @@
      "cmd": "exa audit export",
      "group": "audit",
      "help": "Archival export of the audit trail (D4·R4). Append-only — never deletes.",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa audit prune",
+     "group": "audit",
+     "help": "Prune old audit events under the retention policy WITHOUT breaking the chain (ADR 0028). Dry run by default. Refused unless EXAMLOPS_AUDIT_RETENTION_DAYS is set, the chain verifies, a fresh signed checkpoint is anchored to the WORM store, and the deleted rows are archived. A signed prune record keeps exa audit verify passing over what remains.",
      "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
      "guide": "guides/audit-trail.md"
     },
@@ -3061,6 +3068,13 @@
      "guide": "guides/projects-workspaces.md"
     },
     {
+     "cmd": "exa project openfga-sync",
+     "group": "project",
+     "help": "Backfill OpenFGA from the native authz_relations table (idempotent; needs owner rights).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
      "cmd": "exa project pipelines",
      "group": "project",
      "help": "Show the project's two pipeline surfaces: Prefect (training) + Ray Serve (serving) (P7).",
@@ -3078,6 +3092,13 @@
      "cmd": "exa project revoke",
      "group": "project",
      "help": "Revoke a subject's relation on an object (audited).",
+     "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa project scope-audit",
+     "group": "project",
+     "help": "Report platform.db tables that carry no project/tenant scope (read-only, ADR 0014). Every table is classified scoped / model-scoped / exempt (with a reason) / UNSCOPED. Exits 1 if a table is UNSCOPED or an exemption has gone stale. known_gaps lists the user-data tables that are still not partitioned by project.",
      "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
      "guide": "guides/projects-workspaces.md"
     },

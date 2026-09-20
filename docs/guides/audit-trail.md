@@ -103,7 +103,32 @@ trail's state at that point (async/batched — not per event):
 ```bash
 exa audit checkpoint          # sign the current head (D3 HMAC key / EXAMLOPS_SIGNING_KEY)
 exa audit checkpoints         # list signed checkpoints
+exa audit checkpoint --anchor --skip-unchanged   # cron form: exit 1 unless durably anchored
 ```
+
+### Anchoring off the platform (WORM)
+
+A checkpoint is also appended to a hash-chained WORM log outside the database, so a full-database
+rewrite cannot re-chain a forged history unnoticed. Set `EXAMLOPS_AUDIT_WORM_PATH` to either
+
+- a **file** (local append-only chain; development), or
+- **`s3://bucket/prefix`** — one S3 **Object-Lock** object per entry (`<prefix>/000000000001.json`,
+  ...), written with `ObjectLockMode` (`EXAMLOPS_AUDIT_WORM_S3_MODE`, default `GOVERNANCE`; use
+  `COMPLIANCE` in production) and `ObjectLockRetainUntilDate`
+  (`EXAMLOPS_AUDIT_WORM_S3_RETAIN_DAYS`) and `If-None-Match: *`, so an existing entry is never
+  overwritten. The bucket must be created with Object Lock enabled. It needs boto3
+  (`pip install 'examlops[backup]'`).
+
+If the S3 write fails, the failure is **counted** (`audit_worm.anchor_failures()`), logged at ERROR,
+and the entry degrades to `EXAMLOPS_AUDIT_WORM_FALLBACK_PATH`; the command reports the checkpoint as
+*not* durably anchored (and `--anchor` exits 1). `exa audit verify-worm` reads the S3 chain, checks
+every DB checkpoint is anchored, and warns about checkpoints that exist only in the fallback file.
+
+The periodic export is a callable, not a daemon: `examlops.audit_worm.checkpoint_and_anchor()`
+(idempotent with `skip_if_unchanged=True`) — call it from cron or any scheduler.
+
+**Not built:** a Rekor transparency-log target and Sigstore signing (no Sigstore client exists in
+the tree; checkpoints are HMAC-signed with the D7-managed key).
 
 ## Archival export & retention
 
@@ -114,6 +139,33 @@ action is itself audited:
 exa audit export --out audit_2026.json
 exa audit export --out old.json --before 2026-01-01T00:00:00
 ```
+
+### Retention policy: pruning without breaking the chain
+
+By default the trail is kept **forever**. To enforce a minimum retention period set
+`EXAMLOPS_AUDIT_RETENTION_DAYS=N`; rows older than N days may then be pruned:
+
+```bash
+exa audit prune                                   # dry run (default): what would go
+exa audit prune --execute --archive audit-h1.json # delete, after archiving the rows first
+```
+
+Deleting a prefix of a hash chain would normally break verification, so a prune is only allowed
+when **all** of these hold, and refuses (deleting nothing) otherwise: retention is configured; the
+chain verifies now; a fresh signed checkpoint over the head is anchored to the WORM store (or
+`--allow-unanchored` was passed and no anchor is configured); the cut itself is anchored; the
+deleted rows were written to the archive file, whose SHA-256 is recorded. The newest row is
+never pruned, and `--before` can only be *older* than `now - retention`.
+
+The last deleted row's id and hash (the *cut*) are stored in a **signed prune record**
+(`audit_prunes`, HMAC with the D7 key). `exa audit verify` starts the retained chain at the cut,
+so it still passes — and still **fails** if a retained row is altered, if the prune record is
+forged (signature mismatch) or if it is deleted (the chain no longer starts at `GENESIS`). The
+prune is recorded in the chain as an `audit_pruned` event. The append-only DELETE trigger is
+dropped and recreated inside one transaction, so a failure leaves it in place.
+
+Without the signing key `exa audit verify` still checks the chain but reports the prune record as
+*unverifiable* and `fully_verified: false`.
 
 ## Streaming to a SIEM
 

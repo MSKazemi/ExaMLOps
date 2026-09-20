@@ -34,6 +34,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   score, margin to the winner and idle/total capacity (`explain` key under `-o json`), built only
   from what placement already returns.
 
+### Added - audit retention, S3 Object-Lock WORM anchor, OpenFGA client, project enforcement (ADR 0028 / 0014)
+
+- `exa audit prune` (dry run by default; `--execute --archive FILE`): enforces
+  `EXAMLOPS_AUDIT_RETENTION_DAYS` (unset = keep forever, unchanged) without breaking the hash chain.
+  Refused unless the chain verifies and a fresh checkpoint is anchored; a signed prune record lets
+  `exa audit verify` keep passing on the retained range and still fail on tampering, a forged record
+  or a deleted record. Recorded as an `audit_pruned` event; rows archived first (SHA-256 recorded).
+- S3 Object-Lock WORM anchor: `EXAMLOPS_AUDIT_WORM_PATH=s3://bucket/prefix` (boto3, lazy). Objects are
+  written with lock mode + retain-until + `If-None-Match: *`; a failed write is counted
+  (`audit_worm.anchor_failures()`), logged and degraded to `EXAMLOPS_AUDIT_WORM_FALLBACK_PATH`, never
+  reported as anchored. `exa audit checkpoint --anchor --skip-unchanged` and
+  `audit_worm.checkpoint_and_anchor()` are the periodic-export path (no daemon). The old bare
+  `except: pass` around anchoring is gone.
+- OpenFGA HTTP client behind `examlops.authz` (`EXAMLOPS_OPENFGA_URL` + `_STORE_ID`): used only when
+  configured, fail closed (timeout/error = deny), grants/revokes mirrored, project delete drops the
+  tuples; `exa project openfga-sync` backfills. Native authz unchanged when unset.
+- Project enforcement: with `EXAMLOPS_MULTITENANCY` on, `exa project` commands and the dashboard
+  project routers now refuse a denied subject (exit 1 / HTTP 403); creator becomes owner;
+  `EXAMLOPS_AUTHZ_ADMINS` bootstrap; legacy password sessions map to `legacy:<role>` with the
+  `default`-project migration grants. Flag off: unchanged.
+- `exa project scope-audit`: read-only report of `platform.db` tables without a project/tenant scope,
+  with a known-exempt list and a guard test that fails on a new unscoped table.
+
 ## [0.61.0] - 2026-09-20
 
 ### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)

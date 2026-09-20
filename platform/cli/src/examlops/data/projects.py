@@ -197,6 +197,16 @@ def delete_project(name: str) -> bool:
     Underlying models/connections themselves are never deleted, only the grouping.
     """
     init_db()
+    from examlops.authz import openfga_client as _fga
+
+    cfg = _fga.config_from_env()
+    if cfg is not None and get_project(name):
+        # ADR 0014: with OpenFGA configured its tuples are the ones that decide, so the same
+        # resurrection hazard applies there - drop them before the native rows.
+        from examlops.data.governance import list_relations
+
+        for rel in list_relations(obj=f"project:{name}"):
+            _fga.delete_grant(cfg, rel["subject"], rel["relation"], rel["object"])
     with get_db() as conn:
         row = conn.execute("SELECT name FROM projects WHERE name=?", (name,)).fetchone()
         if not row:

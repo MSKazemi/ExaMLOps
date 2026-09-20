@@ -427,55 +427,69 @@ def reviews(
 
 
 @app.command("checkpoint")
-def checkpoint() -> None:
-    """Sign the current chain head, producing a detached checkpoint signature (D4·R5)."""
-    from examlops.data.audit import audit_chain_head, sign_audit_checkpoint
+def checkpoint(
+    anchor_required: bool = typer.Option(
+        False,
+        "--anchor",
+        help="Require the WORM anchor: exit 1 unless the checkpoint was durably anchored "
+        "(cron-friendly; an S3 failure that degraded to the local fallback counts as a failure)",
+    ),
+    skip_unchanged: bool = typer.Option(
+        False,
+        "--skip-unchanged",
+        help="Do nothing when the head already has an anchored checkpoint (cheap for cron)",
+    ),
+) -> None:
+    """Sign the current chain head and anchor it to the WORM store (D4·R5).
 
-    head = audit_chain_head()
-    if head is None:
-        _output.info("No chained audit events yet — nothing to checkpoint.")
-        return
-    # Sign the head hash with the D7-managed signing key (D3's HMAC helper). FAIL CLOSED
-    # (item 0.7): if no signing key is configured we refuse rather than sign with a
-    # well-known default — a checkpoint anyone can forge provides zero tamper-evidence,
-    # which is worse than no checkpoint.
-    from examlops.supplychain import SigningKeyMissing, _hmac_sign
+    This is also the periodic-export hook: run it from cron (``exa audit checkpoint --anchor
+    --skip-unchanged``) or call :func:`examlops.audit_worm.checkpoint_and_anchor` from a scheduler.
+    """
+    # FAIL CLOSED (item 0.7): if no signing key is configured we refuse rather than sign with a
+    # well-known default - a checkpoint anyone can forge provides zero tamper-evidence, which is
+    # worse than no checkpoint.
+    from examlops.audit_worm import checkpoint_and_anchor
+    from examlops.supplychain import SigningKeyMissing
 
     try:
-        signature = _hmac_sign(head["hash"])
+        res = checkpoint_and_anchor(skip_if_unchanged=skip_unchanged)
     except SigningKeyMissing as exc:
         _output.error(
             f"Cannot sign audit checkpoint: {exc}. A checkpoint signed with a default key is "
-            "forgeable and provides no tamper-evidence — refusing. Configure a real signing key "
+            "forgeable and provides no tamper-evidence - refusing. Configure a real signing key "
             "(EXAMLOPS_SIGNING_KEY, or store secret 'model-signing/key' via exa secrets set)."
         )
         raise typer.Exit(1) from exc
-    key_id = "d3-hmac"
-    cp = sign_audit_checkpoint(signature, key_id=key_id)
-    if cp is None:
-        # None means the chain has no head to sign over. The caller checked that a moment ago,
-        # so this is the concurrent-truncation case; refusing beats anchoring an empty dict to
-        # a WORM store, which would look like a valid checkpoint forever after.
-        _output.error("The audit chain has no head to checkpoint — nothing was signed.")
-    # Anchor to the external WORM store (item 2.4) so the checkpoint is tamper-evident even against
-    # a full-DB rewrite. Best-effort + no-op when EXAMLOPS_AUDIT_WORM_PATH is unset.
-    worm_hash = None
-    try:
-        from datetime import UTC, datetime
-
-        from examlops.audit_worm import anchor_checkpoint
-
-        worm_hash = anchor_checkpoint(cp, ts=datetime.now(UTC).isoformat(timespec="seconds"))
-    except Exception:  # noqa: BLE001 - anchoring is best-effort
-        pass
-    if _output.json_mode:
-        _output.print_json({**cp, "worm_hash": worm_hash})
+    status = res["status"]
+    if status == "empty":
+        _output.info("No chained audit events yet - nothing to checkpoint.")
         return
-    anchored = f", anchored to WORM {worm_hash[:12]}…" if worm_hash else ""
-    _output.ok(
-        f"Checkpoint signed over head id {cp['head_id']} "
-        f"(hash {cp['head_hash'][:12]}…, key {key_id}){anchored}."
-    )
+    # An anchor that failed is said out loud in BOTH modes (stderr keeps stdout one JSON document);
+    # this used to be swallowed by a bare `except: pass`.
+    if res.get("anchor_error"):
+        _output.warning(
+            f"WORM anchor did not complete: {res['anchor_error']}"
+            + (" - degraded to the local fallback file" if res.get("degraded") else "")
+        )
+    failed = anchor_required and not res.get("anchored")
+    if _output.json_mode:
+        _output.print_json(res)
+    elif status == "unchanged":
+        _output.ok(f"Head id {res['head_id']} already has an anchored checkpoint - unchanged.")
+    else:
+        where = (
+            f", anchored to WORM ({res['backend']}) {res['worm_hash'][:12]}..."
+            if res.get("worm_hash")
+            else ""
+        )
+        _output.ok(
+            f"Checkpoint signed over head id {res['head_id']} "
+            f"(hash {res['head_hash'][:12]}..., key {res.get('key_id')}){where}."
+        )
+    if failed:
+        if not _output.json_mode:
+            _output.error("--anchor was requested but the checkpoint is not durably anchored.")
+        raise typer.Exit(1)
 
 
 @app.command("verify-worm")
@@ -529,3 +543,82 @@ def export(
     actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
     write_audit_event("cli", actor, "audit_export", out, {"count": len(events), "before": before})
     _output.ok(f"Exported {len(events)} audit event(s) to {out} (retained in place, append-only).")
+
+
+@app.command("prune")
+def prune(
+    before: str = typer.Option(
+        None,
+        "--before",
+        help="Prune events older than this date (YYYY-MM-DD or ISO-8601); never newer than the "
+        "retention floor (EXAMLOPS_AUDIT_RETENTION_DAYS)",
+    ),
+    execute: bool = typer.Option(
+        False, "--execute", help="Actually delete (default is a dry run that changes nothing)"
+    ),
+    archive: str = typer.Option(
+        None, "--archive", help="File to write the pruned rows to (required with --execute)"
+    ),
+    allow_unanchored: bool = typer.Option(
+        False,
+        "--allow-unanchored",
+        help="Prune even though no WORM anchor is configured (the cut is then not off-platform)",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+) -> None:
+    """Prune old audit events under the retention policy WITHOUT breaking the chain (ADR 0028).
+
+    Dry run by default. Refused unless EXAMLOPS_AUDIT_RETENTION_DAYS is set, the chain verifies,
+    a fresh signed checkpoint is anchored to the WORM store, and the deleted rows are archived.
+    A signed prune record keeps ``exa audit verify`` passing over what remains.
+    """
+    from examlops.data.audit_retention import (
+        RetentionRefused,
+        effective_cutoff,
+        execute_prune,
+        plan_prune,
+    )
+
+    try:
+        cutoff = effective_cutoff(before)
+        if not execute:
+            plan = plan_prune(cutoff)
+            plan["dry_run"] = True
+            if _output.json_mode:
+                _output.print_json(plan)
+            elif not plan["eligible"]:
+                _output.ok(f"Dry run: nothing older than {cutoff} UTC to prune.")
+            else:
+                _output.info(
+                    f"Dry run: would prune {plan['eligible']} event(s) (ids up to {plan['cut_id']}, "
+                    f"older than {cutoff} UTC). Re-run with --execute --archive FILE."
+                )
+            return
+        if not archive:
+            _output.error("--execute requires --archive FILE (the deleted rows are archived first)")
+            raise typer.Exit(1)
+        plan = plan_prune(cutoff)
+        if plan["eligible"] and not _output.confirm(
+            f"[bold red]Permanently delete[/bold red] {plan['eligible']} audit event(s) older "
+            f"than {cutoff} UTC? They are archived to {archive} first.",
+            auto_yes=yes,
+        ):
+            _output.info("Cancelled.")
+            return
+        result = execute_prune(
+            before, archive_path=archive, actor=_actor(), allow_unanchored=allow_unanchored
+        )
+    except RetentionRefused as exc:
+        _output.error(f"Prune refused: {exc}")
+        raise typer.Exit(1) from exc
+    if _output.json_mode:
+        _output.print_json(result)
+        return
+    if result["status"] == "nothing-to-prune":
+        _output.ok("Nothing to prune.")
+        return
+    _output.ok(
+        f"Pruned {result['pruned']} audit event(s) up to id {result['cut_id']}; archive "
+        f"{result['archive']} (sha256 {result['archive_sha256'][:12]}...). "
+        "`exa audit verify` still covers the retained chain."
+    )

@@ -1,8 +1,10 @@
 """D6 — Fine-grained RBAC & multi-tenancy authz client (ADR 0014, spec D6).
 
 A relationship model (``owner ⊇ editor ⊇ viewer``) over objects, checked with a
-**default-deny** policy (spec R3). Backed by ``platform_db.authz_relations`` (an
-OpenFGA backend can be swapped behind :func:`check` later).
+**default-deny** policy (spec R3). Backed by ``platform_db.authz_relations``; when an OpenFGA
+server is configured (``EXAMLOPS_OPENFGA_URL`` + ``EXAMLOPS_OPENFGA_STORE_ID``,
+:mod:`examlops.authz.openfga_client`) :func:`check`, :func:`grant` and :func:`revoke` use it
+instead - fail closed, and never unless configured.
 
 **Feature-flagged (spec R9):** unless ``EXAMLOPS_MULTITENANCY`` is truthy, :func:`check`
 returns True — single-tenant behaviour is unchanged.
@@ -54,6 +56,25 @@ def check(subject: str, relation: str, obj: str, *, actor: str | None = None) ->
     """
     if not multitenancy_enabled():
         return True
+    from examlops.authz import openfga_client as _fga
+
+    cfg = _fga.config_from_env()
+    if cfg is not None:
+        try:
+            allowed = _fga.check(cfg, subject, relation, obj)
+        except _fga.OpenFgaError as exc:  # timeout / unreachable / bad reply -> DENY (fail closed)
+            logger.error(
+                "authz check failed closed (deny) via OpenFGA for %s '%s' on %s: %s",
+                subject,
+                relation,
+                obj,
+                exc,
+            )
+            _audit("authz_error", subject, relation, obj, actor)
+            return False
+        if not allowed:
+            _audit("authz_deny", subject, relation, obj, actor)
+        return allowed
     required = _rank(relation)
     node: str | None = obj
     allowed = False
@@ -85,15 +106,25 @@ def require(subject: str, relation: str, obj: str, *, actor: str | None = None) 
 
 def grant(subject: str, relation: str, obj: str, *, actor: str | None = None) -> None:
     """Grant a relation (audited, spec: grant)."""
+    from examlops.authz import openfga_client as _fga
     from examlops.data.governance import grant_relation
 
+    cfg = _fga.config_from_env()
+    if cfg is not None:
+        # OpenFGA first: if it refuses, nothing is granted (raises OpenFgaError).
+        _fga.write_grant(cfg, subject, relation, obj)
     grant_relation(subject, relation, obj, actor=actor)
     _audit("authz_grant", subject, relation, obj, actor)
 
 
 def revoke(subject: str, relation: str, obj: str, *, actor: str | None = None) -> int:
+    from examlops.authz import openfga_client as _fga
     from examlops.data.governance import revoke_relation
 
+    cfg = _fga.config_from_env()
+    if cfg is not None:
+        # OpenFGA first: a revoke it cannot perform must not look done (raises OpenFgaError).
+        _fga.delete_grant(cfg, subject, relation, obj)
     n = revoke_relation(subject, relation, obj)
     _audit("authz_revoke", subject, relation, obj, actor)
     return n
