@@ -91,12 +91,29 @@ and writing the same redacted text twice would double the exposure the privacy g
 redaction hook (PII defense) before export. Treat enabling capture as a governed
 action.
 
+On the **gateway path** (`GatewayClient.chat`) the hook is the tenant redaction policy
+(ADR 0148 decision 2), selected by `EXAMLOPS_TELEMETRY_REDACTION`:
+
+| Mode | What the span carries |
+|---|---|
+| `enforce` (default) | PII and secrets replaced (`[redacted-email]`, ...) in prompt and completion. |
+| `monitor` | Content unchanged; what would have been redacted is recorded to `guardrail_events` (direction `telemetry`). |
+| `off` | Identity. |
+
+**Fail closed.** If the redactor raises (or cannot be built) that content is *not* attached to the
+span and `examlops.telemetry.genai.redaction_failures()` is incremented; the request itself is
+still served. An unrecognised mode is treated as `enforce`. The prompt captured is what was sent
+to the backend (after the request guardrail), and the answer is the one returned to the caller.
+Not covered: spans emitted outside the gateway (engines, agents) still use the process-wide
+`set_redactor` hook, which defaults to identity.
+
 ## Toggles
 
 | Variable | Default | Effect |
 |---|---|---|
 | `OTEL_SDK_DISABLED` | `true` | Master switch. When truthy/unset, all GenAI instrumentation is a **no-op** — zero overhead, behaviour unchanged. |
 | `EXAMLOPS_GENAI_CAPTURE_CONTENT` | unset | When truthy, capture (redacted) prompt/completion content on spans. |
+| `EXAMLOPS_TELEMETRY_REDACTION` | `enforce` | `off`/`monitor`/`enforce` redaction of captured content on the gateway path. |
 | `OTEL_SEMCONV_STABILITY_OPT_IN` | unset | Comma-separated OTel opt-in. `gen_ai_latest_experimental` selects the structured message attributes. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://tempo:4317` | Where spans are exported. |
 

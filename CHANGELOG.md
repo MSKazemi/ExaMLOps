@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — gateway span content is redacted, fail closed (ADR 0148 decision 2, redactor wiring)
+
+With `EXAMLOPS_GENAI_CAPTURE_CONTENT` on, `GatewayClient.chat` now attaches the prompt and completion
+to its `chat` span through a tenant redaction policy (`guardrails.telemetry_redactor`), chosen by the
+new `EXAMLOPS_TELEMETRY_REDACTION` = `enforce` (default; PII and secrets replaced) / `monitor`
+(unchanged, findings to `guardrail_events`) / `off`. `genai.maybe_capture_content` gained a per-call
+`redactor` and fails closed: a redactor that raises drops that content and increments
+`genai.redaction_failures()`. Before this the gateway captured no content and the hook had no caller.
+Guard `tests/unit/test_telemetry_redaction_gateway.py`. Not done: engine/agent spans still use the
+process-wide hook; ADR 0148 decisions 1, 3-7 remain (status unchanged, Partially implemented).
+
 ### Added — `exa reproduce run --execute` (ADR 0038 clause 2, first real rebuild)
 
 `exa reproduce run <model> <version> --execute` now performs, in order, each with a real failure

@@ -353,6 +353,49 @@ def _secret_hit(text: str) -> bool:
         return False
 
 
+_TELEMETRY_MODES = ("off", "monitor", "enforce")
+
+
+def telemetry_redaction_mode() -> str:
+    """``EXAMLOPS_TELEMETRY_REDACTION``: off | monitor | enforce (default ``enforce``).
+
+    Unlike the request boundary, the default is enforce: content capture is already opt-in, so
+    redacting what an operator asked to export cannot break traffic, and an unrecognised value
+    falls back to enforce rather than off so a typo cannot leak prompts (ADR 0148 d2).
+    """
+    mode = os.getenv("EXAMLOPS_TELEMETRY_REDACTION", "enforce").strip().lower()
+    return mode if mode in _TELEMETRY_MODES else "enforce"
+
+
+def telemetry_redactor(tenant: str = "default", mode: str | None = None):
+    """Text -> text redactor for prompts/completions leaving as telemetry (ADR 0148 d2).
+
+    ``enforce`` replaces PII and secrets; ``monitor`` returns the text unchanged but records what
+    would have been redacted to ``guardrail_events`` (direction ``telemetry``); ``off`` is the
+    identity. Any failure inside raises, so the caller (``genai.maybe_capture_content``) drops the
+    capture and counts it instead of exporting unredacted text.
+    """
+    mode = mode or telemetry_redaction_mode()
+    if mode == "off":
+        return lambda text: text
+    recorder = DefaultGuardrail(mode=mode, tenant=tenant)
+
+    def _redact(text: str) -> str:
+        out, findings = redact_pii(text)
+        if _secret_hit(out):
+            findings = [*findings, "secret"]
+            out = _redact_secret(out)
+        if mode == "monitor":
+            for rule in findings:
+                recorder._record("telemetry", "monitor", rule)
+            return text
+        for rule in findings:
+            recorder._record("telemetry", "redact", rule)
+        return out
+
+    return _redact
+
+
 def rag_guardrail_adapter(guard: DefaultGuardrail):
     """Return a B4-compatible guardrail fn: text -> (flagged, neutralized_text)."""
 

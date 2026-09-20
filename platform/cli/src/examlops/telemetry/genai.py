@@ -321,8 +321,28 @@ def record_usage(
     return cost
 
 
+#: Content captures dropped because the redactor raised (ADR 0148 d2), this process. A capture that
+#: cannot be redacted is not emitted at all — fail closed — and the loss is counted, not silent.
+_REDACTION_FAILURES = 0
+
+
+def redaction_failures() -> int:
+    """Captures dropped this process because redaction failed (fail-closed, ADR 0148 d2)."""
+    return _REDACTION_FAILURES
+
+
+def note_redaction_failure() -> None:
+    """Count a capture dropped because its redactor could not be built or run."""
+    global _REDACTION_FAILURES
+    _REDACTION_FAILURES += 1
+
+
 def maybe_capture_content(
-    span: Any, *, prompt: str | None = None, completion: str | None = None
+    span: Any,
+    *,
+    prompt: str | None = None,
+    completion: str | None = None,
+    redactor: Callable[[str], str] | None = None,
 ) -> bool:
     """Attach prompt/completion content to ``span`` — gated + redacted (spec R5/R6).
 
@@ -337,25 +357,44 @@ def maybe_capture_content(
     never both:** capture is the one place content leaves the process, and emitting the same
     redacted text twice doubles the exposure surface of the very attribute the privacy gate
     exists to bound.
+
+    ``redactor`` overrides the process-wide hook for this call (the gateway passes its
+    tenant-policy redactor). **Fail closed:** if the redactor raises, that piece of content is
+    *not* attached and :func:`redaction_failures` is incremented — unredacted text never rides
+    on a span because the thing meant to clean it broke.
     """
     if not content_capture_enabled():
         return False
     latest = latest_experimental_enabled()
     captured = False
+    fn = redactor or _redactor
+
+    def _clean(text: str) -> str | None:
+        try:
+            out = fn(text)
+            return out if isinstance(out, str) else None
+        except Exception:  # noqa: BLE001 - fail closed, counted
+            note_redaction_failure()
+            return None
+
     if prompt is not None:
-        redacted = _redactor(prompt)
-        if latest:
+        redacted = _clean(prompt)
+        if redacted is None:
+            pass
+        elif latest:
             span.set_attribute("gen_ai.input.messages", _as_messages("user", redacted))
         else:
             span.set_attribute("gen_ai.prompt", redacted)
-        captured = True
+        captured = captured or redacted is not None
     if completion is not None:
-        redacted = _redactor(completion)
-        if latest:
+        redacted = _clean(completion)
+        if redacted is None:
+            pass
+        elif latest:
             span.set_attribute("gen_ai.output.messages", _as_messages("assistant", redacted))
         else:
             span.set_attribute("gen_ai.completion", redacted)
-        captured = True
+        captured = captured or redacted is not None
     return captured
 
 

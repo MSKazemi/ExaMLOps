@@ -589,7 +589,7 @@ class GatewayClient:
                 model, comp.prompt_tokens, comp.completion_tokens
             )
             # C1 span (best-effort) + FinOps cost (R8).
-            _emit_span(model, self.tenant, comp, prompt_version=prompt_version)
+            _emit_span(model, self.tenant, comp, prompt_version=prompt_version, messages=messages)
             _account(
                 "usage",
                 record_gateway_call,
@@ -677,8 +677,31 @@ def _coerce(raw: Any, model: str, backend: str) -> Completion:
     return Completion(text=str(raw), model=model, backend=backend)
 
 
+def _messages_text(messages: list[dict[str, Any]] | None) -> str:
+    """The text of a request's messages, for span content capture (image parts skipped)."""
+    parts: list[str] = []
+    for msg in messages or []:
+        content = msg.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            parts.extend(
+                p["text"]
+                for p in content
+                if isinstance(p, dict)
+                and isinstance(p.get("text"), str)
+                and p.get("type") == "text"
+            )
+    return "\n".join(parts)
+
+
 def _emit_span(
-    model: str, tenant: str, comp: Completion, *, prompt_version: str | None = None
+    model: str,
+    tenant: str,
+    comp: Completion,
+    *,
+    prompt_version: str | None = None,
+    messages: list[dict[str, Any]] | None = None,
 ) -> None:
     try:
         from examlops.telemetry import genai
@@ -693,6 +716,22 @@ def _emit_span(
                 input_tokens=comp.prompt_tokens,
                 output_tokens=comp.completion_tokens,
             )
+            if genai.content_capture_enabled():
+                # ADR 0148 d2: content leaves only through the tenant redaction policy. Building
+                # the redactor can fail too, and then nothing is captured (fail closed, counted).
+                try:
+                    from examlops.guardrails import telemetry_redactor
+
+                    redactor = telemetry_redactor(tenant)
+                except Exception:  # noqa: BLE001
+                    genai.note_redaction_failure()
+                    return
+                genai.maybe_capture_content(
+                    span,
+                    prompt=_messages_text(messages) or None,
+                    completion=comp.text,
+                    redactor=redactor,
+                )
     except Exception:
         pass
 
