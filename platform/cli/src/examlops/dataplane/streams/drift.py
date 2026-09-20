@@ -1,6 +1,6 @@
 """Drift aggregator for the dataplane stream ingress (ADR 0130/0131, Plan 2, task A5).
 
-A port of the SeanerBUS bridge's ``DriftTracker`` (``platform/clients/seanerbus_bridge.py`` —
+A port of the Dataplane bus bridge's ``DriftTracker`` (``platform/clients/dataplane_bus_bridge.py`` —
 read, never imported) to a multi-replica, thread-based ingress:
 
 * **Same signal.** A rolling window of the last ``window`` model outcomes per model; a failure

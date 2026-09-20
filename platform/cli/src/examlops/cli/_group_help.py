@@ -268,8 +268,8 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     "admission": [
         ("Admission queue depth", "exa admission stats"),
     ],
-    "seanerbus": [
-        ("Models + SeanerBUS UUIDs", "exa seanerbus list"),
+    "dataplane-bus": [
+        ("Models + Dataplane bus UUIDs", "exa dataplane-bus list"),
     ],
     "mcp": [
         ("Tools exposed to agents", "exa mcp tools"),

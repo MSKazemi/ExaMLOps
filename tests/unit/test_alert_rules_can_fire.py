@@ -94,7 +94,7 @@ def test_no_alert_detects_downtime_with_a_self_reported_liveness_gauge():
 def test_the_bridge_liveness_gauge_is_in_fact_only_ever_set_to_one():
     """Pins the premise of the test above, so it cannot be dismissed as theoretical."""
     src = (
-        Path(__file__).resolve().parents[2] / "platform" / "clients" / "seanerbus_bridge.py"
+        Path(__file__).resolve().parents[2] / "platform" / "clients" / "dataplane_bus_bridge.py"
     ).read_text()
     sets = re.findall(r"_BRIDGE_UP\.set\(([^)]*)\)", src)
     assert sets, "the bridge no longer has a liveness gauge — update this test with it"

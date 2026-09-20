@@ -311,10 +311,10 @@ async def test_an_output_path_in_a_new_directory_just_works(client, platform_db,
 
 
 async def test_commands_run_from_the_repo_root_like_an_operator(client, platform_db, fresh_runner):
-    # `exa seanerbus list` reads the use-case pack relative to the repo root ("run from the repo
+    # `exa dataplane-bus list` reads the use-case pack relative to the repo root ("run from the repo
     # root"); from the workspace it failed. The console runs where an operator would.
     h = await _token(client, VIEWER_PW)
-    r = await _run(client, h, "seanerbus list")
+    r = await _run(client, h, "dataplane-bus list")
     run = await _finish(client, h, r.json()["id"], fresh_runner)
     assert run["status"] == "succeeded", run
 

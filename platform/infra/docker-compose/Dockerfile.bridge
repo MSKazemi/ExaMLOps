@@ -10,15 +10,15 @@ WORKDIR /app
 RUN pip install --no-cache-dir pycapnp httpx prometheus_client pyyaml
 
 # Directory names vary by deploy environment:
-#   local dev:  SEANERBUS_DIR=seanerbus          AI_PRODUCTIONS_DIR=ai-productions
-#   lxp-cpu01:  SEANERBUS_DIR=examlops-seanerbus/seanerbus  AI_PRODUCTIONS_DIR=examlops
-ARG SEANERBUS_DIR=seanerbus
+#   local dev:  DATAPLANE_BUS_DIR=dataplane-bus          AI_PRODUCTIONS_DIR=ai-productions
+#   lxp-cpu01:  DATAPLANE_BUS_DIR=examlops-dataplane-bus/dataplane-bus  AI_PRODUCTIONS_DIR=examlops
+ARG DATAPLANE_BUS_DIR=dataplane-bus
 ARG AI_PRODUCTIONS_DIR=ai-productions
 
-# Copy and install the seanerbus Python bindings
-# (build context is the parent seanergys/ directory so both repos are accessible)
-COPY ${SEANERBUS_DIR}/bindings/python /app/seanerbus-pkg
-RUN pip install --no-cache-dir /app/seanerbus-pkg
+# Copy and install the dataplane-bus Python bindings
+# (build context is the parent directory so both repos are accessible)
+COPY ${DATAPLANE_BUS_DIR}/bindings/python /app/dataplane-bus-pkg
+RUN pip install --no-cache-dir /app/dataplane-bus-pkg
 
 # Install the examlops platform library — WITHOUT it, the bridge's
 # `from examlops.platform_db import …` fails at startup, _PLATFORM_DB_AVAILABLE flips False,
@@ -29,8 +29,8 @@ RUN pip install --no-cache-dir /app/examlops-cli
 
 # Copy bridge client code from ai-productions
 COPY ${AI_PRODUCTIONS_DIR}/platform/clients/ /app/clients/
-COPY ${AI_PRODUCTIONS_DIR}/usecases/seanergy/models /app/usecases/seanergy/models
+COPY ${AI_PRODUCTIONS_DIR}/usecases/reference/models /app/usecases/reference/models
 
 WORKDIR /app
 
-CMD ["python", "clients/seanerbus_bridge.py"]
+CMD ["python", "clients/dataplane_bus_bridge.py"]

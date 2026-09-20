@@ -14,7 +14,7 @@ container labels (`examlops.spiffe=gateway`, `examlops.spiffe=ray-serving`). Che
   client with the gateway's or the dashboard's SVID gets through, so the identity is what decides;
 - a caller's egress sidecar (`identity/serving-egress-envoy.yaml`, in the caller's network
   namespace, labelled with the caller's identity) carries plain HTTP from the caller's loopback to
-  the model server under that identity: the dashboard may infer and reload, the SeanerBUS bridge
+  the model server under that identity: the dashboard may infer and reload, the Dataplane bus bridge
   may infer but every spelling of an admin route is refused, and a sidecar with an identity that is
   no caller gets nothing through.
 
@@ -122,7 +122,7 @@ INFER = b'{"inputs": [{"name": "input-0", "shape": [1], "datatype": "FP64", "dat
 
 # Callers with an egress sidecar, by the identity their sidecar carries: an admin caller, an
 # inference-only caller, and a registered workload that is no caller of the model server.
-CALLERS = ("dashboard", "seanerbus-bridge", "autopilot")
+CALLERS = ("dashboard", "dataplane-bus-bridge", "autopilot")
 
 
 def _hardening(service: str) -> list[str]:
@@ -407,18 +407,18 @@ def test_an_admin_caller_may_reload(stack):
 
 
 def test_an_inference_only_caller_is_refused_every_spelling_of_an_admin_route(stack):
-    _wait_for_caller(stack, "seanerbus-bridge")
+    _wait_for_caller(stack, "dataplane-bus-bridge")
     status, text = _from_caller(
-        stack, "seanerbus-bridge", "/infer-pipeline/infer", method="POST", body=INFER
+        stack, "dataplane-bus-bridge", "/infer-pipeline/infer", method="POST", body=INFER
     )
     assert status == 200, text  # inference is what it is for
     xfcc = json.loads(text)["headers"]["x-forwarded-client-cert"]
-    assert "URI=spiffe://examlops.internal/seanerbus-bridge" in xfcc, xfcc
+    assert "URI=spiffe://examlops.internal/dataplane-bus-bridge" in xfcc, xfcc
     for path in ("/reload", "/reload/jpcp", "//reload", "/RELOAD", "/./reload", "/x/../reload",
                  "/infer-pipeline/traffic-rules/jpcp", "/infer-pipeline//traffic-rules/jpcp"):  # fmt: skip
-        status, text = _from_caller(stack, "seanerbus-bridge", path, method="POST", body=b"{}")
+        status, text = _from_caller(stack, "dataplane-bus-bridge", path, method="POST", body=b"{}")
         assert status == 403, (path, status, text)
-    status, _ = _from_caller(stack, "seanerbus-bridge", "/%2Freload", method="POST", body=b"{}")
+    status, _ = _from_caller(stack, "dataplane-bus-bridge", "/%2Freload", method="POST", body=b"{}")
     assert status == 400  # an escaped slash is rejected before any rule reads the path
 
 

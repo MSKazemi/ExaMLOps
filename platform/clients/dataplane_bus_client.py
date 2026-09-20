@@ -1,7 +1,7 @@
 """
-High-level SeanerBUS client for ExaMLOps.
+High-level Dataplane bus client for ExaMLOps.
 
-Wraps the raw seanerbus.client.Connection with a typed, async-generator-
+Wraps the raw dataplane-bus.client.Connection with a typed, async-generator-
 based API so callers never touch raw Cap'n'Proto payloads directly.
 """
 
@@ -11,13 +11,13 @@ import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any, TypeVar
 
-from seanerbus.client import Connection as _RawConnection
+from dataplane_bus.client import Connection as _RawConnection
 
 T = TypeVar("T")
 
 
 class Connection:
-    """Typed seanerbus connection.
+    """Typed dataplane-bus connection.
 
     Usage::
 
@@ -55,7 +55,7 @@ class Connection:
         while True:
             raw = await self._conn.read_msg()
             if raw is None:
-                raise EOFError("SeanerBUS connection closed")
+                raise EOFError("Dataplane bus connection closed")
             yield msg_class.from_capnp(raw)
 
     async def publish(self, topic: uuid.UUID, msg: Any) -> None:
@@ -80,7 +80,7 @@ class Connection:
         while True:
             raw = await self._conn.read_msg()
             if raw is None:
-                raise EOFError("SeanerBUS connection closed")
+                raise EOFError("Dataplane bus connection closed")
             req = req_class.from_capnp(raw)
             res = await handler(req)
             await self._conn.respond_to(raw, res.to_capnp())

@@ -302,7 +302,7 @@ def test_no_job_needs_another_in_its_own_stage():
     """Stricter than the rule above, and deliberately so.
 
     Same-stage ``needs:`` is legal — but only from GitLab 14.2. This pipeline runs on a
-    self-managed Seanergys instance whose version is not something the file should have to
+    self-managed GitLab instance whose version is not something the file should have to
     assume, and the failure mode is a pipeline that will not be *created*: no job runs, and
     no job reports that nothing ran. Keeping every dependency pointing at a strictly earlier
     stage costs nothing and removes the assumption entirely.

@@ -91,7 +91,7 @@ def test_non_public_addresses_are_denied(ip):
         "control-plane",
         "nats",
         "vllm",
-        "seanerbus-bridge",
+        "dataplane-bus-bridge",
         "backup",
         "mlflow.",  # trailing FQDN dot
         "MLFLOW",  # case
@@ -120,7 +120,7 @@ def test_internal_name_bypass_is_closed_even_with_an_overlapping_cidr(monkeypatc
         "examlops-mlflow",
         "nats",
         "vllm",
-        "seanerbus-bridge",
+        "dataplane-bus-bridge",
         "backup",
         "minio-init",
     ):

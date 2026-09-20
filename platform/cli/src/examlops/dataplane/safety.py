@@ -50,7 +50,7 @@ _INTERNAL_NAMES = frozenset(
         "docker-socket-proxy",
         "dataplane",
         "promtail",
-        "seanerbus-bridge",
+        "dataplane-bus-bridge",
         "backup",
         "nats",
         "vllm",

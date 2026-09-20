@@ -77,7 +77,7 @@ def test_health_reports_registry_and_auth(client):
 
 
 def test_models_endpoint_lists_known_models(client):
-    # /models requires read scope since the D2 hardening (it exposes per-model SeanerBUS
+    # /models requires read scope since the D2 hardening (it exposes per-model Dataplane bus
     # UUIDs and promotion config — registry enumeration must not be anonymous).
     r = client.get("/models", headers={"Authorization": "Bearer test-token"})
     assert r.status_code == 200
@@ -230,5 +230,5 @@ class TestPrefectGatewaySlugParsing:
 
 
 def test_models_endpoint_requires_token(client):
-    """D2 regression guard: the registry (incl. SeanerBUS UUIDs) is not anonymous."""
+    """D2 regression guard: the registry (incl. Dataplane bus UUIDs) is not anonymous."""
     assert client.get("/models").status_code == 401

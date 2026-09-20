@@ -237,8 +237,8 @@ def test_inference_telemetry_round_trips_bridge_to_consumer(js, tmp_path, monkey
     same rows `write_drift_snapshot`/`write_input_snapshot` would have written directly.
 
     Publishes through `NatsPublisher` directly rather than importing the real bridge module,
-    which needs the (not installed here) `seanerbus` client SDK and is unit-tested against a
-    stub for exactly that reason (`test_seanerbus_bridge.py`). What that unit suite does not
+    which needs the (not installed here) `dataplane-bus` client SDK and is unit-tested against a
+    stub for exactly that reason (`test_dataplane_bus_bridge.py`). What that unit suite does not
     cover — and this does — is that the payload it hands `NatsPublisher` actually survives a
     real NATS round trip into `handle_inference_telemetry_event`.
     """

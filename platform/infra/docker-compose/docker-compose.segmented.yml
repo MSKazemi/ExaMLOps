@@ -88,8 +88,8 @@ services:
     environment:
       # Spawned notebooks join the notebooks zone, not the (now empty) default network.
       DOCKER_NETWORK_NAME: examlops_notebooks
-  seanerbus-bridge:
-    networks: [db, control, ops, seanerbus-net]
+  dataplane-bus-bridge:
+    networks: [db, control, ops, dataplane-bus-net]
   backup:
     networks: [db, objects]
   nats:

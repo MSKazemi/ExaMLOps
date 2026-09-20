@@ -60,9 +60,9 @@ scrape_configs:
   # running container, so a service is scraped once it runs. One that stops after that is kept as
   # a target and reported down (a failed lookup keeps the last result): its alert still fires.
   # docs/runbooks/platform.md#targetdown covers removing one on purpose.
-  - job_name: seanerbus_bridge
+  - job_name: dataplane_bus_bridge
     dns_sd_configs:
-      - names: ['seanerbus-bridge']
+      - names: ['dataplane-bus-bridge']
         type: A
         port: 8003
         refresh_interval: 30s

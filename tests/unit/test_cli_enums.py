@@ -52,8 +52,8 @@ def test_mlflow_alias_values():
 def test_stack_service_hyphenated_values():
     assert StackService.ray_serving == "ray-serving"
     assert StackService.control_plane == "control-plane"
-    assert StackService.seanerbus_sim == "seanerbus-sim"
-    assert StackService.seanerbus_bridge == "seanerbus-bridge"
+    assert StackService.dataplane_bus_sim == "dataplane-bus-sim"
+    assert StackService.dataplane_bus_bridge == "dataplane-bus-bridge"
 
 
 def test_all_enums_are_str_subclass():
@@ -79,7 +79,7 @@ def test_stack_service_covers_all_compose_services():
         "promtail",
         "dashboard",
         "jupyterhub",
-        "seanerbus-sim",
-        "seanerbus-bridge",
+        "dataplane-bus-sim",
+        "dataplane-bus-bridge",
     ]:
         assert expected in values, f"StackService missing: {expected}"

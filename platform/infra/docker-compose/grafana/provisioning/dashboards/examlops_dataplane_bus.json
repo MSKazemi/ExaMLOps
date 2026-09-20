@@ -14,7 +14,7 @@
         "iconColor": "orange",
         "name": "Bridge Errors",
         "target": {
-          "expr": "{project=\"examlops\",compose_service=\"seanerbus-bridge\"} |~ \"(?i)(error|exception|fail)\"",
+          "expr": "{project=\"examlops\",compose_service=\"dataplane-bus-bridge\"} |~ \"(?i)(error|exception|fail)\"",
           "maxLines": 50,
           "refId": "bridge-err"
         },
@@ -22,7 +22,7 @@
       }
     ]
   },
-  "description": "SeanerBUS Bridge — per-model inference rate, error rate, latency percentiles, retrain triggers, and bridge health",
+  "description": "Dataplane bus Bridge — per-model inference rate, error rate, latency percentiles, retrain triggers, and bridge health",
   "editable": true,
   "graphTooltip": 1,
   "id": null,
@@ -45,7 +45,7 @@
       "title": "Bridge Status",
       "gridPos": {"h": 3, "w": 4, "x": 0, "y": 1},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "seanerbus_bridge_up", "legendFormat": "", "refId": "A"}],
+      "targets": [{"expr": "dataplane_bus_bridge_up", "legendFormat": "", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
       "fieldConfig": {
         "defaults": {
@@ -64,7 +64,7 @@
       "title": "Total Inferences (24 h)",
       "gridPos": {"h": 3, "w": 4, "x": 4, "y": 1},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "increase(seanerbus_inferences_total[24h])", "legendFormat": "{{model}}", "refId": "A"}],
+      "targets": [{"expr": "increase(dataplane_bus_inferences_total[24h])", "legendFormat": "{{model}}", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["sum"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
       "fieldConfig": {
         "defaults": {
@@ -82,7 +82,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "sum(rate(seanerbus_inference_errors_total[5m])) / sum(rate(seanerbus_inferences_total[5m])) * 100",
+          "expr": "sum(rate(dataplane_bus_inference_errors_total[5m])) / sum(rate(dataplane_bus_inferences_total[5m])) * 100",
           "legendFormat": "",
           "refId": "A"
         }
@@ -102,7 +102,7 @@
       "title": "Latency p50 (5 min)",
       "gridPos": {"h": 3, "w": 4, "x": 12, "y": 1},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "histogram_quantile(0.50, sum by(le) (rate(seanerbus_inference_latency_seconds_bucket[5m])))", "legendFormat": "", "refId": "A"}],
+      "targets": [{"expr": "histogram_quantile(0.50, sum by(le) (rate(dataplane_bus_inference_latency_seconds_bucket[5m])))", "legendFormat": "", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none", "textMode": "auto"},
       "fieldConfig": {
         "defaults": {
@@ -118,7 +118,7 @@
       "title": "Latency p99 (5 min)",
       "gridPos": {"h": 3, "w": 4, "x": 16, "y": 1},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "histogram_quantile(0.99, sum by(le) (rate(seanerbus_inference_latency_seconds_bucket[5m])))", "legendFormat": "", "refId": "A"}],
+      "targets": [{"expr": "histogram_quantile(0.99, sum by(le) (rate(dataplane_bus_inference_latency_seconds_bucket[5m])))", "legendFormat": "", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
       "fieldConfig": {
         "defaults": {
@@ -134,7 +134,7 @@
       "title": "Retrain Triggers (24 h)",
       "gridPos": {"h": 3, "w": 4, "x": 20, "y": 1},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"expr": "increase(seanerbus_retrain_triggers_total[24h]) or vector(0)", "legendFormat": "", "refId": "A"}],
+      "targets": [{"expr": "increase(dataplane_bus_retrain_triggers_total[24h]) or vector(0)", "legendFormat": "", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
       "fieldConfig": {
         "defaults": {
@@ -159,7 +159,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"expr": "rate(seanerbus_inferences_total[2m])", "legendFormat": "{{model}}", "refId": "A"}
+        {"expr": "rate(dataplane_bus_inferences_total[2m])", "legendFormat": "{{model}}", "refId": "A"}
       ],
       "options": {
         "tooltip": {"mode": "multi", "sort": "desc"},
@@ -181,7 +181,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "rate(seanerbus_inference_errors_total[2m]) / rate(seanerbus_inferences_total[2m]) * 100",
+          "expr": "rate(dataplane_bus_inference_errors_total[2m]) / rate(dataplane_bus_inferences_total[2m]) * 100",
           "legendFormat": "{{model}}",
           "refId": "A"
         }
@@ -214,9 +214,9 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"expr": "histogram_quantile(0.50, sum by(le) (rate(seanerbus_inference_latency_seconds_bucket[2m])))", "legendFormat": "p50", "refId": "A"},
-        {"expr": "histogram_quantile(0.95, sum by(le) (rate(seanerbus_inference_latency_seconds_bucket[2m])))", "legendFormat": "p95", "refId": "B"},
-        {"expr": "histogram_quantile(0.99, sum by(le) (rate(seanerbus_inference_latency_seconds_bucket[2m])))", "legendFormat": "p99", "refId": "C"}
+        {"expr": "histogram_quantile(0.50, sum by(le) (rate(dataplane_bus_inference_latency_seconds_bucket[2m])))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by(le) (rate(dataplane_bus_inference_latency_seconds_bucket[2m])))", "legendFormat": "p95", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by(le) (rate(dataplane_bus_inference_latency_seconds_bucket[2m])))", "legendFormat": "p99", "refId": "C"}
       ],
       "options": {
         "tooltip": {"mode": "multi"},
@@ -238,7 +238,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by(le, model_id) (rate(seanerbus_inference_latency_seconds_bucket[2m])))",
+          "expr": "histogram_quantile(0.99, sum by(le, model_id) (rate(dataplane_bus_inference_latency_seconds_bucket[2m])))",
           "legendFormat": "{{model}}",
           "refId": "A"
         }
@@ -272,7 +272,7 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {
-          "expr": "rate(seanerbus_retrain_triggers_total[5m]) or vector(0)",
+          "expr": "rate(dataplane_bus_retrain_triggers_total[5m]) or vector(0)",
           "legendFormat": "retrain triggers/s",
           "refId": "A"
         }
@@ -299,12 +299,12 @@
         {
           "id": 41,
           "type": "logs",
-          "title": "SeanerBUS Bridge Logs",
+          "title": "Dataplane bus Bridge Logs",
           "gridPos": {"h": 10, "w": 24, "x": 0, "y": 31},
           "datasource": {"type": "loki", "uid": "loki"},
           "targets": [
             {
-              "expr": "{project=\"examlops\",compose_service=\"seanerbus-bridge\"}",
+              "expr": "{project=\"examlops\",compose_service=\"dataplane-bus-bridge\"}",
               "legendFormat": "",
               "refId": "A"
             }
@@ -324,10 +324,10 @@
   ],
   "refresh": "10s",
   "schemaVersion": 38,
-  "tags": ["examlops", "seanerbus", "inference"],
+  "tags": ["examlops", "dataplane-bus", "inference"],
   "time": {"from": "now-1h", "to": "now"},
   "timepicker": {},
-  "title": "SeanerBUS Bridge",
-  "uid": "examlops-seanerbus",
+  "title": "Dataplane bus Bridge",
+  "uid": "examlops-dataplane-bus",
   "version": 2
 }

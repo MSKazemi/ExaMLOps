@@ -45,7 +45,7 @@ _MAX_PAYLOAD_DEPTH = 32
 
 
 class ModelSchemaRegistry:
-    """YAML-driven per-model input feature schema for the SeanerBUS bridge.
+    """YAML-driven per-model input feature schema for the Dataplane bus bridge.
 
     Usage::
 

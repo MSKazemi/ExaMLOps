@@ -74,7 +74,7 @@ services:
     environment:
       EXAMLOPS_SPIFFE_TRUST_DOMAIN: ${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}
       # One SPIFFE ID per name: spiffe://<trust domain>/<name>, selected by examlops.spiffe=<name>.
-      SPIFFE_WORKLOADS: ${SPIFFE_WORKLOADS:-control-plane dashboard skipper autopilot seanerbus-bridge gateway ray-serving}
+      SPIFFE_WORKLOADS: ${SPIFFE_WORKLOADS:-control-plane dashboard skipper autopilot dataplane-bus-bridge gateway ray-serving}
       SPIFFE_JWT_SVID_TTL: ${SPIFFE_JWT_SVID_TTL:-300}
     volumes:
       - spire_pki:/pki
@@ -184,15 +184,15 @@ services:
       - spire_agent_socket:/run/spire/sockets:ro
       - svid_autopilot:/run/spire/svid
 
-  spiffe-helper-seanerbus-bridge:
+  spiffe-helper-dataplane-bus-bridge:
     <<: *spiffe-helper
-    profiles: [seanerbus]
+    profiles: [dataplane-bus]
     labels:
-      examlops.spiffe: seanerbus-bridge
+      examlops.spiffe: dataplane-bus-bridge
     volumes:
       - ./helper-caller.conf:/conf/helper.conf:ro
       - spire_agent_socket:/run/spire/sockets:ro
-      - svid_seanerbus_bridge:/run/spire/svid
+      - svid_dataplane_bus_bridge:/run/spire/svid
 
 volumes:
   spire_pki:
@@ -204,7 +204,7 @@ volumes:
   svid_dashboard:
   svid_skipper:
   svid_autopilot:
-  svid_seanerbus_bridge:
+  svid_dataplane_bus_bridge:
 
 # Internal only: SPIRE needs no egress, and no platform service needs to reach either network.
 networks:

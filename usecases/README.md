@@ -12,7 +12,7 @@ platform code.
 The platform resolves the active pack from the environment:
 
 ```
-EXAMLOPS_USECASE_DIR=/path/to/pack     # pack root (default: usecases/seanergy)
+EXAMLOPS_USECASE_DIR=/path/to/pack     # pack root (default: usecases/reference)
 RAY_MODELS_DIR / MODELS_YAML_DIR       # explicit per-model YAML dir (override)
 ```
 

@@ -2,7 +2,7 @@
 # All expressions reference metrics emitted by:
 #   serving/ray_serving/app.py         (ray_examlops_*)
 #   platform/services/control_plane/   (examlops_*)
-#   seanerbus-bridge                   (seanerbus_*)
+#   dataplane-bus-bridge                   (dataplane_bus_*)
 groups:
 
   # ── Ray Serve / Online Inference ──────────────────────────────────────────────
@@ -318,77 +318,77 @@ groups:
           summary: "The gateway's own request ceiling is refusing traffic"
           description: "{{ printf \"%.2f\" $value }} requests/s refused with 429 by the whole-gateway ceiling (not a tenant quota)."
 
-  # ── SeanerBUS Bridge ──────────────────────────────────────────────────────────
-  - name: examlops-seanerbus
+  # ── Dataplane bus Bridge ──────────────────────────────────────────────────────────
+  - name: examlops-dataplane-bus
     rules:
 
-      # On `up`, not on `seanerbus_bridge_up`. The bridge sets its own gauge to 1 while it runs
+      # On `up`, not on `dataplane_bus_bridge_up`. The bridge sets its own gauge to 1 while it runs
       # and never sets it to 0 — it cannot, being dead — so the series goes stale instead, and
-      # `seanerbus_bridge_up == 0` matched nothing at exactly the moment the alert was for. The
+      # `dataplane_bus_bridge_up == 0` matched nothing at exactly the moment the alert was for. The
       # generic `TargetDown` did still fire, three minutes later and without the service label.
-      - alert: SeanerBUSBridgeDown
-        expr: up{job="seanerbus_bridge"} == 0
+      - alert: DataplaneBusBridgeDown
+        expr: up{job="dataplane_bus_bridge"} == 0
         for: 2m
         labels:
           severity: critical
-          service: seanerbus
+          service: dataplane-bus
         annotations:
           runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-bridge-down"
-          summary: "SeanerBUS bridge is offline"
+          summary: "Dataplane bus bridge is offline"
           description: "The bridge has been unreachable for 2 min — inference requests from the bus are failing."
 
-      - alert: SeanerBUSHighErrorRate
+      - alert: DataplaneBusHighErrorRate
         expr: |
-          sum(rate(seanerbus_inference_errors_total[5m]))
-          / clamp_min(sum(rate(seanerbus_inferences_total[5m])), 0.001)
+          sum(rate(dataplane_bus_inference_errors_total[5m]))
+          / clamp_min(sum(rate(dataplane_bus_inferences_total[5m])), 0.001)
           > 0.05
         for: 5m
         labels:
           severity: warning
-          service: seanerbus
+          service: dataplane-bus
         annotations:
           runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-bridge-error-rate"
-          summary: "SeanerBUS inference error rate > 5%"
+          summary: "Dataplane bus inference error rate > 5%"
           description: "Bridge inference error rate is {{ $value | humanizePercentage }} over the last 5 min."
 
-      - alert: SeanerBUSHighLatencyP99
+      - alert: DataplaneBusHighLatencyP99
         expr: |
           histogram_quantile(0.99,
-            sum by(le) (rate(seanerbus_inference_latency_seconds_bucket[5m]))
+            sum by(le) (rate(dataplane_bus_inference_latency_seconds_bucket[5m]))
           ) > 0.5
         for: 10m
         labels:
           severity: warning
-          service: seanerbus
+          service: dataplane-bus
         annotations:
           runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-bridge-latency"
-          summary: "SeanerBUS p99 latency > 500 ms"
-          description: "SeanerBUS p99 inference latency is {{ $value | humanizeDuration }}."
+          summary: "Dataplane bus p99 latency > 500 ms"
+          description: "Dataplane bus p99 inference latency is {{ $value | humanizeDuration }}."
 
       # The bridge replies on the bus before it writes drift/input telemetry (plan P0.5). That
       # keeps a slow or broken database off the inference path — and would hide it completely,
       # because inferences keep succeeding while drift detection silently loses its input.
-      - alert: SeanerBUSTelemetryWritesFailing
-        expr: sum(increase(seanerbus_telemetry_persist_failures_total[10m])) > 0
+      - alert: DataplaneBusTelemetryWritesFailing
+        expr: sum(increase(dataplane_bus_telemetry_persist_failures_total[10m])) > 0
         for: 5m
         labels:
           severity: warning
-          service: seanerbus
+          service: dataplane-bus
         annotations:
           runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-telemetry-writes-failing"
-          summary: "SeanerBUS bridge cannot write inference telemetry"
+          summary: "Dataplane bus bridge cannot write inference telemetry"
           description: "{{ $value | humanize }} drift/input-embedding writes failed in 10 min. Inference is unaffected, but drift detection is losing samples; check the platform datastore."
 
-      - alert: SeanerBUSTelemetryDropping
-        expr: sum(increase(seanerbus_telemetry_dropped_total[10m])) > 0
+      - alert: DataplaneBusTelemetryDropping
+        expr: sum(increase(dataplane_bus_telemetry_dropped_total[10m])) > 0
         for: 10m
         labels:
           severity: warning
-          service: seanerbus
+          service: dataplane-bus
         annotations:
           runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-telemetry-dropping"
-          summary: "SeanerBUS bridge is dropping inference telemetry"
-          description: "The telemetry spool is full ({{ $value | humanize }} records dropped in 10 min): the datastore cannot keep up with bus traffic. Raise SEANERBUS_TELEMETRY_QUEUE_MAX only after fixing write latency."
+          summary: "Dataplane bus bridge is dropping inference telemetry"
+          description: "The telemetry spool is full ({{ $value | humanize }} records dropped in 10 min): the datastore cannot keep up with bus traffic. Raise DATAPLANE_BUS_TELEMETRY_QUEUE_MAX only after fixing write latency."
 
   # ── Control Plane ─────────────────────────────────────────────────────────────
   - name: examlops-control-plane

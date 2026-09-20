@@ -339,7 +339,7 @@ export interface ModelDetailResponse {
     work_pool: string | null
     concurrency_limit: number | null
   }
-  seanerbus_uuid?: string | null
+  dataplane_bus_uuid?: string | null
   stages: {
     production: ModelStageInfo | null
     canary: ModelStageInfo | null

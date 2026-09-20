@@ -15,7 +15,7 @@ inference, and that record is what drift detection reads later.
 
 <div class="xm-player" data-scene="prediction" markdown>
 <ol class="xm-steps">
-<li data-focus="client,bus" data-run="client-bus" data-actor="Client" data-line="data"><strong>A client sends a job to one model's address.</strong> Every model has its own UUID on the bus, set as <code>seanerbus_uuid</code> in its YAML. In request/reply mode — the one the stack runs — the bus routes by that UUID, not by the model name.</li>
+<li data-focus="client,bus" data-run="client-bus" data-actor="Client" data-line="data"><strong>A client sends a job to one model's address.</strong> Every model has its own UUID on the bus, set as <code>dataplane_bus_uuid</code> in its YAML. In request/reply mode — the one the stack runs — the bus routes by that UUID, not by the model name.</li>
 <li data-focus="bus,bridge" data-run="bus-bridge" data-actor="Bridge" data-line="data"><strong>The bridge picks the handler for that model.</strong> At start-up it registered one handler per model UUID. The handler fixes the model, picks the alias — Production unless the job asks for another — and builds the features from the model's input schema.</li>
 <li data-focus="bridge,ingress" data-run="bridge-ingress" data-actor="Bridge" data-line="data"><strong>The job enters the inference pipeline.</strong> The bridge posts it to <code>/infer-pipeline/infer</code> on Ray Serve over one shared HTTP client: 5 s to connect, 10 s to read, no retry at this hop.</li>
 <li data-focus="ingress,transformer" data-run="ingress-transformer" data-actor="Ingress" data-line="data"><strong>The ingress validates the payload.</strong> An embedding and a node count are required. A malformed request gets a 422 here — a schema error, which is not treated as a model failure.</li>
@@ -65,5 +65,5 @@ exa drift input status                            # input-embedding drift
 
 - [Interfaces](../guides/interfaces.md) — bus, HTTP, CLI and dashboard entry points
 - [Ray Serve](../components/ray-serve.md) — hot set, aliases, reload and shadow traffic
-- [SeanerBUS bridge](../guides/seanerbus.md) and [bus architecture](../guides/seanerbus-architecture.md)
+- [Dataplane bus bridge](../guides/dataplane-bus.md) and [bus architecture](../guides/dataplane-bus-architecture.md)
 - [Follow a retrain](retrain.md) — what happens after drift or failures are detected

@@ -48,7 +48,7 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
 
     Uses the shared :mod:`examlops.resilience.db` helper so every one of the ~170
     call sites (and the 3 concurrent long-lived writers: CLI, agent service,
-    seanerbus bridge) gets WAL + ``synchronous=NORMAL`` + a ``busy_timeout`` that
+    dataplane-bus bridge) gets WAL + ``synchronous=NORMAL`` + a ``busy_timeout`` that
     waits out lock contention instead of raising ``database is locked`` immediately,
     plus ``check_same_thread=False`` for the threaded services.
     """
@@ -1038,7 +1038,7 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
             CREATE INDEX IF NOT EXISTS idx_dataplane_pulls_source
                 ON dataplane_pulls(project, source, id);
             -- Plan 2 (ADR 0130/0131) task A6 — stream catalog: named inbound-connector
-            -- bindings (Kafka/HTTP push/SeanerBUS req-res) that route a live request to a
+            -- bindings (Kafka/HTTP push/Dataplane bus req-res) that route a live request to a
             -- project/model/alias. PK (project, name) mirrors dataplane_sources; project
             -- ''  (displayed '_global') is the unscoped default, same convention as the
             -- source registry above. options_json/limits_json mirror spec_json/limits_json

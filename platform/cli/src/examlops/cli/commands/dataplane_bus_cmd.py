@@ -20,10 +20,10 @@ app = typer.Typer(
 # Per-model YAML lives in the active use-case pack (ADR 0094), not the platform (env-resolved).
 MODELS_DIR = _usecase_models_dir()
 
-_EXAMPLES_LIST = "Examples:\n\n  exa seanerbus list\n\n  exa --json seanerbus list"
-_EXAMPLES_INIT = "Examples:\n\n  exa seanerbus init-uuids"
-_EXAMPLES_REGEN = "Examples:\n\n  exa seanerbus regen-uuid JPCP"
-_EXAMPLES_STATUS = "Examples:\n\n  exa seanerbus status"
+_EXAMPLES_LIST = "Examples:\n\n  exa dataplane-bus list\n\n  exa --json dataplane-bus list"
+_EXAMPLES_INIT = "Examples:\n\n  exa dataplane-bus init-uuids"
+_EXAMPLES_REGEN = "Examples:\n\n  exa dataplane-bus regen-uuid JPCP"
+_EXAMPLES_STATUS = "Examples:\n\n  exa dataplane-bus status"
 
 
 def _iter_yamls() -> list[tuple[str, Path, str]]:
@@ -42,19 +42,19 @@ def _iter_yamls() -> list[tuple[str, Path, str]]:
 
 
 def _insert_uuid(text: str, uid: str) -> str:
-    """Insert seanerbus_uuid after the 'enabled:' line (preserves all formatting)."""
+    """Insert dataplane_bus_uuid after the 'enabled:' line (preserves all formatting)."""
     m = re.search(r"^enabled:.*$", text, re.MULTILINE)
     if m:
         pos = m.end()
-        return text[:pos] + f"\nseanerbus_uuid: {uid}" + text[pos:]
-    return text.rstrip() + f"\nseanerbus_uuid: {uid}\n"
+        return text[:pos] + f"\ndataplane_bus_uuid: {uid}" + text[pos:]
+    return text.rstrip() + f"\ndataplane_bus_uuid: {uid}\n"
 
 
 def _replace_uuid(text: str, uid: str) -> str:
-    """Replace existing seanerbus_uuid value in YAML text."""
+    """Replace existing dataplane_bus_uuid value in YAML text."""
     return re.sub(
-        r"^seanerbus_uuid:.*$",
-        f"seanerbus_uuid: {uid}",
+        r"^dataplane_bus_uuid:.*$",
+        f"dataplane_bus_uuid: {uid}",
         text,
         count=1,
         flags=re.MULTILINE,
@@ -63,26 +63,26 @@ def _replace_uuid(text: str, uid: str) -> str:
 
 @app.command(name="list", epilog=_EXAMPLES_LIST)
 def list_uuids():
-    """Show all models and their SeanerBUS UUIDs."""
+    """Show all models and their Dataplane bus UUIDs."""
     rows = []
     for name, path, text in _iter_yamls():
         raw = yaml.safe_load(text) or {}
         rows.append(
             [
                 name,
-                raw.get("seanerbus_uuid") or "(not assigned)",
+                raw.get("dataplane_bus_uuid") or "(not assigned)",
             ]
         )
-    _output.print_table("SeanerBUS UUIDs", ["Model", "UUID"], rows)
+    _output.print_table("Dataplane bus UUIDs", ["Model", "UUID"], rows)
 
 
 @app.command(name="init-uuids", epilog=_EXAMPLES_INIT)
 def init_uuids():
-    """Assign a SeanerBUS UUID to every model that doesn't have one. Idempotent."""
+    """Assign a Dataplane bus UUID to every model that doesn't have one. Idempotent."""
     assigned: list[list[str]] = []
     for name, path, text in _iter_yamls():
         raw = yaml.safe_load(text) or {}
-        if raw.get("seanerbus_uuid") is not None:
+        if raw.get("dataplane_bus_uuid") is not None:
             continue
         new_uid = str(uuid.uuid4())
         path.write_text(_insert_uuid(text, new_uid))
@@ -103,12 +103,12 @@ def init_uuids():
 def regen_uuid(
     model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
 ):
-    """Regenerate the SeanerBUS UUID for one model. Notify HPC teams of the change."""
+    """Regenerate the Dataplane bus UUID for one model. Notify HPC teams of the change."""
     for name, path, text in _iter_yamls():
         if name.upper() == model.upper():
             new_uid = str(uuid.uuid4())
             raw = yaml.safe_load(text) or {}
-            if raw.get("seanerbus_uuid") is not None:
+            if raw.get("dataplane_bus_uuid") is not None:
                 path.write_text(_replace_uuid(text, new_uid))
             else:
                 path.write_text(_insert_uuid(text, new_uid))
@@ -124,9 +124,9 @@ def regen_uuid(
 
 @app.command(epilog=_EXAMPLES_STATUS)
 def status():
-    """Probe the SeanerBUS bridge health and runtime stats endpoints."""
+    """Probe the Dataplane bus bridge health and runtime stats endpoints."""
     cfg = load_config()
-    base_url = cfg.seanerbus_bridge_url
+    base_url = cfg.dataplane_bus_bridge_url
     try:
         health = _client.get(f"{base_url}/health")
         stats = _client.get(f"{base_url}/stats")

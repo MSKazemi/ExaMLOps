@@ -1,4 +1,4 @@
-/* Follow a prediction: the data line, hop by hop. Sources: platform/clients/seanerbus_bridge.py,
+/* Follow a prediction: the data line, hop by hop. Sources: platform/clients/dataplane_bus_bridge.py,
  * serving/inference_pipeline/app.py (ingress, FeatureTransformer, ModelRouter),
  * serving/ray_serving/app.py (MultiModelServer, hot set, reload poll, metrics). */
 XM.register("prediction", {
@@ -13,12 +13,12 @@ XM.register("prediction", {
   nodes: [
     { id: "client", x: 100, y: 160, label: "Client", sub: "site service", kind: "external", line: "data",
       info: { title: "Client", tasks: ["Sends an inference job addressed to one model's UUID", "Must check the reply's error message: on failure the prediction is 0.0"] } },
-    { id: "bus", x: 290, y: 160, label: "SeanerBUS", sub: "routes by UUID", kind: "external", line: "data",
-      info: { title: "SeanerBUS", tasks: ["In request/reply mode, routes each message by its UUID; the UUID, not a name, selects the model"], links: [{ text: "Bus architecture", href: "guides/seanerbus-architecture.md" }] } },
+    { id: "bus", x: 290, y: 160, label: "Dataplane bus", sub: "routes by UUID", kind: "external", line: "data",
+      info: { title: "Dataplane bus", tasks: ["In request/reply mode, routes each message by its UUID; the UUID, not a name, selects the model"], links: [{ text: "Bus architecture", href: "guides/dataplane-bus-architecture.md" }] } },
     { id: "bridge", x: 480, y: 160, label: "Bus bridge", sub: "one handler per model", line: "data",
-      info: { title: "Bus bridge", sub: "Handler bound to the model's seanerbus_uuid",
+      info: { title: "Bus bridge", sub: "Handler bound to the model's dataplane_bus_uuid",
         tasks: ["Sets the model and alias (default Production)", "Builds features from the model's input schema", "Posts to the pipeline: 5 s connect, 10 s read, no retry at this hop"],
-        cli: ["exa seanerbus status"], links: [{ text: "Bridge guide", href: "guides/seanerbus.md" }] } },
+        cli: ["exa dataplane-bus status"], links: [{ text: "Bridge guide", href: "guides/dataplane-bus.md" }] } },
     { id: "ingress", x: 670, y: 160, label: "Ingress", sub: "validate payload", line: "data",
       info: { title: "Pipeline ingress", sub: "POST /infer-pipeline/infer",
         tasks: ["Validates the request against the data contract (embedding and num_nodes required)", "Answers 422 on a schema error", "Opens the first trace span when tracing is on"] } },

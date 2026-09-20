@@ -4,7 +4,7 @@ Covers:
 
 * CRUD on the ``dataplane_streams`` catalog (``examlops.data.dataplane``), including the
   origin-conditional upsert and the conditional ``set_stream_state``/``state_reason``;
-* ``examlops.dataplane.streams.bindings``: YAML parsing (incl. the legacy ``seanerbus_uuid``
+* ``examlops.dataplane.streams.bindings``: YAML parsing (incl. the legacy ``dataplane_bus_uuid``
   shim, off by default), tenancy (ruling R11) with ASCII name validation (fix round 1 #3),
   canonical model-spelling resolution (fix round 1 #4), origin ownership (fix round 1 #1), the
   safe removal sweep (fix round 1 #2), per-entry robustness (fix round 1 #5), and
@@ -38,7 +38,7 @@ from examlops.dataplane.streams.types import StreamBinding, StreamLimits  # noqa
 from examlops.dataplane.types import SpecError  # noqa: E402
 from pipelines.model_loader import ModelYAMLConfig, normalize_inference_streams  # noqa: E402
 
-_LEGACY_ENV = "EXAMLOPS_DATAPLANE_LEGACY_SEANERBUS_UUID"
+_LEGACY_ENV = "EXAMLOPS_DATAPLANE_LEGACY_DATAPLANE_BUS_UUID"
 _KELVIN = "K"  # KELVIN SIGN — Python str.lower() folds it to 'k', SQLite's lower() does not
 _FULLWIDTH_J = "Ｊ"  # FULLWIDTH LATIN CAPITAL LETTER J — non-ASCII lookalike of 'J'
 
@@ -58,7 +58,7 @@ def _assign_model(project: str, model: str) -> None:
 @pytest.fixture
 def pack(tmp_path, monkeypatch) -> Path:
     """An isolated, empty use-case pack — every ``define_stream``/``sync_pack_streams`` test uses
-    this instead of the real ``usecases/seanergy`` pack, so (a) tests never depend on, or race
+    this instead of the real ``usecases/reference`` pack, so (a) tests never depend on, or race
     with, another session editing that pack's YAML files, and (b) ``define_stream``'s canonical
     model-name resolution (fix round 1 #4) only ever sees models the test itself declared."""
     root = tmp_path / "pack"
@@ -364,30 +364,30 @@ def test_yaml_streams_rejects_non_ascii_model():
         bindings.yaml_streams({"name": f"JPCP{_KELVIN}", "inference": {}}, project="")
 
 
-def test_yaml_streams_legacy_seanerbus_off_by_default(monkeypatch):
+def test_yaml_streams_legacy_dataplane_bus_off_by_default(monkeypatch):
     monkeypatch.delenv(_LEGACY_ENV, raising=False)
-    model_yaml = {"name": "JPCP", "seanerbus_uuid": "abc-123", "inference": {}}
+    model_yaml = {"name": "JPCP", "dataplane_bus_uuid": "abc-123", "inference": {}}
     assert bindings.yaml_streams(model_yaml, project="") == []
 
 
-def test_yaml_streams_legacy_seanerbus_enabled_via_env(monkeypatch):
+def test_yaml_streams_legacy_dataplane_bus_enabled_via_env(monkeypatch):
     monkeypatch.setenv(_LEGACY_ENV, "1")
-    model_yaml = {"name": "JPCP", "seanerbus_uuid": "abc-123", "inference": {}}
+    model_yaml = {"name": "JPCP", "dataplane_bus_uuid": "abc-123", "inference": {}}
     result = bindings.yaml_streams(model_yaml, project="")
     assert len(result) == 1
     b = result[0]
-    assert b.connector == "seanerbus"
+    assert b.connector == "dataplane-bus"
     assert b.address == "abc-123"
     assert b.model == "JPCP"
-    assert b.name == "JPCP-seanerbus"
+    assert b.name == "JPCP-dataplane-bus"
 
 
 def test_yaml_streams_legacy_shim_skipped_if_already_declared(monkeypatch):
     monkeypatch.setenv(_LEGACY_ENV, "1")
     model_yaml = {
         "name": "JPCP",
-        "seanerbus_uuid": "abc-123",
-        "inference": {"streams": [{"name": "sb", "connector": "seanerbus", "address": "explicit"}]},
+        "dataplane_bus_uuid": "abc-123",
+        "inference": {"streams": [{"name": "sb", "connector": "dataplane-bus", "address": "explicit"}]},
     }
     result = bindings.yaml_streams(model_yaml, project="")
     assert len(result) == 1
@@ -540,14 +540,14 @@ def test_define_stream_accepts_a_registered_connector_and_the_push_kind(pack, ki
 
 
 def test_a_pack_entry_may_name_a_connector_the_core_does_not_register(pack):
-    """The pack's own connectors (SeanerBUS arrives as pack content) must still sync — only the
+    """The pack's own connectors (Dataplane bus arrives as pack content) must still sync — only the
     API/CLI path is held to the registry."""
     (pack / "packmodel.yaml").write_text(
-        "name: PACKMODEL\ninference:\n  streams:\n    - name: bus1\n      connector: seanerbus\n"
+        "name: PACKMODEL\ninference:\n  streams:\n    - name: bus1\n      connector: dataplane-bus\n"
     )
     report = bindings.sync_pack_streams(actor="ci")
     assert report["errors"] == [] and report["synced"] == ["_global/bus1"]
-    assert bindings.get_binding("bus1", "").connector == "seanerbus"
+    assert bindings.get_binding("bus1", "").connector == "dataplane-bus"
 
 
 def test_yaml_streams_labels_pack_bindings_pack(pack):
@@ -1223,7 +1223,7 @@ _PARITY_RAW = {
     "name": "JPCP",
     "config_class": "jpcp_config.JPCPConfiguration",
     "task_type": "regression",
-    "seanerbus_uuid": "legacy-uuid-1",
+    "dataplane_bus_uuid": "legacy-uuid-1",
     "inference": {
         "streams": [
             {"name": "http-in", "connector": "http", "address": "https://x/infer"},
@@ -1269,7 +1269,7 @@ def test_yaml_streams_and_normalizer_agree(monkeypatch, legacy_env):
         name=_PARITY_RAW["name"],
         config_class=_PARITY_RAW["config_class"],
         task_type=_PARITY_RAW["task_type"],
-        seanerbus_uuid=_PARITY_RAW["seanerbus_uuid"],
+        dataplane_bus_uuid=_PARITY_RAW["dataplane_bus_uuid"],
         inference=_PARITY_RAW["inference"],
     )
     via_normalizer = normalize_inference_streams(cfg)

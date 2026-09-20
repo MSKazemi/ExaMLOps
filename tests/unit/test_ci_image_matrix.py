@@ -26,9 +26,9 @@ _COMPOSE = _ROOT / "platform" / "infra" / "docker-compose" / "docker-compose.yml
 # point of the guard is that "not in the matrix" should be a decision rather than an
 # oversight.
 _EXCLUDED = {
-    # Its build context is the PARENT of this repository — it needs the sibling seanerbus
+    # Its build context is the PARENT of this repository — it needs the sibling dataplane-bus
     # checkout, which a CI clone of this repo does not have. Built on the node, as before.
-    "seanerbus-bridge",
+    "dataplane-bus-bridge",
 }
 
 

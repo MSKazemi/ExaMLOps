@@ -60,7 +60,7 @@ deployment points at those stores, and backup covers them through its `postgres`
 tiers.
 
 ```bash
-exa instance init --data-dir /srv/examlops-data --pack usecases/seanergy --preset standard
+exa instance init --data-dir /srv/examlops-data --pack usecases/reference --preset standard
 export EXAMLOPS_DATA_DIR=/srv/examlops-data        # on every process
 exa instance info                                   # every place user data lives
 ```

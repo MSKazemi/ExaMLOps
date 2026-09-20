@@ -1,10 +1,10 @@
 """
-Smoke-test publisher for the seanerbus bridge.
+Smoke-test publisher for the dataplane-bus bridge.
 
 Publishes 3 synthetic HpcJobV1 messages to the given job topic UUID.
 
 Usage:
-    python clients/seanerbus_test_pub.py <JOB_TOPIC_UUID>
+    python clients/dataplane_bus_test_pub.py <JOB_TOPIC_UUID>
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ import capnp
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from seanerbus_client import Connection  # noqa: E402
-from seanerbus_msgs import HpcJobV1  # noqa: E402
+from dataplane_bus_client import Connection  # noqa: E402
+from dataplane_bus_msgs import HpcJobV1  # noqa: E402
 
-SEANERBUS_HOST = os.getenv("SEANERBUS_HOST", "localhost")
-SEANERBUS_PORT = int(os.getenv("SEANERBUS_PORT", "5398"))
+DATAPLANE_BUS_HOST = os.getenv("DATAPLANE_BUS_HOST", "localhost")
+DATAPLANE_BUS_PORT = int(os.getenv("DATAPLANE_BUS_PORT", "5398"))
 EMBEDDING_DIM = 384
 _USERS = list(range(1, 101))
 _NODE_COUNTS = [1, 2, 4, 8, 16]
@@ -49,7 +49,7 @@ async def main() -> None:
         print(f"ERROR: {sys.argv[1]!r} is not a valid UUID")
         sys.exit(1)
 
-    conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
+    conn = Connection(DATAPLANE_BUS_HOST, DATAPLANE_BUS_PORT)
     await conn.connect()
 
     for i in range(1, 4):

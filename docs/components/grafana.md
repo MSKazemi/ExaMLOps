@@ -1,6 +1,6 @@
 # Grafana — Monitoring Dashboards
 
-Grafana visualises the real-time metrics that Ray Serve, the control plane, and the SeanerBUS bridge export to Prometheus. Seven dashboards are provisioned automatically when the monitoring stack starts.
+Grafana visualises the real-time metrics that Ray Serve, the control plane, and the Dataplane bus bridge export to Prometheus. Seven dashboards are provisioned automatically when the monitoring stack starts.
 
 ## Start / stop
 
@@ -55,7 +55,7 @@ Prediction drift (median/p95/p05), input embedding norm/mean/std vs baseline, au
 
 Queue depth gauges, approval funnel gauge, SLA risk gauge (oldest pending in days), event rate time series by model and action, auto-expiry trend, and a Loki approval event log.
 
-### SeanerBUS Bridge (`examlops-seanerbus`)
+### Dataplane bus Bridge (`examlops-dataplane-bus`)
 
 Bridge health status, total inferences, per-model error rate %, combined p50/p95/p99 latency, per-model p99, retrain trigger rate, and a collapsible bridge log panel.
 
@@ -143,9 +143,9 @@ Rules are defined in `platform/infra/docker-compose/alert_rules.yml`, mounted in
 | `ServingGatewayCredentialStoreUnavailable` | `examlops-gateway` | warning | `gateway-authz` answered 503 for 5m |
 | `ServingGatewayHighErrorRate` | `examlops-gateway` | warning | > 5 % of gateway answers 5xx for 10m |
 | `ServingGatewayAtCeiling` | `examlops-gateway` | warning | The whole-gateway ceiling refused requests for 10m |
-| `SeanerBUSBridgeDown` | `examlops-seanerbus` | critical | `up{job="seanerbus_bridge"} == 0` for 2m |
-| `SeanerBUSHighErrorRate` | `examlops-seanerbus` | warning | Bridge inference error ratio > 5% for 5m |
-| `SeanerBUSHighLatencyP99` | `examlops-seanerbus` | warning | Bridge p99 latency > 500ms for 10m |
+| `DataplaneBusBridgeDown` | `examlops-dataplane-bus` | critical | `up{job="dataplane_bus_bridge"} == 0` for 2m |
+| `DataplaneBusHighErrorRate` | `examlops-dataplane-bus` | warning | Bridge inference error ratio > 5% for 5m |
+| `DataplaneBusHighLatencyP99` | `examlops-dataplane-bus` | warning | Bridge p99 latency > 500ms for 10m |
 | `ControlPlaneDown` | `examlops-control-plane` | critical | `up{job="control_plane"} == 0` for 2m |
 | `ApprovalsStale` | `examlops-control-plane` | warning | Oldest pending approval > 24h for 30m |
 | `ApprovalsStaleUrgent` | `examlops-control-plane` | critical | Oldest pending approval > 72h (auto-expiry imminent) |
@@ -213,7 +213,7 @@ the failure message names what slipped, and so a deliberate exception would have
 as a number; the comment above it records what each step proved.
 
 **A firing case is also the cheapest regression test for a metric's meaning.** When
-`seanerbus_inferences_total` was corrected to count every dispatched call rather than only
+`dataplane_bus_inferences_total` was corrected to count every dispatched call rather than only
 successes, the alert's case was updated to assert the *figure* — 10 % of calls failing must read
 `10%`. Simulating the old denominator makes it render `11.11%`, so the replay now fails if anyone
 reverts the emitter. An expression test that only asks "did it fire" would not have noticed.
@@ -308,7 +308,7 @@ Prometheus.
 | `alertmanager` | `alertmanager:9093` | Alertmanager self-monitoring |
 | `tempo` | `tempo:3200` | Trace-store self-monitoring |
 | `loki` | `loki:3100` | Log-store self-monitoring |
-| `seanerbus_bridge` | DNS `seanerbus-bridge:8003` | Bus bridge: inference throughput, errors, latency (profile `seanerbus`) |
+| `dataplane_bus_bridge` | DNS `dataplane-bus-bridge:8003` | Bus bridge: inference throughput, errors, latency (profile `dataplane-bus`) |
 | `dataplane` | `dataplane:8010` | dataplane pulls, freshness |
 | `vllm` | DNS `vllm:8000` | vLLM serving: TTFT, queue depth, KV-cache usage (GPU profile `vllm`) |
 | `gateway` | DNS `gateway:9902`, path `/stats/prometheus` | Serving gateway (Envoy): answers by class, authorization errors, ceiling refusals (profile `gateway`) |
@@ -387,7 +387,7 @@ Default: `admin` / `admin`. You will be prompted to change the password on first
 Prometheus evaluates `platform/infra/docker-compose/alert_rules.yml` and routes firing alerts to
 **Alertmanager** (`prom/alertmanager`, http://localhost:19093). 25 rules span four groups:
 `examlops-serving` (SLO burn-rate, error rate, latency, model count),
-`examlops-seanerbus` (bridge up, error rate, p99),
+`examlops-dataplane-bus` (bridge up, error rate, p99),
 `examlops-control-plane` (retrain errors, CB open, approval SLA, auto-expiry),
 and `examlops-platform` (Loki, Tempo, Alertmanager, Ray Serve target health).
 Validate the rules with `make alerts-check`.

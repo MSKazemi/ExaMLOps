@@ -100,7 +100,7 @@ GROUP_GUIDES = {
     "connection": "guides/projects-workspaces.md",
     "workbench": "guides/projects-workspaces.md",
     "backup": "guides/backup-restore.md",
-    "seanerbus": "guides/seanerbus.md",
+    "dataplane-bus": "guides/dataplane-bus.md",
     "approvals": "guides/control-plane.md",
 }
 

@@ -48,8 +48,8 @@ class StackService(StrEnum):
     promtail = "promtail"
     dashboard = "dashboard"
     jupyterhub = "jupyterhub"
-    seanerbus_sim = "seanerbus-sim"
-    seanerbus_bridge = "seanerbus-bridge"
+    dataplane_bus_sim = "dataplane-bus-sim"
+    dataplane_bus_bridge = "dataplane-bus-bridge"
     vllm = "vllm"  # GPU-only, behind the `vllm` compose profile (ADR 0107)
 
 

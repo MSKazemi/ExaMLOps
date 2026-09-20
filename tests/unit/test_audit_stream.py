@@ -93,7 +93,7 @@ def test_every_service_that_writes_audit_events_can_be_switched_on():
         ).read_text()
     )
     writers = [
-        "control-plane", "dashboard", "agent", "seanerbus-bridge", "autopilot-follower",
+        "control-plane", "dashboard", "agent", "dataplane-bus-bridge", "autopilot-follower",
         "skipper-watch", "dataplane", "ray-serving", "gateway-authz", "backup",
     ]  # fmt: skip
     missing = []

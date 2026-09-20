@@ -302,7 +302,7 @@ exa drift input baseline JPCP
 
 ## exa audit
 
-Platform audit log — who did what and when. Events are written by the CLI (`exa approvals approve/reject`, `exa serve traffic`, `exa pipeline promote`), the SeanerBUS bridge (every inference), and the agent.
+Platform audit log — who did what and when. Events are written by the CLI (`exa approvals approve/reject`, `exa serve traffic`, `exa pipeline promote`), the Dataplane bus bridge (every inference), and the agent.
 
 ```bash
 exa audit                              # last 30 days, all events
@@ -575,7 +575,7 @@ exa pipeline validate
 
 ### `exa pipeline export-registry`
 
-Export auto-discovered model state to `usecases/seanergy/models`.
+Export auto-discovered model state to `usecases/reference/models`.
 
 ```bash
 exa pipeline export-registry
@@ -646,43 +646,43 @@ After scaffolding: edit `modelzoo/seanergys_modelzoo/models/tasks/<name>.py` and
 
 ---
 
-## exa seanerbus
+## exa dataplane-bus
 
-SeanerBUS bridge UUID management. Each model has a stable UUID used as its identity on the SeanerBUS. Run these commands from the repo root.
+Dataplane bus bridge UUID management. Each model has a stable UUID used as its identity on the Dataplane bus. Run these commands from the repo root.
 
-### `exa seanerbus list`
+### `exa dataplane-bus list`
 
-Show all models and their SeanerBUS UUIDs. Reads directly from `pipelines/models/*.yaml` — no dashboard required.
+Show all models and their Dataplane bus UUIDs. Reads directly from `pipelines/models/*.yaml` — no dashboard required.
 
 ```bash
-exa seanerbus list
-exa --json seanerbus list | jq '.[] | select(.uuid != "(not assigned)")'
+exa dataplane-bus list
+exa --json dataplane-bus list | jq '.[] | select(.uuid != "(not assigned)")'
 ```
 
-### `exa seanerbus init-uuids`
+### `exa dataplane-bus init-uuids`
 
 Assign a UUID to every model that doesn't have one. Idempotent — safe to run multiple times. Commit the resulting YAML changes to git so HPC teams can see the stable UUIDs.
 
 ```bash
-exa seanerbus init-uuids
+exa dataplane-bus init-uuids
 git add pipelines/models/
-git commit -m "feat: assign SeanerBUS UUIDs"
+git commit -m "feat: assign Dataplane bus UUIDs"
 ```
 
-### `exa seanerbus regen-uuid <model>`
+### `exa dataplane-bus regen-uuid <model>`
 
 Regenerate the UUID for a single model. **HPC teams must be notified** — the old UUID will no longer be registered by the bridge.
 
 ```bash
-exa seanerbus regen-uuid JPCP
+exa dataplane-bus regen-uuid JPCP
 ```
 
-### `exa seanerbus status`
+### `exa dataplane-bus status`
 
-Probe the SeanerBUS bridge `/health` and `/stats` endpoints and print the combined response.
+Probe the Dataplane bus bridge `/health` and `/stats` endpoints and print the combined response.
 
 ```bash
-exa seanerbus status
+exa dataplane-bus status
 ```
 
 ---
@@ -698,7 +698,7 @@ The `--service` option accepts any of these values (tab-completes after `--insta
 ```
 postgres  minio  mlflow  orchestrator  ray-serving  control-plane
 prometheus  alertmanager  tempo  grafana  loki  promtail
-dashboard  jupyterhub  seanerbus-bridge
+dashboard  jupyterhub  dataplane-bus-bridge
 ```
 
 ### `exa stack up`

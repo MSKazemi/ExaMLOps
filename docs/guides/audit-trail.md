@@ -225,7 +225,7 @@ event unprotected **inside a loop over models**, so a failed write aborted the t
 models already retrained — reporting a failure for an operation that had partly succeeded. A guard
 now fails the build on any audit write inside an exception handler, tree-wide.
 
-A third instance was in the **SeanerBUS bridge**, and it is the one with the worst consequence.
+A third instance was in the **Dataplane bus bridge**, and it is the one with the worst consequence.
 Its `retrain_triggered` write sat inside the same `try` as the control-plane POST, whose handler
 answers the bus with `error_msg`. So a retrain the control plane had **accepted** was reported back
 as failed — and a caller that retries on error fires a *second* retrain of the same model on the
@@ -347,7 +347,7 @@ subset — which is the argument for the guard deriving its own scope rather tha
 | `exa retrain` | silent `except Exception: pass` |
 | Skipper (`skipper/tools/training.py`) | silent `except Exception: pass` |
 | Dashboard (`routers/pipelines.py`) | already honest — logs and re-raises |
-| SeanerBUS bridge | reported the loss to the caller as a failed retrain |
+| Dataplane bus bridge | reported the loss to the caller as a failed retrain |
 
 > The dashboard was **absent from that list until 2026-09-02**, and so was its chaining: sixteen
 > routers and five modules wrote raw `INSERT`s, so every dashboard mutation would have landed

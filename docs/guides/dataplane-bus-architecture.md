@@ -1,4 +1,4 @@
-# SeanerBUS Integration — Architecture Deep Dive
+# Dataplane bus Integration — Architecture Deep Dive
 
 Answers three questions: how AI-production identifies the reqgen, how it selects
 a model, and how the full request/response path works end-to-end.
@@ -12,30 +12,30 @@ Nothing is configured on the AI-production side about the reqgen. It works the
 other way around:
 
 ```
-seanerbus repo                    SeanerBUS                 ai-productions
+dataplane-bus repo                    Dataplane bus                 ai-productions
 ──────────────                    (Rust bus)                ─────────────
 reqgen hardcodes                                            bridge reads
 JPCP_UUID = 30b0f24c              [UUID registry]           jpcp.yaml →
-                                                            seanerbus_uuid:
+                                                            dataplane_bus_uuid:
 conn.request(JPCP_UUID, ...)  ──► routes to whoever    ◄── 30b0f24c
                                   registered 30b0f24c       conn.register(JPCP_UUID)
 ```
 
 - The reqgen **hardcodes** the UUID in `generator.py`
-- The bridge **reads** the same UUID from `usecases/seanergy/models/jpcp.yaml`
-- If they match → SeanerBUS connects them. If not → `[?] unexpected payloadType=0`
+- The bridge **reads** the same UUID from `usecases/reference/models/jpcp.yaml`
+- If they match → Dataplane bus connects them. If not → `[?] unexpected payloadType=0`
 - Neither side knows anything about the other directly
 
 The UUID in `jpcp.yaml` is the **shared key** agreed out-of-band between the
-two repos. The `models.yaml` in the seanerbus repo mirrors it.
+two repos. The `models.yaml` in the dataplane-bus repo mirrors it.
 
 ### UUID locations
 
 | File | Repo | Field |
 |------|------|-------|
-| `ai-production-inference-request-generator/src/examlops_reqgen/generator.py` | seanerbus | `JPCP_UUID = uuid.UUID("30b0f24c-...")` hardcoded |
-| `ai-production-inference-request-generator/models.yaml` | seanerbus | `uuid: 30b0f24c-...` reference copy |
-| `usecases/seanergy/models/jpcp.yaml` | ai-productions | `seanerbus_uuid: 30b0f24c-...` source of truth |
+| `ai-production-inference-request-generator/src/examlops_reqgen/generator.py` | dataplane-bus | `JPCP_UUID = uuid.UUID("30b0f24c-...")` hardcoded |
+| `ai-production-inference-request-generator/models.yaml` | dataplane-bus | `uuid: 30b0f24c-...` reference copy |
+| `usecases/reference/models/jpcp.yaml` | ai-productions | `dataplane_bus_uuid: 30b0f24c-...` source of truth |
 
 ---
 
@@ -45,9 +45,9 @@ Three layers of resolution:
 
 ```
 Layer 1 — UUID → model name  (bridge startup, from YAML)
-  pipelines/models/jpcp.yaml   → seanerbus_uuid: 30b0f24c
-  pipelines/models/mack.yaml   → seanerbus_uuid: 65611ddc
-  pipelines/models/mcbound.yaml→ seanerbus_uuid: 1a2c3b5d
+  pipelines/models/jpcp.yaml   → dataplane_bus_uuid: 30b0f24c
+  pipelines/models/mack.yaml   → dataplane_bus_uuid: 65611ddc
+  pipelines/models/mcbound.yaml→ dataplane_bus_uuid: 1a2c3b5d
   bridge registers one handler per UUID, each handler is bound to a model name
 
 Layer 2 — model name + alias → MLflow version  (Ray Serve)
@@ -64,7 +64,7 @@ The `_make_inference_handler(model_name)` call in the bridge is what binds UUID
 to model name at startup:
 
 ```python
-# seanerbus_bridge.py — _run_reqres()
+# dataplane_bus_bridge.py — _run_reqres()
 for model_name, model_uuid in _MODEL_UUIDS.items():   # loaded from YAML
     conn.serve(model_uuid, HpcJobV1, _make_inference_handler(model_name))
 #                                     ↑ closure captures "JPCP" for this handler
@@ -78,7 +78,7 @@ the request arrived on the JPCP UUID channel.
 ## 3. Full request/response flow — both sides
 
 ```
-REQGEN (seanerbus repo)              SeanerBUS              BRIDGE → Ray Serve (ai-productions)
+REQGEN (dataplane-bus repo)              Dataplane bus              BRIDGE → Ray Serve (ai-productions)
 ───────────────────────              ─────────              ──────────────────────────────────
 
 _make_job():
@@ -133,9 +133,9 @@ log: ← RES  job=bcdad28d  [ok]  196ms
 
 | Point | Detail |
 |-------|--------|
-| SeanerBUS is a pure router | It knows nothing about JPCP, Ray Serve, or MLflow — just UUID → registered handler |
-| `raw` carries the return address | The object from `read_msg()` is passed to both `from_capnp()` (decode) and `respond_to()` (reply) — correlation is internal to SeanerBUS |
-| `conn.request()` blocks | The reqgen waits synchronously per request; SeanerBUS holds the correlation and delivers the response when `respond_to()` is called |
+| Dataplane bus is a pure router | It knows nothing about JPCP, Ray Serve, or MLflow — just UUID → registered handler |
+| `raw` carries the return address | The object from `read_msg()` is passed to both `from_capnp()` (decode) and `respond_to()` (reply) — correlation is internal to Dataplane bus |
+| `conn.request()` blocks | The reqgen waits synchronously per request; Dataplane bus holds the correlation and delivers the response when `respond_to()` is called |
 | UUID is the only shared state | No service discovery, no config exchange — just a UUID agreed between the two repos |
 | `[?] payloadType=0` | Means the bridge has not yet registered that UUID — requests queue or drop until the bridge connects |
 
@@ -156,10 +156,10 @@ log: ← RES  job=bcdad28d  [ok]  196ms
 
 | File | Repo | Role |
 |------|------|------|
-| `ai-production-inference-request-generator/src/examlops_reqgen/generator.py` | seanerbus | Builds and sends `HpcJobV1`, decodes `HpcInferenceResV1` |
-| `ai-production-inference-request-generator/src/examlops_reqgen/messages.py` | seanerbus | Cap'n'Proto encode/decode for both message types |
-| `platform/clients/seanerbus_bridge.py` | ai-productions | Registers UUID handlers, calls Ray Serve, replies |
-| `platform/clients/seanerbus_client.py` | ai-productions | Typed async wrapper around raw `seanerbus.client.Connection` |
-| `platform/clients/seanerbus_msgs/` | ai-productions | Cap'n'Proto schema + Python classes for all message types |
-| `usecases/seanergy/models/jpcp.yaml` | ai-productions | Source of truth for `seanerbus_uuid` |
-| `ai-production-inference-request-generator/models.yaml` | seanerbus | Mirror of UUIDs — must stay in sync with ai-productions YAMLs |
+| `ai-production-inference-request-generator/src/examlops_reqgen/generator.py` | dataplane-bus | Builds and sends `HpcJobV1`, decodes `HpcInferenceResV1` |
+| `ai-production-inference-request-generator/src/examlops_reqgen/messages.py` | dataplane-bus | Cap'n'Proto encode/decode for both message types |
+| `platform/clients/dataplane_bus_bridge.py` | ai-productions | Registers UUID handlers, calls Ray Serve, replies |
+| `platform/clients/dataplane_bus_client.py` | ai-productions | Typed async wrapper around raw `dataplane-bus.client.Connection` |
+| `platform/clients/dataplane_bus_msgs/` | ai-productions | Cap'n'Proto schema + Python classes for all message types |
+| `usecases/reference/models/jpcp.yaml` | ai-productions | Source of truth for `dataplane_bus_uuid` |
+| `ai-production-inference-request-generator/models.yaml` | dataplane-bus | Mirror of UUIDs — must stay in sync with ai-productions YAMLs |

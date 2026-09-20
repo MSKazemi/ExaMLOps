@@ -27,8 +27,8 @@ DISPLAY_NAMES: dict[str, str] = {
     "grafana": "Grafana",
     "loki": "Loki",
     "promtail": "Promtail",
-    "seanerbus-sim": "SeanerBUS",
-    "seanerbus-bridge": "SeanerBUS Bridge",
+    "dataplane-bus-sim": "Dataplane bus",
+    "dataplane-bus-bridge": "Dataplane bus Bridge",
     "dashboard": "Dashboard",
 }
 

@@ -46,7 +46,7 @@ STATEFUL = {
     "dataplane",
     "agent",
     "dashboard",
-    "seanerbus-bridge",
+    "dataplane-bus-bridge",
     "backup",
     "autopilot-follower",
     "skipper-watch",
@@ -146,7 +146,7 @@ def test_the_dependency_scan_sees_the_known_edges():
         ("prometheus", "gateway-authz"),  # found by DNS, not a static target
         ("grafana", "tempo"),
         ("promtail", "loki"),
-        ("seanerbus-bridge", "control-plane"),
+        ("dataplane-bus-bridge", "control-plane"),
         (NOTEBOOK, "mlflow"),
         (NOTEBOOK, "minio"),
         ("ray-serving", "nats"),

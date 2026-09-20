@@ -929,6 +929,26 @@ Check that a source's system is reachable and the credentials work (reads no dat
 
 - `--project, -p`
 
+## `exa dataplane-bus`
+
+Dataplane bus bridge UUID management
+
+### `exa dataplane-bus init-uuids`
+
+Assign a Dataplane bus UUID to every model that doesn't have one. Idempotent.
+
+### `exa dataplane-bus list`
+
+Show all models and their Dataplane bus UUIDs.
+
+### `exa dataplane-bus regen-uuid`
+
+Regenerate the Dataplane bus UUID for one model. Notify HPC teams of the change.
+
+### `exa dataplane-bus status`
+
+Probe the Dataplane bus bridge health and runtime stats endpoints.
+
 ## `exa docs`
 
 Generate the full command reference from the live CLI tree.
@@ -2927,26 +2947,6 @@ Scaffold a new model: model class, config, unit test, and YAML.
 - `--task, -t` — Task type
 - `--type, -T` — ML task type
 - `--force` — Overwrite existing files
-
-## `exa seanerbus`
-
-SeanerBUS bridge UUID management
-
-### `exa seanerbus init-uuids`
-
-Assign a SeanerBUS UUID to every model that doesn't have one. Idempotent.
-
-### `exa seanerbus list`
-
-Show all models and their SeanerBUS UUIDs.
-
-### `exa seanerbus regen-uuid`
-
-Regenerate the SeanerBUS UUID for one model. Notify HPC teams of the change.
-
-### `exa seanerbus status`
-
-Probe the SeanerBUS bridge health and runtime stats endpoints.
 
 ## `exa secrets`
 

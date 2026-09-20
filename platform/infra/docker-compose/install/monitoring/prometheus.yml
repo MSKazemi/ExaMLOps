@@ -1,6 +1,6 @@
 # Prometheus for the install bundle's `monitoring` profile.
 #
-# The development stack's ../../prometheus.yml also scrapes the SeanerBUS bridge and vLLM, which
+# The development stack's ../../prometheus.yml also scrapes the Dataplane bus bridge and vLLM, which
 # the bundle does not run. A job whose target never exists keeps `up == 0` true forever, so the
 # generic TargetDown alert would page for a service nobody installed. This file therefore keeps
 # only the jobs the bundle has, each copied verbatim from the development file;

@@ -123,7 +123,7 @@ def test_set_knob_unknown_domain_raises(_env):
 
 
 def test_set_bridge_uuid_edits_yaml_and_audits(_env, monkeypatch):
-    import examlops.cli.commands.seanerbus_cmd as sb
+    import examlops.cli.commands.dataplane_bus_cmd as sb
 
     models = _env / "models"
     models.mkdir()
@@ -132,7 +132,7 @@ def test_set_bridge_uuid_edits_yaml_and_audits(_env, monkeypatch):
 
     out = pa.set_bridge_uuid("JPCP")
     assert out["result"]["changed"] is True and out["result"]["uuid"]
-    assigned = yaml.safe_load((models / "jpcp.yaml").read_text())["seanerbus_uuid"]
+    assigned = yaml.safe_load((models / "jpcp.yaml").read_text())["dataplane_bus_uuid"]
     # idempotent: a second non-regen call does not change it
     out2 = pa.set_bridge_uuid("JPCP")
     assert out2["result"]["changed"] is False and out2["result"]["uuid"] == assigned
@@ -187,7 +187,7 @@ def test_policy_require_approval_then_approve(_env, tmp_path):
 
 
 def test_propose_source_change_records_intent_only(_env):
-    out = pa.propose_source_change(["platform/clients/seanerbus_bridge.py"], "tune retry")
+    out = pa.propose_source_change(["platform/clients/dataplane_bus_bridge.py"], "tune retry")
     assert out["result"]["next_steps"] and "dualgit" in " ".join(out["result"]["next_steps"])
     assert len(_audit_rows("platform_admin:platform_source_change")) == 1
 

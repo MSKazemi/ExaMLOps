@@ -593,8 +593,8 @@ tests:
         alertname: SLOErrorBudgetFastBurn
         exp_alerts: []
 
-  # ── SeanerBUS bridge ────────────────────────────────────────────────────────────────────────
-  # The denominator is every dispatched call. Until 2026-09-14 `seanerbus_inferences_total` was
+  # ── Dataplane bus bridge ────────────────────────────────────────────────────────────────────────
+  # The denominator is every dispatched call. Until 2026-09-14 `dataplane_bus_inferences_total` was
   # incremented only past `raise_for_status()`, so this was errors ÷ *successes*: it read 11 % at a
   # true 10 %, 900 % at 90 %, and divided by zero in a total outage. The alert fired anyway —
   # `clamp_min` saved it from the division — but the number it reported was wrong. These cases pin
@@ -602,18 +602,18 @@ tests:
   - name: a bridge error rate over 5 percent alerts, and reports the true percentage
     interval: 15s
     input_series:
-      - series: 'seanerbus_inferences_total{job="seanerbus_bridge",model="JPCP"}'
+      - series: 'dataplane_bus_inferences_total{job="dataplane_bus_bridge",model="JPCP"}'
         values: '0+10x80'
-      - series: 'seanerbus_inference_errors_total{job="seanerbus_bridge",model="JPCP"}'
+      - series: 'dataplane_bus_inference_errors_total{job="dataplane_bus_bridge",model="JPCP"}'
         values: '0+1x80'
     alert_rule_test:
       - eval_time: 12m
-        alertname: SeanerBUSHighErrorRate
+        alertname: DataplaneBusHighErrorRate
         exp_alerts:
-          - exp_labels: {severity: warning, service: seanerbus}
+          - exp_labels: {severity: warning, service: dataplane-bus}
             exp_annotations:
               runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-bridge-error-rate"
-              summary: "SeanerBUS inference error rate > 5%"
+              summary: "Dataplane bus inference error rate > 5%"
               description: "Bridge inference error rate is 10% over the last 5 min."
 
   # Every call failing is 100 %, not a division by zero. This is the state the old denominator
@@ -621,30 +621,30 @@ tests:
   - name: a total bridge outage reads as one hundred percent
     interval: 15s
     input_series:
-      - series: 'seanerbus_inferences_total{job="seanerbus_bridge",model="JPCP"}'
+      - series: 'dataplane_bus_inferences_total{job="dataplane_bus_bridge",model="JPCP"}'
         values: '0+10x80'
-      - series: 'seanerbus_inference_errors_total{job="seanerbus_bridge",model="JPCP"}'
+      - series: 'dataplane_bus_inference_errors_total{job="dataplane_bus_bridge",model="JPCP"}'
         values: '0+10x80'
     alert_rule_test:
       - eval_time: 12m
-        alertname: SeanerBUSHighErrorRate
+        alertname: DataplaneBusHighErrorRate
         exp_alerts:
-          - exp_labels: {severity: warning, service: seanerbus}
+          - exp_labels: {severity: warning, service: dataplane-bus}
             exp_annotations:
               runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-bridge-error-rate"
-              summary: "SeanerBUS inference error rate > 5%"
+              summary: "Dataplane bus inference error rate > 5%"
               description: "Bridge inference error rate is 100% over the last 5 min."
 
   - name: a healthy bridge stays quiet
     interval: 15s
     input_series:
-      - series: 'seanerbus_inferences_total{job="seanerbus_bridge",model="JPCP"}'
+      - series: 'dataplane_bus_inferences_total{job="dataplane_bus_bridge",model="JPCP"}'
         values: '0+100x80'
-      - series: 'seanerbus_inference_errors_total{job="seanerbus_bridge",model="JPCP"}'
+      - series: 'dataplane_bus_inference_errors_total{job="dataplane_bus_bridge",model="JPCP"}'
         values: '0+1x80'
     alert_rule_test:
       - eval_time: 12m
-        alertname: SeanerBUSHighErrorRate
+        alertname: DataplaneBusHighErrorRate
         exp_alerts: []
 
   # The two telemetry counters are unlabelled, so prometheus_client creates them at 0 on import —
@@ -653,46 +653,46 @@ tests:
   - name: the first dropped telemetry record alerts
     interval: 15s
     input_series:
-      - series: 'seanerbus_telemetry_dropped_total{job="seanerbus_bridge"}'
+      - series: 'dataplane_bus_telemetry_dropped_total{job="dataplane_bus_bridge"}'
         values: '0x40 0+1x80'
     alert_rule_test:
       - eval_time: 25m
-        alertname: SeanerBUSTelemetryDropping
+        alertname: DataplaneBusTelemetryDropping
         exp_alerts:
-          - exp_labels: {severity: warning, service: seanerbus}
+          - exp_labels: {severity: warning, service: dataplane-bus}
             exp_annotations:
               runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-telemetry-dropping"
-              summary: "SeanerBUS bridge is dropping inference telemetry"
-              description: "The telemetry spool is full (40 records dropped in 10 min): the datastore cannot keep up with bus traffic. Raise SEANERBUS_TELEMETRY_QUEUE_MAX only after fixing write latency."
+              summary: "Dataplane bus bridge is dropping inference telemetry"
+              description: "The telemetry spool is full (40 records dropped in 10 min): the datastore cannot keep up with bus traffic. Raise DATAPLANE_BUS_TELEMETRY_QUEUE_MAX only after fixing write latency."
 
   - name: the first failed telemetry write alerts
     interval: 15s
     input_series:
-      - series: 'seanerbus_telemetry_persist_failures_total{job="seanerbus_bridge"}'
+      - series: 'dataplane_bus_telemetry_persist_failures_total{job="dataplane_bus_bridge"}'
         values: '0x40 0+1x80'
     alert_rule_test:
       - eval_time: 25m
-        alertname: SeanerBUSTelemetryWritesFailing
+        alertname: DataplaneBusTelemetryWritesFailing
         exp_alerts:
-          - exp_labels: {severity: warning, service: seanerbus}
+          - exp_labels: {severity: warning, service: dataplane-bus}
             exp_annotations:
               runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-telemetry-writes-failing"
-              summary: "SeanerBUS bridge cannot write inference telemetry"
+              summary: "Dataplane bus bridge cannot write inference telemetry"
               description: "40 drift/input-embedding writes failed in 10 min. Inference is unaffected, but drift detection is losing samples; check the platform datastore."
 
   - name: a bridge writing all its telemetry stays quiet
     interval: 15s
     input_series:
-      - series: 'seanerbus_telemetry_persist_failures_total{job="seanerbus_bridge"}'
+      - series: 'dataplane_bus_telemetry_persist_failures_total{job="dataplane_bus_bridge"}'
         values: '0x120'
-      - series: 'seanerbus_telemetry_dropped_total{job="seanerbus_bridge"}'
+      - series: 'dataplane_bus_telemetry_dropped_total{job="dataplane_bus_bridge"}'
         values: '0x120'
     alert_rule_test:
       - eval_time: 22m
-        alertname: SeanerBUSTelemetryWritesFailing
+        alertname: DataplaneBusTelemetryWritesFailing
         exp_alerts: []
       - eval_time: 22m
-        alertname: SeanerBUSTelemetryDropping
+        alertname: DataplaneBusTelemetryDropping
         exp_alerts: []
 
   # The production shape, and the one that matters: this counter is labelled by model and dataset,
@@ -1432,19 +1432,19 @@ tests:
               summary: "Serving gateway component gateway is down"
               description: "No scrape of gateway:9902 for 2 minutes. Envoy down: clients get connection errors. gateway-authz down: every request is refused with 503 (the gateway fails closed)."
 
-  - name: SeanerBUSBridgeDown fires when its own scrape target stops answering
+  - name: DataplaneBusBridgeDown fires when its own scrape target stops answering
     interval: 15s
     input_series:
-      - series: 'up{job="seanerbus_bridge",instance="seanerbus-bridge:8003"}'
+      - series: 'up{job="dataplane_bus_bridge",instance="dataplane-bus-bridge:8003"}'
         values: '1x20 0x80'
     alert_rule_test:
       - eval_time: 18m
-        alertname: SeanerBUSBridgeDown
+        alertname: DataplaneBusBridgeDown
         exp_alerts:
-          - exp_labels: {severity: critical, service: seanerbus, job: seanerbus_bridge, instance: "seanerbus-bridge:8003"}
+          - exp_labels: {severity: critical, service: dataplane-bus, job: dataplane_bus_bridge, instance: "dataplane-bus-bridge:8003"}
             exp_annotations:
               runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-bridge-down"
-              summary: "SeanerBUS bridge is offline"
+              summary: "Dataplane bus bridge is offline"
               description: "The bridge has been unreachable for 2 min — inference requests from the bus are failing."
 
   - name: LokiDown fires when its own scrape target stops answering
@@ -1794,36 +1794,36 @@ tests:
   - name: a slow bridge p99 alerts
     interval: 15s
     input_series:
-      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="0.1"}'
+      - series: 'dataplane_bus_inference_latency_seconds_bucket{job="dataplane_bus_bridge",le="0.1"}'
         values: '0x120'
-      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="0.5"}'
+      - series: 'dataplane_bus_inference_latency_seconds_bucket{job="dataplane_bus_bridge",le="0.5"}'
         values: '0x120'
-      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="1"}'
+      - series: 'dataplane_bus_inference_latency_seconds_bucket{job="dataplane_bus_bridge",le="1"}'
         values: '0+50x120'
-      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="+Inf"}'
+      - series: 'dataplane_bus_inference_latency_seconds_bucket{job="dataplane_bus_bridge",le="+Inf"}'
         values: '0+50x120'
     alert_rule_test:
       - eval_time: 20m
-        alertname: SeanerBUSHighLatencyP99
+        alertname: DataplaneBusHighLatencyP99
         exp_alerts:
-          - exp_labels: {severity: warning, service: seanerbus}
+          - exp_labels: {severity: warning, service: dataplane-bus}
             exp_annotations:
               runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/bus/#bus-bridge-latency"
-              summary: "SeanerBUS p99 latency > 500 ms"
-              description: "SeanerBUS p99 inference latency is 995ms."
+              summary: "Dataplane bus p99 latency > 500 ms"
+              description: "Dataplane bus p99 inference latency is 995ms."
 
   - name: a responsive bridge trips no latency alert
     interval: 15s
     input_series:
-      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="0.1"}'
+      - series: 'dataplane_bus_inference_latency_seconds_bucket{job="dataplane_bus_bridge",le="0.1"}'
         values: '0+50x120'
-      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="0.5"}'
+      - series: 'dataplane_bus_inference_latency_seconds_bucket{job="dataplane_bus_bridge",le="0.5"}'
         values: '0+50x120'
-      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="1"}'
+      - series: 'dataplane_bus_inference_latency_seconds_bucket{job="dataplane_bus_bridge",le="1"}'
         values: '0+50x120'
-      - series: 'seanerbus_inference_latency_seconds_bucket{job="seanerbus_bridge",le="+Inf"}'
+      - series: 'dataplane_bus_inference_latency_seconds_bucket{job="dataplane_bus_bridge",le="+Inf"}'
         values: '0+50x120'
     alert_rule_test:
       - eval_time: 20m
-        alertname: SeanerBUSHighLatencyP99
+        alertname: DataplaneBusHighLatencyP99
         exp_alerts: []

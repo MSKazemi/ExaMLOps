@@ -65,7 +65,7 @@ def test_make_and_ci_run_the_tests():
 #   47 -> 43   the approval gauges + HighRetrainErrorRate
 #   43 -> 41   the two SLO burn-rate alerts — writing the case is what caught the value being the
 #              error ratio rather than the burn rate it was labelled as
-#   41 -> 38   the SeanerBUS bridge
+#   41 -> 38   the Dataplane bus bridge
 #   38 -> 37   ServingSnapshotLagging — a replica that had applied NO snapshot published no series,
 #              so `min()` was empty and the alert could not fire for the most-behind replica
 #   37 -> 32   the event backbone

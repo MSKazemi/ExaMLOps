@@ -57,7 +57,7 @@ From `platform/infra/docker-compose/`, add the overlay to the usual command:
 docker compose -f docker-compose.yml -f docker-compose.identity.yml up -d
 # with the event consumers and the bus bridge, as usual:
 docker compose -f docker-compose.yml -f docker-compose.identity.yml \
-    --profile events --profile seanerbus up -d
+    --profile events --profile dataplane-bus up -d
 ```
 
 That starts:
@@ -101,7 +101,7 @@ outage therefore never stops the platform; it only delays the move to tokens.
 | dashboard | `spiffe://<trust domain>/dashboard` | `dashboard` | `read`, `write` | always |
 | agent (Skipper) | `spiffe://<trust domain>/skipper` | `skipper` | `read`, `retrain` | always |
 | autopilot-follower | `spiffe://<trust domain>/autopilot` | `autopilot` | `read`, `retrain` | `events` |
-| seanerbus-bridge | `spiffe://<trust domain>/seanerbus-bridge` | `seanerbus-bridge` | `retrain` | `seanerbus` |
+| dataplane-bus-bridge | `spiffe://<trust domain>/dataplane-bus-bridge` | `dataplane-bus-bridge` | `retrain` | `dataplane-bus` |
 | control-plane | `spiffe://<trust domain>/control-plane` | — (receives; keeps the bundle) | — | always |
 
 The principals and scopes are the ones each service's static credential has (see
@@ -113,7 +113,7 @@ approvals and the audit trail therefore name the same service whichever credenti
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_SPIFFE_TRUST_DOMAIN` | `examlops.internal` | The installation's trust domain. SPIRE, the registrations and the control plane's mapping all follow it. |
-| `SPIFFE_WORKLOADS` | `control-plane dashboard skipper autopilot seanerbus-bridge gateway ray-serving` | The names `spire-register` registers, each selected by the label `examlops.spiffe=<name>`. |
+| `SPIFFE_WORKLOADS` | `control-plane dashboard skipper autopilot dataplane-bus-bridge gateway ray-serving` | The names `spire-register` registers, each selected by the label `examlops.spiffe=<name>`. |
 | `SPIFFE_JWT_SVID_TTL` | `300` | Token lifetime in seconds for newly registered workloads. |
 | `SPIRE_SERVER_MEM_LIMIT` / `SPIRE_AGENT_MEM_LIMIT` | `256m` / `128m` | Memory ceilings. |
 | `CONTROL_PLANE_WORKLOAD_IDENTITIES_JSON` | the table above | The control plane's SPIFFE ID → principal map. Compose cannot put JSON in a variable's default, so to change it, override the variable in a further `-f` file. |
@@ -144,7 +144,7 @@ flowchart LR
     agent -. "SDS: certificates" .-> side
 ```
 
-The control plane, the agent and the SeanerBUS bridge are wired like the dashboard, each with its
+The control plane, the agent and the Dataplane bus bridge are wired like the dashboard, each with its
 own sidecar.
 
 - **The model server listens on loopback only** (`RAY_SERVE_HOST=127.0.0.1`), and port 18001 is
@@ -154,7 +154,7 @@ own sidecar.
 - **`serving-mtls` is the one way in.** This Envoy runs in ray-serving's network namespace and
   listens on `ray-serving:8443`. It presents `…/ray-serving` and requires a client certificate from
   the trust domain's CA naming one of the model server's callers: `…/gateway`, `…/control-plane`,
-  `…/dashboard`, `…/skipper` (the agent) or `…/seanerbus-bridge`. A workload with a valid identity
+  `…/dashboard`, `…/skipper` (the agent) or `…/dataplane-bus-bridge`. A workload with a valid identity
   that is not a caller, such as `…/autopilot`, is refused at the handshake. The Envoy tells the
   model server who called in `x-forwarded-client-cert`, replacing any value a client sent.
 - **The admin routes need an admin caller.** `POST /reload`, `/reload/{model}` and

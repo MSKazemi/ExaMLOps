@@ -1,11 +1,11 @@
 """
-ExaMLOps SeanerBUS message types.
+ExaMLOps Dataplane bus message types.
 
 Defines Cap'n'Proto message wrappers for HPC job inference and retrain
-requests. The payloadType integers match the seanerbus MessageTypes enum
-(0-indexed Cap'n Proto enum) without requiring any changes to the seanerbus
+requests. The payloadType integers match the dataplane-bus MessageTypes enum
+(0-indexed Cap'n Proto enum) without requiring any changes to the dataplane-bus
 repository. The JPCP inference req/res use the dedicated jpcpInferenceReqV1
-(@19) / jpcpInferenceResV1 (@20) message types of the current seanerbus
+(@19) / jpcpInferenceResV1 (@20) message types of the current dataplane-bus
 protocol; their Cap'n Proto struct layout is wire-identical to the legacy
 HpcJobV1 / HpcInferenceResV1 structs kept here.
 """
@@ -20,8 +20,8 @@ import capnp
 capnp.remove_import_hook()
 _schema = capnp.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), "msg.capnp"))
 
-# payloadType integer constants — must match the seanerbus MessageTypes enum
-# ordering (Cap'n Proto enum, 0-indexed). Current seanerbus protocol:
+# payloadType integer constants — must match the dataplane-bus MessageTypes enum
+# ordering (Cap'n Proto enum, 0-indexed). Current dataplane-bus protocol:
 #   vectorReqV1 @5, vectorResV1 @6, jpcpInferenceReqV1 @19, jpcpInferenceResV1 @20.
 # NOTE: retrain has no dedicated message type in the current protocol; the
 # RETRAIN_* values below are legacy and inert (no retrain traffic flows over

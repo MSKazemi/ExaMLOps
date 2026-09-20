@@ -4,7 +4,7 @@
 
 Key facts:
 
-- Built for ML engineers, platform engineers and HPC operators who run models on batch-scheduled clusters, originally for the EuroHPC SEANERGYS project.
+- Built for ML engineers, platform engineers and HPC operators who run models on batch-scheduled clusters.
 - Schedulers: Slurm, Flux, and a `mock` scheduler so everything runs on a laptop without a cluster (`EXAMLOPS_HPC_SCHEDULER=mock|slurm|flux`).
 - Lifecycle: auto-discovery training pipelines (Prefect) → MLflow registry with Staging/Canary/Production aliases → gated promotion (`exa pipeline promote --if-rmse-lt …`) → Ray Serve multi-model serving with traffic splitting → drift detection and optional closed-loop retraining.
 - Governance: an approval queue for CI model changes, policy-as-code, a hash-chained audit trail, RBAC and multi-tenancy, supply-chain signing, EU AI Act risk classification.

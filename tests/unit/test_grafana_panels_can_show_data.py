@@ -34,7 +34,7 @@ _RAY_PREFIX = "ray_"
 # Prometheus derives these series from a histogram; the code declares only the base name.
 _HISTOGRAM_SUFFIXES = ("_bucket", "_sum", "_count")
 
-_OURS = re.compile(r"\b((?:examlops|ray_examlops|seanerbus)_[a-z0-9_]+)")
+_OURS = re.compile(r"\b((?:examlops|ray_examlops|dataplane-bus)_[a-z0-9_]+)")
 _DECLARED = re.compile(r'(?:Counter|Gauge|Histogram)\(\s*\n?\s*"([a-z][a-z0-9_]*)"')
 
 
@@ -90,7 +90,7 @@ def test_the_inventory_itself_is_not_silently_empty():
     """Guards the guard: a broken scan would make the test above vacuously true."""
     emitted = _emitted()
     assert len(emitted) > 20, f"metric inventory looks broken, found only {sorted(emitted)}"
-    assert "seanerbus_inferences_total" in emitted
+    assert "dataplane_bus_inferences_total" in emitted
     assert "ray_examlops_predict_latency_seconds_bucket" in emitted
     assert _queried(), "no dashboard expressions were parsed at all"
 

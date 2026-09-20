@@ -24,7 +24,7 @@ A module is a coarse slice of the platform:
 | `finops` | Budgets, cost and carbon accounting, reports |
 | `workbenches` | Per-project JupyterHub notebooks |
 | `observability` | Prometheus, Alertmanager, Grafana, Loki, Tempo |
-| `integrations` | SeanerBUS bridge, ModelZoo sync, signed Exchange packages (requires `serving`) |
+| `integrations` | Dataplane bus bridge, ModelZoo sync, signed Exchange packages (requires `serving`) |
 
 `exa modules show <module>` lists everything a module owns: its commands, dashboard flags and
 API routes, Compose services and profiles, Helm switches, related environment gates, and

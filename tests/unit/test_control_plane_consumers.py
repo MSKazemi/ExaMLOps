@@ -179,7 +179,7 @@ def test_the_scan_finds_the_known_consumers():
         "platform/cli/src/examlops/cli/commands/retrain.py",
         "platform/services/dashboard/backend/routers/approvals.py",
         "platform/services/agent/skipper/tools/registry.py",
-        "platform/clients/seanerbus_bridge.py",
+        "platform/clients/dataplane_bus_bridge.py",
     ):
         assert expected in wheres, f"extractor no longer sees {expected}"
     # 35, not 40: the eleven retrain submissions now go through examlops.retrain_command and

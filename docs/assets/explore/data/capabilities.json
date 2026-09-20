@@ -3094,7 +3094,7 @@
     "events",
     "admission",
     "exchange",
-    "seanerbus"
+    "dataplane-bus"
    ],
    "commands": [
     {
@@ -3392,32 +3392,32 @@
      "guide": null
     },
     {
-     "cmd": "exa seanerbus init-uuids",
-     "group": "seanerbus",
-     "help": "Assign a SeanerBUS UUID to every model that doesn't have one. Idempotent.",
-     "anchor": "exa-seanerbus-seanerbus-bridge-uuid-management",
-     "guide": "guides/seanerbus.md"
+     "cmd": "exa dataplane-bus init-uuids",
+     "group": "dataplane-bus",
+     "help": "Assign a Dataplane bus UUID to every model that doesn't have one. Idempotent.",
+     "anchor": "exa-dataplane-bus-dataplane-bus-bridge-uuid-management",
+     "guide": "guides/dataplane-bus.md"
     },
     {
-     "cmd": "exa seanerbus list",
-     "group": "seanerbus",
-     "help": "Show all models and their SeanerBUS UUIDs.",
-     "anchor": "exa-seanerbus-seanerbus-bridge-uuid-management",
-     "guide": "guides/seanerbus.md"
+     "cmd": "exa dataplane-bus list",
+     "group": "dataplane-bus",
+     "help": "Show all models and their Dataplane bus UUIDs.",
+     "anchor": "exa-dataplane-bus-dataplane-bus-bridge-uuid-management",
+     "guide": "guides/dataplane-bus.md"
     },
     {
-     "cmd": "exa seanerbus regen-uuid",
-     "group": "seanerbus",
-     "help": "Regenerate the SeanerBUS UUID for one model. Notify HPC teams of the change.",
-     "anchor": "exa-seanerbus-seanerbus-bridge-uuid-management",
-     "guide": "guides/seanerbus.md"
+     "cmd": "exa dataplane-bus regen-uuid",
+     "group": "dataplane-bus",
+     "help": "Regenerate the Dataplane bus UUID for one model. Notify HPC teams of the change.",
+     "anchor": "exa-dataplane-bus-dataplane-bus-bridge-uuid-management",
+     "guide": "guides/dataplane-bus.md"
     },
     {
-     "cmd": "exa seanerbus status",
-     "group": "seanerbus",
-     "help": "Probe the SeanerBUS bridge health and runtime stats endpoints.",
-     "anchor": "exa-seanerbus-seanerbus-bridge-uuid-management",
-     "guide": "guides/seanerbus.md"
+     "cmd": "exa dataplane-bus status",
+     "group": "dataplane-bus",
+     "help": "Probe the Dataplane bus bridge health and runtime stats endpoints.",
+     "anchor": "exa-dataplane-bus-dataplane-bus-bridge-uuid-management",
+     "guide": "guides/dataplane-bus.md"
     }
    ]
   }

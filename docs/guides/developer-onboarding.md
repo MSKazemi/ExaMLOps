@@ -21,7 +21,7 @@ approves it, serves it for real inference requests, and watches it afterwards fo
 carbon, drift and quality. Everything can be driven from a command line (`exa`), from a
 web dashboard, or by talking to an agent in plain English.
 
-It is in production at **LuxProvide (MeluXina)** for the EuroHPC **SEANERGYS** project.
+It is in production at **LuxProvide (MeluXina)**.
 
 ---
 
@@ -52,7 +52,7 @@ The repository has **four main code areas** plus content and docs.
 | `platform/` | The product itself: the `exa` CLI, the dashboard, the control-plane API, the Skipper agent, infrastructure glue | **the platform** |
 | `pipelines/` | The training engine — how a training run is built and submitted | **the training engine** |
 | `serving/` | Ray Serve model server and the inference pipeline | **the serving engine** |
-| `usecases/` | The actual models and datasets of a given deployment (e.g. `usecases/seanergy`) | **the content** |
+| `usecases/` | The actual models and datasets of a given deployment (e.g. `usecases/reference`) | **the content** |
 | `modelzoo/` | The upstream model library — **read-only here, never edit it** | **someone else's library** |
 | `tests/` | ~312 unit test files, plus integration tests | **the safety net** |
 | `docs/` | Everything a user or operator reads (89 guides + tutorials + reference) | **the manual** |
@@ -71,7 +71,7 @@ Inside `platform/`:
 
 > **The platform never mentions a concrete model or dataset.**
 > `platform/` and `pipelines/` do not know that "JPCP" exists. They load whatever
-> use-case pack they are pointed at (`EXAMLOPS_USECASE_DIR`, default `usecases/seanergy`).
+> use-case pack they are pointed at (`EXAMLOPS_USECASE_DIR`, default `usecases/reference`).
 > This is what lets the same platform serve a completely different project tomorrow.
 > A CI check fails the build if someone breaks this rule.
 

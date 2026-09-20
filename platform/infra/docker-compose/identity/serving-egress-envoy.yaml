@@ -2,7 +2,7 @@
 #
 #   caller ──▶ 127.0.0.1:8001 ─ this Envoy (in the caller's network namespace) ══▶ ray-serving:8443
 #
-# One file for every caller: the control plane, the dashboard, the agent and the SeanerBUS bridge
+# One file for every caller: the control plane, the dashboard, the agent and the Dataplane bus bridge
 # each run it as a sidecar in their own network namespace (docker-compose.identity.yml,
 # `serving-egress-<caller>`). The caller keeps speaking plain HTTP to what it takes for the model
 # server, now 127.0.0.1:8001, and needs no certificate handling of its own. The sidecar carries the

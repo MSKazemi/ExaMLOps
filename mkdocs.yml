@@ -181,9 +181,9 @@ nav:
       - All Interfaces: guides/interfaces.md
       - Add a New Model: guides/add-a-new-model.md
       - Control Plane (Retraining API): guides/control-plane.md
-      - SeanerBUS Bridge: guides/seanerbus.md
-      - SeanerBUS Setup (real bus): guides/seanerbus-sim.md
-      - SeanerBUS Architecture: guides/seanerbus-architecture.md
+      - Dataplane bus Bridge: guides/dataplane-bus.md
+      - Dataplane bus Setup (real bus): guides/dataplane-bus-sim.md
+      - Dataplane bus Architecture: guides/dataplane-bus-architecture.md
       - Management Agent: guides/agent.md
       - CI/CD — GitLab Pipeline: guides/cicd.md
       - JupyterHub Notebooks: guides/jupyter.md

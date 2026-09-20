@@ -77,7 +77,7 @@ invalid engine, dtype, tensor-parallel size, or a spec-decode block missing its
 `draft_model` fails CI:
 
 ```bash
-exa models engine validate ./usecases/seanergy/models/jpcp.yaml
+exa models engine validate ./usecases/reference/models/jpcp.yaml
 exa models engine list          # available engines
 ```
 

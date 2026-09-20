@@ -55,7 +55,7 @@ c.DockerSpawner.environment = {
     # authored plugins with the rest of the platform (ADR 0074).
     "PYTHONPATH":             "/repo/platform/cli/src",
     "EXAMLOPS_PROVIDERS_DIR": "/repo/.providers",
-    "EXAMLOPS_USECASE_DIR":   "/repo/usecases/seanergy",
+    "EXAMLOPS_USECASE_DIR":   "/repo/usecases/reference",
     "PLATFORM_DB":            "/repo/platform.db",
 }
 

@@ -27,7 +27,7 @@ Label rules (controller rulings R7 and R9.5):
   ``stopped`` for ever.
 * ``dataplane_stream_embedding_{norm,mean,std}{model}`` — set by the ingress from the request's
   embedding summary; ``…_baseline{model}`` — set by :func:`on_baseline` from the stats keys
-  ``norm_mean``/``mean_mean``/``std_mean``, exactly as the SeanerBUS bridge reads them.
+  ``norm_mean``/``mean_mean``/``std_mean``, exactly as the Dataplane bus bridge reads them.
 """
 
 from __future__ import annotations

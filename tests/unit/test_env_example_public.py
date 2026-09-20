@@ -109,8 +109,8 @@ def test_every_secret_ships_empty():
 def test_the_guard_catches_what_it_is_for():
     """Proves the three detectors red, so a clean run means checked and not merely quiet."""
     with pytest.raises(AssertionError):
-        assert not _IPV4.search("SEANERBUS_HOST=172.19.0.1")
-    leaked = _FQDN.findall("GITLAB_URL=https://gitlab.seanergys.fz-juelich.de")
+        assert not _IPV4.search("DATAPLANE_BUS_HOST=172.19.0.1")
+    leaked = _FQDN.findall("GITLAB_URL=https://gitlab.example.org")
     assert leaked and set(leaked) - _GENERIC_HOSTS, "an internal FQDN must not look generic"
     assert _assignments("GITLAB_PROJECT_ID=87\n")["GITLAB_PROJECT_ID"] == "87"
 

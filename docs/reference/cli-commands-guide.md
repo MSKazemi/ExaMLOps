@@ -127,7 +127,7 @@ Auto-discovers models and datasets, runs and deploys their Prefect training flow
 | `exa pipeline promote` | Promotes a model alias when a `--if-<metric>-<op>` threshold passes (**mutation** — moves the MLflow alias). | Rule-based Staging→Production promotion gated on a metric. | `exa pipeline promote jpcp --if-rmse-lt 5.0 --dry-run`<br>`exa pipeline promote jpcp --if-rmse-lt 5.0 --save` |
 | `exa pipeline promote-delete` | Deletes saved metric-gated promotion rules (**mutation** — removes DB rules). | Clean up obsolete promotion rules. | `exa pipeline promote-delete jpcp`<br>`exa pipeline promote-delete --all` |
 | `exa pipeline add-model` | Wires an existing modelzoo model class into the pipeline by generating its YAML + config shim (**mutation** — writes files); does not create a new class. | Register a hand-written or imported model class for training/inference. | `exa pipeline add-model DemoAD --task anomaly_detection --type classification` |
-| `exa pipeline export-registry` | Exports auto-discovered model state to `usecases/seanergy/models` (**mutation** — writes the registry file). | Snapshot discovered models into a versionable registry. | `exa pipeline export-registry` |
+| `exa pipeline export-registry` | Exports auto-discovered model state to `usecases/reference/models` (**mutation** — writes the registry file). | Snapshot discovered models into a versionable registry. | `exa pipeline export-registry` |
 
 #### `exa pipeline distributed` — distributed training + checkpoint/resume (E6)
 
@@ -300,9 +300,9 @@ Generates standards-based documentation from live platform data: Croissant JSON-
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa cards dataset <dataset>` | Emits + validates a Croissant JSON-LD dataset card (R1/R2); `--out` writes the JSON. | Publish a machine-readable, standards-compliant dataset card. | `exa cards dataset FData --revision 3a9f --license CC-BY-4.0 --out fdata.croissant.json` |
-| `exa cards model <model>` | Builds a structured model card from live data, marking gaps as "not provided" (R3/R4); `--save` persists a version, `--out` writes Markdown. | Auto-generate an always-current model card. | `exa cards model jpcp --tenant seanergy --out jpcp-card.md --save` |
+| `exa cards model <model>` | Builds a structured model card from live data, marking gaps as "not provided" (R3/R4); `--save` persists a version, `--out` writes Markdown. | Auto-generate an always-current model card. | `exa cards model jpcp --tenant reference --out jpcp-card.md --save` |
 | `exa cards export <subject>` | **[mutation]** Export a card for publication with internal fields dropped, PII and site-specific locations redacted, and a detected secret **blocking** the export (audited); `--dataset`, `--out <file>`, `--force`, `--tenant`. | Publish a model or dataset card outside the deployment without leaking tenant identity, personal data or infrastructure detail. | `exa cards export jpcp --out jpcp-card.json` |
-| `exa cards completeness <model>` | Scores model-card completeness (0..1) — the D5/C3 promotion gate signal (R6); `--require` exits 1 below a threshold. | CI gate: block promotion of under-documented models. | `exa cards completeness jpcp --tenant seanergy --require 0.8` |
+| `exa cards completeness <model>` | Scores model-card completeness (0..1) — the D5/C3 promotion gate signal (R6); `--require` exits 1 below a threshold. | CI gate: block promotion of under-documented models. | `exa cards completeness jpcp --tenant reference --require 0.8` |
 
 ## Models & Registry
 
@@ -330,7 +330,7 @@ Inspect registered models and their versions, compare and trace them, roll alias
 | `exa models quantize <model> <version>` | **Mutation.** Quantizes a base version (`--method awq\|gptq\|fp8\|int8`, default `awq`) and registers a new signed + BOM'd version; `--path` supplies artifacts to sign, `--dataset`/`--dataset-revision` feed the BOM. | Ship a smaller/faster variant with provenance intact. | `exa models quantize JPCP 17 --method awq --path ./artifacts/jpcp` |
 | `exa models parity <model> <target-version>` | Portability gate: compare a quantized version against its base on the model's declared tolerance. `--tolerance`. | Prove a requantisation did not change the numerics before promoting it. | `exa models parity JPCP 17-awq` |
 | `exa models engine list` | Lists available inference engines. | Discover which serving engines a model YAML may target. | `exa models engine list` |
-| `exa models engine validate <yaml_path>` | Validates a per-model YAML's `engine:` block (same check the CI integrity guard runs). | Pre-commit / CI gate on engine config. | `exa models engine validate ./usecases/seanergy/models/jpcp.yaml` |
+| `exa models engine validate <yaml_path>` | Validates a per-model YAML's `engine:` block (same check the CI integrity guard runs). | Pre-commit / CI gate on engine config. | `exa models engine validate ./usecases/reference/models/jpcp.yaml` |
 | `exa models rollback run <model>` | **Mutation.** Rolls a model alias (default `Production`) back to a version: `-v/--version`, `-a/--alias`, `-r/--reason`, `-n/--dry-run` to preview. Prompts for confirmation unless `--yes`. | Emergency revert to a known-good version. | `exa models rollback run JPCP --version 5 --dry-run` (preview) · `exa --yes models rollback run JPCP --version 5` |
 | `exa models rollback history <model>` | Shows rollback history for a model (last 20 events). | Audit past alias reassignments. | `exa models rollback history JPCP` |
 
@@ -511,7 +511,7 @@ Plan, execute, and verify production deploys of models.
 | Command | What it does | Use case | Example |
 |---|---|---|---|
 | `exa production deploy [ACTION] [DEPLOY_ID]` | Plans/executes deploys or inspects history/status; `--execute` (default is a side-effect-free dry run), `--models` (stale/all/IDs), `--dataset`, `-e/--env`, `--registry`, `--no-schedule`, plus history filters (`--limit`, `--status`, `--model`, `--operation`). | Roll out stale models, or review deploy history. Default is a safe plan. **mutation with `--execute`** | `exa production deploy --models stale` &nbsp;·&nbsp; `exa production deploy --models JPCP,MACK --dataset PM100Dataset --execute` |
-| `exa production verify` | Verifies production service health without changing state. The SeanerBUS check follows `SEANERBUS_BRIDGE_STATUS_URL` / the `seanerbus_bridge` config key. | Confirm production is healthy after a deploy. | `exa production verify` |
+| `exa production verify` | Verifies production service health without changing state. The Dataplane bus check follows `DATAPLANE_BUS_BRIDGE_STATUS_URL` / the `dataplane_bus_bridge` config key. | Confirm production is healthy after a deploy. | `exa production verify` |
 | `exa production reload` | Hot-reloads the control plane's model registry and re-runs its startup checks, without a restart. **Mutation**. | Pick up new or edited model YAML, or a fixed DB/token config, on a running control plane. | `exa production reload` |
 
 ### `exa gateway` — model gateway (virtual keys, routing, cost)
@@ -1129,7 +1129,7 @@ Per-project dev environments (JupyterLab-style). Definitions are metadata (`STOP
 
 ## Platform & Integrations
 
-The plumbing beneath ExaMLOps: the Docker Compose stack lifecycle, tiered backup/restore of the platform datastore, the NovaFabric event backbone and admission-control queue, signed package exchange, SeanerBUS bridge wiring, and the MCP/A2A agent surface. Most commands here are read-only inspection; the ones that mutate state or reach outward (stack up/down, backup create/restore, events relay, seanerbus init-uuids, mcp serve) are flagged below — the examples for those are safe/preview forms, not run here.
+The plumbing beneath ExaMLOps: the Docker Compose stack lifecycle, tiered backup/restore of the platform datastore, the NovaFabric event backbone and admission-control queue, signed package exchange, Dataplane bus bridge wiring, and the MCP/A2A agent surface. Most commands here are read-only inspection; the ones that mutate state or reach outward (stack up/down, backup create/restore, events relay, dataplane-bus init-uuids, mcp serve) are flagged below — the examples for those are safe/preview forms, not run here.
 
 ### `exa stack` — Docker Compose stack lifecycle
 
@@ -1171,7 +1171,7 @@ ExaMLOps is three layers: the **core** (the code a release replaces), the **depl
 |---|---|---|---|
 | `exa instance info` | Shows the core (release, data format, how it is installed), the deployment (Kubernetes / container / host, image tag, datastore engine), every place instance data lives (datastores, MLflow, object store, site configuration, site profile, use-case pack, providers, feature store, backups — each with who set it, whether it exists, its size and which backup tier captures it), the data-format stamp and compatibility verdict, and the site's modules. | Know exactly what an upgrade replaces and what it must keep | `exa instance info` |
 | `exa instance check` | Pre-flight: the data is compatible with this release, the data root exists and is writable, the site profile has no warnings, the use-case pack resolves (and its optional `requires_examlops` specifier admits this release). Exits **1** on any failed check. | Gate before and after installing a new release (CI or by hand) | `exa instance check` |
-| `exa instance init` | Creates an instance-data root: the layout (`usecase/`, `config/`, `.providers/`, `backups/`, `agent/`), `site.toml` (from `--preset`, `--site-name`), optionally a copy of a use-case pack (`--pack`, never overwritten without `--overwrite-pack`), and a stamped datastore. Idempotent. **(mutation, CLI only)** | Set up the data space of a new install so it lives outside the code | `exa instance init --data-dir /srv/examlops-data --pack usecases/seanergy --preset standard` |
+| `exa instance init` | Creates an instance-data root: the layout (`usecase/`, `config/`, `.providers/`, `backups/`, `agent/`), `site.toml` (from `--preset`, `--site-name`), optionally a copy of a use-case pack (`--pack`, never overwritten without `--overwrite-pack`), and a stamped datastore. Idempotent. **(mutation, CLI only)** | Set up the data space of a new install so it lives outside the code | `exa instance init --data-dir /srv/examlops-data --pack usecases/reference --preset standard` |
 
 ### `exa upgrade` — bring an instance's data forward to the installed release (ADR 0128)
 
@@ -1231,13 +1231,13 @@ Builds, verifies, inspects, and imports signed `.novapack` packages. Packing fai
 | `exa exchange inspect` | Shows a package's manifest without importing it. | Preview package contents/provenance | `exa exchange inspect mypack.novapack` |
 | `exa exchange import` | Verify-before-import: verifies signature + integrity, then extracts to `-d`. Refuses unverified. **(mutation)** | Safely install a shared package | `exa exchange import mypack.novapack -d ./imported` |
 
-### `exa seanerbus` — SeanerBUS bridge UUID management
+### `exa dataplane-bus` — Dataplane bus bridge UUID management
 
-Manages the per-model SeanerBUS UUIDs the bridge uses to register one req/res handler per model, and probes the bridge's health/stats endpoints.
+Manages the per-model Dataplane bus UUIDs the bridge uses to register one req/res handler per model, and probes the bridge's health/stats endpoints.
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa seanerbus list` | Shows all models and their SeanerBUS UUIDs. | Audit which models are bus-registered | `exa seanerbus list` |
-| `exa seanerbus status` | Probes the SeanerBUS bridge health + runtime stats endpoints. | Check the bridge is reachable and serving | `SEANERBUS_BRIDGE_STATUS_URL=http://node:18003 exa seanerbus status` |
-| `exa seanerbus init-uuids` | Assigns a UUID to every model missing one (idempotent). **(mutation)** | Backfill UUIDs on existing models, then commit | `exa seanerbus init-uuids` |
-| `exa seanerbus regen-uuid` | Regenerates one model's SeanerBUS UUID (notify HPC teams of the change). **(mutation, outward impact)** | Rotate a compromised/duplicated UUID | `exa seanerbus regen-uuid JPCP` |
+| `exa dataplane-bus list` | Shows all models and their Dataplane bus UUIDs. | Audit which models are bus-registered | `exa dataplane-bus list` |
+| `exa dataplane-bus status` | Probes the Dataplane bus bridge health + runtime stats endpoints. | Check the bridge is reachable and serving | `DATAPLANE_BUS_BRIDGE_STATUS_URL=http://node:18003 exa dataplane-bus status` |
+| `exa dataplane-bus init-uuids` | Assigns a UUID to every model missing one (idempotent). **(mutation)** | Backfill UUIDs on existing models, then commit | `exa dataplane-bus init-uuids` |
+| `exa dataplane-bus regen-uuid` | Regenerates one model's Dataplane bus UUID (notify HPC teams of the change). **(mutation, outward impact)** | Rotate a compromised/duplicated UUID | `exa dataplane-bus regen-uuid JPCP` |

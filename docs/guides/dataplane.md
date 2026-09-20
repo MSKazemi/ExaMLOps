@@ -448,7 +448,7 @@ Two connector kinds exist today:
 - **`kafka`** is a long-running consumer-group member that reads a topic and, when
   `options.reply_topic` is set, answers on it.
 
-Two things some readers may expect are not here yet: a SeanerBUS req/res connector, and any `exa`
+Two things some readers may expect are not here yet: a Dataplane bus req/res connector, and any `exa`
 command for streams. There is also no HTTP route yet to register a stream. The write path exists
 in the library (`examlops.dataplane.streams.bindings.define_stream`, tenancy-checked and audited),
 but nothing outside the pack sync calls it in this release. In practice, today, you define a
@@ -658,7 +658,7 @@ A connector marked `singleton: true`, one that does not already balance itself a
 leader-elected: at most one replica runs it at a time, under a lease with a fencing token, so a
 stalled or slow replica can never overlap with the one that took over. Kafka does not need this
 (`singleton: false`) because its consumer group already balances partitions across however many
-replicas run `streams`; the mechanism exists for a future connector, such as a SeanerBUS req/res
+replicas run `streams`; the mechanism exists for a future connector, such as a Dataplane bus req/res
 one, that has no such group of its own.
 
 #### Shutdown, and what a caller sees
@@ -796,7 +796,7 @@ deployment wiring in a later batch.
 
 - No `exa` command for streams: no create, list, pause, dead-letter, or anything else.
 - No dashboard page for streams.
-- No SeanerBUS req/res connector (the model YAML's `seanerbus_uuid` legacy shim is unrelated and
+- No Dataplane bus req/res connector (the model YAML's `dataplane_bus_uuid` legacy shim is unrelated and
   gated behind its own environment variable).
 - No HTTP route to define or edit a stream: `inference.streams` in the model YAML is the only way
   in for now.

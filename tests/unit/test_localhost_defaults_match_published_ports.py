@@ -33,7 +33,7 @@ ALLOWED: dict[tuple[str, int], str] = {
         "where 8001 is Ray Serve's own HTTP port on its own loopback."
     ),
 }
-# Dropped 2026-09-13, as this guard's own failure message asks: the dashboard's SeanerBUS router was
+# Dropped 2026-09-13, as this guard's own failure message asks: the dashboard's Dataplane bus router was
 # deleted and its settings no longer name `localhost:8003`, so both exemptions described nothing.
 # An exemption that outlives its subject is an open door, which is why the guard fails on one.
 

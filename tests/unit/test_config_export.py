@@ -39,10 +39,10 @@ def test_secrets_are_redacted(monkeypatch):
 def test_dataset_store_section_reflects_split(monkeypatch):
     monkeypatch.setenv("EXAMLOPS_DATA_S3_ENDPOINT", "https://s3.example.com")
     monkeypatch.setenv("EXAMLOPS_DATA_S3_ACCESS_KEY", "AK")
-    monkeypatch.setenv("EXAMLOPS_DATA_BUCKET", "nonseanergys-dataset")
+    monkeypatch.setenv("EXAMLOPS_DATA_BUCKET", "other-dataset")
     ds = build_export_snapshot()["object_stores"]["dataset_store"]
     assert ds["endpoint"] == "https://s3.example.com"
-    assert ds["bucket"] == "nonseanergys-dataset"
+    assert ds["bucket"] == "other-dataset"
     assert ds["credentials_set"] is True
 
 

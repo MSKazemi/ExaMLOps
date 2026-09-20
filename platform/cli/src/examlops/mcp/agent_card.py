@@ -59,7 +59,7 @@ def build_agent_card(
             "agents and MCP clients."
         ),
         "version": _version(),
-        "provider": {"organization": "SEANERGYS", "url": "https://seanergys.eu"},
+        "provider": {"organization": "ExaMLOps", "url": "https://github.com/MSKazemi/ExaMLOps"},
         # A2A capability flags describe *this* agent's protocol support, and each one is a
         # promise a peer may act on. `stateTransitionHistory` means a peer can ask for a
         # task's status-transition history — which needs a task concept, and this surface

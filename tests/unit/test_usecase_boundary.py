@@ -2,8 +2,8 @@
 
 Guards the separation between the ExaMLOps platform and a use-case pack:
   1. the platform core / pipeline engine imports no ``seanergys_modelzoo`` directly;
-  2. the loader resolves the bundled Seanergy pack by default;
-  3. a completely different (non-Seanergy) pack loads purely from its ``pack.toml`` — proving the
+  2. the loader resolves the bundled reference pack by default;
+  3. a completely different (non-reference) pack loads purely from its ``pack.toml`` — proving the
      seam carries no hardcoded use-case knowledge.
 """
 
@@ -39,8 +39,8 @@ def test_no_direct_modelzoo_imports_in_core():
     assert violations == [], "boundary violations:\n" + "\n".join(violations)
 
 
-def test_default_pack_resolves_seanergy():
-    """With no env override the loader finds the bundled Seanergy pack's per-model YAML."""
+def test_default_pack_resolves_reference():
+    """With no env override the loader finds the bundled reference pack's per-model YAML."""
     usecase.pack.cache_clear()
     md = usecase.models_dir()
     assert md.name == "models"
@@ -49,7 +49,7 @@ def test_default_pack_resolves_seanergy():
 
 
 def test_second_pack_loads_from_toml(tmp_path, monkeypatch):
-    """A non-Seanergy pack loads entirely from its pack.toml — no hardcoded use-case knowledge."""
+    """A non-reference pack loads entirely from its pack.toml — no hardcoded use-case knowledge."""
     pack = tmp_path / "acme"
     (pack / "models").mkdir(parents=True)
     (pack / "models" / "widget.yaml").write_text("name: Widget\n")

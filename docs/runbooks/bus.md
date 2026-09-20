@@ -28,7 +28,7 @@ address, or the model schema registry it loads at startup).
 **Impact:** bus requesters get error replies.
 
 !!! note "The figure was not a percentage until 2026-09-14"
-    `seanerbus_inferences_total` counted only **successful** calls, so `errors ÷ inferences` was
+    `dataplane_bus_inferences_total` counted only **successful** calls, so `errors ÷ inferences` was
     errors ÷ successes. It read 11 % at a true 10 % error rate, **900 % at 90 %**, and a total
     outage divided by zero — which is why the Grafana error-rate panels showed `+Inf` or nothing at
     the moment they mattered most. The alert still fired (its `clamp_min` denominator saved it from

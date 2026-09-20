@@ -394,7 +394,7 @@ command then name the service that acted, and a compromised service can do only 
 
 ```json
 {
-  "<random>": {"principal": "seanerbus-bridge", "tenant": "default", "scopes": ["retrain"]},
+  "<random>": {"principal": "dataplane-bus-bridge", "tenant": "default", "scopes": ["retrain"]},
   "<random>": {"principal": "autopilot",        "tenant": "default", "scopes": ["read", "retrain"]},
   "<random>": {"principal": "skipper",          "tenant": "default", "scopes": ["read", "retrain"]},
   "<random>": {"principal": "dashboard",        "tenant": "default", "scopes": ["read", "write"]},
@@ -403,7 +403,7 @@ command then name the service that acted, and a compromised service can do only 
 ```
 
 Hand each service its secret through its own variable. In Compose these are
-`SEANERBUS_BRIDGE_CONTROL_PLANE_TOKEN`, `AUTOPILOT_CONTROL_PLANE_TOKEN`,
+`DATAPLANE_BUS_BRIDGE_CONTROL_PLANE_TOKEN`, `AUTOPILOT_CONTROL_PLANE_TOKEN`,
 `AGENT_CONTROL_PLANE_TOKEN` and `DASHBOARD_CONTROL_PLANE_TOKEN`; each falls back to the shared
 `CONTROL_PLANE_TOKEN` while unset. Add `approve` to Skipper's scopes only if the agent should
 approve models; separation of duties still refuses an approval by the principal that requested
@@ -447,7 +447,7 @@ exa retrain JPCP --dataset PM100Dataset --dummy
 ## Model Registry
 
 `GET /models` and `POST /retrain` validation both rely on the active use-case pack. The control plane
-resolves its model YAML directory from `EXAMLOPS_USECASE_DIR`/`usecases/seanergy/pack.toml`; it does
+resolves its model YAML directory from `EXAMLOPS_USECASE_DIR`/`usecases/reference/pack.toml`; it does
 **not** import model training classes.
 
 This approach (`_load_registry()` in `app.py`) avoids importing model training code. The parsed

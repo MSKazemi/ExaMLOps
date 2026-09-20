@@ -28,13 +28,13 @@ _FIELDS: list[tuple[str, str, str, str, bool]] = [
     ("agent_url", "agent", "AGENT_URL", "http://localhost:18004", False),
     ("dataplane_url", "dataplane", "EXAMLOPS_DATAPLANE_URL", "http://localhost:18010", False),
     # The bridge is reached at the *host* port by anything running outside its container.
-    # `exa seanerbus status` read a `seanerbus_bridge_url` attribute that no Config ever
+    # `exa dataplane-bus status` read a `dataplane_bus_bridge_url` attribute that no Config ever
     # had, and `exa production` hard-coded the address twice, so the variable the platform
     # documents for locating the bridge steered neither of them.
     (
-        "seanerbus_bridge_url",
-        "seanerbus_bridge",
-        "SEANERBUS_BRIDGE_STATUS_URL",
+        "dataplane_bus_bridge_url",
+        "dataplane_bus_bridge",
+        "DATAPLANE_BUS_BRIDGE_STATUS_URL",
         "http://localhost:18003",
         False,
     ),
@@ -62,7 +62,7 @@ _URL_KEYS = {
     "prefect",
     "dashboard",
     "agent",
-    "seanerbus_bridge",
+    "dataplane_bus_bridge",
     "dataplane",
 }
 
@@ -158,7 +158,7 @@ class Config:
     dashboard_url: str = "http://localhost:18099"
     agent_url: str = "http://localhost:18004"
     dataplane_url: str = "http://localhost:18010"
-    seanerbus_bridge_url: str = "http://localhost:18003"
+    dataplane_bus_bridge_url: str = "http://localhost:18003"
     control_plane_token: str = ""
     dashboard_token: str = ""
     agent_token: str = ""

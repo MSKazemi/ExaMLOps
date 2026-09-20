@@ -309,7 +309,7 @@ metrics:
   prometheusRule:
     enabled: false
     labels: {}        # the label your Prometheus' ruleSelector matches
-    extraGroups: []   # e.g. [examlops-serving, examlops-seanerbus, examlops-heartbeat]
+    extraGroups: []   # e.g. [examlops-serving, examlops-dataplane-bus, examlops-heartbeat]
 
 # ── OpenTelemetry export (traces + metrics) ──────────────────────────────────────────────────────
 # Every image runs under `opentelemetry-instrument`. With no collector it retries localhost:4317

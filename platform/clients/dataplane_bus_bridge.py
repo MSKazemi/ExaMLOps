@@ -1,8 +1,8 @@
 """
-SeanerBUS → ExaMLOps Ray Serve bridge.
+Dataplane bus → ExaMLOps Ray Serve bridge.
 
-Connects a Cap'n Proto / TCP seanerbus server to ExaMLOps's Ray Serve inference
-API. Supports three modes via SEANERBUS_MODE:
+Connects a Cap'n Proto / TCP dataplane-bus server to ExaMLOps's Ray Serve inference
+API. Supports three modes via DATAPLANE_BUS_MODE:
 
   pubsub   — subscribe to HpcJobV1 messages, call Ray Serve, optionally publish
              HpcInferenceResV1 results back to a result topic
@@ -11,20 +11,20 @@ API. Supports three modes via SEANERBUS_MODE:
   both     — run all of the above concurrently, each on its own Connection
 
 Env vars (defaults shown):
-    SEANERBUS_HOST=localhost
-    SEANERBUS_PORT=5398
-    SEANERBUS_MODE=both
-    SEANERBUS_JOB_TOPIC_UUID        required for pubsub / both
-    SEANERBUS_RESULT_TOPIC_UUID     optional; enables result publishing
-    SEANERBUS_INFERENCE_UUID        required for reqres / both
-    SEANERBUS_RETRAIN_UUID          required for reqres / both
-    SEANERBUS_VECTOR_UUID           required for vector req/res; omit to disable
+    DATAPLANE_BUS_HOST=localhost
+    DATAPLANE_BUS_PORT=5398
+    DATAPLANE_BUS_MODE=both
+    DATAPLANE_BUS_JOB_TOPIC_UUID        required for pubsub / both
+    DATAPLANE_BUS_RESULT_TOPIC_UUID     optional; enables result publishing
+    DATAPLANE_BUS_INFERENCE_UUID        required for reqres / both
+    DATAPLANE_BUS_RETRAIN_UUID          required for reqres / both
+    DATAPLANE_BUS_VECTOR_UUID           required for vector req/res; omit to disable
     RAY_SERVE_URL=http://localhost:18001
     CONTROL_PLANE_URL=http://localhost:18002
     CONTROL_PLANE_TOKEN=
-    SEANERBUS_DEFAULT_MODEL=JPCP
-    SEANERBUS_DEFAULT_ALIAS=Production
-    SEANERBUS_PUBLISH_RESULTS=true
+    DATAPLANE_BUS_DEFAULT_MODEL=JPCP
+    DATAPLANE_BUS_DEFAULT_ALIAS=Production
+    DATAPLANE_BUS_PUBLISH_RESULTS=true
     DRIFT_WINDOW=50
     DRIFT_THRESHOLD=0.5
     DRIFT_COOLDOWN=300
@@ -47,7 +47,7 @@ import capnp
 import httpx
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
-# Allow importing sibling packages when run as `python clients/seanerbus_bridge.py`
+# Allow importing sibling packages when run as `python clients/dataplane_bus_bridge.py`
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 _CLI_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cli", "src")
 sys.path.insert(0, os.path.abspath(_CLI_SRC))
@@ -140,8 +140,8 @@ async def _follow_retrain(client: httpx.AsyncClient, view: dict, headers: dict[s
 
 
 from model_schema_registry import ModelSchemaRegistry  # noqa: E402
-from seanerbus_client import Connection  # noqa: E402
-from seanerbus_msgs import (  # noqa: E402
+from dataplane_bus_client import Connection  # noqa: E402
+from dataplane_bus_msgs import (  # noqa: E402
     HpcInferenceResV1,
     HpcJobV1,
     RetrainReqV1,
@@ -152,25 +152,25 @@ from seanerbus_msgs import (  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [seanerbus-bridge] %(levelname)s: %(message)s",
+    format="%(asctime)s [dataplane-bus-bridge] %(levelname)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-log = logging.getLogger("seanerbus_bridge")
+log = logging.getLogger("dataplane_bus_bridge")
 logging.getLogger("httpx").setLevel(logging.WARNING)  # suppress per-request HTTP noise
 
 # ── configuration ──────────────────────────────────────────────────────────────
 
-SEANERBUS_HOST = os.getenv("SEANERBUS_HOST", "localhost")
-SEANERBUS_PORT = int(os.getenv("SEANERBUS_PORT", "5398"))
-SEANERBUS_MODE = os.getenv("SEANERBUS_MODE", "both").lower()
+DATAPLANE_BUS_HOST = os.getenv("DATAPLANE_BUS_HOST", "localhost")
+DATAPLANE_BUS_PORT = int(os.getenv("DATAPLANE_BUS_PORT", "5398"))
+DATAPLANE_BUS_MODE = os.getenv("DATAPLANE_BUS_MODE", "both").lower()
 
 RAY_SERVE_URL = os.getenv("RAY_SERVE_URL", "http://localhost:18001").rstrip("/")
 CONTROL_PLANE_URL = os.getenv("CONTROL_PLANE_URL", "http://localhost:18002").rstrip("/")
 CONTROL_PLANE_TOKEN = os.getenv("CONTROL_PLANE_TOKEN", "")
 
-DEFAULT_MODEL = os.getenv("SEANERBUS_DEFAULT_MODEL", "JPCP")
-DEFAULT_ALIAS = os.getenv("SEANERBUS_DEFAULT_ALIAS", "Production")
-PUBLISH_RESULTS = os.getenv("SEANERBUS_PUBLISH_RESULTS", "true").lower() == "true"
+DEFAULT_MODEL = os.getenv("DATAPLANE_BUS_DEFAULT_MODEL", "JPCP")
+DEFAULT_ALIAS = os.getenv("DATAPLANE_BUS_DEFAULT_ALIAS", "Production")
+PUBLISH_RESULTS = os.getenv("DATAPLANE_BUS_PUBLISH_RESULTS", "true").lower() == "true"
 
 DRIFT_WINDOW = int(os.getenv("DRIFT_WINDOW", os.getenv("CLIENT_SIM_DRIFT_WINDOW", "50")))
 DRIFT_THRESHOLD = float(
@@ -190,17 +190,17 @@ def _parse_uuid(env_var: str) -> uuid.UUID | None:
         return None
 
 
-JOB_TOPIC_UUID = _parse_uuid("SEANERBUS_JOB_TOPIC_UUID")
-RESULT_TOPIC_UUID = _parse_uuid("SEANERBUS_RESULT_TOPIC_UUID")
-INFERENCE_UUID = _parse_uuid("SEANERBUS_INFERENCE_UUID")
-RETRAIN_UUID = _parse_uuid("SEANERBUS_RETRAIN_UUID")
-VECTOR_UUID = _parse_uuid("SEANERBUS_VECTOR_UUID")
+JOB_TOPIC_UUID = _parse_uuid("DATAPLANE_BUS_JOB_TOPIC_UUID")
+RESULT_TOPIC_UUID = _parse_uuid("DATAPLANE_BUS_RESULT_TOPIC_UUID")
+INFERENCE_UUID = _parse_uuid("DATAPLANE_BUS_INFERENCE_UUID")
+RETRAIN_UUID = _parse_uuid("DATAPLANE_BUS_RETRAIN_UUID")
+VECTOR_UUID = _parse_uuid("DATAPLANE_BUS_VECTOR_UUID")
 
 
 def _load_model_uuids() -> dict[str, uuid.UUID]:
-    """Read seanerbus_uuid from every model YAML in MODELS_YAML_DIR.
+    """Read dataplane_bus_uuid from every model YAML in MODELS_YAML_DIR.
 
-    Returns {UPPERCASE_MODEL_NAME: uuid.UUID}. Models without seanerbus_uuid
+    Returns {UPPERCASE_MODEL_NAME: uuid.UUID}. Models without dataplane_bus_uuid
     are silently skipped. Errors in individual files are logged and skipped.
     """
     if not MODELS_YAML_DIR:
@@ -224,13 +224,13 @@ def _load_model_uuids() -> dict[str, uuid.UUID]:
         except Exception as exc:
             log.warning("Could not parse %s: %s", yaml_file.name, exc)
             continue
-        raw_uuid = raw.get("seanerbus_uuid", "")
+        raw_uuid = raw.get("dataplane_bus_uuid", "")
         model_name = raw.get("name", "")
         if raw_uuid and model_name:
             try:
                 result[model_name.upper()] = uuid.UUID(raw_uuid)
             except ValueError:
-                log.warning("Invalid seanerbus_uuid in %s — skipping", yaml_file.name)
+                log.warning("Invalid dataplane_bus_uuid in %s — skipping", yaml_file.name)
     return result
 
 
@@ -239,45 +239,45 @@ MODEL_UUIDS: dict[str, uuid.UUID] = _load_model_uuids()
 # ── Prometheus metrics ─────────────────────────────────────────────────────────
 
 _BRIDGE_UP = Gauge(
-    "seanerbus_bridge_up",
+    "dataplane_bus_bridge_up",
     "Set to 1.0 while the bridge process is running",
 )
 _INFERENCES = Counter(
-    "seanerbus_inferences_total",
+    "dataplane_bus_inferences_total",
     "Total inference calls dispatched to Ray Serve",
     ["model"],
 )
 _ERRORS = Counter(
-    "seanerbus_inference_errors_total",
+    "dataplane_bus_inference_errors_total",
     "Total inference calls that returned an error",
     ["model"],
 )
 _LATENCY = Histogram(
-    "seanerbus_inference_latency_seconds",
+    "dataplane_bus_inference_latency_seconds",
     "End-to-end inference latency from bridge POST to Ray Serve response",
     ["model"],
     buckets=[0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
 )
 _RETRAINS = Counter(
-    "seanerbus_retrain_triggers_total",
+    "dataplane_bus_retrain_triggers_total",
     "Total drift-triggered retrains posted to the Control Plane",
 )
 # Per-inference telemetry is written off the reply path (plan P0.5 / finding B5). These make the
 # cost of that decision visible instead of silent: what was dropped, what failed, what is waiting.
 _TELEMETRY_DROPPED = Counter(
-    "seanerbus_telemetry_dropped_total",
+    "dataplane_bus_telemetry_dropped_total",
     "Inference telemetry records dropped because the persistence spool was full",
 )
 _TELEMETRY_FAILURES = Counter(
-    "seanerbus_telemetry_persist_failures_total",
+    "dataplane_bus_telemetry_persist_failures_total",
     "Inference telemetry records whose database write failed (the inference itself succeeded)",
 )
 _TELEMETRY_DEPTH = Gauge(
-    "seanerbus_telemetry_queue_depth",
+    "dataplane_bus_telemetry_queue_depth",
     "Inference telemetry records waiting to be written",
 )
 _TELEMETRY_EVENTBUS_FAILURES = Counter(
-    "seanerbus_telemetry_eventbus_publish_failures_total",
+    "dataplane_bus_telemetry_eventbus_publish_failures_total",
     "Inference telemetry events that failed to publish to the event backbone "
     "(EXAMLOPS_TELEMETRY_VIA_EVENTBUS) and were dropped rather than written directly",
 )
@@ -287,34 +287,34 @@ _TELEMETRY_EVENTBUS_FAILURES = Counter(
 # panels built on these names rendered "No data" from the day they shipped — which reads as a
 # calm system, not as a missing exporter. Labelled `model`, like every other metric here.
 _EMB_NORM = Gauge(
-    "seanerbus_embedding_norm",
+    "dataplane_bus_embedding_norm",
     "L2 norm of the most recent input embedding, per model",
     ["model"],
 )
 _EMB_MEAN = Gauge(
-    "seanerbus_embedding_mean",
+    "dataplane_bus_embedding_mean",
     "Mean of the most recent input embedding, per model",
     ["model"],
 )
 _EMB_STD = Gauge(
-    "seanerbus_embedding_std",
+    "dataplane_bus_embedding_std",
     "Standard deviation of the most recent input embedding, per model",
     ["model"],
 )
 # The baselines are what the live values are *drift from*, so a panel without them shows a
 # line with nothing to judge it against.
 _EMB_NORM_BASELINE = Gauge(
-    "seanerbus_embedding_norm_baseline",
+    "dataplane_bus_embedding_norm_baseline",
     "Recorded baseline embedding norm, per model (exa drift input baseline)",
     ["model"],
 )
 _EMB_MEAN_BASELINE = Gauge(
-    "seanerbus_embedding_mean_baseline",
+    "dataplane_bus_embedding_mean_baseline",
     "Recorded baseline embedding mean, per model (exa drift input baseline)",
     ["model"],
 )
 _EMB_STD_BASELINE = Gauge(
-    "seanerbus_embedding_std_baseline",
+    "dataplane_bus_embedding_std_baseline",
     "Recorded baseline embedding std, per model (exa drift input baseline)",
     ["model"],
 )
@@ -691,7 +691,7 @@ class _TelemetrySpool:
             await self._queue.join()
 
 
-_telemetry_spool = _TelemetrySpool(int(os.getenv("SEANERBUS_TELEMETRY_QUEUE_MAX", "1000")))
+_telemetry_spool = _TelemetrySpool(int(os.getenv("DATAPLANE_BUS_TELEMETRY_QUEUE_MAX", "1000")))
 
 
 def _telemetry_via_eventbus() -> bool:
@@ -752,7 +752,7 @@ def _persist_inference_telemetry(
     row to the hash-chained audit log for every prediction: nothing read those rows, retention
     excludes the audit chain so they were never pruned, and each append took the platform-wide
     audit lock on the hot path. The audit log records decisions; request volume is
-    ``seanerbus_inferences_total``.
+    ``dataplane_bus_inferences_total``.
 
     ``EXAMLOPS_TELEMETRY_VIA_EVENTBUS`` (default off) routes the database writes through the
     event backbone instead of calling them here directly — see
@@ -787,13 +787,13 @@ def _persist_inference_telemetry(
 
 async def _run_pubsub(conn: Connection) -> None:
     if JOB_TOPIC_UUID is None:
-        log.warning("SEANERBUS_JOB_TOPIC_UUID not set — pubsub mode disabled")
+        log.warning("DATAPLANE_BUS_JOB_TOPIC_UUID not set — pubsub mode disabled")
         return
 
     log.info("Subscribing to job topic %s", JOB_TOPIC_UUID)
     result_conn: Connection | None = None
     if PUBLISH_RESULTS and RESULT_TOPIC_UUID is not None:
-        result_conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
+        result_conn = Connection(DATAPLANE_BUS_HOST, DATAPLANE_BUS_PORT)
         await result_conn.connect()
         log.info("Result publishing enabled → topic %s", RESULT_TOPIC_UUID)
 
@@ -874,7 +874,7 @@ async def _run_pubsub(conn: Connection) -> None:
             try:
                 await result_conn.publish(RESULT_TOPIC_UUID, result)
             except Exception as exc:  # noqa: BLE001
-                log.error("Failed to publish result to seanerbus: %s", exc)
+                log.error("Failed to publish result to dataplane-bus: %s", exc)
 
 
 # ── req/res inference handler ──────────────────────────────────────────────────
@@ -1056,7 +1056,7 @@ async def _run_reqres(
 
     if MODEL_UUIDS:
         for model_name, model_uuid in MODEL_UUIDS.items():
-            conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
+            conn = Connection(DATAPLANE_BUS_HOST, DATAPLANE_BUS_PORT)
             await conn.connect()
             tasks.append(
                 asyncio.create_task(
@@ -1071,7 +1071,7 @@ async def _run_reqres(
         )
     else:
         log.warning(
-            "No inference handlers registered — set SEANERBUS_INFERENCE_UUID or add seanerbus_uuid to model YAMLs"
+            "No inference handlers registered — set DATAPLANE_BUS_INFERENCE_UUID or add dataplane_bus_uuid to model YAMLs"
         )
 
     if RETRAIN_UUID is not None:
@@ -1097,34 +1097,34 @@ async def _run_reqres(
 
 async def main() -> None:
     _BRIDGE_UP.set(1.0)
-    _bridge_stats["mode"] = SEANERBUS_MODE
+    _bridge_stats["mode"] = DATAPLANE_BUS_MODE
     log.info(
-        "SeanerBUS bridge starting | host=%s port=%d mode=%s",
-        SEANERBUS_HOST,
-        SEANERBUS_PORT,
-        SEANERBUS_MODE,
+        "Dataplane bus bridge starting | host=%s port=%d mode=%s",
+        DATAPLANE_BUS_HOST,
+        DATAPLANE_BUS_PORT,
+        DATAPLANE_BUS_MODE,
     )
 
     async def _run_bridge() -> None:
-        if SEANERBUS_MODE == "pubsub":
-            conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
+        if DATAPLANE_BUS_MODE == "pubsub":
+            conn = Connection(DATAPLANE_BUS_HOST, DATAPLANE_BUS_PORT)
             await conn.connect()
             await _run_pubsub(conn)
 
-        elif SEANERBUS_MODE == "reqres":
-            inf_conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
-            retrain_conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
-            vector_conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
+        elif DATAPLANE_BUS_MODE == "reqres":
+            inf_conn = Connection(DATAPLANE_BUS_HOST, DATAPLANE_BUS_PORT)
+            retrain_conn = Connection(DATAPLANE_BUS_HOST, DATAPLANE_BUS_PORT)
+            vector_conn = Connection(DATAPLANE_BUS_HOST, DATAPLANE_BUS_PORT)
             await inf_conn.connect()
             await retrain_conn.connect()
             await vector_conn.connect()
             await _run_reqres(inf_conn, retrain_conn, vector_conn)
 
-        elif SEANERBUS_MODE == "both":
-            pubsub_conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
-            inf_conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
-            retrain_conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
-            vector_conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
+        elif DATAPLANE_BUS_MODE == "both":
+            pubsub_conn = Connection(DATAPLANE_BUS_HOST, DATAPLANE_BUS_PORT)
+            inf_conn = Connection(DATAPLANE_BUS_HOST, DATAPLANE_BUS_PORT)
+            retrain_conn = Connection(DATAPLANE_BUS_HOST, DATAPLANE_BUS_PORT)
+            vector_conn = Connection(DATAPLANE_BUS_HOST, DATAPLANE_BUS_PORT)
             await asyncio.gather(
                 pubsub_conn.connect(),
                 inf_conn.connect(),
@@ -1137,7 +1137,7 @@ async def main() -> None:
             )
 
         else:
-            log.error("Unknown SEANERBUS_MODE=%r — use pubsub | reqres | both", SEANERBUS_MODE)
+            log.error("Unknown DATAPLANE_BUS_MODE=%r — use pubsub | reqres | both", DATAPLANE_BUS_MODE)
 
     async def _run_bridge_safe() -> None:
         """Run bridge with auto-reconnect; keeps status server alive on failures."""
@@ -1147,12 +1147,12 @@ async def main() -> None:
             attempt += 1
             try:
                 if attempt > 1:
-                    log.info("Reconnecting to SeanerBUS (attempt %d) …", attempt)
+                    log.info("Reconnecting to Dataplane bus (attempt %d) …", attempt)
                 await _run_bridge()
                 log.info("Bridge exited cleanly")
                 break
             except EOFError as exc:
-                log.warning("SeanerBUS connection closed: %s — reconnecting in %.0fs", exc, backoff)
+                log.warning("Dataplane bus connection closed: %s — reconnecting in %.0fs", exc, backoff)
             except Exception:
                 log.exception("Bridge connection failed — reconnecting in %.0fs", backoff)
             _bridge_stats["bridge_error"] = True

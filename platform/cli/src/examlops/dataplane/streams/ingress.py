@@ -1,12 +1,12 @@
 """Stream ingress orchestration (ADR 0130/0131, Plan 2, task A5).
 
 :class:`StreamIngress` is the one path every live-stream request takes, whichever connector
-delivered it (HTTP push, SeanerBUS req/res, Kafka)::
+delivered it (HTTP push, Dataplane bus req/res, Kafka)::
 
     model check → validate + build body → in-flight permit → rate check → infer
         → idempotency check (ok/model only) → reply → offer telemetry (ok only) → feed drift
 
-Properties it keeps, each carried from the SeanerBUS bridge or ruled by the controller:
+Properties it keeps, each carried from the Dataplane bus bridge or ruled by the controller:
 
 * **The binding's model and alias are authoritative** (M1, and C1 of the final review). The
   binding is the authorization unit, so a request naming a different model — or a different

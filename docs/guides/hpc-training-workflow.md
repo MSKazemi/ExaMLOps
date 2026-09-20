@@ -194,7 +194,7 @@ exa pipeline run --model JPCP --dataset PM100Dataset --cluster auto --gpus 1   #
 ## 6. Worked example — JPCP on the live Flux instance (`lxp`)
 
 The `lxp` deployment runs **flux-core 0.85.0** on a 2-node instance
-(`seanergys-lxp-cpu[01-02]`, 32 cores, 0 GPUs), with `flux-accounting` and `flux-sched`
+(`lxp-cpu[01-02]`, 32 cores, 0 GPUs), with `flux-accounting` and `flux-sched`
 available. `flux` is on the system `PATH`, so no `module load` is needed.
 
 > Use SSH host **`lxp-cpu01`**, not `lxp` — the `lxp` alias forces an interactive

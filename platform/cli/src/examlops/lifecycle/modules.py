@@ -260,12 +260,12 @@ CATALOG: tuple[Module, ...] = (
     M(
         "integrations",
         "External integrations",
-        "The SeanerBUS bridge, ModelZoo repository sync and signed Exchange packages.",
-        cli=("seanerbus", "modelzoo", "exchange"),
+        "The Dataplane bus bridge, ModelZoo repository sync and signed Exchange packages.",
+        cli=("dataplane-bus", "modelzoo", "exchange"),
         requires=("serving",),
         dashboard_api=("/modelzoo",),
-        compose_profiles=("seanerbus",),
-        needs="a sibling seanerbus checkout to build the bridge image",
+        compose_profiles=("dataplane-bus",),
+        needs="a sibling dataplane-bus checkout to build the bridge image",
         mcp_tags=("modelzoo",),
     ),
 )

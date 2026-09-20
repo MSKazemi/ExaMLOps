@@ -49,7 +49,7 @@ HEADING_FOR = {
     "dataplane": "Dataplane service",
     "jupyterhub": "JupyterHub",
     "docker-socket-proxy": "Docker socket proxy",
-    "seanerbus-bridge": "bridge",
+    "dataplane-bus-bridge": "bridge",
     "vllm": "vLLM",
     "nats": "NATS",
 }

@@ -206,11 +206,11 @@ activate_release() {
         && echo "jupyterhub up" \
         || echo "warn: jupyterhub start skipped"
     # The bridge is the one service that is never prebuilt: its build context is the parent
-    # of this repo (it needs the sibling seanerbus checkout), which no CI clone has. It
+    # of this repo (it needs the sibling dataplane-bus checkout), which no CI clone has. It
     # builds on the node in both modes, and compose tags it under the release's image name.
-    "${COMPOSE[@]}" --profile seanerbus up -d --build seanerbus-bridge >/dev/null 2>&1 \
-        && echo "seanerbus bridge up" \
-        || echo "warn: seanerbus bridge start skipped"
+    "${COMPOSE[@]}" --profile dataplane-bus up -d --build dataplane-bus-bridge >/dev/null 2>&1 \
+        && echo "dataplane-bus bridge up" \
+        || echo "warn: dataplane-bus bridge start skipped"
 
     # Read the outgoing release BEFORE moving the symlink, so it can be protected from the
     # prune as the rollback target it is about to become.

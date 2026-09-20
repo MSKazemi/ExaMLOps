@@ -1,12 +1,12 @@
-# Seanergy use-case pack (ADR 0094).
+# reference use-case pack (ADR 0094).
 #
 # Declares everything the ExaMLOps platform engine needs to run THIS use case's content,
 # so the platform core names no concrete model/dataset/framework. Point the platform at a
 # different pack with EXAMLOPS_USECASE_DIR=/path/to/other-pack.
 
 [pack]
-name = "seanergy"
-description = "Seanergy HPC use case — power-consumption / job models on the modelzoo framework."
+name = "reference"
+description = "reference HPC use case — power-consumption / job models on the modelzoo framework."
 # Extra sys.path entries the pack's code needs, relative to this pack dir.
 # The upstream model library lives at <repo>/modelzoo.
 pythonpath = ["../../modelzoo"]

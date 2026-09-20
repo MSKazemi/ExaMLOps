@@ -1,12 +1,12 @@
 """Use-case pack loader — the platform/use-case seam (ADR 0094).
 
-A *use-case pack* is a directory (default: ``usecases/seanergy``) holding one deployment's
+A *use-case pack* is a directory (default: ``usecases/reference``) holding one deployment's
 content — per-model YAML, transform shims, and a ``pack.toml`` that declares where its models,
 config package, datasets and ML-framework base-classes live. The ExaMLOps pipeline engine loads
 **everything** through this module so the platform core names no concrete model, dataset, or
 framework. Point the platform at a different pack with ``EXAMLOPS_USECASE_DIR``.
 
-Everything degrades to the legacy in-tree Seanergy layout when no pack is present, so the platform
+Everything degrades to the legacy in-tree reference layout when no pack is present, so the platform
 keeps working mid-migration.
 """
 
@@ -25,7 +25,7 @@ except ModuleNotFoundError:  # pragma: no cover - py<3.11 fallback
     import tomli as tomllib  # type: ignore
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_DEFAULT_PACK = _REPO_ROOT / "usecases" / "seanergy"
+_DEFAULT_PACK = _REPO_ROOT / "usecases" / "reference"
 
 # Legacy fallbacks (pre-ADR-0094 in-tree layout) so a partial migration never breaks discovery.
 _LEGACY_MODELS = _REPO_ROOT / "pipelines" / "models"

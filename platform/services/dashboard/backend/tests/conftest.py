@@ -150,9 +150,9 @@ def pytest_configure(config):  # noqa: ARG001 - pytest's hook signature
 
 # --- a dashboard test may not talk to a running backing service --------------------------
 #
-# `test_seanerbus_status_unreachable_when_bridge_down` asserted the bridge probe fails while doing
+# `test_dataplane_bus_status_unreachable_when_bridge_down` asserted the bridge probe fails while doing
 # nothing to make it fail: it passed here because nothing was on :8003, and would have failed on
-# any machine running `make seanerbus-up` or on the lxp node, where the bridge is a bare-metal
+# any machine running `make dataplane-bus-up` or on the lxp node, where the bridge is a bare-metal
 # process. `test_response_carries_security_headers` — a claim about middleware — went the other
 # way and opened real connections to nine services, then left the result in the health router's
 # 30-second process-global cache.

@@ -1,6 +1,6 @@
 """Each service holds exactly the action it performs (plan P3.2).
 
-``write`` let its holder do every mutation, and every service held it — so the SeanerBUS bridge,
+``write`` let its holder do every mutation, and every service held it — so the Dataplane bus bridge,
 which only ever requests drift retrains, could also approve a model into training or reconfigure
 the ModelZoo integration. Narrow scopes (``retrain``, ``approve``, ``changes``, ``admin``) give a
 credential one action; ``write`` still implies them all, so existing credentials are unchanged.
@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 CREDENTIALS = {
     "bridge-secret-token-value-01": {
-        "principal": "seanerbus-bridge",
+        "principal": "dataplane-bus-bridge",
         "tenant": "default",
         "scopes": ["retrain"],
     },
@@ -114,7 +114,7 @@ def test_the_command_records_which_service_asked(cp):
         ).fetchone()[0]
     finally:
         conn.close()
-    assert actor == "seanerbus-bridge"
+    assert actor == "dataplane-bus-bridge"
 
 
 def test_an_unknown_scope_is_a_configuration_error_not_a_silent_grant(tmp_path, monkeypatch):

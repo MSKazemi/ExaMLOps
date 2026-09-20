@@ -188,7 +188,7 @@ def main() -> int:
         f"task_type: {args.task_type}\n"
         f"framework: sklearn\n"
         f"enabled: true\n"
-        f"seanerbus_uuid: {_uuid_mod.uuid4()}\n"
+        f"dataplane_bus_uuid: {_uuid_mod.uuid4()}\n"
         f"\n"
         f"model:\n"
         f"  embedding_type: NONE\n"

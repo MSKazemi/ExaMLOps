@@ -1,14 +1,14 @@
 """
-Smoke-test req/res client for the seanerbus bridge.
+Smoke-test req/res client for the dataplane-bus bridge.
 
 Sends a single synthetic HpcJobV1 to the JPCP inference handler and prints
 the decoded HpcInferenceResV1 response as JSON.
 
-UUID is read from pipelines/models/jpcp.yaml (seanerbus_uuid field).
+UUID is read from pipelines/models/jpcp.yaml (dataplane_bus_uuid field).
 Override with an explicit UUID as the first argument.
 
 Usage:
-    python clients/seanerbus_test_req.py [<INFERENCE_UUID>]
+    python clients/dataplane_bus_test_req.py [<INFERENCE_UUID>]
 """
 
 from __future__ import annotations
@@ -26,11 +26,11 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from seanerbus_client import Connection  # noqa: E402
-from seanerbus_msgs import HpcInferenceResV1, HpcJobV1  # noqa: E402
+from dataplane_bus_client import Connection  # noqa: E402
+from dataplane_bus_msgs import HpcInferenceResV1, HpcJobV1  # noqa: E402
 
-SEANERBUS_HOST = os.getenv("SEANERBUS_HOST", "localhost")
-SEANERBUS_PORT = int(os.getenv("SEANERBUS_PORT", "5398"))
+DATAPLANE_BUS_HOST = os.getenv("DATAPLANE_BUS_HOST", "localhost")
+DATAPLANE_BUS_PORT = int(os.getenv("DATAPLANE_BUS_PORT", "5398"))
 EMBEDDING_DIM = 384
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -46,13 +46,13 @@ def _jpcp_uuid() -> uuid.UUID:
             sys.exit(1)
     with _JPCP_YAML.open() as f:
         data = yaml.safe_load(f)
-    return uuid.UUID(data["seanerbus_uuid"])
+    return uuid.UUID(data["dataplane_bus_uuid"])
 
 
 async def main() -> None:
     inference_uuid = _jpcp_uuid()
 
-    conn = Connection(SEANERBUS_HOST, SEANERBUS_PORT)
+    conn = Connection(DATAPLANE_BUS_HOST, DATAPLANE_BUS_PORT)
     await conn.connect()
 
     job = HpcJobV1(

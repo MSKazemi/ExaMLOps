@@ -27,7 +27,7 @@ STATEFUL = {
     "dataplane": "source catalog, pull history and snapshot metadata (ADR 0130)",
     "agent": "Skipper platform_ops tools and audit",
     "dashboard": "every platform.db-backed console",
-    "seanerbus-bridge": "drift / input telemetry + audit",
+    "dataplane-bus-bridge": "drift / input telemetry + audit",
     "backup": "snapshots the platform datastore",
     "autopilot-follower": "runs autopilot cycles on retrain.run_completed (ADR 0124)",
     "skipper-watch": "raises watch alerts to the outbox and audit (ADR 0104, ADR 0124)",

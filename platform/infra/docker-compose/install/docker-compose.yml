@@ -20,7 +20,7 @@
 #     the platform starts empty rather than serving a pack baked into one image but not another.
 #
 # Optional profiles (COMPOSE_PROFILES in .env): `minio` (bundled object store, on by default) and
-# `monitoring`. Not in this bundle yet: JupyterHub, the SeanerBUS bridge and vLLM; they run from
+# `monitoring`. Not in this bundle yet: JupyterHub, the Dataplane bus bridge and vLLM; they run from
 # the development stack. See docs/guides/install-compose-bundle.md.
 #
 # Guarded by tests/unit/test_install_bundle.py.
@@ -37,7 +37,7 @@ x-state-env: &state-env
 services:
 
   # One-shot: create the data root (idempotent; never overwrites an existing pack). Set
-  # EXAMLOPS_SEED_PACK to a pack path inside the image (e.g. /app/usecases/seanergy) to seed
+  # EXAMLOPS_SEED_PACK to a pack path inside the image (e.g. /app/usecases/reference) to seed
   # /state/usecase on first start.
   #
   # The services do not share a uid (the agent runs as 10001, others as root), so the data root is

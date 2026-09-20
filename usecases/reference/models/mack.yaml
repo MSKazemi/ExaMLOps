@@ -1,13 +1,15 @@
-name: MCBound
-model_class: MCBound
-config_class: mcbound_config.MCBoundConfiguration
+name: MACK
+model_class: MACK
+config_class: mack_config.MACKConfiguration
 task_type: classification
 framework: sklearn
 enabled: true
-seanerbus_uuid: 1a2c3b5d-6873-41cb-b221-1612a8787e2c
+dataplane_bus_uuid: 65611ddc-2a9c-4b88-bcc7-2f11684eb649
 
 model:
-  embedding_type: NONE
+  embedding_type: SB
+  k_flops: 2
+  k_memory_bw: 2
   hyperparameters:
     n_jobs: -1
 
@@ -36,12 +38,12 @@ lifecycle:
   - {name: Production, metric: accuracy, threshold: 0.70, direction: higher_is_better}
 
 serving:
-  model_id: mcbound
+  model_id: mack
   aliases: [Production, Canary, Staging]
 
 prefect:
   schedule: "0 2 * * *"
-  deployment_name: examlops-mcbound-nightly
+  deployment_name: examlops-mack-nightly
   work_pool: default-agent
   concurrency_limit: 1
 

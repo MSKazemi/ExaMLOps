@@ -12,7 +12,7 @@ from examlops.cli.main import app
 runner = CliRunner()
 
 
-def test_seanerbus_status_fetches_health_and_stats():
+def test_dataplane_bus_status_fetches_health_and_stats():
     def fake_get(url: str):
         if url.endswith("/health"):
             return {"status": "ok", "mode": "both"}
@@ -20,8 +20,8 @@ def test_seanerbus_status_fetches_health_and_stats():
             return {"inferences_total": 3, "errors_total": 0}
         raise AssertionError(f"unexpected URL: {url}")
 
-    with patch("examlops.cli.commands.seanerbus_cmd._client.get", side_effect=fake_get) as mock_get:
-        result = runner.invoke(app, ["seanerbus", "status"])
+    with patch("examlops.cli.commands.dataplane_bus_cmd._client.get", side_effect=fake_get) as mock_get:
+        result = runner.invoke(app, ["dataplane-bus", "status"])
 
     assert result.exit_code == 0
     assert mock_get.call_count == 2

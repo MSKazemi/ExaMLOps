@@ -2,7 +2,7 @@
 pipeline_generator — Auto-pipeline generator for ExaMLOps.
 
 At startup, auto-discovers all (model, config) pairs from the active use-case pack (ADR 0094;
-default ``usecases/seanergy``, override with ``EXAMLOPS_USECASE_DIR``) by scanning:
+default ``usecases/reference``, override with ``EXAMLOPS_USECASE_DIR``) by scanning:
   • the pack's model ``tasks_root`` package  → framework model subclasses
   • the pack's ``config_package``            → framework config subclasses
 
@@ -78,7 +78,7 @@ from pipelines.model_loader import ModelYAMLConfig, scan_model_yamls  # noqa: E4
 from pipelines.registry_loader import export_registry, load_registry, resolve_entries  # noqa: E402
 
 # ── Use-case framework bindings (ADR 0094) ──────────────────────────────────────
-# The active pack (default usecases/seanergy; override with EXAMLOPS_USECASE_DIR) supplies the
+# The active pack (default usecases/reference; override with EXAMLOPS_USECASE_DIR) supplies the
 # ML-framework base classes + helpers. The engine resolves them through the loader so it imports
 # nothing use-case-specific by name; a different pack swaps the whole binding.
 _FRAMEWORK = _usecase.framework()

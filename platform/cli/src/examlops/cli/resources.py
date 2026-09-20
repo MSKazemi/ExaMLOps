@@ -591,11 +591,11 @@ RESOURCES: tuple[Resource, ...] = (
     ),
     R(
         "bus-model",
-        "SeanerBUS models",
-        "Per-model SeanerBUS request/response UUIDs.",
-        list="seanerbus list",
+        "Dataplane bus models",
+        "Per-model Dataplane bus request/response UUIDs.",
+        list="dataplane-bus list",
         key="Model",
-        actions=("seanerbus regen-uuid",),
+        actions=("dataplane-bus regen-uuid",),
     ),
     R(
         "config-context",

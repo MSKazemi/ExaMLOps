@@ -2,8 +2,8 @@
 
 ADR 0130/0131, Plan 2 batch S1 task A6 (ruling R11 / E15). Three entry points:
 
-* :func:`yaml_streams` — parse ``inference.streams`` (plus the legacy ``seanerbus_uuid`` key,
-  gated by ``EXAMLOPS_DATAPLANE_LEGACY_SEANERBUS_UUID``) out of one already-loaded model YAML dict
+* :func:`yaml_streams` — parse ``inference.streams`` (plus the legacy ``dataplane_bus_uuid`` key,
+  gated by ``EXAMLOPS_DATAPLANE_LEGACY_DATAPLANE_BUS_UUID``) out of one already-loaded model YAML dict
   into a list of :class:`StreamBinding`. Pure: no I/O, no catalog write, no tenancy check.
 * :func:`sync_pack_streams` — scans the active pack's model YAMLs
   (:func:`examlops.usecase.models_dir`) and upserts every declared stream into the catalog as
@@ -132,10 +132,10 @@ __all__ = [
 #: pulling in ``yaml`` or the datastore (review M3). They are re-exported here, where they were
 #: first published, so existing callers keep working.
 
-#: Legacy shim gate (E15) — the pre-Plan-2 SeanerBUS bridge derived one binding per model straight
-#: from ``seanerbus_uuid``. Default OFF: a model with real ``inference.streams`` entries should not
+#: Legacy shim gate (E15) — the pre-Plan-2 Dataplane bus bridge derived one binding per model straight
+#: from ``dataplane_bus_uuid``. Default OFF: a model with real ``inference.streams`` entries should not
 #: also get a shadow legacy binding unless an operator opts in during the cutover window.
-_LEGACY_ENV = "EXAMLOPS_DATAPLANE_LEGACY_SEANERBUS_UUID"
+_LEGACY_ENV = "EXAMLOPS_DATAPLANE_LEGACY_DATAPLANE_BUS_UUID"
 
 #: Sweep-disable/re-enable reason (fix round 1, finding 2). Never applied to a human disable/pause,
 #: so the sweep can tell "I did this" apart from "an operator did this" on the next run. Fix round
@@ -432,29 +432,29 @@ def _binding_from_entry(
 
 
 def _declares_legacy_shim(model_yaml: dict[str, Any]) -> bool:
-    """Whether the legacy ``seanerbus_uuid`` shim would derive a binding from this model YAML.
+    """Whether the legacy ``dataplane_bus_uuid`` shim would derive a binding from this model YAML.
 
     The one predicate :func:`_legacy_binding` and :func:`sync_pack_streams` share, so "does this
     model declare anything?" cannot drift from "does the shim produce a binding?".
     """
-    return _truthy(os.getenv(_LEGACY_ENV)) and bool(model_yaml.get("seanerbus_uuid"))
+    return _truthy(os.getenv(_LEGACY_ENV)) and bool(model_yaml.get("dataplane_bus_uuid"))
 
 
 def _legacy_binding(
     model_yaml: dict[str, Any], *, project: str, model: str, origin: str = "pack"
 ) -> StreamBinding | None:
-    """The legacy ``seanerbus_uuid`` shim binding, or ``None`` if the gate is off / no UUID.
+    """The legacy ``dataplane_bus_uuid`` shim binding, or ``None`` if the gate is off / no UUID.
 
     ``model`` is trusted to already be ASCII-validated (every caller validates it before this is
-    reached), so the derived name ``f"{model}-seanerbus"`` needs no separate validation.
+    reached), so the derived name ``f"{model}-dataplane-bus"`` needs no separate validation.
     """
     if not _declares_legacy_shim(model_yaml):
         return None
-    uuid = model_yaml["seanerbus_uuid"]
+    uuid = model_yaml["dataplane_bus_uuid"]
     return StreamBinding(
         project=project,
-        name=f"{model}-seanerbus",
-        connector="seanerbus",
+        name=f"{model}-dataplane-bus",
+        connector="dataplane-bus",
         model=model,
         alias="Production",
         address=str(uuid),
@@ -467,7 +467,7 @@ def _legacy_binding(
 
 
 def yaml_streams(model_yaml: dict[str, Any], *, project: str) -> list[StreamBinding]:
-    """Parse ``inference.streams`` (+ the legacy ``seanerbus_uuid`` shim) out of one already-loaded
+    """Parse ``inference.streams`` (+ the legacy ``dataplane_bus_uuid`` shim) out of one already-loaded
     model YAML dict. Pure — no I/O, no catalog write, no tenancy check (that is
     :func:`define_stream`/:func:`sync_pack_streams`'s job). Raises on the first invalid entry —
     :func:`sync_pack_streams` does **not** call this in bulk; it re-implements the same per-entry
@@ -499,7 +499,7 @@ def yaml_streams(model_yaml: dict[str, Any], *, project: str) -> list[StreamBind
         _binding_from_entry(entry, project=normalized_project, model=model) for entry in raw_streams
     ]
     legacy = _legacy_binding(model_yaml, project=normalized_project, model=model)
-    if legacy is not None and not any(b.connector == "seanerbus" for b in bindings):
+    if legacy is not None and not any(b.connector == "dataplane-bus" for b in bindings):
         bindings.append(legacy)
     return bindings
 
@@ -584,7 +584,7 @@ def sync_pack_streams(*, actor: str | None = None) -> dict[str, list[Any]]:
     parsed/tenancy-checked in its own try/except. A failure — a non-dict entry, an invalid
     ``state:``, a tenancy refusal, a malformed ``inference``/``streams`` shape, or a file that
     fails to parse at all — is recorded under ``report["errors"]`` as
-    ``{"file": ..., "entry": <index, "seanerbus_uuid", or None>, "message": ...}`` and every other
+    ``{"file": ..., "entry": <index, "dataplane_bus_uuid", or None>, "message": ...}`` and every other
     file/entry is still processed.
 
     **Removal sweep (fix round 1 finding 2; fix round 2, N1).** A previously-synced
@@ -615,7 +615,7 @@ def sync_pack_streams(*, actor: str | None = None) -> dict[str, list[Any]]:
     of the sync; that branch never logs/records the exception's own text, only its type and the
     file/entry position, since an exception this module did not raise itself may embed the entry's
     values. A failure of any kind is recorded under ``report["errors"]`` as
-    ``{"file": ..., "entry": <index, "seanerbus_uuid", or None>, "message": ...}`` and suppresses
+    ``{"file": ..., "entry": <index, "dataplane_bus_uuid", or None>, "message": ...}`` and suppresses
     the removal sweep for this run (see above).
 
     **The project a pack stream lands in (live finding D6).** A model YAML's own top-level
@@ -722,18 +722,18 @@ def sync_pack_streams(*, actor: str | None = None) -> dict[str, list[Any]]:
 
         try:
             legacy = _legacy_binding(raw, project=project, model=model)
-            if legacy is not None and "seanerbus" not in file_connectors:
+            if legacy is not None and "dataplane-bus" not in file_connectors:
                 _check_tenancy(legacy.project, legacy.model)
                 _sync_one_binding(legacy, actor=actor, report=report, seen=seen)
         except SpecError as exc:
             report["errors"].append(
-                {"file": path.name, "entry": "seanerbus_uuid", "message": str(exc)}
+                {"file": path.name, "entry": "dataplane_bus_uuid", "message": str(exc)}
             )
         except Exception as exc:  # noqa: BLE001 - same last-resort isolation as the entry loop
             report["errors"].append(
                 {
                     "file": path.name,
-                    "entry": "seanerbus_uuid",
+                    "entry": "dataplane_bus_uuid",
                     "message": f"unexpected {type(exc).__name__}",
                 }
             )
@@ -797,7 +797,7 @@ def _check_connector(kind: str) -> None:
     plugins) plus ``http``, which the service's push route serves rather than a supervised thread.
 
     Only the API/CLI path checks this: a *pack* entry may legitimately name a connector that a
-    site's pack registers later (the SeanerBUS one arrives as pack content), and a pack sync that
+    site's pack registers later (the Dataplane bus one arrives as pack content), and a pack sync that
     refused it would disable streams a running site depends on.
     """
     from examlops.dataplane.streams import connectors

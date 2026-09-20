@@ -9,7 +9,7 @@ hide:
 
 ExaMLOps runs as more than 30 cooperating services, stores and external dependencies. Twenty of
 them are Docker Compose services in the development stack: `make stack-up` starts the core ten, `make monitoring-up` six
-observability services, `make jupyter-up` JupyterHub and `make seanerbus-up` the bus bridge; the
+observability services, `make jupyter-up` JupyterHub and `make dataplane-bus-up` the bus bridge; the
 backup sidecar, vLLM and the Marquez lineage receiver are opt-in profiles (`docker compose --profile backup|vllm|lineage up`). The rest
 are processes, stores and external systems they work with, including the dataplane service (its own
 image, not yet in any compose file) and the reference identity stack (its own compose file,
@@ -35,8 +35,8 @@ Ports are the host ports of the local development stack.
 | Shared platform datastore (platform.db) | Registry and storage | — | Shared platform state: drift, traffic, audit, jobs, projects |
 | Backup sidecar | Registry and storage | — | Scheduled backup of databases and buckets (optional profile) |
 | Marquez lineage receiver | Registry and storage | 15050, 13050 | Receives OpenLineage events and draws the provenance graph (optional profile) |
-| SeanerBUS bridge | Integration | 18003 | Connects the site message bus to serving and retraining |
-| SeanerBUS message bus (external) | Integration | 5398 | The site's message bus (external system) |
+| Dataplane bus bridge | Integration | 18003 | Connects the site message bus to serving and retraining |
+| Dataplane bus message bus (external) | Integration | 5398 | The site's message bus (external system) |
 | Event outbox relay (NovaFabric backbone) | Integration | — | Publishes outbox events at least once |
 | Dashboard (FastAPI BFF + React SPA) | People and agents | 18099 | Web consoles over the same code paths as the CLI |
 | Scoped Docker socket proxy | People and agents | — | Gives the dashboard the containers API only — no images, exec, volumes or networks |
@@ -405,40 +405,40 @@ Hold models, artifacts, datasets and platform state.
 
 Connect external systems and deliver events.
 
-### SeanerBUS bridge
+### Dataplane bus bridge
 
 **Port:** 18003  
-**Built on:** Python asyncio + pycapnp (Cap'n Proto over TCP) + httpx; Dockerfile.bridge; compose profile seanerbus
+**Built on:** Python asyncio + pycapnp (Cap'n Proto over TCP) + httpx; Dockerfile.bridge; compose profile dataplane-bus
 
 **What it does**
 
-- Registers one req/res inference handler per model seanerbus_uuid (HpcJobV1 -> HpcInferenceResV1) plus retrain (RetrainReqV1) and vector (VectorReqV1) handlers
+- Registers one req/res inference handler per model dataplane_bus_uuid (HpcJobV1 -> HpcInferenceResV1) plus retrain (RetrainReqV1) and vector (VectorReqV1) handlers
 - Forwards jobs to Ray Serve /infer-pipeline/infer (vector requests go straight to /predict/{model})
 - Writes drift snapshots, input-embedding stats (norm/mean/std) and audit events off the event loop
 - Tracks per-model rolling error rate (window 50, threshold 0.5, cooldown 300s) and POSTs /retrain to the control plane on drift
 - Serves /health, /stats and /metrics on 8003 and reconnects to the bus with exponential backoff (2s to 30s)
 
-**Talks to:** SeanerBUS message bus (external) (Cap'n Proto/TCP :5398); Inference pipeline (InferencePipelineIngress -> FeatureTransformer -> ModelRouter) (HTTP); Ray Serve MultiModelServer (HTTP); Control plane API (HTTP); Shared platform datastore (platform.db) (SQL)
+**Talks to:** Dataplane bus message bus (external) (Cap'n Proto/TCP :5398); Inference pipeline (InferencePipelineIngress -> FeatureTransformer -> ModelRouter) (HTTP); Ray Serve MultiModelServer (HTTP); Control plane API (HTTP); Shared platform datastore (platform.db) (SQL)
 
-**Operate:** `make seanerbus-up (container) or make seanerbus-bridge-up (bare metal) ; exa seanerbus status`
+**Operate:** `make dataplane-bus-up (container) or make dataplane-bus-bridge-up (bare metal) ; exa dataplane-bus status`
 
-**Guide:** [seanerbus](../guides/seanerbus.md)
+**Guide:** [dataplane-bus](../guides/dataplane-bus.md)
 
-### SeanerBUS message bus (external)
+### Dataplane bus message bus (external)
 
 **Port:** 5398  
-**Built on:** External system from the sibling seanerbus repo; reached over docker network seanerbus-net
+**Built on:** External system from the sibling dataplane-bus repo; reached over docker network dataplane-bus-net
 
 **What it does**
 
 - Carries HPC job / inference / retrain / vector messages between site components and ExaMLOps
 - Runs a request generator (reqgen) used by make full-up
 
-**Talks to:** SeanerBUS bridge (Cap'n Proto/TCP)
+**Talks to:** Dataplane bus bridge (Cap'n Proto/TCP)
 
-**Operate:** `cd ../seanerbus && docker compose up -d (external); make full-up`
+**Operate:** `cd ../dataplane-bus && docker compose up -d (external); make full-up`
 
-**Guide:** [seanerbus architecture](../guides/seanerbus-architecture.md)
+**Guide:** [dataplane-bus architecture](../guides/dataplane-bus-architecture.md)
 
 ### Dataplane service
 
@@ -547,7 +547,7 @@ The ways people and agents operate the platform.
 - Signs people in with a local viewer/admin login or with the organisation's identity provider (OIDC with PKCE and step-up), and accepts SCIM 2.0 provisioning at /api/scim/v2
 - Audits most mutations (approvals are recorded by the control plane instead)
 
-**Talks to:** Control plane API (HTTP); MLflow tracking server + model registry (HTTP (/ajax-api)); Prefect server (orchestrator) (HTTP); Ray Serve MultiModelServer (HTTP); Prometheus (HTTP (PromQL)); Grafana (HTTP/iframe); Loki (HTTP); MinIO object store (S3); Skipper agent server (web UI + OpenAI-compatible bridge) (HTTP (OpenAI-compatible)); Scoped Docker socket proxy (Docker API over TCP 2375); JupyterHub (+ spawned JupyterLab) (HTTP (Hub API)); SeanerBUS bridge (HTTP); PostgreSQL (MLflow + Prefect metadata) (PostgreSQL (asyncpg)); Shared platform datastore (platform.db) (SQL)
+**Talks to:** Control plane API (HTTP); MLflow tracking server + model registry (HTTP (/ajax-api)); Prefect server (orchestrator) (HTTP); Ray Serve MultiModelServer (HTTP); Prometheus (HTTP (PromQL)); Grafana (HTTP/iframe); Loki (HTTP); MinIO object store (S3); Skipper agent server (web UI + OpenAI-compatible bridge) (HTTP (OpenAI-compatible)); Scoped Docker socket proxy (Docker API over TCP 2375); JupyterHub (+ spawned JupyterLab) (HTTP (Hub API)); Dataplane bus bridge (HTTP); PostgreSQL (MLflow + Prefect metadata) (PostgreSQL (asyncpg)); Shared platform datastore (platform.db) (SQL)
 
 **Keeps:** Postgres tables dashboard_config, dashboard_audit, model_doc_overrides, model_doc_images; bucket dashboard-model-docs; platform.db via /state bind mount
 
@@ -691,12 +691,12 @@ Metrics, alerts, logs and traces.
 
 **What it does**
 
-- Scrapes every 15s: ray-serving:8080, control-plane:8002, seanerbus-bridge:8003, alertmanager, tempo, loki, vllm
+- Scrapes every 15s: ray-serving:8080, control-plane:8002, dataplane-bus-bridge:8003, alertmanager, tempo, loki, vllm
 - Loads fleet targets (node_exporter/DCGM/vLLM) from file_sd JSON refreshed every 30s, generated by `exa hpc prometheus-sd`
 - Evaluates 31 alert rules from alert_rules.yml and sends alerts to Alertmanager
 - Stamps external labels cluster/tenant on every series
 
-**Talks to:** Ray Serve MultiModelServer (HTTP scrape); Control plane API (HTTP scrape); SeanerBUS bridge (HTTP scrape); Loki (HTTP scrape); Grafana Tempo (HTTP scrape); vLLM OpenAI-compatible server (HTTP scrape); Alertmanager (HTTP)
+**Talks to:** Ray Serve MultiModelServer (HTTP scrape); Control plane API (HTTP scrape); Dataplane bus bridge (HTTP scrape); Loki (HTTP scrape); Grafana Tempo (HTTP scrape); vLLM OpenAI-compatible server (HTTP scrape); Alertmanager (HTTP)
 
 **Keeps:** volume prometheus_data
 
@@ -730,7 +730,7 @@ Metrics, alerts, logs and traces.
 **What it does**
 
 - Auto-provisions Prometheus, Loki and Tempo datasources
-- Auto-provisions 7 dashboards: overview, online metrics, control plane, drift, approvals, logs, seanerbus
+- Auto-provisions 7 dashboards: overview, online metrics, control plane, drift, approvals, logs, dataplane-bus
 - Allows embedding so the dashboard and Ray dashboard can iframe panels
 - Keeps anonymous access off unless GRAFANA_ANONYMOUS_ENABLED=true
 

@@ -19,8 +19,7 @@ driven by the `exa` command-line tool, a web dashboard, or an AI agent.
 ML engineers, platform engineers and HPC operators who run models on batch-scheduled clusters —
 typically in research computing centres and large research projects — and want the MLOps
 practices of cloud platforms (a model registry, gated promotion, versioned serving, monitoring,
-an audit trail) without moving their workloads to Kubernetes. It was built for the EuroHPC
-SEANERGYS project.
+an audit trail) without moving their workloads to Kubernetes.
 
 ## Do I need a supercomputer or Slurm to try it?
 

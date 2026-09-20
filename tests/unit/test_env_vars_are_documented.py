@@ -37,7 +37,7 @@ REFERENCE = ROOT / "docs" / "reference" / "env-vars.md"
 # That is how `EXAMLOPS_BACKUP_TIERS` — the variable deciding what a backup contains — stayed
 # invisible to the first version of this guard.
 _READ = re.compile(r"""(?:getenv|environ\.get|env\.get)\(\s*["']([A-Z][A-Z0-9_]{2,})["']""")
-_OURS = "EXAMLOPS|AGENT|DASHBOARD|CONTROL_PLANE|RAY|MLFLOW|PREFECT|SEANERBUS"
+_OURS = "EXAMLOPS|AGENT|DASHBOARD|CONTROL_PLANE|RAY|MLFLOW|PREFECT|DATAPLANE_BUS"
 # `_[A-Z0-9]…[A-Z0-9]` and not a trailing underscore: the code also carries bare prefix strings
 # (`"EXAMLOPS_"`, `"RAY_"`) used with startswith, and a looser pattern reads those as variables.
 _LITERAL = re.compile(rf"""["']((?:{_OURS})_[A-Z0-9][A-Z0-9_]*[A-Z0-9])["']""")

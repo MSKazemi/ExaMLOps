@@ -248,7 +248,7 @@ def write_input_snapshot(
 def handle_inference_telemetry_event(event: dict[str, Any]) -> None:
     """The consumer side of ``serving.inference_telemetry`` (ADR 0123 decision 4).
 
-    The serving plane (`platform/clients/seanerbus_bridge.py`, ``EXAMLOPS_TELEMETRY_VIA_EVENTBUS``)
+    The serving plane (`platform/clients/dataplane_bus_bridge.py`, ``EXAMLOPS_TELEMETRY_VIA_EVENTBUS``)
     publishes instead of writing here directly; this performs the same
     ``write_drift_snapshot``/``write_input_snapshot`` calls it used to make inline, on whichever
     process runs the consumer (``exa drift consume-telemetry``) — which is where platform.db

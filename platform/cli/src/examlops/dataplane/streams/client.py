@@ -2,7 +2,7 @@
 
 :class:`InferenceClient` is the seam the ingress calls; :class:`RayPipelineClient` is the S1
 implementation, posting to the inference pipeline's ``/infer-pipeline/infer`` exactly as the
-SeanerBUS bridge does today. The OIP/v2 client that replaces it (B1) plugs into the same Protocol,
+Dataplane bus bridge does today. The OIP/v2 client that replaces it (B1) plugs into the same Protocol,
 so S1 imports nothing of examlops-83's untracked ``oip_client``/``serving.budgets``.
 
 Status mapping (E4 + controller ruling R6) lives in **one table**, :data:`OUTCOME_TABLE`. The

@@ -1,7 +1,7 @@
 # Workload identities for the platform's services — SPIRE on this Docker host (ADR 0125).
 #
 #   docker compose -f docker-compose.yml -f docker-compose.identity.yml up -d
-#   (add --profile events / --profile seanerbus as usual; their helpers follow the same profiles)
+#   (add --profile events / --profile dataplane-bus as usual; their helpers follow the same profiles)
 #
 # Every service that calls the control plane gets a spiffe-helper carrying its identity label. The
 # helper keeps a five-minute JWT-SVID in a volume the service reads through CONTROL_PLANE_TOKEN_FILE
@@ -19,7 +19,7 @@
 # Every hop to the model server is mutual TLS (ADR 0125 phases 2 and 3). The model server listens
 # on loopback only (RAY_SERVE_HOST=127.0.0.1, port 18001 no longer published), and a `serving-mtls`
 # Envoy in its network namespace is the one way in: it presents …/ray-serving and accepts the
-# gateway, the control plane, the dashboard, the agent and the SeanerBUS bridge by their X.509-SVIDs.
+# gateway, the control plane, the dashboard, the agent and the Dataplane bus bridge by their X.509-SVIDs.
 # The gateway (with the `gateway` profile) speaks mutual TLS itself. Each other caller gets a
 # `serving-egress-<caller>` Envoy in its own network namespace. The caller sends plain HTTP to
 # 127.0.0.1:8001 and the sidecar carries it to ray-serving:8443 under the caller's identity. Only
@@ -57,8 +57,8 @@ services:
       EXAMLOPS_SPIFFE_BUNDLE: /run/spire/svid/jwt-bundle.json
       RAY_SERVE_URL: http://127.0.0.1:8001   # its egress sidecar
       CONTROL_PLANE_WORKLOAD_IDENTITIES_JSON: >-
-        {"spiffe://${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}/seanerbus-bridge":
-        {"principal": "seanerbus-bridge", "tenant": "default", "scopes": ["retrain"]},
+        {"spiffe://${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}/dataplane-bus-bridge":
+        {"principal": "dataplane-bus-bridge", "tenant": "default", "scopes": ["retrain"]},
         "spiffe://${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}/autopilot":
         {"principal": "autopilot", "tenant": "default", "scopes": ["read", "retrain"]},
         "spiffe://${EXAMLOPS_SPIFFE_TRUST_DOMAIN:-examlops.internal}/skipper":
@@ -88,12 +88,12 @@ services:
     volumes:
       - svid_autopilot:/run/spire/svid:ro
 
-  seanerbus-bridge:
+  dataplane-bus-bridge:
     environment:
       CONTROL_PLANE_TOKEN_FILE: /run/spire/svid/control-plane.jwt
       RAY_SERVE_URL: http://127.0.0.1:8001   # its egress sidecar
     volumes:
-      - svid_seanerbus_bridge:/run/spire/svid:ro
+      - svid_dataplane_bus_bridge:/run/spire/svid:ro
 
   # ── Every hop to the model server is mutual TLS (ADR 0125 phases 2 and 3) ─────────────────
   ray-serving:
@@ -181,14 +181,14 @@ services:
       serving-mtls:
         condition: service_started
 
-  serving-egress-seanerbus-bridge:
+  serving-egress-dataplane-bus-bridge:
     <<: *serving-egress
-    profiles: [seanerbus]
-    network_mode: service:seanerbus-bridge
+    profiles: [dataplane-bus]
+    network_mode: service:dataplane-bus-bridge
     labels:
-      examlops.spiffe: seanerbus-bridge
+      examlops.spiffe: dataplane-bus-bridge
     depends_on:
-      seanerbus-bridge:
+      dataplane-bus-bridge:
         condition: service_started
         restart: true
       spire-agent:

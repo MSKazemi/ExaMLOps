@@ -1,6 +1,6 @@
 /* Follow a retrain: every trigger, the control plane's checks, the training flow stage by
  * stage, promotion and reload, and the loop back to drift. Sources: exa drift trigger /
- * autopilot / retrain, seanerbus_bridge DriftTracker, control_plane/app.py (/retrain,
+ * autopilot / retrain, dataplane_bus_bridge DriftTracker, control_plane/app.py (/retrain,
  * /api/changes, approvals, ModelZoo auto-retrain), pipelines/pipeline_generator.py. */
 XM.register("retrain", {
   title: "Follow a retrain",

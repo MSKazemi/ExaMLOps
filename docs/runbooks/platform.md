@@ -21,7 +21,7 @@ minutes.
 - **Connection refused but the service is up:** a port or network problem. With the segmented
   overlay, Prometheus reaches only services on the `ops` network.
 - **401 or 403:** the metrics endpoint started requiring authentication.
-- **An opt-in service you removed on purpose** (the `gateway`, `vllm` or `seanerbus` Compose
+- **An opt-in service you removed on purpose** (the `gateway`, `vllm` or `dataplane-bus` Compose
   profiles). These are found by DNS rather than listed, so a site that never runs them gets no
   alert. Once one has run, stopping it leaves it as a target reported down: Docker's resolver
   fails the lookup, and Prometheus keeps the last result it got. Restart Prometheus after

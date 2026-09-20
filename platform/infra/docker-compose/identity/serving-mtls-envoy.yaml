@@ -3,7 +3,7 @@
 #   gateway          ══▶ ┐
 #   control plane    ══▶ │ ray-serving:8443 ─ this Envoy (in ray-serving's network namespace)
 #   dashboard, agent ══▶ │                    ─▶ 127.0.0.1:8001
-#   SeanerBUS bridge ══▶ ┘                    (gRPC: /inference.GRPCInferenceService/ → :8081)
+#   Dataplane bus bridge ══▶ ┘                    (gRPC: /inference.GRPCInferenceService/ → :8081)
 #
 # Under docker-compose.identity.yml the model server listens on loopback only, so this port is the
 # one way in. It proves it is the model server with its X.509-SVID (…/ray-serving) and accepts a
@@ -54,7 +54,7 @@ static_resources:
                       - san_type: URI
                         matcher:
                           safe_regex:
-                            regex: "^spiffe://[^/]+/(gateway|control-plane|dashboard|skipper|seanerbus-bridge)$"
+                            regex: "^spiffe://[^/]+/(gateway|control-plane|dashboard|skipper|dataplane-bus-bridge)$"
                   validation_context_sds_secret_config:
                     name: ROOTCA
                     sds_config:

@@ -81,7 +81,7 @@ def test_every_caller_reads_the_volume_its_labelled_helper_writes(files):
         for name, svc in files["overlay"]["services"].items()
         if "CONTROL_PLANE_TOKEN_FILE" in svc.get("environment", {})
     }
-    assert set(callers) == {"dashboard", "agent", "autopilot-follower", "seanerbus-bridge"}
+    assert set(callers) == {"dashboard", "agent", "autopilot-follower", "dataplane-bus-bridge"}
     mapping = _workload_map(files)
     for name, svc in callers.items():
         assert svc["environment"]["CONTROL_PLANE_TOKEN_FILE"] == f"{SVID_DIR}/control-plane.jwt"
@@ -95,8 +95,8 @@ def test_the_mapping_keeps_each_services_principal_and_scopes(files):
     """The same principal and scopes as the static credential (plan P3.2), so the audit is continuous."""
     mapping = _workload_map(files)
     assert mapping == {
-        f"spiffe://{DOMAIN}/seanerbus-bridge": {
-            "principal": "seanerbus-bridge",
+        f"spiffe://{DOMAIN}/dataplane-bus-bridge": {
+            "principal": "dataplane-bus-bridge",
             "tenant": "default",
             "scopes": ["retrain"],
         },
@@ -148,7 +148,7 @@ def test_a_helper_runs_under_its_services_profile(files):
         "spiffe-helper-dashboard": "dashboard",
         "spiffe-helper-skipper": "agent",
         "spiffe-helper-autopilot": "autopilot-follower",
-        "spiffe-helper-seanerbus-bridge": "seanerbus-bridge",
+        "spiffe-helper-dataplane-bus-bridge": "dataplane-bus-bridge",
         "spiffe-helper-control-plane": "control-plane",
     }
     assert set(owner) == set(_helpers(files))

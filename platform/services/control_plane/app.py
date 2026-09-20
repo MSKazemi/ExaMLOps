@@ -318,7 +318,7 @@ def _credential_details(context: RequestContext) -> dict[str, str]:
 
 
 # Scopes a static credential may carry (plan P3.2). `write` is every mutation, as before; the
-# narrower ones let a service hold exactly the action it performs — the SeanerBUS bridge and the
+# narrower ones let a service hold exactly the action it performs — the Dataplane bus bridge and the
 # autopilot need `retrain`, CI needs `changes`, and neither should be able to approve a model or
 # reconfigure the platform.
 ACTION_SCOPES = {
@@ -2691,7 +2691,7 @@ def get_model_meta_endpoint(name: str) -> dict[str, Any]:
         "path_in_repo": m.path_in_repo,
         "bundled_images": m.bundled_images,
         # Extended fields for dashboard display
-        "seanerbus_uuid": m.seanerbus_uuid,
+        "dataplane_bus_uuid": m.dataplane_bus_uuid,
         "hyperparameters": m.hyperparameters,
         "prefect": m.prefect,
         "enabled": m.enabled,

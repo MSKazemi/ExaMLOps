@@ -175,7 +175,7 @@ def _literal_names(tree) -> dict[str, str]:
 
 
 #: Attribute names that mean "this handler said something". `log.error(...)` is as common as
-#: `logger.warning(...)` and a substring check for "logger" misses it — which is how the SeanerBUS
+#: `logger.warning(...)` and a substring check for "logger" misses it — which is how the Dataplane bus
 #: bridge was reported as silent when it logs on every line of its handler.
 LOG_CALLS = {"debug", "info", "warning", "warn", "error", "exception", "critical", "log"}
 

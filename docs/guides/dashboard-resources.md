@@ -51,7 +51,7 @@ They have no "item" to put in a table, and they live in the CLI Console.
 | Monitoring & Quality | SLOs · Auto-retrain policies · Judge calibrations |
 | HPC, Fleet & FinOps | HPC clusters · HPC jobs · Device pools · Placement decisions · Project budgets |
 | Governance & Security | AI systems (EU AI Act register) · Approvals · Secrets (metadata only) · Policies · Policy bundles · Calculation providers · Audit checkpoints · Audit reviews |
-| Platform & Integrations | Backups · Backup bundles · SeanerBUS models · Config contexts · Control-plane commands · Modules (site feature profile: enable / disable) |
+| Platform & Integrations | Backups · Backup bundles · Dataplane bus models · Config contexts · Control-plane commands · Modules (site feature profile: enable / disable) |
 
 ## How a resource is defined
 

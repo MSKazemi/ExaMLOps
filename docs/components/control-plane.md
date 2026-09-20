@@ -154,7 +154,7 @@ when it has no credential of its own. `CONTROL_PLANE_LEGACY_TOKEN` retires it in
 Every mode counts uses in `control_plane_legacy_token_uses_total`. To retire it:
 
 1. Give each caller its own credential in `CONTROL_PLANE_CREDENTIALS_JSON`, with only the scopes it
-   needs, and point the service at it (`SEANERBUS_BRIDGE_CONTROL_PLANE_TOKEN`,
+   needs, and point the service at it (`DATAPLANE_BUS_BRIDGE_CONTROL_PLANE_TOKEN`,
    `AUTOPILOT_CONTROL_PLANE_TOKEN`, `AGENT_CONTROL_PLANE_TOKEN`, `DASHBOARD_CONTROL_PLANE_TOKEN`).
 2. Set `CONTROL_PLANE_LEGACY_TOKEN=warn` and read the log for anything still using it.
 3. When `increase(control_plane_legacy_token_uses_total[1d])` stays 0, set it to `off`.

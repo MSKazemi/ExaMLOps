@@ -1,16 +1,16 @@
-"""Unit tests for seanerbus_bridge (_handle_vector, _call_pipeline, _call_inference,
+"""Unit tests for dataplane_bus_bridge (_handle_vector, _call_pipeline, _call_inference,
 _make_inference_handler).
 
 Import strategy
 ---------------
 The bridge imports several C-extension packages not available in the test venv
-(seanerbus, pycapnp) and the heavy prometheus_client.  All of them are stubbed
+(dataplane-bus, pycapnp) and the heavy prometheus_client.  All of them are stubbed
 out before the bridge is imported.
 
 Test-isolation note: other test files in this suite (e.g. test_drift_tracker.py)
-also import seanerbus_bridge, and Python caches it in sys.modules.  If that
+also import dataplane_bus_bridge, and Python caches it in sys.modules.  If that
 earlier import used different stubs, this file's stubs may not take effect on
-a simple `import seanerbus_bridge`.  We therefore:
+a simple `import dataplane_bus_bridge`.  We therefore:
 
   1. Install all stubs unconditionally (overwrite, not setdefault) before import.
   2. Force-reload the bridge so its module-level names are rebound to our stubs.
@@ -30,7 +30,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "platform", "clients"))
 
-# capnp — needed only at import time of seanerbus_msgs; keep setdefault so
+# capnp — needed only at import time of dataplane_bus_msgs; keep setdefault so
 # we don't break test_drift_tracker which may already have a real capnp loaded
 if "capnp" not in sys.modules:
     capnp_stub = types.ModuleType("capnp")
@@ -39,13 +39,13 @@ if "capnp" not in sys.modules:
     capnp_stub.run = lambda coro: coro
     sys.modules["capnp"] = capnp_stub
 
-# seanerbus C extension
-if "seanerbus" not in sys.modules:
-    sb_client = types.ModuleType("seanerbus")
-    sb_client.client = types.ModuleType("seanerbus.client")
+# dataplane-bus C extension
+if "dataplane_bus" not in sys.modules:
+    sb_client = types.ModuleType("dataplane_bus")
+    sb_client.client = types.ModuleType("dataplane_bus.client")
     sb_client.client.Connection = MagicMock()
-    sys.modules["seanerbus"] = sb_client
-    sys.modules["seanerbus.client"] = sb_client.client
+    sys.modules["dataplane_bus"] = sb_client
+    sys.modules["dataplane_bus.client"] = sb_client.client
 
 # httpx — always overwrite so our stub is in place when bridge is reloaded.
 # The real module (when installed) is remembered here and put back in sys.modules
@@ -97,8 +97,8 @@ httpx_stub.RequestError = getattr(_real_httpx, "RequestError", Exception)
 httpx_stub.ConnectError = getattr(_real_httpx, "ConnectError", Exception)
 sys.modules["httpx"] = httpx_stub
 
-# seanerbus_msgs — define concrete stub classes so isinstance checks work
-msgs_stub = types.ModuleType("seanerbus_msgs")
+# dataplane_bus_msgs — define concrete stub classes so isinstance checks work
+msgs_stub = types.ModuleType("dataplane_bus_msgs")
 
 
 class _VectorReqV1:
@@ -137,7 +137,7 @@ msgs_stub.HpcJobV1 = _HpcJobV1
 msgs_stub.HpcInferenceResV1 = _HpcInferenceResV1
 msgs_stub.RetrainReqV1 = _RetrainReqV1
 msgs_stub.RetrainResV1 = _RetrainResV1
-sys.modules["seanerbus_msgs"] = msgs_stub
+sys.modules["dataplane_bus_msgs"] = msgs_stub
 
 # model_schema_registry — lightweight stub (always overwrite)
 model_schema_stub = types.ModuleType("model_schema_registry")
@@ -159,7 +159,7 @@ sys.modules["model_schema_registry"] = model_schema_stub
 
 # ── 2. Import the bridge ──────────────────────────────────────────────────────
 
-import seanerbus_bridge as bridge  # noqa: E402
+import dataplane_bus_bridge as bridge  # noqa: E402
 
 # Fix-up: if another test file (e.g. test_drift_tracker.py) already imported the
 # bridge with MagicMock stubs for the message classes, the bridge module's
@@ -184,7 +184,7 @@ bridge._schema_registry = _MockRegistry()  # type: ignore[attr-defined]
 sys.modules.pop("model_schema_registry", None)
 
 # Same reasoning for httpx: the bridge did `import httpx` above, so `bridge.httpx`
-# already holds the stub and every `patch("seanerbus_bridge.httpx.AsyncClient")` in
+# already holds the stub and every `patch("dataplane_bus_bridge.httpx.AsyncClient")` in
 # this file keeps working.  Nothing else in the suite should inherit it, so put the
 # real module back.  examlops.resilience.timeouts imports httpx lazily inside
 # httpx_timeout(), so it picks the restored module up on the next call.
@@ -223,7 +223,7 @@ async def test_handle_vector_success(mock_http_client):
 
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         result = await bridge._handle_vector(req)
 
     assert isinstance(result, _VectorResV1)
@@ -243,7 +243,7 @@ async def test_handle_vector_ray_error_returns_empty(mock_http_client):
 
     mock_http_client.post = AsyncMock(side_effect=Exception("connection refused"))
 
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         result = await bridge._handle_vector(req)
 
     assert isinstance(result, _VectorResV1)
@@ -263,7 +263,7 @@ async def test_handle_vector_increments_stat(mock_http_client, monkeypatch):
 
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         await bridge._handle_vector(req)
 
     assert bridge._bridge_stats["vectors_total"] == 1
@@ -290,7 +290,7 @@ async def test_call_pipeline_uses_schema_registry(mock_http_client):
     mock_response.status_code = 200
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         prediction, run_id, version = await bridge._call_pipeline(job)
 
     assert prediction == 55.0
@@ -337,7 +337,7 @@ async def test_call_pipeline_success(mock_http_client):
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
     job = _make_hpc_job()
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         prediction, run_id, version = await bridge._call_pipeline(job)
 
     assert prediction == 91.5
@@ -361,8 +361,8 @@ async def test_call_pipeline_logs_res_line(mock_http_client, caplog):
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
     job = _make_hpc_job()
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
-        with caplog.at_level(logging.INFO, logger="seanerbus_bridge"):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+        with caplog.at_level(logging.INFO, logger="dataplane_bus_bridge"):
             await bridge._call_pipeline(job)
 
     res_lines = [r.message for r in caplog.records if "→ RES" in r.message]
@@ -381,7 +381,7 @@ async def test_call_pipeline_ray_serve_error_propagates(mock_http_client):
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
     job = _make_hpc_job()
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         with pytest.raises(_HTTPStatusError):
             await bridge._call_pipeline(job)
 
@@ -400,7 +400,7 @@ async def test_call_inference_success(mock_http_client):
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
     job = _make_hpc_job(job_id="job-xtest001", model_name="JPCP", alias="Production")
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         result = await bridge._call_inference(job)
 
     assert isinstance(result, _HpcInferenceResV1)
@@ -419,7 +419,7 @@ async def test_call_inference_ray_serve_error_returns_error_msg(mock_http_client
     )
 
     job = _make_hpc_job(model_name="JPCP")
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         result = await bridge._call_inference(job)
 
     assert isinstance(result, _HpcInferenceResV1)
@@ -453,7 +453,7 @@ async def test_make_inference_handler_binds_model_name(mock_http_client):
     job = _make_hpc_job(model_name="", alias="Production")
     handler = bridge._make_inference_handler("MACK")
 
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         result = await handler(job)
 
     assert captured, "Expected at least one POST call to Ray Serve"
@@ -477,7 +477,7 @@ async def test_transport_error_does_not_feed_drift(mock_http_client):
 
     mock_http_client.post = AsyncMock(side_effect=Exception("connection refused"))
     job = _make_hpc_job(model_name=model)
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         result = await bridge._call_inference(job)
 
     after = list(bridge._drift_tracker._results.get(model, []))
@@ -498,7 +498,7 @@ async def test_successful_inference_records_drift_success(mock_http_client):
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
     job = _make_hpc_job(model_name=model)
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         await bridge._call_inference(job)
 
     bucket = bridge._drift_tracker._results.get(model, [])
@@ -582,7 +582,7 @@ def test_via_eventbus_gauges_and_baseline_still_run_locally(monkeypatch):
     bridge._persist_inference_telemetry("JPCP", "Production", 1.0, [3.0, 4.0], "job-10")
 
     assert baseline_calls == ["JPCP"]
-    assert _gauge("seanerbus_embedding_norm", "JPCP") == 5.0
+    assert _gauge("dataplane_bus_embedding_norm", "JPCP") == 5.0
 
 
 def test_via_eventbus_a_publish_failure_is_counted_and_dropped(monkeypatch):
@@ -673,9 +673,9 @@ def test_embedding_stats_are_exported_not_only_written_to_sqlite(monkeypatch):
 
     bridge._persist_inference_telemetry("EMBX", "Production", 1.0, [3.0, 4.0], "job-3")
 
-    assert _gauge("seanerbus_embedding_norm", "EMBX") == 5.0
-    assert _gauge("seanerbus_embedding_mean", "EMBX") == 3.5
-    assert _gauge("seanerbus_embedding_std", "EMBX") == 0.5
+    assert _gauge("dataplane_bus_embedding_norm", "EMBX") == 5.0
+    assert _gauge("dataplane_bus_embedding_mean", "EMBX") == 3.5
+    assert _gauge("dataplane_bus_embedding_std", "EMBX") == 0.5
 
 
 def test_baseline_gauges_are_published_from_the_recorded_baseline(monkeypatch):
@@ -691,9 +691,9 @@ def test_baseline_gauges_are_published_from_the_recorded_baseline(monkeypatch):
 
     bridge._persist_inference_telemetry("EMBY", "Production", 1.0, [1.0, 1.0], "job-4")
 
-    assert _gauge("seanerbus_embedding_norm_baseline", "EMBY") == 7.0
-    assert _gauge("seanerbus_embedding_mean_baseline", "EMBY") == 0.25
-    assert _gauge("seanerbus_embedding_std_baseline", "EMBY") == 0.5
+    assert _gauge("dataplane_bus_embedding_norm_baseline", "EMBY") == 7.0
+    assert _gauge("dataplane_bus_embedding_mean_baseline", "EMBY") == 0.25
+    assert _gauge("dataplane_bus_embedding_std_baseline", "EMBY") == 0.5
 
 
 def test_a_missing_baseline_leaves_the_gauge_unset_rather_than_zero(monkeypatch):
@@ -706,7 +706,7 @@ def test_a_missing_baseline_leaves_the_gauge_unset_rather_than_zero(monkeypatch)
 
     bridge._persist_inference_telemetry("EMBZ", "Production", 1.0, [1.0, 1.0], "job-5")
 
-    assert _gauge("seanerbus_embedding_norm_baseline", "EMBZ") is None
+    assert _gauge("dataplane_bus_embedding_norm_baseline", "EMBZ") is None
 
 
 def test_the_baseline_is_not_read_from_sqlite_on_every_single_inference(monkeypatch):
@@ -742,7 +742,7 @@ def test_a_broken_baseline_read_never_breaks_the_inference_path(monkeypatch):
 
     bridge._persist_inference_telemetry("EMBV", "Production", 1.0, [3.0, 4.0], "job-7")
 
-    assert _gauge("seanerbus_embedding_norm", "EMBV") == 5.0
+    assert _gauge("dataplane_bus_embedding_norm", "EMBV") == 5.0
 
 
 # ── every door that can start a retrain must leave a trace ───────────────────
@@ -769,7 +769,7 @@ async def test_drift_trigger_writes_an_audit_event(mock_http_client, monkeypatch
     tracker._last_retrain = {}
     tracker.cooldown = 0
 
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         await tracker._maybe_trigger("JPCP", 0.5)
 
     assert len(seen) == 1, "a drift-driven retrain must be audited"
@@ -796,7 +796,7 @@ async def test_bus_retrain_request_writes_an_audit_event(mock_http_client, monke
     mock_http_client.post = AsyncMock(return_value=submitted)
     mock_http_client.get = AsyncMock(return_value=followed)
 
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         res = await bridge._handle_retrain(_retrain_req())
 
     assert mock_http_client.post.call_args[0][0].endswith("/v1/retrain")
@@ -826,7 +826,7 @@ async def test_a_bus_retrain_not_yet_dispatched_replies_with_the_command(
     mock_http_client.post = AsyncMock(return_value=queued)
     mock_http_client.get = AsyncMock(return_value=queued)
 
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         res = await bridge._handle_retrain(_retrain_req())
 
     assert res.flow_run_id == "" and not getattr(res, "error_msg", "")
@@ -866,7 +866,7 @@ async def test_failed_retrain_is_not_audited_as_triggered(mock_http_client, monk
     req.backend_name = "dataplane"
     req.is_dummy = False
 
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         res = await bridge._handle_retrain(req)
 
     assert getattr(res, "error_msg", "")
@@ -886,7 +886,7 @@ async def test_ingress_inference_failed_feeds_drift_tracker(mock_http_client):
 
     bridge._drift_tracker._results.pop("JPCP", None)
     req = _make_hpc_job()
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         res = await bridge._call_inference(req)
 
     assert getattr(res, "error_msg", "")
@@ -905,7 +905,7 @@ async def test_transport_500_still_excluded_from_drift(mock_http_client):
 
     bridge._drift_tracker._results.pop("JPCP", None)
     req = _make_hpc_job()
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         res = await bridge._call_inference(req)
 
     assert getattr(res, "error_msg", "")
@@ -940,7 +940,7 @@ async def test_only_the_models_own_failure_reaches_the_drift_tracker(
 
     bridge._drift_tracker._results.pop("JPCP", None)
     req = _make_hpc_job()
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         res = await bridge._call_inference(req)
 
     assert getattr(res, "error_msg", "")  # the caller is told it failed either way
@@ -962,7 +962,7 @@ async def test_rejected_drift_trigger_not_counted_and_cooldown_released(
 
     tracker = bridge.DriftTracker(window=4, threshold=0.5, cooldown=300)
     before = bridge._bridge_stats["retrains_total"]
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         await tracker._maybe_trigger("JPCP", 0.75)
 
     assert bridge._bridge_stats["retrains_total"] == before
@@ -981,7 +981,7 @@ async def test_accepted_drift_trigger_counts_and_audits(mock_http_client, monkey
 
     tracker = bridge.DriftTracker(window=4, threshold=0.5, cooldown=300)
     before = bridge._bridge_stats["retrains_total"]
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         await tracker._maybe_trigger("JPCP", 0.75)
 
     assert bridge._bridge_stats["retrains_total"] == before + 1
@@ -1026,14 +1026,14 @@ async def test_a_database_failure_does_not_fail_the_inference(
 
     monkeypatch.setattr(bridge, "write_drift_snapshot", _db_down)
     mock_http_client.post = AsyncMock(return_value=_ok_response())
-    before = _sample("seanerbus_telemetry_persist_failures_total")
+    before = _sample("dataplane_bus_telemetry_persist_failures_total")
 
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         prediction, _run, _version = await bridge._call_pipeline(_make_hpc_job())
     await fresh_spool.join()
 
     assert prediction == 12.0
-    assert _sample("seanerbus_telemetry_persist_failures_total") == before + 1
+    assert _sample("dataplane_bus_telemetry_persist_failures_total") == before + 1
 
 
 @pytest.mark.asyncio
@@ -1046,7 +1046,7 @@ async def test_the_reply_does_not_wait_for_the_database(mock_http_client, monkey
     monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: None)
     mock_http_client.post = AsyncMock(return_value=_ok_response())
 
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         result = await asyncio.wait_for(bridge._call_pipeline(_make_hpc_job()), timeout=1.0)
 
     assert result[0] == 12.0
@@ -1060,13 +1060,13 @@ async def test_a_full_spool_drops_and_counts_instead_of_blocking(monkeypatch, fr
 
     gate = threading.Event()
     monkeypatch.setattr(bridge, "_persist_inference_telemetry", lambda *a: gate.wait(5))
-    before = _sample("seanerbus_telemetry_dropped_total")
+    before = _sample("dataplane_bus_telemetry_dropped_total")
 
     accepted = [fresh_spool.offer(("M", "Production", 1.0, None, str(i))) for i in range(6)]
 
     # maxsize=2: the worker may already hold one record, so at most three are accepted.
     assert accepted.count(False) >= 3
-    assert _sample("seanerbus_telemetry_dropped_total") == before + accepted.count(False)
+    assert _sample("dataplane_bus_telemetry_dropped_total") == before + accepted.count(False)
     gate.set()
     await fresh_spool.join()
 
@@ -1109,7 +1109,7 @@ async def test_a_failed_audit_write_does_not_report_the_retrain_as_failed(
     mock_http_client.post = AsyncMock(return_value=submitted)
     mock_http_client.get = AsyncMock(return_value=followed)
 
-    with patch("seanerbus_bridge.httpx.AsyncClient", return_value=mock_http_client):
+    with patch("dataplane_bus_bridge.httpx.AsyncClient", return_value=mock_http_client):
         res = await bridge._handle_retrain(_retrain_req())
 
     # The success path constructs `RetrainResV1(flow_run_id=…, status_url=…)` with no `error_msg`

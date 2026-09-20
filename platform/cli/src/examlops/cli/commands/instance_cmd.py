@@ -31,7 +31,7 @@ _EX_CHECK = (
 _EX_INIT = (
     "Examples:\n\n"
     "  [dim]# Create a data root, seed it with a use-case pack, pick a site preset[/dim]\n"
-    "  exa instance init --data-dir /srv/examlops-data --pack usecases/seanergy "
+    "  exa instance init --data-dir /srv/examlops-data --pack usecases/reference "
     "--preset standard\n\n"
     "  [dim]# Then make every process use it[/dim]\n"
     "  export EXAMLOPS_DATA_DIR=/srv/examlops-data"

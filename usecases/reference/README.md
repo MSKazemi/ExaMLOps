@@ -1,6 +1,6 @@
-# Seanergy Use-Case Pack
+# reference Use-Case Pack
 
-The Seanergy HPC use case — the models, datasets, and pipelines that run **on top of** ExaMLOps.
+The reference HPC use case — the models, datasets, and pipelines that run **on top of** ExaMLOps.
 This is *content*, kept separate from the platform (ADR 0094); the platform loads it through the
 `pipelines.usecase` / `examlops.usecase` seam and names none of it directly.
 
@@ -18,13 +18,13 @@ The model *implementations* and dataset classes live upstream in `modelzoo/`
 
 ## Using it
 
-It is the default pack, so `EXAMLOPS_USECASE_DIR` defaults to `usecases/seanergy`. Everything works
+It is the default pack, so `EXAMLOPS_USECASE_DIR` defaults to `usecases/reference`. Everything works
 unchanged:
 
 ```bash
 exa pipeline list
 exa pipeline run --model JPCP --dataset PM100Dataset --dummy
-exa seanerbus list
+exa dataplane-bus list
 exa cards dataset FData          # schema comes from datasets/schemas.json
 ```
 

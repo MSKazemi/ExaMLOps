@@ -1,7 +1,7 @@
-# Cap'n'Proto message types for ExaMLOps ↔ SeanerBUS integration.
-# These types are defined locally in ai-productions so the seanerbus repo
+# Cap'n'Proto message types for ExaMLOps ↔ Dataplane bus integration.
+# These types are defined locally in ai-productions so the dataplane-bus repo
 # remains unmodified. The payloadType integers (5-10) match the agreed
-# message type numbering used by the seanerbus message envelope.
+# message type numbering used by the dataplane-bus message envelope.
 
 @0xd7a3f51e9c82b064;
 

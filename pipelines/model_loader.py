@@ -14,10 +14,10 @@ from typing import Any
 
 import yaml
 
-#: Env gate for the legacy seanerbus_uuid -> stream shim (E15). Default OFF, mirrors
+#: Env gate for the legacy dataplane_bus_uuid -> stream shim (E15). Default OFF, mirrors
 #: examlops.dataplane.streams.bindings._LEGACY_ENV — kept as a literal here, not imported, because
 #: this module runs on HPC nodes that may not carry the platform package at all.
-_LEGACY_SEANERBUS_ENV = "EXAMLOPS_DATAPLANE_LEGACY_SEANERBUS_UUID"
+_LEGACY_DATAPLANE_BUS_ENV = "EXAMLOPS_DATAPLANE_LEGACY_DATAPLANE_BUS_UUID"
 
 #: Mirrors examlops.dataplane.streams.types.StreamLimits' field defaults. Duplicated (not
 #: imported — see module docstring) so a stream entry with no ``limits`` block normalizes to the
@@ -31,8 +31,8 @@ _DEFAULT_STREAM_LIMITS: dict[str, Any] = {
 }
 
 
-def _use_legacy_seanerbus_shim() -> bool:
-    return (os.getenv(_LEGACY_SEANERBUS_ENV) or "").strip().lower() in ("1", "true", "yes", "on")
+def _use_legacy_dataplane_bus_shim() -> bool:
+    return (os.getenv(_LEGACY_DATAPLANE_BUS_ENV) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -70,7 +70,7 @@ class ModelYAMLConfig:
     serving: dict[str, Any] = field(default_factory=dict)
     prefect: dict[str, Any] = field(default_factory=dict)
     inference: dict[str, Any] = field(default_factory=dict)
-    seanerbus_uuid: str | None = None
+    dataplane_bus_uuid: str | None = None
     project: str | None = None  # owning Project (ADR 0088), optional default membership
     # Inference-engine block (ADR 0016/0107). Kept as a raw mapping: it is validated by
     # examlops.engines.validate_engine_block (registry-integrity CI guard) and consumed by
@@ -141,7 +141,7 @@ def load_model_yaml(path: Path) -> ModelYAMLConfig:
         serving=raw.get("serving", {}),
         prefect=raw.get("prefect", {}),
         inference=raw.get("inference", {}),
-        seanerbus_uuid=raw.get("seanerbus_uuid") or None,
+        dataplane_bus_uuid=raw.get("dataplane_bus_uuid") or None,
         project=raw.get("project") or None,
         engine=raw.get("engine") or {},
         fairness=raw.get("fairness") or {},
@@ -156,7 +156,7 @@ def scan_model_yamls(models_dir: Path) -> list[ModelYAMLConfig]:
 
 
 def normalize_inference_streams(model_yaml: ModelYAMLConfig) -> list[dict[str, Any]]:
-    """Normalize ``inference.streams`` (+ the legacy ``seanerbus_uuid`` shim) into a list of plain
+    """Normalize ``inference.streams`` (+ the legacy ``dataplane_bus_uuid`` shim) into a list of plain
     dicts with defaults applied.
 
     This is the pure, ``examlops.dataplane``-import-free twin of
@@ -195,17 +195,17 @@ def normalize_inference_streams(model_yaml: ModelYAMLConfig) -> list[dict[str, A
             }
         )
     if (
-        _use_legacy_seanerbus_shim()
-        and model_yaml.seanerbus_uuid
-        and not any(s["connector"] == "seanerbus" for s in out)
+        _use_legacy_dataplane_bus_shim()
+        and model_yaml.dataplane_bus_uuid
+        and not any(s["connector"] == "dataplane-bus" for s in out)
     ):
         out.append(
             {
-                "name": f"{model}-seanerbus",
-                "connector": "seanerbus",
+                "name": f"{model}-dataplane-bus",
+                "connector": "dataplane-bus",
                 "model": model,
                 "alias": "Production",
-                "address": str(model_yaml.seanerbus_uuid),
+                "address": str(model_yaml.dataplane_bus_uuid),
                 "connection": None,
                 "options": {},
                 "limits": dict(_DEFAULT_STREAM_LIMITS),

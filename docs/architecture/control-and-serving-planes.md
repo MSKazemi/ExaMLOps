@@ -6,7 +6,7 @@ ExaMLOps has two planes with different jobs and different availability needs.
   It is the control-plane API and its workers, the MLflow registry, the Prefect orchestrator, the
   approval gate, policy, and everything operators use to change the platform: the `exa` CLI, the
   dashboard and the Skipper agent.
-- The **serving plane** answers requests: the SeanerBUS bridge, the Ray Serve inference ingress,
+- The **serving plane** answers requests: the Dataplane bus bridge, the Ray Serve inference ingress,
   feature transformer and router, and the multi-model server.
 
 !!! note "Why *serving* plane"
@@ -26,7 +26,7 @@ flowchart LR
         OPS[exa · dashboard · Skipper]
     end
     subgraph SP[Serving plane — answers]
-        BR[SeanerBUS bridge]
+        BR[Dataplane bus bridge]
         ING[Inference ingress → router]
         MS[Multi-model server]
     end
@@ -46,7 +46,7 @@ the serving plane, and telemetry flows *out*. Neither is ever awaited on the req
 | Rule | What it means | Status |
 |---|---|---|
 | **Reply first** | The bridge answers the bus before it records drift and input statistics. A slow or unavailable datastore cannot delay or fail an inference. Records wait in a bounded spool; overflow and write failures are counted and alerted. | Enforced |
-| **Decisions, not requests, are audited** | The hash-chained audit log records decisions (approve, reject, retrain, traffic change). Per-request volume is a metric (`seanerbus_inferences_total`), not an audit row. | Enforced |
+| **Decisions, not requests, are audited** | The hash-chained audit log records decisions (approve, reject, retrain, traffic change). Per-request volume is a metric (`dataplane_bus_inferences_total`), not an audit row. | Enforced |
 | **Last-known-good** | A replica that cannot reach MLflow keeps serving the models it has; a failed reload never evicts a healthy model. | Enforced |
 | **Admin actions are control actions** | Reload and live traffic-rule changes need `RAY_SERVE_ADMIN_TOKEN`; inference routes stay open to clients. | Enforced |
 | **Serving gateway** | Envoy fronts inference: a credential on every request (virtual key or IdP token, decided by `examlops.serving_gateway`), per-tenant quotas across replicas, the verified tenant passed upstream, body and time limits, a retry budget. Only inference is routed. | Implemented; opt-in Compose profile `gateway` ([guide](../guides/serving-gateway.md)) |
@@ -89,5 +89,5 @@ decision.
 - [Control plane guide](../guides/control-plane.md) — endpoints, dispatch target, admission,
   separation of duties, audit
 - [Ray Serve](../components/ray-serve.md) — admin routes, traffic splits, verify-before-load
-- [SeanerBUS bridge](../guides/seanerbus.md) — reply-first telemetry
+- [Dataplane bus bridge](../guides/dataplane-bus.md) — reply-first telemetry
 - [Environment variables](../reference/env-vars.md)

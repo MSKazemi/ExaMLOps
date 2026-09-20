@@ -6,7 +6,7 @@ serving-gateway guard holds those rules for envoy.yaml). The only differences ar
 cluster, which speaks mutual TLS with certificates from the SPIRE agent, the agent's SDS cluster,
 and the node identity SDS needs.
 
-The other callers (control plane, dashboard, agent, SeanerBUS bridge) each run
+The other callers (control plane, dashboard, agent, Dataplane bus bridge) each run
 `identity/serving-egress-envoy.yaml` as a sidecar: plain HTTP in on their own loopback, the same
 mutual TLS out. The serving side (`identity/serving-mtls-envoy.yaml`) accepts exactly those
 identities, lets only the admin callers use the admin routes, and forwards over loopback to a model
@@ -34,7 +34,7 @@ SERVING = COMPOSE / "identity" / "serving-mtls-envoy.yaml"
 EGRESS = COMPOSE / "identity" / "serving-egress-envoy.yaml"
 SOCKET = "/run/spire/sockets/agent.sock"
 TLS = "envoy.transport_sockets.tls"
-CALLERS = "^spiffe://[^/]+/(gateway|control-plane|dashboard|skipper|seanerbus-bridge)$"
+CALLERS = "^spiffe://[^/]+/(gateway|control-plane|dashboard|skipper|dataplane-bus-bridge)$"
 ADMIN_CALLERS = "^spiffe://[^/]+/(control-plane|dashboard|skipper)$"
 
 
@@ -162,14 +162,14 @@ def test_the_model_server_accepts_its_callers_and_forwards_over_loopback():
         ("^spiffe://[^/]+/gateway$", "spiffe://examlops.internal/gateway/extra", False),
         ("^spiffe://[^/]+/ray-serving$", "spiffe://examlops.internal/ray-serving", True),
         ("^spiffe://[^/]+/ray-serving$", "spiffe://examlops.internal/ray-serving-x", False),
-        (CALLERS, "spiffe://examlops.internal/seanerbus-bridge", True),
+        (CALLERS, "spiffe://examlops.internal/dataplane-bus-bridge", True),
         (CALLERS, "spiffe://examlops.internal/skipper", True),
         (CALLERS, "spiffe://examlops.internal/autopilot", False),  # registered, but no caller
         (CALLERS, "spiffe://examlops.internal/dashboard-x", False),
         (CALLERS, "spiffe://examlops.internal/ns/x/dashboard", False),
         (ADMIN_CALLERS, "spiffe://examlops.internal/dashboard", True),
         (ADMIN_CALLERS, "spiffe://examlops.internal/gateway", False),
-        (ADMIN_CALLERS, "spiffe://examlops.internal/seanerbus-bridge", False),
+        (ADMIN_CALLERS, "spiffe://examlops.internal/dataplane-bus-bridge", False),
     ],
 )
 def test_the_peer_patterns_match_exactly_one_workload_path(regex, peer, accepted):
@@ -295,7 +295,7 @@ def test_every_direct_caller_goes_through_its_own_sidecar():
     base = _yaml(COMPOSE / "docker-compose.yml")
     overlay = _yaml(COMPOSE / "docker-compose.identity.yml")["services"]
     callers = _base_callers(base)
-    assert set(callers) == {"control-plane", "dashboard", "agent", "seanerbus-bridge"}
+    assert set(callers) == {"control-plane", "dashboard", "agent", "dataplane-bus-bridge"}
     sidecars = {n: s for n, s in overlay.items() if n.startswith("serving-egress-")}
     assert set(sidecars) == {f"serving-egress-{c}" for c in callers}
     serving_image = overlay["serving-mtls"]["image"]

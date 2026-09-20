@@ -39,7 +39,7 @@ EXAMLOPS_POSTGRES_SCHEMA=staging exa status     # staging's own tables, same dat
 
 The test suite uses this to keep one Postgres server for every test run.
 
-Every process that touches platform state — CLI, control plane, dashboard, SeanerBUS bridge, agent —
+Every process that touches platform state — CLI, control plane, dashboard, Dataplane bus bridge, agent —
 must carry both variables. A process that carries only one of them silently keeps using
 `platform.db`, which is the failure mode to watch for: split state, not an error message.
 

@@ -147,7 +147,7 @@ exa events stats                # event-outbox backlog (pending/published/poison
 exa admission stats             # admission-control queue depth by state
 exa backup list                 # backups & bundles with manifest metadata
 exa stack status                # running containers + ports
-exa seanerbus list              # models + their SeanerBUS UUIDs
+exa dataplane-bus list              # models + their Dataplane bus UUIDs
 exa mcp tools                   # tools exposed to agents over MCP
 exa hpc nodes                   # compute nodes (CPUs/mem/GPUs/state)
 exa hpc clusters                # registered clusters + approval state

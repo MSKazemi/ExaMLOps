@@ -23,7 +23,7 @@ def resolve_models_dir() -> Path:
     """Directory of per-model YAML for the active use-case pack (ADR 0094).
 
     Mirrors ``pipelines.usecase.models_dir()`` WITHOUT importing the pipeline engine (which
-    pulls torch). Resolution order: ``EXAMLOPS_USECASE_DIR`` → default pack ``usecases/seanergy``
+    pulls torch). Resolution order: ``EXAMLOPS_USECASE_DIR`` → default pack ``usecases/reference``
     (honouring its ``pack.toml`` ``[content] models_dir``) → legacy ``pipelines/models``.
 
     Fixes the P0 "Model Registry — 0 models" bug: ADR 0094 moved model YAML out of
@@ -33,8 +33,8 @@ def resolve_models_dir() -> Path:
     env = os.getenv("EXAMLOPS_USECASE_DIR")
     if env:
         root = Path(env).expanduser().resolve()
-    elif (_REPO_ROOT / "usecases" / "seanergy" / "pack.toml").is_file():
-        root = _REPO_ROOT / "usecases" / "seanergy"
+    elif (_REPO_ROOT / "usecases" / "reference" / "pack.toml").is_file():
+        root = _REPO_ROOT / "usecases" / "reference"
     else:
         return _LEGACY_MODELS_DIR
     rel = "models"
@@ -63,7 +63,7 @@ class ModelMeta:
     path_in_repo: str  # relative to repo root, ends with /
     bundled_images: list[str] = field(default_factory=list)
     # Extended metadata — populated from YAML for dashboard display
-    seanerbus_uuid: str | None = None
+    dataplane_bus_uuid: str | None = None
     hyperparameters: dict[str, Any] = field(default_factory=dict)
     prefect: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
@@ -176,7 +176,7 @@ def get_model_meta(model_name: str) -> ModelMeta:
         promotion=promotion,
         path_in_repo=rel,
         bundled_images=images,
-        seanerbus_uuid=cfg.get("seanerbus_uuid"),
+        dataplane_bus_uuid=cfg.get("dataplane_bus_uuid"),
         hyperparameters=model_section.get("hyperparameters", {}),
         prefect=prefect_section,
         enabled=bool(cfg.get("enabled", True)),

@@ -15,7 +15,7 @@ ai-productions/
 ├── platform/        # Infra & operations
 │   ├── cli/         # the `examlops` package + `exa` CLI  (src/examlops/)
 │   ├── services/    # dashboard · control_plane · agent  (containerized apps)
-│   ├── clients/     # simulators + SeanerBUS bridge
+│   ├── clients/     # simulators + Dataplane bus bridge
 │   ├── infra/       # docker-compose + slurm-adapter
 │   └── ci/          # notify_model_changes.py
 ├── pipelines/       # Prefect training & model-lifecycle orchestration
@@ -30,7 +30,7 @@ The three library areas — `platform/cli` (`examlops`), `pipelines` (`examlops-
 ```mermaid
 graph TB
     subgraph External["External Systems"]
-        SB["SeanerBUS\n(Cap'n'Proto TCP :5398)\nReal bus in prod; MockSeanerBusServer in dev"]
+        SB["Dataplane bus\n(Cap'n'Proto TCP :5398)\nReal bus in prod; MockDataplaneBusServer in dev"]
         GitLab["GitLab\n(ModelZoo repo)"]
         GitHub["GitHub\n(ModelZoo repo)"]
         HPC["HPC Cluster\n(Slurm / Flux)"]
@@ -40,7 +40,7 @@ graph TB
         Ray["Ray Serve\nMulti-Model Server :18001"]
         Pipeline["InferencePipeline\n/infer-pipeline/infer\n(batch transformer · :18001)"]
         CP["Control Plane\nFastAPI :18002"]
-        Bridge["SeanerBUS Bridge\nclient process\n+ ModelSchemaRegistry\n+ per-model UUID handlers"]
+        Bridge["Dataplane bus Bridge\nclient process\n+ ModelSchemaRegistry\n+ per-model UUID handlers"]
         BridgeStat["Bridge Status\nHTTP :18003"]
         Prefect["Prefect\nOrchestrator :14200"]
     end
@@ -114,11 +114,11 @@ graph TB
 
 ## Inference Request Flow
 
-SeanerBUS → Inference Pipeline → Ray Serve, with drift-triggered retraining.
+Dataplane bus → Inference Pipeline → Ray Serve, with drift-triggered retraining.
 
 ```mermaid
 sequenceDiagram
-    participant SB as SeanerBUS Server
+    participant SB as Dataplane bus Server
     participant Bridge as Bridge
     participant Ingress as InferencePipelineIngress
     participant FT as FeatureTransformer
@@ -147,7 +147,7 @@ sequenceDiagram
     Note over Bridge,SB: the reply goes first — telemetry never delays it
     Bridge->>Drift: record(model, success=True)
     Bridge-)Spool: offer(model, alias, prediction, embedding)
-    Note over Spool: bounded (SEANERBUS_TELEMETRY_QUEUE_MAX) — drops and counts when full
+    Note over Spool: bounded (DATAPLANE_BUS_TELEMETRY_QUEUE_MAX) — drops and counts when full
     Spool->>PlatDB: write_drift_snapshot + input snapshot (off the event loop)
 
     alt error_rate ≥ threshold AND cooldown elapsed
@@ -157,8 +157,8 @@ sequenceDiagram
 ```
 
 Individual inferences are not audited: the audit log records decisions (a retrain, a
-promotion), not traffic. `seanerbus_telemetry_dropped_total` and
-`seanerbus_telemetry_persist_failures_total` show when drift telemetry is incomplete.
+promotion), not traffic. `dataplane_bus_telemetry_dropped_total` and
+`dataplane_bus_telemetry_persist_failures_total` show when drift telemetry is incomplete.
 
 ## Training Pipeline Flow
 
@@ -241,7 +241,7 @@ sequenceDiagram
 ### Retraining path
 
 ```
-6. Drift detection in seanerbus_bridge
+6. Drift detection in dataplane_bus_bridge
    └─ rolling per-model error window (default 50 requests, DRIFT_WINDOW)
    └─ error_rate ≥ DRIFT_THRESHOLD AND cooldown elapsed (DRIFT_COOLDOWN)
    ▼
@@ -255,7 +255,7 @@ sequenceDiagram
    (returns to step 2 — Prefect training_flow)
 ```
 
-> **Note:** `client_sim.py` and `dataplane_sim.py` are retired. Their job-generation and drift-detection roles are now handled natively by `seanerbus_bridge.py` (drift) and `seanerbus_sim.py` (synthetic load). See [SeanerBUS Simulator guide](seanerbus-sim.md).
+> **Note:** `client_sim.py` and `dataplane_sim.py` are retired. Their job-generation and drift-detection roles are now handled natively by `dataplane_bus_bridge.py` (drift) and `dataplane_bus_sim.py` (synthetic load). See [Dataplane bus Simulator guide](dataplane-bus-sim.md).
 
 ### ModelZoo freshness path
 
@@ -295,16 +295,16 @@ sequenceDiagram
      examlops_approvals_pending
      examlops_approval_events_total{model_id, action}
      examlops_approval_age_oldest_seconds
-   SeanerBUS Bridge emits bridge metrics on port 8003 (GET /metrics, no auth):
-     seanerbus_bridge_up               — 1.0 while the process is running
-     seanerbus_inferences_total{model} — every dispatched call, successful or not (the
+   Dataplane bus Bridge emits bridge metrics on port 8003 (GET /metrics, no auth):
+     dataplane_bus_bridge_up               — 1.0 while the process is running
+     dataplane_bus_inferences_total{model} — every dispatched call, successful or not (the
                                          denominator of the bridge error rate)
-     seanerbus_inference_errors_total{model} — incremented on every inference error
-     seanerbus_inference_latency_seconds{model} — histogram, end-to-end POST latency
-     seanerbus_retrain_triggers_total  — incremented on each drift-triggered retrain
-     seanerbus_embedding_norm{model} / _mean{model} / _std{model}
+     dataplane_bus_inference_errors_total{model} — incremented on every inference error
+     dataplane_bus_inference_latency_seconds{model} — histogram, end-to-end POST latency
+     dataplane_bus_retrain_triggers_total  — incremented on each drift-triggered retrain
+     dataplane_bus_embedding_norm{model} / _mean{model} / _std{model}
                                        — last observed input-embedding statistics (phase 21)
-     seanerbus_embedding_norm_baseline{model} / _mean_baseline / _std_baseline
+     dataplane_bus_embedding_norm_baseline{model} / _mean_baseline / _std_baseline
                                        — the recorded baseline those are drift *from*, read
                                          from input_baselines and refreshed at most once a
                                          minute per model; unset until `exa drift input
@@ -312,10 +312,10 @@ sequenceDiagram
                                          rather than a zero that looks like a measurement
    Prometheus scrapes all three targets → stores time series → Grafana queries
    → evaluates alert rules (alert_rules.yml) → fires to Alertmanager.
-   Grafana auto-provisions the examlops_seanerbus.json dashboard (uid: examlops-seanerbus)
+   Grafana auto-provisions the examlops_dataplane_bus.json dashboard (uid: examlops-dataplane-bus)
    with 4 panels: Bridge Status (stat), Inference Rate, Error Rate, Latency p50/p99.
    Anonymous read-only access is enabled on Grafana (internal network only) so the
-   dashboard SeanerBUS page can embed the three timeseries panels as iframes.
+   dashboard Dataplane bus page can embed the three timeseries panels as iframes.
 
 10. Alertmanager (:19093) receives fired alerts, deduplicates, routes
     to the configured receiver, and exposes a silence/inhibition UI.
@@ -346,7 +346,7 @@ All host-exposed ports use a **+10000 offset** from their canonical defaults. In
 | JupyterHub | 18888 | 8888 | Multi-user notebooks |
 | Ray Serve API | 18001 | 8001 | Inference + reload |
 | Control Plane | 18002 | 8002 | `POST /retrain` (bearer auth); `GET /metrics` (no auth) |
-| SeanerBUS Bridge Status | 18003 | 8003 | `GET /health` `GET /stats` `GET /metrics` (no auth) |
+| Dataplane bus Bridge Status | 18003 | 8003 | `GET /health` `GET /stats` `GET /metrics` (no auth) |
 | MLflow | 15000 | 5000 | Model registry + runs |
 | Prefect | 14200 | 4200 | Flow orchestration |
 | MinIO API | 19000 | 9000 | S3-compatible |
@@ -357,7 +357,7 @@ All host-exposed ports use a **+10000 offset** from their canonical defaults. In
 | Loki | 13100 | 3100 | Log aggregation |
 | Tempo | 13200 | 3200 | Distributed trace backend (OTLP :4317/:4318) |
 | Ray Dashboard | 18265 | 8265 | Ray cluster status |
-| SeanerBUS | 5398 | 5398 | Cap'n'Proto TCP (external, no offset) |
+| Dataplane bus | 5398 | 5398 | Cap'n'Proto TCP (external, no offset) |
 
 ## Key Design Decisions
 
@@ -377,7 +377,7 @@ All host-exposed ports use a **+10000 offset** from their canonical defaults. In
 
 **Datastore engine seam (`examlops.storage`, enterprise-readiness item 0.1)** — the shared `platform.db` is fronted by a dialect-neutral `StorageBackend` protocol so the engine can migrate from SQLite (single-writer, dev/small-fleet default) to Postgres (multi-writer, HA, per-tenant isolation) without touching the ~221 `platform_db` helper call sites. Ships a fully-tested `SqliteBackend` (unchanged behaviour via `examlops.resilience.db`) and a **working `PostgresBackend`**: `examlops.storage.pg` translates the platform's SQLite dialect (placeholders, `AUTOINCREMENT`, `DATETIME` defaults, `INSERT OR REPLACE`, `PRAGMA table_info`, `BEGIN IMMEDIATE` → advisory lock, append-only triggers) behind a `sqlite3`-shaped connection, which is why the helpers themselves did not change. Select with `EXAMLOPS_DB_BACKEND` + `EXAMLOPS_POSTGRES_DSN`; see `docs/guides/postgres-backend.md`. Verified live against Postgres 16 (all 142 tables, audit hash chain, tamper-evidence); pooling and the full-suite parity run are the remaining work.
 
-**Concurrency-safe datastore access (Phase-0 hardening)** — every SQLite connection goes through `examlops.resilience.db.connect` (WAL + `busy_timeout`), enforced by a CI guard banning bare `sqlite3.connect`; the dashboard (a separate app) carries the same guarantee via its local `dbconn.connect`. Read-modify-write invariants that must be atomic across writer processes — chiefly the tamper-evident audit hash-chain and the auto-retrain cooldown claim — use an `IMMEDIATE`-lock transaction (`_immediate_write`) / a single conditional `UPDATE` under `write_retry`, so concurrent writers cannot fork the chain or double-fire a retrain. `init_db()` runs the schema DDL once per process (a path sentinel), and the SeanerBUS bridge offloads its per-inference writes off the asyncio loop.
+**Concurrency-safe datastore access (Phase-0 hardening)** — every SQLite connection goes through `examlops.resilience.db.connect` (WAL + `busy_timeout`), enforced by a CI guard banning bare `sqlite3.connect`; the dashboard (a separate app) carries the same guarantee via its local `dbconn.connect`. Read-modify-write invariants that must be atomic across writer processes — chiefly the tamper-evident audit hash-chain and the auto-retrain cooldown claim — use an `IMMEDIATE`-lock transaction (`_immediate_write`) / a single conditional `UPDATE` under `write_retry`, so concurrent writers cannot fork the chain or double-fire a retrain. `init_db()` runs the schema DDL once per process (a path sentinel), and the Dataplane bus bridge offloads its per-inference writes off the asyncio loop.
 
 **Programmable MLOps — one uniform extension model (Phase 37, ADRs 0076–0082)** — every capability is extensible/governable as code or config, sharing the design DNA of `examlops.providers` (stable interface · builtin/entry-point/declarative sources · graceful degradation · two trust tiers). Five surfaces:
 - **Typed SDK** (`examlops/sdk/`) — a small, semver'd public facade (`examlops.status/place/list_providers/resolve_provider` + `__version__`/`api_version()`); the CLI and MCP tools call *through* it, so there is one code path. Anything not exported is `_private`.
@@ -408,11 +408,11 @@ All host-exposed ports use a **+10000 offset** from their canonical defaults. In
 
 **Drift-triggered closed-loop retraining** — `exa drift trigger` checks every model's z-score against its per-model auto-retrain config stored in `platform.db` (`drift_auto_retrain` table). Models exceeding the configured z-score threshold (default 3.0) with an elapsed cooldown period automatically receive a `POST /retrain` at the control plane, completing the feedback loop from live HPC traffic to scheduled model retraining without operator intervention. The trigger command is safe to run as a scheduled cron job. Use `exa drift auto-retrain enable <MODEL> --min-z 2.5` to configure and `--dry-run` to preview without firing.
 
-## SeanerBUS Integration
+## Dataplane bus Integration
 
-The SeanerBUS bridge (`platform/clients/seanerbus_bridge.py`) is a long-running async process that connects the ExaMLOps inference stack to an external Cap'n'Proto/TCP message bus. It has no HTTP API of its own beyond the internal `/health` + `/stats` server on :18003 for monitoring.
+The Dataplane bus bridge (`platform/clients/dataplane_bus_bridge.py`) is a long-running async process that connects the ExaMLOps inference stack to an external Cap'n'Proto/TCP message bus. It has no HTTP API of its own beyond the internal `/health` + `/stats` server on :18003 for monitoring.
 
-The bridge registers one req/res handler per model using the `seanerbus_uuid` field from each model's YAML file (`pipelines/models/*.yaml`). This allows HPC callers to address a specific model directly by UUID without embedding a model name in the message payload. Topic-based pub/sub and global retrain/vector handlers remain shared.
+The bridge registers one req/res handler per model using the `dataplane_bus_uuid` field from each model's YAML file (`pipelines/models/*.yaml`). This allows HPC callers to address a specific model directly by UUID without embedding a model name in the message payload. Topic-based pub/sub and global retrain/vector handlers remain shared.
 
 ### Communication patterns
 
@@ -428,7 +428,7 @@ The bridge supports five message patterns simultaneously in `both` mode:
 
 ### Connection model
 
-Each subscription or service registration gets its own `Connection`. The seanerbus `read_msg()` loop is not multiplexed — one connection per role. All connections run concurrently under `asyncio.gather()`.
+Each subscription or service registration gets its own `Connection`. The dataplane-bus `read_msg()` loop is not multiplexed — one connection per role. All connections run concurrently under `asyncio.gather()`.
 
 ### Schema registry
 
@@ -443,6 +443,6 @@ The bridge tracks a rolling per-model error window (default 50 requests). When t
 A minimal asyncio HTTP server runs on :18003 inside the bridge process:
 - `GET /health` — `{"status": "ok", "mode": "both"}`
 - `GET /stats` — inference counts, error counts, retrain count, vector count, per-model breakdown
-- `GET /metrics` — Prometheus text format; scraped by the `seanerbus_bridge` job in `prometheus.yml`
+- `GET /metrics` — Prometheus text format; scraped by the `dataplane_bus_bridge` job in `prometheus.yml`
 
-The dashboard proxy forwards `/proxy/seanerbus/*` to this server so bridge status is visible in the UI. The `/metrics` endpoint is scraped directly by Prometheus (container-to-container on port 8003); it is not proxied through the dashboard.
+The dashboard proxy forwards `/proxy/dataplane-bus/*` to this server so bridge status is visible in the UI. The `/metrics` endpoint is scraped directly by Prometheus (container-to-container on port 8003); it is not proxied through the dashboard.

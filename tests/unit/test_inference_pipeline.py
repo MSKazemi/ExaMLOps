@@ -66,7 +66,7 @@ class TestResolve:
         assert alias == "Canary"
 
     def test_missing_model_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("SEANERBUS_DEFAULT_MODEL", "JPCP")
+        monkeypatch.setenv("DATAPLANE_BUS_DEFAULT_MODEL", "JPCP")
         import importlib
 
         import serving.inference_pipeline.app as m
@@ -77,7 +77,7 @@ class TestResolve:
         assert model == "jpcp"
 
     def test_empty_string_model_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("SEANERBUS_DEFAULT_MODEL", "JPCP")
+        monkeypatch.setenv("DATAPLANE_BUS_DEFAULT_MODEL", "JPCP")
         import importlib
 
         import serving.inference_pipeline.app as m
@@ -88,7 +88,7 @@ class TestResolve:
         assert model == "jpcp"
 
     def test_missing_alias_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("SEANERBUS_DEFAULT_ALIAS", "Production")
+        monkeypatch.setenv("DATAPLANE_BUS_DEFAULT_ALIAS", "Production")
         import importlib
 
         import serving.inference_pipeline.app as m

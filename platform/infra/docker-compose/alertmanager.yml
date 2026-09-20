@@ -91,7 +91,7 @@ inhibit_rules:
   # If a scrape target/service is entirely down, mute its derived symptom alerts (they're
   # just consequences of the outage) within the same cluster+service.
   - source_matchers:
-      - alertname =~ "TargetDown|ControlPlaneDown|RayServeTargetDown|SeanerBUSBridgeDown"
+      - alertname =~ "TargetDown|ControlPlaneDown|RayServeTargetDown|DataplaneBusBridgeDown"
     target_matchers:
       - severity =~ "warning|critical"
     equal: ['cluster', 'service']

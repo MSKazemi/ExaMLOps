@@ -3,7 +3,7 @@
 #
 # Adjusts bridge build ARGs to match the deploy-node directory layout:
 #   $EXAMLOPS_DEPLOY_PATH/            (this repo)
-#   $EXAMLOPS_DEPLOY_PATH-seanerbus/seanerbus/   (the seanerbus repo)
+#   $EXAMLOPS_DEPLOY_PATH-dataplane-bus/dataplane-bus/   (the dataplane-bus repo)
 #
 # Site-specific values live in .env (gitignored), never here:
 #   EXAMLOPS_GITLAB_HOST_ENTRY="<gitlab-host>:<ip>"   internal DNS pin for the
@@ -15,10 +15,10 @@ services:
     extra_hosts:
       - "${EXAMLOPS_GITLAB_HOST_ENTRY:-gitlab.example.com:127.0.0.1}"
 
-  seanerbus-bridge:
+  dataplane-bus-bridge:
     build:
       dockerfile: examlops/platform/infra/docker-compose/Dockerfile.bridge
       network: host
       args:
         AI_PRODUCTIONS_DIR: examlops
-        SEANERBUS_DIR: examlops-seanerbus/seanerbus
+        DATAPLANE_BUS_DIR: examlops-dataplane-bus/dataplane-bus

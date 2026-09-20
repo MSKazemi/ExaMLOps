@@ -95,5 +95,5 @@ providers:
   # - name: consortium
   #   issuer: https://aai.consortium.example.eu/realms/research
   #   audience: examlops
-  #   tenant_claim: org                     # e.g. "org": "unibo"
-  #   tenants_allowed: [unibo, polimi, fzj] # a token naming any other tenant is refused
+  #   tenant_claim: org                     # e.g. "org": "org-a"
+  #   tenants_allowed: [org-a, org-b, org-c] # a token naming any other tenant is refused

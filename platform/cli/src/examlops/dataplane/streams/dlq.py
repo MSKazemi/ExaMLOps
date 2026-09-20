@@ -1,6 +1,6 @@
 """Dead letters for asynchronous stream connectors (ADR 0131 §5, Plan 2, rulings R3/R15, E6).
 
-A connector with no waiting caller — Kafka today, SeanerBUS pub/sub later — parks a message it
+A connector with no waiting caller — Kafka today, Dataplane bus pub/sub later — parks a message it
 cannot process through a :class:`DeadLetterSink`. This module holds the seam — the Protocol, the
 reason vocabulary, the error-text redaction every sink and header must use, and
 :class:`LoggingDeadLetterSink`, the metadata-only default — and the database-backed store behind

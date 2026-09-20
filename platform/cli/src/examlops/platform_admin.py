@@ -17,7 +17,7 @@ policy-gated and auditable exactly like a CLI change:
 
 Nothing here reimplements a writer: each method wraps the exact ``examlops.*`` function the CLI calls
 (``finops.cost``, ``providers.save_provider``, ``connections``, ``_config.write_config``,
-``data.*`` setters, the ``seanerbus`` UUID edit) — so the façade can never drift from the CLI.
+``data.*`` setters, the ``dataplane-bus`` UUID edit) — so the façade can never drift from the CLI.
 """
 
 from __future__ import annotations
@@ -350,15 +350,15 @@ def set_connection(
     )
 
 
-# ── Bridge wiring (ExaMLOps ↔ SeanerBUS, per-model UUID) ──────────────────────
+# ── Bridge wiring (ExaMLOps ↔ Dataplane bus, per-model UUID) ──────────────────────
 
 
 def set_bridge_uuid(
     model: str, *, regenerate: bool = False, approve: bool = False
 ) -> dict[str, Any]:
-    """Assign or regenerate a model's ``seanerbus_uuid`` in its use-case YAML (bridge ↔ model map).
+    """Assign or regenerate a model's ``dataplane_bus_uuid`` in its use-case YAML (bridge ↔ model map).
 
-    Reuses the same YAML edit the ``exa seanerbus`` command performs. ``regenerate=False`` only
+    Reuses the same YAML edit the ``exa dataplane-bus`` command performs. ``regenerate=False`` only
     assigns one when missing (idempotent); ``regenerate=True`` rotates an existing UUID — note that
     HPC teams must then update their config. Governed + audited.
     """
@@ -366,14 +366,14 @@ def set_bridge_uuid(
 
     import yaml
 
-    from examlops.cli.commands.seanerbus_cmd import _insert_uuid, _iter_yamls, _replace_uuid
+    from examlops.cli.commands.dataplane_bus_cmd import _insert_uuid, _iter_yamls, _replace_uuid
 
     def _apply() -> dict[str, Any]:
         for name, path, text in _iter_yamls():
             if name.upper() != model.upper():
                 continue
             raw = yaml.safe_load(text) or {}
-            current = raw.get("seanerbus_uuid")
+            current = raw.get("dataplane_bus_uuid")
             if current is not None and not regenerate:
                 return {"model": name, "uuid": current, "changed": False}
             new_uid = str(_uuid.uuid4())
@@ -484,7 +484,7 @@ def propose_source_change(
             "next_steps": [
                 "review the diff on the deploy node: git -C <repo> diff -- " + " ".join(paths),
                 'ship via dualgit: dualgit doctor → dualgit ship "<message>"',
-                "redeploy the affected service (e.g. make seanerbus-up / dashboard-up / control-plane-up)",
+                "redeploy the affected service (e.g. make dataplane-bus-up / dashboard-up / control-plane-up)",
             ],
         }
 

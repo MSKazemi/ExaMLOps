@@ -1,6 +1,6 @@
-"""Entry-point shim that graduates the SEANERGYS pack into an installable package.
+"""Entry-point shim that graduates the reference pack into an installable package.
 
-Installing this package (``pip install -e usecases/seanergy``) registers the pack under the
+Installing this package (``pip install -e usecases/reference``) registers the pack under the
 ``examlops.usecase_packs`` entry-point group, so the platform discovers it with no
 ``EXAMLOPS_USECASE_DIR`` set (see ``examlops.usecase`` / ADR 0094 Stage 5).
 

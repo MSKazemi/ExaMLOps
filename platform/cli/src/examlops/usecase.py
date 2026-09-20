@@ -10,7 +10,7 @@ environment, so a deployment points the platform at its own pack without any cod
                                        survives upgrades (ADR 0128) — used when it has a pack.toml
     installed pack (entry point)       a pip-installed pack registered under
                                        ``examlops.usecase_packs`` (Stage 5, ADR 0094)
-    (default)                          the bundled reference pack, ``usecases/seanergy/models``
+    (default)                          the bundled reference pack, ``usecases/reference/models``
 
 This is a thin path resolver only — it imports nothing from the pipeline engine or the pack,
 and discovers installed packs *generically* by group, never naming a concrete use-case.
@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-DEFAULT_MODELS_DIR = "usecases/seanergy/models"
+DEFAULT_MODELS_DIR = "usecases/reference/models"
 
 #: Entry-point group a graduated, pip-installable use-case pack registers under. Each entry
 #: point resolves to the pack root directory (a ``Path``/``str``) or a zero-arg callable

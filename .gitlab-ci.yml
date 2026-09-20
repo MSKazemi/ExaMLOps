@@ -140,7 +140,7 @@ sanity:check-structure:
     - test -f platform/infra/docker-compose/docker-compose.yml
     # Models moved from pipelines/models/ to the use-case packs (ADR 0094 platform/use-case split);
     # verify the default pack's model dir instead of the retired pipelines/models/.
-    - test -d usecases/seanergy/models
+    - test -d usecases/reference/models
     - echo "Structure OK"
 
 # D7 (ADR 0011): block any commit that introduces a plaintext secret. Uses the
@@ -812,11 +812,11 @@ test:deps:audit:
 # ROLLOUT: opt-in. The whole stage is inert until the CI/CD variable EXAMLOPS_USE_REGISTRY
 # is set on the project, because it depends on two things that must be checked on the real
 # infrastructure first, not assumed:
-#   • the Container Registry feature being enabled on the Seanergys project, and
-#   • the LXP docker daemon being able to reach registry.gitlab.seanergys.fz-juelich.de.
+#   • the Container Registry feature being enabled on the GitLab project, and
+#   • the LXP docker daemon being able to reach registry.gitlab.example.org.
 # Until then deploy:lxp keeps building on the node exactly as it does today.
 #
-# RUNNER REQUIREMENT: a privileged runner (docker-in-docker). If the Seanergys runners are
+# RUNNER REQUIREMENT: a privileged runner (docker-in-docker). If the GitLab runners are
 # not privileged, swap the dind service for a `kaniko` or `buildah` image — the only thing
 # that changes is this job's before_script; build_image.sh stays as it is.
 
@@ -868,8 +868,8 @@ build:images:
       # with what the deploy actually runs. tests/unit/test_ci_image_matrix.py holds the
       # list itself against the compose file.
       #
-      # seanerbus-bridge is deliberately absent: its build context is the PARENT of this
-      # repository (it needs the sibling seanerbus checkout), which does not exist in a CI
+      # dataplane-bus-bridge is deliberately absent: its build context is the PARENT of this
+      # repository (it needs the sibling dataplane-bus checkout), which does not exist in a CI
       # clone. It is built on the node, as it always was.
       - SERVICE:
           - postgres
@@ -967,7 +967,7 @@ scan:images:
 # STAGE: PUBLISH — mirror the exact digests outward. Never a gate.
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# The Seanergys registry is internal, so nothing built here is visible to anyone outside
+# The GitLab registry is internal, so nothing built here is visible to anyone outside
 # the institute. These jobs copy the SAME DIGESTS (skopeo copy, no rebuild) to the public
 # registries, which means the image on GHCR or Docker Hub is bit-identical to the one LXP
 # is running — not a lookalike rebuilt from the same source at a different time.
@@ -1099,7 +1099,7 @@ publish:helm:
 pages:
   # `release`, not `publish`, purely so its `needs:` on publish:helm points at a STRICTLY
   # EARLIER stage. Same-stage `needs:` is legal only on GitLab 14.2+, and the version of the
-  # Seanergys instance is not something this file should have to assume.
+  # GitLab instance is not something this file should have to assume.
   stage: release
   image: python:3.12-slim
   interruptible: true

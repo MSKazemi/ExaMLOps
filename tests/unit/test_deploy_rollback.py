@@ -1,7 +1,7 @@
 """The rollback path must not destroy what the deploy path was fixed to preserve.
 
 `deploy:lxp` deliberately does **not** pass `--remove-orphans`: on this compose file that
-flag deletes every profile service (monitoring ×6, jupyter, vllm, the SeanerBUS bridge),
+flag deletes every profile service (monitoring ×6, jupyter, vllm, the Dataplane bus bridge),
 which is what commit a9035877 — "persist on-demand services across deploys" — was written to
 stop. The rollback in `smoke:lxp` kept its copy of the flag, so the recovery path did exactly
 the thing the deploy path forbids, at the one moment production is already broken and nobody
@@ -42,7 +42,7 @@ def test_no_remove_orphans_on_the_lxp_stack(job: str):
     assert "--remove-orphans" not in _script(job), (
         f"`{job}` passes --remove-orphans to docker compose. On this compose file that deletes "
         "every profile service — the six monitoring containers, JupyterHub, vllm and the "
-        "SeanerBUS bridge — so Grafana embeds, project workbenches and the bus tab break. "
+        "Dataplane bus bridge — so Grafana embeds, project workbenches and the bus tab break. "
         "deploy:lxp was fixed for exactly this in a9035877; keep both paths identical."
     )
 

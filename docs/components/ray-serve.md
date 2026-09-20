@@ -567,7 +567,7 @@ API runs arbitrary code without authentication. From another machine, use an SSH
 | `INFERENCE_DEADLINE_SECONDS` / `INFERENCE_DEADLINE_MAX_SECONDS` | `30` / `300` | Default and maximum request budget |
 | `INFERENCE_ROUTE_RETRIES` | `2` | Ceiling on router retries (transport errors, 503, and one retry of a replica lost mid-request) |
 | `INFERENCE_RETRY_MAX_TOKENS` / `INFERENCE_RETRY_TOKEN_RATIO` | `100` / `0.1` | Router retry budget: a burst of ~50 retries, then ~1 per 10 successes |
-| `RAY_MODELS_DIR` | unset | Phase 14: directory of per-model YAML files (e.g., `usecases/seanergy/models`). Takes precedence over `RAY_REGISTRY_PATH` |
+| `RAY_MODELS_DIR` | unset | Phase 14: directory of per-model YAML files (e.g., `usecases/reference/models`). Takes precedence over `RAY_REGISTRY_PATH` |
 | `RAY_REGISTRY_PATH` | unset | Path to `model_registry.yaml`; enables per-model `serve_aliases`. Unset = use global `RAY_PRELOAD_ALIASES` for all models |
 | `RAY_REGISTRY_ENV` | unset | Env overlay name (e.g., `prod`) loaded alongside `RAY_REGISTRY_PATH` |
 

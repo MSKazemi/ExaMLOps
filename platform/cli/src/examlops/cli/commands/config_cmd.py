@@ -50,7 +50,7 @@ def show():
     """Print the current resolved config (env vars + TOML file)."""
     cfg = load_config()
     # Every field the resolver knows, from the one spec — a hand-kept list here once left out
-    # `dashboard_token` and `seanerbus_bridge_url`, so `show` hid settings `env` reported.
+    # `dashboard_token` and `dataplane_bus_bridge_url`, so `show` hid settings `env` reported.
     data: dict[str, str] = {}
     for field, _key, _env, _default, is_secret in _FIELDS:
         value = getattr(cfg, field)
@@ -226,7 +226,7 @@ _ENV_PREFIXES = (
     "DASHBOARD_",
     "CONTROL_PLANE_",
     "AWS_",
-    "SEANERBUS_",
+    "DATAPLANE_BUS_",
     "OTEL_",
     "PLATFORM_DB",
     "PREFECT_",
@@ -321,7 +321,7 @@ def build_export_snapshot() -> dict:
     # 4) Model registry + environment overlays (repo-local, best-effort).
     root = _repo_root()
     usecase_dir = os.getenv("EXAMLOPS_USECASE_DIR") or (
-        str(root / "usecases" / "seanergy") if root else None
+        str(root / "usecases" / "reference") if root else None
     )
     snapshot["models"] = _yaml_files_section(Path(usecase_dir) / "models" if usecase_dir else None)
     snapshot["env_overlays"] = _yaml_files_section(root / "pipelines" / "envs" if root else None)

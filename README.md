@@ -16,7 +16,7 @@ changes.
 [![Good first issues](https://img.shields.io/github/issues/MSKazemi/ExaMLOps/good%20first%20issue?label=good%20first%20issues&color=7057ff)](https://github.com/MSKazemi/ExaMLOps/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](.github/CODE_OF_CONDUCT.md)
 
-In production at **LuxProvide (MeluXina)** for the EuroHPC **SEANERGYS** project.
+In production at **LuxProvide (MeluXina)**.
 
 | Stage | What the platform does |
 |---|---|
@@ -26,7 +26,7 @@ In production at **LuxProvide (MeluXina)** for the EuroHPC **SEANERGYS** project
 | **Serve** | Multi-model serving (Ray Serve) with a batching inference pipeline (`@serve.batch`) |
 | **Observe** | Real-time metrics (Prometheus + Grafana), centralized logs (Loki) |
 | **Operate** | The `exa` platform CLI, a React 19 + FastAPI dashboard, and **Skipper** — a LangGraph management agent with a native `exa chat` client |
-| **Integrate** | SeanerBUS HPC message bridge |
+| **Integrate** | Dataplane bus HPC message bridge |
 
 **Is it for you?** Yes if your models train on a Slurm or Flux cluster and you want versions,
 promotion and serving governed rather than scripted. If you are Kubernetes-native, Kubeflow or
@@ -99,8 +99,8 @@ make stack-wipe             # DESTRUCTIVE: remove containers, volumes, images
 make stack-restart          # restart without rebuild
 make stack-logs             # tail docker-compose logs
 make monitoring-up          # start Prometheus + Grafana + Loki + Promtail
-# cd ../seanerbus && docker compose up -d   # start real SeanerBUS + reqgen
-make seanerbus-up           # start bridge (connects to real SeanerBUS)
+# cd ../dataplane-bus && docker compose up -d   # start real Dataplane bus + reqgen
+make dataplane-bus-up           # start bridge (connects to real Dataplane bus)
 
 # Exa CLI: pipelines, deployments, serving, and production state
 exa pipeline list
@@ -121,9 +121,9 @@ make dashboard-up           # build + start dashboard on :18099
 make dashboard-logs         # tail dashboard logs
 make dashboard-check        # run backend pytest + frontend npm test
 
-# SeanerBUS bridge
-make seanerbus-up           # start SeanerBUS bridge
-make seanerbus-down         # stop SeanerBUS bridge
+# Dataplane bus bridge
+make dataplane-bus-up           # start Dataplane bus bridge
+make dataplane-bus-down         # stop Dataplane bus bridge
 
 # Approval gate (Phase 11)
 exa approvals list
@@ -167,7 +167,7 @@ exa status                  # show services, approvals, and production state
 | Ray Dashboard | http://localhost:18265 |
 | Control Plane | http://localhost:18002 |
 | Skipper agent | http://localhost:18004 |
-| SeanerBUS Bridge Status | http://localhost:18003 |
+| Dataplane bus Bridge Status | http://localhost:18003 |
 | JupyterHub | http://localhost:18888 |
 | MinIO Console | http://localhost:19001 |
 | Prometheus | http://localhost:19090 |
@@ -198,7 +198,7 @@ The pipeline discovers and runs it automatically; CI enforces registry integrity
 ExaMLOps/
 ├── docs/                       # Documentation
 │   ├── components/             # Per-service component docs
-│   ├── guides/                 # Quickstart, add-a-model, SeanerBUS, etc.
+│   ├── guides/                 # Quickstart, add-a-model, Dataplane bus, etc.
 │   └── reference/              # Commands, env vars, CLI, API reference
 ├── modelzoo/                   # seanergys-modelzoo model library (poetry)
 │   └── seanergys_modelzoo/
@@ -214,10 +214,10 @@ ExaMLOps/
 │   ├── ray_serving/            # Multi-model Ray Serve inference :18001
 │   └── inference_pipeline/     # Ray Serve DeploymentGraph (Phase 10)
 └── platform/                   # Platform area (workspace coordinator: examlops-workspace)
-    ├── clients/                # SeanerBUS bridge + seanerbus_sim.py + dummy client
+    ├── clients/                # Dataplane bus bridge + dataplane_bus_sim.py + dummy client
     ├── ci/                     # CI helper scripts (notify_model_changes.py)
     ├── infra/
-    │   ├── docker-compose/     # Dev stack (profiles: default / monitoring / seanerbus / dev)
+    │   ├── docker-compose/     # Dev stack (profiles: default / monitoring / dataplane-bus / dev)
     │   └── slurm-adapter/      # HPC/Slurm integration (mock + real)
     ├── services/
     │   ├── agent/              # LangGraph management agent + skipper/ package
@@ -225,7 +225,7 @@ ExaMLOps/
     │   └── dashboard/          # React 19 + FastAPI dashboard :18099
     └── cli/                    # Installable `examlops` dist (installed by make install-dev)
         └── src/examlops/       # Shared schemas + `exa` platform CLI (Typer)
-            └── cli/            # exa CLI: approvals/models/retrain/predict/serve/pipeline/seanerbus/stack/config
+            └── cli/            # exa CLI: approvals/models/retrain/predict/serve/pipeline/dataplane-bus/stack/config
 ```
 
 ## Python Environments
@@ -265,7 +265,7 @@ The documentation site is published at **https://mskazemi.com/ExaMLOps/**. Its
 - [System Architecture](docs/guides/architecture.md)
 - [Command Reference (full command tree)](docs/reference/cli-generated.md)
 - [Environment Variables](docs/reference/env-vars.md)
-- [SeanerBUS Integration](docs/guides/seanerbus.md)
+- [Dataplane bus Integration](docs/guides/dataplane-bus.md)
 - [Add a New Model](docs/guides/add-a-new-model.md)
 - [exa CLI Command Guide (use cases + examples)](docs/reference/cli-commands-guide.md)
 - [Approval Gate](docs/guides/control-plane.md#approval-gate-phase-11)

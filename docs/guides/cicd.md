@@ -280,7 +280,7 @@ is set. Without it the pipeline behaves exactly as it did before the stage exist
 ### build:images
 
 Builds each service image once, from a tree that has already passed every blocking check,
-and pushes it to the Seanergys GitLab Container Registry as
+and pushes it to the GitLab GitLab Container Registry as
 `$CI_REGISTRY_IMAGE/examlops-<service>:<sha>` (plus `:latest` on `main` and `:<tag>` on a
 tag).
 
@@ -303,12 +303,12 @@ context and Dockerfile are, so CI cannot build an image from a different context
 one the deploy runs. `tests/unit/test_ci_image_matrix.py` holds the matrix against the
 compose file in both directions and fails if a buildable service is missing from either.
 
-**`seanerbus-bridge` is deliberately not built here.** Its build context is the *parent* of
-this repository — it needs the sibling `seanerbus` checkout, which a CI clone does not have.
+**`dataplane-bus-bridge` is deliberately not built here.** Its build context is the *parent* of
+this repository — it needs the sibling `dataplane-bus` checkout, which a CI clone does not have.
 It continues to build on the node. The same is true of the JupyterLab spawner image, which
 `lxp_release.sh` builds directly rather than through compose.
 
-**Runner requirement.** Docker-in-Docker, so the Seanergys runner must be privileged. If it
+**Runner requirement.** Docker-in-Docker, so the GitLab runner must be privileged. If it
 is not, replace the `dind` service with `kaniko` or `buildah`: only this job's
 `before_script` changes, `build_image.sh` does not.
 
@@ -384,7 +384,7 @@ dependency pointing backwards so the assumption never has to be made.
 ### publish:ghcr
 
 Copies every digest to `ghcr.io/mskazemi/examlops-<service>`. Runs only when `GHCR_TOKEN`
-is set. This is the public-visibility half of the registry story: the Seanergys registry is
+is set. This is the public-visibility half of the registry story: the GitLab registry is
 internal, so nothing built there is visible outside the institute.
 
 ### publish:dockerhub
@@ -569,7 +569,7 @@ Two properties of that path are easy to lose and expensive to lose, so
 `tests/unit/test_deploy_rollback.py` pins them:
 
 * **No `--remove-orphans`.** On this compose file the flag deletes every profile service — the six
-  monitoring containers, JupyterHub, vllm and the SeanerBUS bridge. `deploy:lxp` was changed to
+  monitoring containers, JupyterHub, vllm and the Dataplane bus bridge. `deploy:lxp` was changed to
   stop passing it (a9035877, "persist on-demand services across deploys"); the rollback kept its
   copy until 2026-08-20, so recovering from a bad deploy would have restored the previous code
   while destroying Grafana embeds, project workbenches and the bus tab — at the one moment
@@ -674,15 +674,15 @@ predefined by GitLab — do not set them by hand.
 
 **Prerequisites to confirm before setting `EXAMLOPS_USE_REGISTRY`:**
 
-1. The **Container Registry** feature is enabled on the Seanergys project
+1. The **Container Registry** feature is enabled on the GitLab project
    (Settings → General → Visibility → Container Registry). It is not on by default on every
    self-managed instance.
-2. The **lxp-cpu01 docker daemon can reach** `registry.gitlab.seanergys.fz-juelich.de`.
+2. The **lxp-cpu01 docker daemon can reach** `registry.gitlab.example.org`.
    Verify on the node, not by assumption — container egress there has been blocked before
    by a leftover firewalld `FORWARD` drop:
 
    ```bash
-   ssh lxp-cpu01 'docker login registry.gitlab.seanergys.fz-juelich.de'
+   ssh lxp-cpu01 'docker login registry.gitlab.example.org'
    ```
 
 3. A **cleanup policy** is configured on the registry (Settings → Packages and registries →
@@ -882,9 +882,9 @@ The dashboard's backend suite carries the same guard, in
 `platform/services/dashboard/backend/tests/conftest.py`. It reads its port list from `settings`
 rather than a hand-written constant, so a backing service added there is covered without touching
 the guard; `database_url` is excluded, because the Postgres run connects to it for real and should.
-It found the defect in both directions at once — one test asserted the SeanerBUS bridge probe
+It found the defect in both directions at once — one test asserted the Dataplane bus bridge probe
 *fails* while doing nothing to make it fail (green here, red on any machine running
-`make seanerbus-up`, and red on the lxp node where the bridge is a bare-metal process), and one
+`make dataplane-bus-up`, and red on the lxp node where the bridge is a bare-metal process), and one
 asserted a response header while fanning out to nine live services and leaving the result in the
 health router's 30-second process-global cache.
 
@@ -929,7 +929,7 @@ recorded an empty object tier. Neither raised.
 it parses every `docker-compose*.yml` for `HOST:CONTAINER` mappings and fails on any source default
 naming a container-side port on `localhost`, so publishing a new service brings its port under the
 guard with no edit. Two exemptions are recorded with reasons and re-checked each run — the inference
-pipeline runs *inside* the Ray container, and the SeanerBUS bridge is also run bare-metal in dev,
+pipeline runs *inside* the Ray container, and the Dataplane bus bridge is also run bare-metal in dev,
 where it serves on the host's `8003` with no mapping at all.
 
 ---

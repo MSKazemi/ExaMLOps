@@ -35,7 +35,7 @@ The same capabilities are available from the [dashboard](../dashboard/usage-guid
 | HPC, Fleet & FinOps | Discover clusters, place jobs and account for cost and carbon. | `hpc`, `fleet`, `hardware`, `federated`, `finops`, `report` | 41 |
 | Governance & Security | Approve changes, audit actions, manage secrets and policy. | `auth`, `approvals`, `audit`, `secrets`, `compliance`, `governance`, `policy`, `providers` | 57 |
 | Projects & Workspaces | Group models, people, storage and connections into projects. | `project`, `namespace`, `connection`, `workbench` | 35 |
-| Platform & Integrations | Operate the stack, back it up and connect external systems. | `stack`, `backup`, `instance`, `upgrade`, `modules`, `events`, `admission`, `exchange`, `seanerbus` | 46 |
+| Platform & Integrations | Operate the stack, back it up and connect external systems. | `stack`, `backup`, `instance`, `upgrade`, `modules`, `events`, `admission`, `exchange`, `dataplane-bus` | 46 |
 
 </div>
 

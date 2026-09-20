@@ -62,7 +62,7 @@ Provenance then shows in `exa providers list`, the dashboard **Providers** conso
 ```python
 pa.set_connection("dataplane-prod", "dataplane",
                   config={"endpoint": "http://dataplane:8000"}, secret_value="…")  # secret → secrets store, never audited
-pa.set_bridge_uuid("JPCP")                 # assign the SeanerBUS UUID if missing (idempotent)
+pa.set_bridge_uuid("JPCP")                 # assign the Dataplane bus UUID if missing (idempotent)
 pa.set_bridge_uuid("JPCP", regenerate=True)  # rotate it (HPC teams must update their config)
 pa.set_knob("traffic", "JPCP", {"Production": 90, "Canary": 10})
 pa.set_config(control_plane_url="http://control-plane:8002")   # token values are redacted in audit
@@ -74,7 +74,7 @@ Editing real integration code is deliberately **not** hot-applied. In an admin `
 workbench, `platform/clients/` is mounted read-write; edit the file, then record the intent:
 
 ```python
-out = pa.propose_source_change(["platform/clients/seanerbus_bridge.py"], "tune bridge retry/backoff")
+out = pa.propose_source_change(["platform/clients/dataplane_bus_bridge.py"], "tune bridge retry/backoff")
 print(out["result"]["next_steps"])   # exact ship + redeploy steps (commit via `dualgit ship` → redeploy the service)
 ```
 

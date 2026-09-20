@@ -7,8 +7,8 @@ reply path from the write path, and :class:`DbTelemetrySink` is the first (and f
 :class:`TelemetrySink` — writing drift/input-embedding snapshots into ``platform.db`` via
 ``examlops.data.drift``. A NATS sink plugs into the same :class:`TelemetrySink` seam later.
 
-Behaviour carried over from the SeanerBUS bridge's ``_TelemetrySpool``/``_persist_inference_
-telemetry`` (``platform/clients/seanerbus_bridge.py``, owned by another session — read, never
+Behaviour carried over from the Dataplane bus bridge's ``_TelemetrySpool``/``_persist_inference_
+telemetry`` (``platform/clients/dataplane_bus_bridge.py``, owned by another session — read, never
 imported from here):
 
 - reply first, telemetry after: the caller offers a record to the spool and moves on; a daemon

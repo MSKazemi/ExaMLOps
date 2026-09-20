@@ -29,7 +29,7 @@ runs it) and the **instance data** your users create. Decide where the instance 
 the first user touches the platform — it is what every later upgrade must keep:
 
 ```bash
-exa instance init --data-dir /srv/examlops-data --pack usecases/seanergy --preset standard
+exa instance init --data-dir /srv/examlops-data --pack usecases/reference --preset standard
 export EXAMLOPS_DATA_DIR=/srv/examlops-data      # set it for every process / service
 exa instance info                                 # where every piece of user data lives
 exa modules list                                  # which modules this centre runs
@@ -82,7 +82,7 @@ curl -s http://localhost:18099/api/health     # dashboard
 make monitoring-up     # Prometheus + Alertmanager + Tempo + Grafana + Loki + Promtail
 make jupyter-up        # JupyterHub (per-project workbenches) on :18888
 make control-plane-up  # retrain API on :18002 (needs CONTROL_PLANE_TOKEN)
-make full-up           # stack + monitoring + SeanerBUS bridge (needs the seanerbus repo + network)
+make full-up           # stack + monitoring + Dataplane bus bridge (needs the dataplane-bus repo + network)
 ```
 
 Service URLs (local): dashboard :18099 · MLflow :15000 · Prefect :14200 · Ray :18001/:18265 ·

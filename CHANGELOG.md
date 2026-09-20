@@ -7,7 +7,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ### Added — per-inference telemetry can cross the serving/control-plane boundary as an event, not a database write (ADR 0123 decision 4)
 
-The SeanerBUS bridge always wrote drift and input-embedding snapshots straight to `platform.db`.
+The Dataplane bus bridge always wrote drift and input-embedding snapshots straight to `platform.db`.
 `EXAMLOPS_TELEMETRY_VIA_EVENTBUS=1` now routes them through the NATS event backbone instead
 (`serving.inference_telemetry`), so the bridge no longer needs database connectivity under that
 mode — the actual point of the control-plane/serving-plane separation this ADR names.
@@ -578,7 +578,7 @@ firing nothing, and an Alertmanager inhibit rule that was inert for the whole se
 
 ### Added — the "X is down" alerts and the Watchdog proved to fire, ratchet 19 → 12
 
-- `ControlPlaneDown`, `ServingGatewayDown`, `SeanerBUSBridgeDown`, `LokiDown`, `TempoDown` and
+- `ControlPlaneDown`, `ServingGatewayDown`, `DataplaneBusBridgeDown`, `LokiDown`, `TempoDown` and
   `AlertmanagerDown` each now have a case that takes their target from up to down.
 - **The Watchdog's case feeds no input series at all.** It is the dead-man's switch the external
   heartbeat monitor watches, and it is only a switch if nothing inside the platform can quiet it.
@@ -939,15 +939,15 @@ firing nothing, and an Alertmanager inhibit rule that was inert for the whole se
 
 ### Added — the bridge alerts proved to fire, and the denominator fix pinned by replay
 
-- The unproven-alert ratchet goes **41 → 38**: `SeanerBUSHighErrorRate`,
-  `SeanerBUSTelemetryDropping` and `SeanerBUSTelemetryWritesFailing`.
+- The unproven-alert ratchet goes **41 → 38**: `DataplaneBusHighErrorRate`,
+  `DataplaneBusTelemetryDropping` and `DataplaneBusTelemetryWritesFailing`.
 - The error-rate cases assert the **figure**, not just the firing: 10 % of calls failing must read
   `10%`, and every call failing must read `100%`. Simulating the previous success-only denominator
   makes both fail — the first renders `11.11%` and the outage case cannot be expressed at all. The
   replay now guards yesterday's emitter fix.
 - The telemetry cases pin why `increase(...) > 0` can catch the *first* dropped record here:
   both counters are unlabelled, so `prometheus_client` creates them at zero on import. Checked
-  against the bridge's real registry rather than assumed — the labelled `seanerbus_inferences_total`
+  against the bridge's real registry rather than assumed — the labelled `dataplane_bus_inferences_total`
   has no series until its first inference, which is the distinction that matters.
 
 ### Verified — the emitter fix reached more consumers than the previous entry claimed
@@ -961,14 +961,14 @@ firing nothing, and an Alertmanager inhibit rule that was inert for the whole se
 
 ### Fixed — the bridge's error rate was errors ÷ successes, so 90 % failures read as 900 %
 
-- `seanerbus_inferences_total` is documented — in its own help text, and by the bridge's internal
+- `dataplane_bus_inferences_total` is documented — in its own help text, and by the bridge's internal
   `_bridge_stats["inferences_total"]`, which counts every branch — as *every dispatched call*. The
   Prometheus counter was incremented **after `raise_for_status()`**, so it counted only successes,
-  while `seanerbus_inference_errors_total` counted the failures.
+  while `dataplane_bus_inference_errors_total` counted the failures.
 - Everything dividing one by the other therefore computed errors ÷ successes and called it an error
   rate: **11 % at a true 10 %, 900 % at 90 %, and `+Inf` during a total outage** — on three panels
   declaring a `percent` unit, at the moment an operator is most likely to be looking.
-  `SeanerBUSHighErrorRate` kept firing (its `clamp_min` denominator saved it from the division), so
+  `DataplaneBusHighErrorRate` kept firing (its `clamp_min` denominator saved it from the division), so
   nothing was missed; the number was simply wrong.
 - The counter now increments beside each `inferences_total`, which is the one place that decides
   what a dispatched call is — so the metric, its name, its help and the internal tally agree, and
@@ -1682,7 +1682,7 @@ firing nothing, and an Alertmanager inhibit rule that was inert for the whole se
 
 ### Fixed — a lost audit event told the bus a successful retrain had failed
 
-- The SeanerBUS bridge's `retrain_triggered` write sat inside the same `try` as the control-plane
+- The Dataplane bus bridge's `retrain_triggered` write sat inside the same `try` as the control-plane
   POST, whose handler answers the bus with `error_msg`. An unreachable audit datastore therefore
   reported a retrain the control plane had **accepted** as a failure — and a caller that retries on
   error fires a **second retrain of the same model on the cluster**. A lost record became duplicate
@@ -2309,18 +2309,17 @@ firing nothing, and an Alertmanager inhibit rule that was inert for the whole se
 - `docs/guides/backup-restore.md` said the restore path "is exercised in CI so it can never rot";
   that claim now says which engine it was true of, and links the drill that makes it true of both.
 
-### Removed — the UNIBO and SEANERGYS logos and the SeanerBUS page from the dashboard
+### Removed — the partner logos and the Dataplane bus page from the dashboard
 
-- The sidebar and the sign-in screen no longer show the University of Bologna and SEANERGYS
-  logos or the "SEANERGYS · EuroHPC-JU" caption. The two image files are deleted.
-- The SeanerBUS console is gone. That covers its nav entry, the `/platform/integrations` route
-  and the `/seanerbus` redirect, the SeanerBUS section of the Config page, the two SeanerBUS nodes
-  in the Overview architecture diagram, and the dashboard's `/api/seanerbus/*` router.
-- `/api/health` no longer reports `seanerbus` or `seanerbus_sim`, so `unmeasured` is now
-  `["slurm"]`. The dashboard no longer reads `SEANERBUS_BRIDGE_STATUS_URL` or
-  `PUBLIC_SEANERBUS_BRIDGE_URL`.
-- Not removed: the bridge and client in `platform/clients/`, `exa seanerbus`, the
-  `seanerbus-bridge` compose service and its Grafana dashboard, and the `seanerbus_*` keys that
+- The sidebar and the sign-in screen no longer show the partner logos or caption. The two image files are deleted.
+- The Dataplane bus console is gone. That covers its nav entry, the `/platform/integrations` route
+  and the `/dataplane-bus` redirect, the Dataplane bus section of the Config page, the two Dataplane bus nodes
+  in the Overview architecture diagram, and the dashboard's `/api/dataplane-bus/*` router.
+- `/api/health` no longer reports `dataplane-bus` or `dataplane_bus_sim`, so `unmeasured` is now
+  `["slurm"]`. The dashboard no longer reads `DATAPLANE_BUS_BRIDGE_STATUS_URL` or
+  `PUBLIC_DATAPLANE_BUS_BRIDGE_URL`.
+- Not removed: the bridge and client in `platform/clients/`, `exa dataplane-bus`, the
+  `dataplane-bus-bridge` compose service and its Grafana dashboard, and the `dataplane_bus_*` keys that
   `/api/config` accepts and exports.
 
 ### Documented — the control plane can stay unready after a first Helm install (charts v0.54.0, v0.55.0)
@@ -2362,7 +2361,7 @@ the running stack. Fixed, each with a test that fails on the old code:
 - **Canary and shadow configuration never reached serving.** Ray Serve now uses the shared platform
   store, model names match case-insensitively, the CLI and Skipper push to the right route, and a
   split applies to default-alias traffic without overriding a request pinned to another alias.
-- **A datastore problem failed bus inferences.** The SeanerBUS bridge now replies first and writes
+- **A datastore problem failed bus inferences.** The Dataplane bus bridge now replies first and writes
   drift / input telemetry in the background (bounded, counted, alerted). The per-request
   `inference_served` audit row is gone.
 - **The backup sidecar backed up a file the control plane no longer writes.** It now follows the
@@ -2426,7 +2425,7 @@ notebook environment and runtime settings, and fails on any dependency the zonin
 ### Security — each service holds only the control-plane action it performs (plan P3.2)
 
 Control-plane credentials had two scopes, `read` and `write`, and every service held `write`:
-the SeanerBUS bridge, which only requests drift retrains, could also approve a model into
+the Dataplane bus bridge, which only requests drift retrains, could also approve a model into
 training or reconfigure the ModelZoo integration. There are now narrow action scopes
 (`retrain`, `approve`, `changes`, `admin`), and `write` still implies them all, so existing
 credentials are unchanged. Every mutating route requires `write` or its one action scope.
@@ -3757,7 +3756,7 @@ these commands had no way to authenticate there.
 With the workload-identity overlay (`-f docker-compose.identity.yml`), every call to the model
 server now carries the caller's SPIFFE identity over mutual TLS 1.3, not only the gateway's.
 
-- **Egress sidecars.** The control plane, the dashboard, the agent and the SeanerBUS bridge each
+- **Egress sidecars.** The control plane, the dashboard, the agent and the Dataplane bus bridge each
   get a `serving-egress-<caller>` Envoy (`identity/serving-egress-envoy.yaml`) in their own network
   namespace, labelled with the caller's identity. The caller's `RAY_SERVE_URL` becomes
   `http://127.0.0.1:8001`. It keeps speaking plain HTTP to its own loopback, and the sidecar carries
@@ -3895,7 +3894,7 @@ nothing. It now sends twenty, and its failure message lists what the router saw.
 three pass.
 
 - `tests/unit/test_serving_budgets.py` +9 (every cause, including a read timeout, the budget's
-  burst and its sustained rate; mutation-checked). `tests/unit/test_seanerbus_bridge.py` +7 (which
+  burst and its sustained rate; mutation-checked). `tests/unit/test_dataplane_bus_bridge.py` +7 (which
   causes reach the drift tracker). `tests/unit/test_oip_v2.py` +4.
 
 ### Security — the serving gateway reaches the model server over mutual TLS (ADR 0125 phase 2)
@@ -4283,8 +4282,8 @@ threads at once. Before the fixes it failed on every run.
 ### Changed — opt-in services are found by DNS; the serving gateway is monitored
 
 - **No permanently firing alerts for services a site does not run.** `vllm` (GPU profile) and
-  `seanerbus_bridge` (profile `seanerbus`) were static scrape targets, so on a host without them
-  `TargetDown`, `VLLMEndpointDown` and `SeanerBUSBridgeDown` fired forever. Services behind a
+  `dataplane_bus_bridge` (profile `dataplane-bus`) were static scrape targets, so on a host without them
+  `TargetDown`, `VLLMEndpointDown` and `DataplaneBusBridgeDown` fired forever. Services behind a
   Compose profile are now found with `dns_sd_configs`, and a service that has never run has no
   target. One that stops after running stays a target reported down, so its alert still fires.
   `tests/integration/test_prometheus_optional_targets_live.py` (`EXAMLOPS_PROMETHEUS_LIVE=1`) shows
@@ -4918,7 +4917,7 @@ stub and nothing consumed anything. Now:
   source applies again), `exa config delete-context NAME` (destructive; clears the active pointer
   when it pointed there) and `exa config use --clear` (back to the base configuration without
   editing the TOML). `exa config show` now reports every field (it omitted `dashboard_token` and
-  `seanerbus_bridge_url`).
+  `dataplane_bus_bridge_url`).
 - **`exa env --validate` audits the file:** keys nothing reads (left by older versions or hand
   edits) and an `active_context` that no longer exists are reported as warnings.
 - **Dashboard → Config → "exa CLI configuration":** the `config.toml` every dashboard-run `exa`
@@ -7709,13 +7708,13 @@ followed by a deep fix pass. Highlights, by tier:
   any source default that names a container-side port on `localhost`, so a new service is covered
   the moment it is published. Two exemptions carry their reason and are re-checked each run.
 - **The bridge's address was documented as configurable and was not, in either `exa` command
-  that probes it.** `exa seanerbus status` resolved it with `getattr(cfg, "seanerbus_bridge_url",
+  that probes it.** `exa dataplane-bus status` resolved it with `getattr(cfg, "dataplane_bus_bridge_url",
   …)` against a `Config` that has never had that attribute, so the fallback was the only value it
   could produce, and `exa production verify` hard-coded `http://localhost:18003` twice. Neither
   could be pointed at a bridge on another host or at the bare-metal bridge in dev — a
-  production-readiness check reporting "SeanerBUS unreachable" with full confidence about an
-  address nobody chose. `seanerbus_bridge_url` is now a real config field
-  (`SEANERBUS_BRIDGE_STATUS_URL`, `[urls] seanerbus_bridge`, default the published host port
+  production-readiness check reporting "Dataplane bus unreachable" with full confidence about an
+  address nobody chose. `dataplane_bus_bridge_url` is now a real config field
+  (`DATAPLANE_BUS_BRIDGE_STATUS_URL`, `[urls] dataplane_bus_bridge`, default the published host port
   `18003`), read by both commands and visible in `exa env`.
 - **The dashboard's health endpoint published two verdicts nothing had measured.** `/api/health`
   answered `slurm: ok` whenever `EXAMLOPS_SLURM_MODE=mock` — a green tick for a scheduler that is
@@ -7723,7 +7722,7 @@ followed by a deep fix pass. Highlights, by tier:
   case where a scheduler *does* exist and the dashboard simply cannot reach it from the container.
   That second branch pinned the top-level `status` at `degraded` for the entire life of any
   real-scheduler deployment, which is how an operator learns to stop reading a health page.
-  `seanerbus_sim` had the mirror-image defect: it copied the bridge's HTTP reachability, but the
+  `dataplane_bus_sim` had the mirror-image defect: it copied the bridge's HTTP reachability, but the
   bridge's `/health` is a constant `{"status": "ok", …}` that reports nothing about the Cap'n Proto
   bus, so the entry claimed the simulator was up on the strength of a probe that could not tell.
   Both now report `status: "unknown"` with a `note` saying why, are listed in a new top-level
@@ -7788,9 +7787,9 @@ followed by a deep fix pass. Highlights, by tier:
 - **The same guard on the dashboard's backend suite, and two tests it caught immediately.** The
   port list is derived from `settings`, so a backing service added there is covered without editing
   the guard (`database_url` excluded — the Postgres run connects for real). It found the defect in
-  both directions: `test_seanerbus_status_unreachable_when_bridge_down` asserted the bridge probe
+  both directions: `test_dataplane_bus_status_unreachable_when_bridge_down` asserted the bridge probe
   *fails* while doing nothing to make it fail — green on a laptop with nothing on `:8003`, red on
-  any machine running `make seanerbus-up` and on the lxp node, where the bridge is a bare-metal
+  any machine running `make dataplane-bus-up` and on the lxp node, where the bridge is a bare-metal
   process — and `test_response_carries_security_headers`, a claim about middleware, fanned out to
   nine live services and left the result in the health router's 30-second process-global cache.
   Both preconditions are now established rather than assumed. The suite went from 137 s to 44 s.
@@ -7874,7 +7873,7 @@ followed by a deep fix pass. Highlights, by tier:
   `EXAMLOPS_FAIRNESS_GATE_ENABLED`, `EXAMLOPS_SYNTHETIC_ONLY_GATE`, plus
   `EXAMLOPS_KSERVE_LIVE_APPLY`), the grid-intensity carbon signal, the policy engine and bundle
   directory, the LLM launcher, the OTel sampler and its 5% bound, the Prefect circuit breaker, the
-  MLflow HTTP retries, the SeanerBUS publish switch and legacy topic UUIDs, and the paths and
+  MLflow HTTP retries, the Dataplane bus publish switch and legacy topic UUIDs, and the paths and
   identity knobs. `UNDOCUMENTED` is empty, so the guard is no longer a ratchet over a backlog but a
   hard rule: a new variable is documented in the change that introduces it.
 
@@ -8321,7 +8320,7 @@ followed by a deep fix pass. Highlights, by tier:
   already do this (or fail loudly rather than silently).
 
 - **Three Grafana panels had queried metrics that nothing emitted since the day they shipped.**
-  The input-embedding drift panels (`examlops_drift.json`) read `seanerbus_embedding_norm_mean`,
+  The input-embedding drift panels (`examlops_drift.json`) read `dataplane_bus_embedding_norm_mean`,
   `…_mean_value`, `…_std_value` and their three baselines — six names no `Counter`, `Gauge` or
   `Histogram` anywhere in the tree declared. Grafana renders "No data" for a metric that does not
   exist exactly as it does for a quiet system, so a feature that shipped in phase 21 had a
@@ -8332,7 +8331,7 @@ followed by a deep fix pass. Highlights, by tier:
   floor that reads as a measurement).
 - **Ten dashboard legends interpolated a label their series does not carry.** The bridge labels
   its metrics `model`; the control plane uses `model_id`; the dashboards had mixed the two, so on
-  the overview and SeanerBUS boards every per-model line rendered without a name — the panel
+  the overview and Dataplane bus boards every per-model line rendered without a name — the panel
   still draws, it just stops being per-model, which is why nobody noticed.
   `tests/unit/test_grafana_panels_can_show_data.py` now holds every provisioned panel to the
   metrics and labels the code actually declares.
@@ -8375,10 +8374,10 @@ followed by a deep fix pass. Highlights, by tier:
   match a series. `LokiDown` selects `up{job="loki"}` and **no scrape config named `loki`** — an
   absent job makes that selector *empty*, not zero, so neither `LokiDown` nor the catch-all
   `TargetDown` could fire for Loki: the platform's log store could stop and no alarm existed.
-  Prometheus now scrapes `loki:3100`. `SeanerBUSBridgeDown` tested `seanerbus_bridge_up == 0`, a
+  Prometheus now scrapes `loki:3100`. `DataplaneBusBridgeDown` tested `dataplane_bus_bridge_up == 0`, a
   gauge the bridge sets to 1 while it runs and never sets to 0 — it cannot, being dead — so the
   series went stale rather than to zero at exactly the moment the alert was for; it now uses
-  `up{job="seanerbus_bridge"}`. (That one had a fallback: the generic `TargetDown` still fired,
+  `up{job="dataplane_bus_bridge"}`. (That one had a fallback: the generic `TargetDown` still fired,
   three minutes later and without the `service` label.) Separately, the monitoring guide told
   readers Prometheus scraped *three* services and listed three, when the config had seven — the
   table a reader consults before choosing a `job` label. `tests/unit/test_alert_rules_can_fire.py`
@@ -8542,7 +8541,7 @@ followed by a deep fix pass. Highlights, by tier:
   behind it.** A retrain is the platform's most consequential action — it can end in a
   production promotion — and ten call sites can start one. Audited each: `exa retrain`,
   `exa hpo`, `exa drift trigger`, `exa autopilot` and the MCP `trigger_retrain` tool all
-  record a `retrain_triggered` event; the SeanerBUS bridge's **drift trigger** (fired from
+  record a `retrain_triggered` event; the Dataplane bus bridge's **drift trigger** (fired from
   live inference error rates) and **bus retrain request**, and the **Skipper agent's**
   `trigger_retrain`, recorded nothing. Whether the platform's most consequential action left
   a trace depended on which door it came through — and the three silent ones are exactly the
@@ -8618,7 +8617,7 @@ followed by a deep fix pass. Highlights, by tier:
   the correct template state); the Azure endpoint carries `<your-resource>`; the Ollama
   section documents the two shapes — a local daemon on 11434, a forwarded port for a remote
   GPU host — instead of one machine's name and its model inventory; the Docker bridge gateway
-  is the command that prints it rather than one run's address; and the SeanerBUS pointer now
+  is the command that prints it rather than one run's address; and the Dataplane bus pointer now
   goes to a published guide instead of a private runbook. No hostname, IP or project id
   remains. The nested `platform/infra/docker-compose/.env.example` stays private and is still
   refused by `git add`.
@@ -9210,7 +9209,7 @@ followed by a deep fix pass. Highlights, by tier:
 
 - **The auto-rollback destroyed exactly what the deploy was fixed to preserve.** `deploy:lxp`
   deliberately does not pass `--remove-orphans` — on this compose file it deletes every profile
-  service (six monitoring containers, JupyterHub, vllm, the SeanerBUS bridge), which is what commit
+  service (six monitoring containers, JupyterHub, vllm, the Dataplane bus bridge), which is what commit
   a9035877 "persist on-demand services across deploys" was written to stop, and the deploy carries
   a NOTE saying so. The rollback in `smoke:lxp`, forty lines further down, kept its copy of the
   flag. So recovering from a bad deploy would have restored the previous code while silently
@@ -9713,7 +9712,7 @@ followed by a deep fix pass. Highlights, by tier:
   shipped code — `usecases/` is a product tier in its own right (ADR 0094) — yet neither
   was inside any lint scope, so nothing stopped them rotting. Widening the scope surfaced
   8 real errors, all now fixed: `UP035` (deprecated `typing` imports) in
-  `platform/clients/seanerbus_client.py`, and 7 × `E402` in the use-case pack's model
+  `platform/clients/dataplane_bus_client.py`, and 7 × `E402` in the use-case pack's model
   configs. The `E402`s are *intentional* — the packs bootstrap `sys.path` for the
   `EXAMLOPS_MODELZOO_DIR` checkout before importing it, exactly as `pipelines/` does — so
   they are recorded as a narrow `usecases/**/model_configs/*.py` per-file-ignore with the
@@ -9835,7 +9834,7 @@ followed by a deep fix pass. Highlights, by tier:
 - **feat(pipelines): dedicated dataset object store, separable from the MLflow artifact store.** The
   `minio` dataset backend now honours `EXAMLOPS_DATA_S3_ENDPOINT` / `EXAMLOPS_DATA_S3_ACCESS_KEY` /
   `EXAMLOPS_DATA_S3_SECRET_KEY` (+ existing `EXAMLOPS_DATA_BUCKET`), so large-scale training datasets
-  (e.g. the SEANERGYS Day-0 store on JSC S3) can live on a **different** S3/MinIO instance than the
+  (e.g. a Day-0 store on S3) can live on a **different** S3/MinIO instance than the
   platform MinIO holding MLflow artifacts/models. Unset ⇒ legacy shared-instance resolution,
   byte-identical (`MLFLOW_S3_ENDPOINT_URL` + `AWS_*`). Modelzoo untouched — routing happens at the
   `pipeline_generator` call site. Verified live against a stand-in bucket on the deployed MinIO with
@@ -10042,11 +10041,11 @@ followed by a deep fix pass. Highlights, by tier:
 
 ### Fixed
 
-- **ci(deploy): on-demand services (JupyterHub · SeanerBUS bridge · monitoring) now persist across
+- **ci(deploy): on-demand services (JupyterHub · Dataplane bus bridge · monitoring) now persist across
   deploys.** The `deploy:lxp` job ran `docker compose up --remove-orphans` with no profiles active, so
-  it deleted the profile-gated services every deploy — breaking the Jupyter/workbench, SeanerBUS, and
+  it deleted the profile-gated services every deploy — breaking the Jupyter/workbench, Dataplane bus, and
   Grafana-embed tabs. Dropped `--remove-orphans` from the core up and added non-fatal startup of the
-  JupyterLab image + JupyterHub + the SeanerBUS bridge, so project workbenches (Jupyter file editing)
+  JupyterLab image + JupyterHub + the Dataplane bus bridge, so project workbenches (Jupyter file editing)
   keep working after each deploy.
 - **fix(dashboard): the Audit page no longer 500s when an audit row has non-JSON `details`.**
   `/api/platform-audit` decoded each row's `details` with `json.loads` in a list comprehension that
@@ -10098,7 +10097,7 @@ followed by a deep fix pass. Highlights, by tier:
   | `/pipelines` | `/build/pipelines` | `/projects` | `/platform/projects` |
   | `/llmops` | `/serve/llmops` | `/services` | `/platform/services` |
   | `/nextgen`, `/next-gen` | `/serve/nextgen` | `/config` | `/platform/config` |
-  | `/drift` | `/operate/drift` | `/seanerbus` | `/platform/integrations` |
+  | `/drift` | `/operate/drift` | `/dataplane-bus` | `/platform/integrations` |
   | `/alerts` | `/operate/alerts` | `/jupyter` | `/platform/jupyter` |
   | `/facility` | `/operate/facility` | `/flags` | `/platform/flags` |
   | `/finops` | `/operate/finops` | `/`, `/documents`, `/preferences`, `/noc` | unchanged |
@@ -10350,7 +10349,7 @@ followed by a deep fix pass. Highlights, by tier:
   - **Model Registry showed 0 models while Ray Serve had live deployments:** the control plane
     (`services/control_plane/model_meta.py`, `app.py`) still read the removed `pipelines/models/`
     path after ADR 0094 moved model YAML into the use-case pack. Both now resolve the active pack
-    via a shared `resolve_models_dir()` (`EXAMLOPS_USECASE_DIR` → `usecases/seanergy` `pack.toml`
+    via a shared `resolve_models_dir()` (`EXAMLOPS_USECASE_DIR` → `usecases/reference` `pack.toml`
     `models_dir` → legacy fallback), without importing the torch-heavy pipeline engine. Registry now
     returns `JPCP`/`MACK`/`MCBound`.
   - Tests: `dashboard/backend/tests/test_platform_audit.py` (4 new), `frontend` grafana guards
@@ -10489,9 +10488,9 @@ followed by a deep fix pass. Highlights, by tier:
   from the `examlops.usecase_packs` entry-point group — a new precedence rung between
   `EXAMLOPS_USECASE_DIR` and the bundled default — so a pip-installed pack is found with no env
   var and no code change, while the platform still names no concrete use-case (fail-open on a
-  broken pack). The SEANERGYS pack is graduated to an installable `exa-pack-seanergy`
-  (`usecases/seanergy/pyproject.toml` + `exa_pack_seanergy.pack_root` shim; `pip install -e
-  usecases/seanergy`). Loader discovery fully unit-tested (6). Non-editable wheel data-packaging
+  broken pack). The reference pack is graduated to an installable `exa-pack-reference`
+  (`usecases/reference/pyproject.toml` + `exa_pack_reference.pack_root` shim; `pip install -e
+  usecases/reference`). Loader discovery fully unit-tested (6). Non-editable wheel data-packaging
   is a build-host follow-up.
 
 ## [0.40.0] - 2026-07-29
@@ -10605,7 +10604,7 @@ followed by a deep fix pass. Highlights, by tier:
   read tools (and intermittently reddening the surface-contract gate). Now degrades gracefully.
 - **fix(ci): `sanity:check-structure` unblocked.** The GitLab structure gate still asserted
   `test -d pipelines/models`, a directory retired by the ADR 0094 platform/use-case split (models
-  moved to `usecases/seanergy/models/`), so **every** pipeline failed at the sanity stage — tests and
+  moved to `usecases/reference/models/`), so **every** pipeline failed at the sanity stage — tests and
   deploy never ran. The check now verifies the use-case pack's model dir.
 
 ### Added (pre-existing, this cycle)
@@ -10984,10 +10983,10 @@ followed by a deep fix pass. Highlights, by tier:
   audit log (hash chain) and FinOps cost history. Exposed as `exa data retention-prune --days N [--dry-run]
   [--vacuum]` (audited). `tests/unit/test_purge_telemetry.py` (4 cases).
 - **perf(bridge): offload per-inference SQLite writes off the event loop (item 0.11 / QW10).** The
-  SeanerBUS bridge made three synchronous `platform.db` writes (drift snapshot, input-embedding snapshot,
+  Dataplane bus bridge made three synchronous `platform.db` writes (drift snapshot, input-embedding snapshot,
   audit event) directly on the asyncio loop for every inference, head-of-line-blocking the hot path while
   they took the write lock. They're now bundled into `_persist_inference_telemetry` and run in a single
-  `asyncio.to_thread` hop. `tests/unit/test_seanerbus_bridge.py` (+2 cases).
+  `asyncio.to_thread` hop. `tests/unit/test_dataplane_bus_bridge.py` (+2 cases).
 - **perf(db): index `hpc_nodes(cluster, state)` (Phase 0 bonus win).** Fleet capacity/availability
   queries filter node snapshots by cluster and state; `ix_hpc_nodes_cluster_state` avoids a full scan at
   fleet scale. Covered by `tests/unit/test_schema_once.py`.
@@ -12070,7 +12069,7 @@ lives in additive `platform_db` tables.
   panel, theme-synced, base URL sourced from the health probe's Grafana service URL).
 - **F1/F3 shared-primitive adoption across dashboard pages (complete).** All pages with async
   loading/empty states — Approvals, Drift, Pipelines, Audit, Services, Datasets, Overview, Models,
-  ModelDetail, SeanerBus, and Docs — now use the designed `<Skeleton>` loading convention and
+  ModelDetail, DataplaneBus, and Docs — now use the designed `<Skeleton>` loading convention and
   `<EmptyState>` (accessible, CTA-ready) in place of ad-hoc `Loading…` text and bespoke
   empty/`animate-pulse` blocks — consistent, colourblind-safe, WCAG-2.2-AA states (ADR 0050/0051).
   (Jupyter and Config have no such states.)
@@ -12276,7 +12275,7 @@ lives in additive `platform_db` tables.
 
 ### Fixed
 
-- **Test isolation** — the SeanerBUS bridge / drift / metrics unit suites now pass
+- **Test isolation** — the Dataplane bus bridge / drift / metrics unit suites now pass
   standalone (`pytest <file>`), not only in full-suite order: a `tests/unit/conftest.py`
   pre-imports the real `prometheus_client` so the bridge tests' stub guard skips it,
   and the bridge test's `httpx` stub gained `Timeout`/`RequestError`/`ConnectError`
@@ -12301,7 +12300,7 @@ lives in additive `platform_db` tables.
 - **Fault-injection test suites** — `tests/unit/test_ray_serve_faults.py` (503-vs-404,
   health/ready split, predict timeout), `tests/unit/test_slurm_faults.py` (bounded
   wait, transient UNKNOWN, CLI timeout), and drift-regression tests in
-  `tests/unit/test_seanerbus_bridge.py` (transport errors must not feed drift).
+  `tests/unit/test_dataplane_bus_bridge.py` (transport errors must not feed drift).
 
 ### Changed
 
@@ -12318,7 +12317,7 @@ lives in additive `platform_db` tables.
   - **Inference pipeline** (`serving/inference_pipeline/app.py`): router retries
     transient transport errors; traffic rules are now **durable** (persisted to
     `platform_db`, shared across replicas); added `/health`; 422 on bad rule values.
-  - **SeanerBUS bridge**: **transport/infrastructure errors no longer feed the drift
+  - **Dataplane bus bridge**: **transport/infrastructure errors no longer feed the drift
     tracker** — fixes an outage masquerading as model drift and firing spurious
     retrains; fire-and-forget trigger tasks are strong-referenced; shared timeouts.
   - **Skipper agent**: SQLite checkpointer hardened (WAL + busy_timeout + absolute
@@ -12352,11 +12351,11 @@ lives in additive `platform_db` tables.
 
 ### Added
 
-- **`host.docker.internal` mapping for the SeanerBUS bridge** — added `extra_hosts: ["host.docker.internal:host-gateway"]` to the bridge service in `docker-compose.yml` so `SEANERBUS_HOST=host.docker.internal` reaches a SeanerBUS running bare-metal on the host (Linux Docker needs the explicit host-gateway alias). Documented in `docs/guides/seanerbus-sim.md`.
+- **`host.docker.internal` mapping for the Dataplane bus bridge** — added `extra_hosts: ["host.docker.internal:host-gateway"]` to the bridge service in `docker-compose.yml` so `DATAPLANE_BUS_HOST=host.docker.internal` reaches a Dataplane bus running bare-metal on the host (Linux Docker needs the explicit host-gateway alias). Documented in `docs/guides/dataplane-bus-sim.md`.
 
 ### Changed
 
-- **SeanerBUS bridge host-configuration docs** — expanded the root and compose-dir `.env.example`, plus `docs/guides/seanerbus-sim.md`, with the bridge→SeanerBUS connection modes (container name / `host.docker.internal` / Docker bridge gateway IP), the "`localhost` ≠ host inside a container" gotcha, the bare-metal `0.0.0.0:5398` bind requirement, and the root-`.env` interpolation precedence (the `environment:` block overrides `env_file:`).
+- **Dataplane bus bridge host-configuration docs** — expanded the root and compose-dir `.env.example`, plus `docs/guides/dataplane-bus-sim.md`, with the bridge→Dataplane bus connection modes (container name / `host.docker.internal` / Docker bridge gateway IP), the "`localhost` ≠ host inside a container" gotcha, the bare-metal `0.0.0.0:5398` bind requirement, and the root-`.env` interpolation precedence (the `environment:` block overrides `env_file:`).
 
 ## [0.24.0] — 2026-06-24
 
@@ -12391,14 +12390,14 @@ lives in additive `platform_db` tables.
 
 ### Removed
 
-- **`DemoAnomaly` demo model (prototype — never released)** — a self-contained dummy anomaly detector (model, `SyntheticAnomalyDataset`, per-model config/YAML, and a SeanerBUS request generator) was prototyped during this cycle and then removed before the v0.24.0 tag, so it ships in no release. The active model registry is `JPCP / MACK / MCBound`. The runbook at `docs/tutorials/demoanomaly-e2e-demo.md` is intentionally kept as a step-by-step reference for wiring a model end-to-end.
+- **`DemoAnomaly` demo model (prototype — never released)** — a self-contained dummy anomaly detector (model, `SyntheticAnomalyDataset`, per-model config/YAML, and a Dataplane bus request generator) was prototyped during this cycle and then removed before the v0.24.0 tag, so it ships in no release. The active model registry is `JPCP / MACK / MCBound`. The runbook at `docs/tutorials/demoanomaly-e2e-demo.md` is intentionally kept as a step-by-step reference for wiring a model end-to-end.
 
 ## [0.23.1] — 2026-06-12
 
 ### Fixed
 
 - **MLflow 3.x compatibility** — migrated all REST calls from deprecated `/ajax-api/2.0/mlflow/` to `/api/2.0/mlflow/` across CLI, dashboard backend, control plane, and agent tools; `registered-models/list` → `registered-models/search`.
-- **Dashboard TypeScript build** — removed unused `GitBranch` import and added missing type fields (`hyperparameters`, `lifecycle_gates`, `retraining`, `seanerbus_uuid`) to `ModelDetailResponse` interface.
+- **Dashboard TypeScript build** — removed unused `GitBranch` import and added missing type fields (`hyperparameters`, `lifecycle_gates`, `retraining`, `dataplane_bus_uuid`) to `ModelDetailResponse` interface.
 - **`exa status` dashboard unreachable** — health probe cache used per-Host-header keys so Docker healthcheck (`localhost`) never warmed the cache for the control plane (`dashboard:8099`); switched to a global cache key with per-response URL rewriting. Increased control-plane dashboard probe timeout from 5 s to 12 s.
 - **`exa doctor` warnings** — created missing config file at `~/.config/examlops/config.toml` on LXP; added `CONTROL_PLANE_TOKEN` to the LXP `.env`.
 
@@ -12415,7 +12414,7 @@ lives in additive `platform_db` tables.
 - **CI/CD: failure notifications** — `platform/ci/notify_failure.py` sends a Slack-compatible webhook payload when any CI job fails (requires `NOTIFICATION_WEBHOOK_URL` masked CI variable).
 - **`exa pipeline add-model <Name>`** — register an existing ModelZoo class into the training/serving pipeline without re-scaffolding; verifies model class exists in modelzoo, generates YAML + config shim only.
 - **`tools/scaffold_model.py --skip-model-class`** — pipeline-only scaffold (YAML + config shim); used by `exa pipeline add-model`.
-- **Control plane `/models/{name}/meta`** — response now includes `seanerbus_uuid`, `hyperparameters`, `prefect` config, and `enabled` flag from model YAML.
+- **Control plane `/models/{name}/meta`** — response now includes `dataplane_bus_uuid`, `hyperparameters`, `prefect` config, and `enabled` flag from model YAML.
 - **Dashboard `ModelDetail`** — lifecycle gates section (color-coded Staging/Canary/Production cards with metric/threshold/direction); retraining schedule section (cron, deployment name, work pool, concurrency); hyperparameters in Technical section.
 - **`make smoke-check`** — run `smoke_check.sh` against the local stack.
 - **`make selfheal`** — run `self_heal.sh` once against the local stack.
@@ -12472,7 +12471,7 @@ lives in additive `platform_db` tables.
 ### Added
 
 - Monitoring: comprehensive Grafana dashboard overhaul — 7 dashboards (overview, online metrics,
-  control plane, drift, approvals, SeanerBUS, logs); SLO error-budget panels; per-model latency
+  control plane, drift, approvals, Dataplane bus, logs); SLO error-budget panels; per-model latency
   tables; drift input embedding panels; approval funnel and SLA risk gauges.
 - Alertmanager: 25 alert rules across 4 groups with `promtool` CI validation (`make alerts-check`).
 - Control plane round 2 (app v0.13.0): JSON structured logging (`LOG_FORMAT`), Prefect circuit

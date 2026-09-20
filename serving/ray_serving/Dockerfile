@@ -22,7 +22,7 @@ COPY pipelines /app/pipelines
 RUN uv pip install --no-cache-dir -e /app/pipelines --system
 
 # Use-case pack — per-model YAML the serving layer reads (ADR 0094). Resolved via
-# RAY_MODELS_DIR / EXAMLOPS_USECASE_DIR (default usecases/seanergy/models, relative to WORKDIR).
+# RAY_MODELS_DIR / EXAMLOPS_USECASE_DIR (default usecases/reference/models, relative to WORKDIR).
 COPY usecases /app/usecases
 
 # examlops provides the observability tracing helper (+ OTel SDK/exporter deps).

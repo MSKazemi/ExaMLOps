@@ -16,9 +16,9 @@ ROOT_DIR        := $(CURDIR)
 COMPOSE_DIR     := platform/infra/docker-compose
 RAY_SERVING_DIR := serving/ray_serving
 MODELZOO_DIR    := modelzoo
-# deploy-node layout: $(DEPLOY_PATH)-seanerbus/seanerbus
-# laptop layout:      ../../seanerbus  (two levels up from repo root)
-SEANERBUS_DIR   ?= $(or $(wildcard $(ROOT_DIR)/../examlops-seanerbus/seanerbus),$(ROOT_DIR)/../../seanerbus)
+# deploy-node layout: $(DEPLOY_PATH)-dataplane-bus/dataplane-bus
+# laptop layout:      ../../dataplane-bus  (two levels up from repo root)
+DATAPLANE_BUS_DIR   ?= $(or $(wildcard $(ROOT_DIR)/../examlops-dataplane-bus/dataplane-bus),$(ROOT_DIR)/../../dataplane-bus)
 PID_DIR         := .run
 
 # ── Remote deploy node ────────────────────────────────────────────────────────
@@ -78,8 +78,8 @@ endif
         stack-up stack-down stack-wipe stack-restart stack-logs stack-ps stack-shell \
         touch-env-dashboard \
         monitoring-up monitoring-down \
-        seanerbus-up seanerbus-down seanerbus-bridge-logs seanerbus-reqgen-logs \
-        seanerbus-install seanerbus-bridge-up seanerbus-test-req \
+        dataplane-bus-up dataplane-bus-down dataplane-bus-bridge-logs dataplane-bus-reqgen-logs \
+        dataplane-bus-install dataplane-bus-bridge-up dataplane-bus-test-req \
         dashboard-up dashboard-logs dashboard-check dashboard-check-backend ci-frontend ci-control-plane \
         jupyter-up jupyter-down jupyter-logs jupyter-add-user \
         control-plane-up control-plane-down control-plane-logs \
@@ -150,23 +150,23 @@ help: ## Show this help message
 ##@ Stack  (Docker Compose)
 # =============================================================================
 
-full-up: _guard-uv ## Start everything: stack + monitoring + SeanerBUS (reqgen + bridge)
-	@if ! docker network ls --format "{{.Name}}" | grep -q "^seanerbus-net$$"; then \
-	  printf "$(RED)ERROR: Docker network 'seanerbus-net' not found.$(RESET)\n"; \
-	  printf "$(DIM)Run once: docker network create seanerbus-net$(RESET)\n"; \
+full-up: _guard-uv ## Start everything: stack + monitoring + Dataplane bus (reqgen + bridge)
+	@if ! docker network ls --format "{{.Name}}" | grep -q "^dataplane-bus-net$$"; then \
+	  printf "$(RED)ERROR: Docker network 'dataplane-bus-net' not found.$(RESET)\n"; \
+	  printf "$(DIM)Run once: docker network create dataplane-bus-net$(RESET)\n"; \
 	  exit 1; \
 	fi
-	@if [ ! -d "$(SEANERBUS_DIR)" ]; then \
-	  printf "$(RED)ERROR: SeanerBUS repo not found at $(SEANERBUS_DIR)$(RESET)\n"; \
-	  printf "$(DIM)Clone it: git clone <seanerbus-repo> $(SEANERBUS_DIR)$(RESET)\n"; \
+	@if [ ! -d "$(DATAPLANE_BUS_DIR)" ]; then \
+	  printf "$(RED)ERROR: Dataplane bus repo not found at $(DATAPLANE_BUS_DIR)$(RESET)\n"; \
+	  printf "$(DIM)Clone it: git clone <dataplane-bus-repo> $(DATAPLANE_BUS_DIR)$(RESET)\n"; \
 	  exit 1; \
 	fi
-	@printf "$(BOLD)Starting ExaMLOps stack + monitoring + SeanerBUS...$(RESET)\n"
+	@printf "$(BOLD)Starting ExaMLOps stack + monitoring + Dataplane bus...$(RESET)\n"
 	@cd $(COMPOSE_DIR) && $(DC) up -d --build
 	@cd $(COMPOSE_DIR) && $(DC) --profile monitoring up -d prometheus grafana loki promtail alertmanager tempo
-	@printf "$(DIM)Starting SeanerBUS reqgen...$(RESET)\n"
-	@cd $(SEANERBUS_DIR) && docker compose up -d
-	@cd $(COMPOSE_DIR) && $(DC) --profile seanerbus up -d seanerbus-bridge
+	@printf "$(DIM)Starting Dataplane bus reqgen...$(RESET)\n"
+	@cd $(DATAPLANE_BUS_DIR) && docker compose up -d
+	@cd $(COMPOSE_DIR) && $(DC) --profile dataplane-bus up -d dataplane-bus-bridge
 	@printf "\n$(GREEN)All services are up:$(RESET)\n"
 	@printf "  %-30s %s\n" \
 	  "Dashboard"          "http://localhost:18099" \
@@ -181,8 +181,8 @@ full-up: _guard-uv ## Start everything: stack + monitoring + SeanerBUS (reqgen +
 	  "Grafana"            "http://localhost:13000  (admin / admin)" \
 	  "Loki"               "http://localhost:13100" \
 	  "Tempo"              "http://localhost:13200" \
-	  "SeanerBUS Bridge"   "http://localhost:18003  (/health · /stats · /metrics)"
-	@printf "\n$(DIM)Logs: make seanerbus-bridge-logs · make seanerbus-reqgen-logs$(RESET)\n\n"
+	  "Dataplane bus Bridge"   "http://localhost:18003  (/health · /stats · /metrics)"
+	@printf "\n$(DIM)Logs: make dataplane-bus-bridge-logs · make dataplane-bus-reqgen-logs$(RESET)\n\n"
 
 stack-up: _guard-uv ## Start core stack: Postgres · MLflow · Prefect · Ray · Control Plane · Agent · Dashboard
 	@printf "$(BOLD)Starting ExaMLOps core stack...$(RESET)\n"
@@ -197,14 +197,14 @@ stack-up: _guard-uv ## Start core stack: Postgres · MLflow · Prefect · Ray ·
 	@printf "  %-30s %s\n" "Skipper Agent" "http://localhost:18004  (/healthz)"
 	@printf "\n$(DIM)Tip: 'make monitoring-up' to also start Prometheus/Grafana/Loki · 'make full-up' for everything$(RESET)\n\n"
 
-stop-all: ## Stop ALL ExaMLOps containers (core + monitoring + SeanerBUS + Jupyter) — prevents auto-restart on reboot
+stop-all: ## Stop ALL ExaMLOps containers (core + monitoring + Dataplane bus + Jupyter) — prevents auto-restart on reboot
 	@printf "$(BOLD)Stopping all ExaMLOps containers...$(RESET)\n"
 	@cd $(COMPOSE_DIR) && $(DC) \
-	  --profile monitoring --profile seanerbus --profile jupyter \
+	  --profile monitoring --profile dataplane-bus --profile jupyter \
 	  down 2>/dev/null || true
-	@if [ -d "$(SEANERBUS_DIR)" ]; then \
-	  printf "$(DIM)Stopping SeanerBUS reqgen...$(RESET)\n"; \
-	  cd $(SEANERBUS_DIR) && docker compose down 2>/dev/null || true; \
+	@if [ -d "$(DATAPLANE_BUS_DIR)" ]; then \
+	  printf "$(DIM)Stopping Dataplane bus reqgen...$(RESET)\n"; \
+	  cd $(DATAPLANE_BUS_DIR) && docker compose down 2>/dev/null || true; \
 	fi
 	@printf "$(GREEN)All containers stopped and removed.$(RESET)\n"
 	@printf "$(DIM)Volumes preserved. Containers will NOT restart on reboot.$(RESET)\n"
@@ -212,7 +212,7 @@ stop-all: ## Stop ALL ExaMLOps containers (core + monitoring + SeanerBUS + Jupyt
 rebuild: ## Force-rebuild ALL images (--no-cache) + restart core + monitoring  ← use after Dockerfile/dep changes
 	@printf "$(BOLD)Stopping all running containers...$(RESET)\n"
 	@cd $(COMPOSE_DIR) && $(DC) \
-	  --profile monitoring --profile jupyter --profile seanerbus \
+	  --profile monitoring --profile jupyter --profile dataplane-bus \
 	  down --remove-orphans 2>/dev/null || true
 	@printf "$(BOLD)Rebuilding all images (no cache)...$(RESET)\n"
 	@cd $(COMPOSE_DIR) && $(DC) --profile monitoring build --no-cache
@@ -236,7 +236,7 @@ rebuild: ## Force-rebuild ALL images (--no-cache) + restart core + monitoring  �
 rebuild-all: ## Force-rebuild ALL images including JupyterHub + restart EVERYTHING (core + monitoring + jupyter)
 	@printf "$(BOLD)Stopping all running containers...$(RESET)\n"
 	@cd $(COMPOSE_DIR) && $(DC) \
-	  --profile monitoring --profile jupyter --profile seanerbus \
+	  --profile monitoring --profile jupyter --profile dataplane-bus \
 	  down --remove-orphans 2>/dev/null || true
 	@printf "$(BOLD)Rebuilding JupyterLab user image...$(RESET)\n"
 	@docker build --network=host -t examlops-jupyterlab \
@@ -270,7 +270,7 @@ remote-rebuild: ## Pull latest code + force-rebuild + restart all containers on 
 	  cd platform/infra/docker-compose; \
 	  echo '=== stopping all containers ==='; \
 	  docker compose --env-file $(DEPLOY_PATH)/.env \
-	    --profile monitoring --profile jupyter --profile seanerbus \
+	    --profile monitoring --profile jupyter --profile dataplane-bus \
 	    down --remove-orphans 2>/dev/null || true; \
 	  echo '=== rebuilding all images (no cache) ==='; \
 	  docker compose --env-file $(DEPLOY_PATH)/.env \
@@ -344,59 +344,59 @@ monitoring-up: ## Start Prometheus (9090) · Alertmanager (9093) · Tempo (3200)
 	@printf "\n"
 
 # =============================================================================
-##@ SeanerBUS Bridge  (Docker Compose container)
+##@ Dataplane bus Bridge  (Docker Compose container)
 # =============================================================================
-# Prerequisite: real SeanerBUS must be running on port 5398.
-#   cd ../seanerbus && docker compose up -d
+# Prerequisite: real Dataplane bus must be running on port 5398.
+#   cd ../dataplane-bus && docker compose up -d
 #
 # Default: bridge connects to host.docker.internal:5398 in reqres mode.
-# Override host:  SEANERBUS_HOST=<ip> make seanerbus-up
+# Override host:  DATAPLANE_BUS_HOST=<ip> make dataplane-bus-up
 
-seanerbus-up: ## Start ExaMLOps SeanerBUS bridge container (NOT the SeanerBUS system itself)
-	@printf "$(BOLD)Starting SeanerBUS bridge...$(RESET)\n"
-	@printf "$(DIM)Note: this starts the bridge inside ExaMLOps, not the SeanerBUS system.$(RESET)\n"
-	@printf "$(DIM)      To start SeanerBUS first: cd $(SEANERBUS_DIR)/.. && docker compose up -d$(RESET)\n"
-	@cd $(COMPOSE_DIR) && $(DC) --profile seanerbus up -d seanerbus-bridge
-	@printf "$(GREEN)SeanerBUS bridge is up:$(RESET)\n"
+dataplane-bus-up: ## Start ExaMLOps Dataplane bus bridge container (NOT the Dataplane bus system itself)
+	@printf "$(BOLD)Starting Dataplane bus bridge...$(RESET)\n"
+	@printf "$(DIM)Note: this starts the bridge inside ExaMLOps, not the Dataplane bus system.$(RESET)\n"
+	@printf "$(DIM)      To start Dataplane bus first: cd $(DATAPLANE_BUS_DIR)/.. && docker compose up -d$(RESET)\n"
+	@cd $(COMPOSE_DIR) && $(DC) --profile dataplane-bus up -d dataplane-bus-bridge
+	@printf "$(GREEN)Dataplane bus bridge is up:$(RESET)\n"
 	@printf "  %-30s %s\n" \
 	  "Bridge endpoint" "http://localhost:18003  (/health · /stats)" \
-	  "Logs" "make seanerbus-bridge-logs"
+	  "Logs" "make dataplane-bus-bridge-logs"
 	@printf "\n"
 
-seanerbus-down: ## Stop ExaMLOps SeanerBUS bridge container (does NOT stop the SeanerBUS system)
-	@cd $(COMPOSE_DIR) && $(DC) --profile seanerbus stop seanerbus-bridge
-	@cd $(COMPOSE_DIR) && $(DC) --profile seanerbus rm -f seanerbus-bridge
-	@printf "$(DIM)SeanerBUS bridge stopped. SeanerBUS system is unaffected.$(RESET)\n"
+dataplane-bus-down: ## Stop ExaMLOps Dataplane bus bridge container (does NOT stop the Dataplane bus system)
+	@cd $(COMPOSE_DIR) && $(DC) --profile dataplane-bus stop dataplane-bus-bridge
+	@cd $(COMPOSE_DIR) && $(DC) --profile dataplane-bus rm -f dataplane-bus-bridge
+	@printf "$(DIM)Dataplane bus bridge stopped. Dataplane bus system is unaffected.$(RESET)\n"
 
-seanerbus-bridge-logs: ## Tail SeanerBUS bridge logs
-	@cd $(COMPOSE_DIR) && $(DC) --profile seanerbus logs -f seanerbus-bridge
+dataplane-bus-bridge-logs: ## Tail Dataplane bus bridge logs
+	@cd $(COMPOSE_DIR) && $(DC) --profile dataplane-bus logs -f dataplane-bus-bridge
 
-seanerbus-reqgen-logs: ## Tail SeanerBUS request generator logs (inference_requests.log + seanerbus.log)
-	@tail -f $(SEANERBUS_DIR)/logs/inference_requests.log $(SEANERBUS_DIR)/logs/seanerbus.log
+dataplane-bus-reqgen-logs: ## Tail Dataplane bus request generator logs (inference_requests.log + dataplane-bus.log)
+	@tail -f $(DATAPLANE_BUS_DIR)/logs/inference_requests.log $(DATAPLANE_BUS_DIR)/logs/dataplane-bus.log
 
 
 # =============================================================================
-##@ SeanerBUS Integration  (Python CLI tools)
+##@ Dataplane bus Integration  (Python CLI tools)
 # =============================================================================
 
-SEANERBUS_SERVER ?= localhost
-SEANERBUS_PORT   ?= 5398
+DATAPLANE_BUS_SERVER ?= localhost
+DATAPLANE_BUS_PORT   ?= 5398
 
-seanerbus-install: install ## Install SeanerBUS Python bindings from the configured sibling checkout
-	@test -d "$(SEANERBUS_DIR)/bindings/python" || { \
-	  printf "$(RED)ERROR: SeanerBUS Python bindings not found under $(SEANERBUS_DIR).$(RESET)\n"; \
+dataplane-bus-install: install ## Install Dataplane bus Python bindings from the configured sibling checkout
+	@test -d "$(DATAPLANE_BUS_DIR)/bindings/python" || { \
+	  printf "$(RED)ERROR: Dataplane bus Python bindings not found under $(DATAPLANE_BUS_DIR).$(RESET)\n"; \
 	  exit 1; \
 	}
-	$(UV) pip install -e "$(SEANERBUS_DIR)/bindings/python"
+	$(UV) pip install -e "$(DATAPLANE_BUS_DIR)/bindings/python"
 
-seanerbus-bridge-up: ## Start seanerbus bridge bare-metal (reqres mode, real SeanerBUS)
-	SEANERBUS_HOST=$(SEANERBUS_SERVER) SEANERBUS_PORT=$(SEANERBUS_PORT) \
-	SEANERBUS_MODE=reqres \
-	SEANERBUS_VECTOR_UUID=$(SEANERBUS_VECTOR_UUID) \
-	.venv/bin/python platform/clients/seanerbus_bridge.py
+dataplane-bus-bridge-up: ## Start dataplane-bus bridge bare-metal (reqres mode, real Dataplane bus)
+	DATAPLANE_BUS_HOST=$(DATAPLANE_BUS_SERVER) DATAPLANE_BUS_PORT=$(DATAPLANE_BUS_PORT) \
+	DATAPLANE_BUS_MODE=reqres \
+	DATAPLANE_BUS_VECTOR_UUID=$(DATAPLANE_BUS_VECTOR_UUID) \
+	.venv/bin/python platform/clients/dataplane_bus_bridge.py
 
-seanerbus-test-req: ## Send one req/res inference request to JPCP (uses JPCP UUID from jpcp.yaml)
-	.venv/bin/python platform/clients/seanerbus_test_req.py
+dataplane-bus-test-req: ## Send one req/res inference request to JPCP (uses JPCP UUID from jpcp.yaml)
+	.venv/bin/python platform/clients/dataplane_bus_test_req.py
 
 monitoring-down: ## Stop Prometheus · Grafana · Loki · Promtail · Alertmanager · Tempo
 	@cd $(COMPOSE_DIR) && $(DC) --profile monitoring stop prometheus grafana loki promtail alertmanager tempo
@@ -1066,7 +1066,7 @@ preflight: install-dev ## Full local mirror of every BLOCKING GitLab CI job — 
 	@test -d platform/services/dashboard
 	@test -d platform/services/control_plane
 	@test -f platform/infra/docker-compose/docker-compose.yml
-	@test -d usecases/seanergy/models
+	@test -d usecases/reference/models
 	@printf "$(BOLD)3/16 sanity: secret scan$(RESET)\n"
 	@$(VENV)/bin/exa secrets scan platform/
 	@$(VENV)/bin/exa secrets scan pipelines/

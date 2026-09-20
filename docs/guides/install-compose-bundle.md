@@ -26,7 +26,7 @@ as a tarball asset, with the matching version already filled in.
 Every ExaMLOps image is pulled from `ghcr.io/mskazemi` at the bundle's version. Every upstream
 image is pinned by digest, so two installs of the same release run the same bytes.
 
-The bundle doesn't include JupyterHub, the SeanerBUS bridge or vLLM. They still run from the
+The bundle doesn't include JupyterHub, the Dataplane bus bridge or vLLM. They still run from the
 development stack (`platform/infra/docker-compose/docker-compose.yml`).
 
 ## Requirements
@@ -154,7 +154,7 @@ ExaMLOps doesn't ship with any models of its own. They come from a use-case pack
 every service reads the same one, from `./state/usecase`. With no pack, the platform starts empty.
 
 - To start from a pack shipped inside the images, set `EXAMLOPS_SEED_PACK` before the first
-  start, for example `EXAMLOPS_SEED_PACK=/app/usecases/seanergy`. `instance-init` copies it into
+  start, for example `EXAMLOPS_SEED_PACK=/app/usecases/reference`. `instance-init` copies it into
   `./state/usecase` once.
 - To use your own pack, copy it into `./state/usecase`, with its `pack.toml` at the top, and
   restart with `docker compose up -d`.

@@ -1,7 +1,7 @@
 """Value objects for the dataplane streaming surface (ADR 0130/0131, Plan 2).
 
 A stream binding connects a named project/model/alias combination to an inbound connector (Kafka,
-HTTP push, SeanerBUS req/res, ...) and carries the limits governing how its traffic is admitted and
+HTTP push, Dataplane bus req/res, ...) and carries the limits governing how its traffic is admitted and
 retried. ``StreamRequest``/``InferenceResult`` are the connector-agnostic request/response shapes
 that carry a request from ingress to the model router and back. All types are frozen dataclasses —
 pure value objects, no I/O, no heavy imports — so later tasks (ingress, catalog, supervisor, the

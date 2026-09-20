@@ -56,14 +56,14 @@ Four files (all under git, none gitignored):
 | File | Purpose |
 |---|---|
 | `modelzoo/seanergys_modelzoo/models/tasks/<task>/<name>/<name>_model.py` | `SeanergysSklearnModel` subclass — replace the placeholder estimator with your real algorithm |
-| `pipelines/models/<name_lower>.yaml` | Full model config — datasets, features, lifecycle thresholds, Prefect schedule, serving aliases, inference schema, **SeanerBUS UUID** |
+| `pipelines/models/<name_lower>.yaml` | Full model config — datasets, features, lifecycle thresholds, Prefect schedule, serving aliases, inference schema, **Dataplane bus UUID** |
 | `pipelines/model_configs/<name>_config.py` | Transforms-only Python shim — provides `MODEL_CLASS`, `SUPPORTED_DATASETS`, `resolve_embedding_type`, `get_transforms` (model-bound callables that cannot be expressed in YAML) |
 | `tests/unit/test_<name>.py` | Four checks: registered, config loads, inference contract, instantiation |
 
 A matching `__init__.py` is created next to the model file so Python treats the
 new directory as a package — required for the auto-discovery scan.
 
-> **SeanerBUS UUID:** The scaffold auto-generates a `seanerbus_uuid` field in the model YAML. The SeanerBUS bridge registers a dedicated req/res handler for this model at that UUID on startup. Share the UUID with HPC teams via `exa seanerbus list` or the dashboard `/seanerbus` page.
+> **Dataplane bus UUID:** The scaffold auto-generates a `dataplane_bus_uuid` field in the model YAML. The Dataplane bus bridge registers a dedicated req/res handler for this model at that UUID on startup. Share the UUID with HPC teams via `exa dataplane-bus list` or the dashboard `/dataplane-bus` page.
 
 ## Available options
 

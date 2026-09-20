@@ -1,7 +1,7 @@
 """Opt-in services are scraped when they run, and absent ones raise no alert (Docker + Prometheus).
 
 ``prometheus.yml`` finds the services behind Compose profiles (``gateway``, ``gateway-authz``,
-``vllm``, ``seanerbus-bridge``) by DNS instead of listing them as static targets: a static target
+``vllm``, ``dataplane-bus-bridge``) by DNS instead of listing them as static targets: a static target
 for a service the site does not run is an ``up == 0`` series forever, so ``TargetDown`` and the
 service's own alert fire permanently. Whether that works depends on Prometheus's DNS discovery
 against Docker's embedded resolver, which no unit test can show. This runs the Prometheus image
@@ -36,7 +36,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / "platform" / "infra" / "docker-compose"
-OPTIONAL_JOBS = ("gateway", "gateway_authz", "vllm", "seanerbus_bridge")
+OPTIONAL_JOBS = ("gateway", "gateway_authz", "vllm", "dataplane_bus_bridge")
 
 pytestmark = [
     pytest.mark.live,
@@ -135,7 +135,7 @@ def test_a_running_opt_in_service_is_found_and_scraped(stack):
 def test_an_absent_opt_in_service_has_no_up_series_to_alert_on(stack):
     _until(lambda: _query(stack["base"], 'up{job="gateway"} == 1'))
     time.sleep(6)  # several refresh and scrape rounds
-    for job in ("gateway_authz", "vllm", "seanerbus_bridge"):
+    for job in ("gateway_authz", "vllm", "dataplane_bus_bridge"):
         assert _query(stack["base"], f'up{{job="{job}"}}') == [], job
     assert _query(stack["base"], "up == 0") == []  # what TargetDown selects
 
