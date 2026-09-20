@@ -70,6 +70,7 @@ from examlops.cli.commands import (
     modules_cmd,
     namespace_cmd,
     pipeline,
+    plan_cmd,
     plugins_cmd,
     policy_cmd,
     predict,
@@ -160,6 +161,7 @@ _ROOT_PANELS: list[tuple[str, list[str]]] = [
             "auth",
             "approvals",
             "audit",
+            "plan",
             "secrets",
             "compliance",
             "governance",
@@ -480,6 +482,9 @@ app.command("predict", epilog=predict._EXAMPLES)(predict.predict)
 app.command("scaffold", epilog=scaffold._EXAMPLES)(scaffold.scaffold)
 app.command("status", epilog=status._EXAMPLES)(status.status)
 app.add_typer(audit_cmd.app, name="audit", help="Audit log — tamper-evident, hash-chained (D4)")
+app.add_typer(
+    plan_cmd.app, name="plan", help="Agent plans — proposed changes, blast radius, outcome"
+)
 app.command("doctor", epilog=doctor._EXAMPLES)(doctor.doctor)
 app.command("plugins", epilog=plugins_cmd._EXAMPLES)(plugins_cmd.plugins)
 app.command("docs", epilog=docs_cmd._EXAMPLES)(docs_cmd.docs)

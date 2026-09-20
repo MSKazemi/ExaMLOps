@@ -389,6 +389,33 @@ something downstream is broken:
  "audit_warning": "action succeeded but was not audited: audit chain unavailable"}
 ```
 
+### Plan and apply for agent principals (ADR 0147 decision 2)
+
+An agent that identifies itself (`EXAMLOPS_PRINCIPAL_KIND=agent`) never gets implicit consent.
+Calling a mutating tool directly returns `code: plan_required`; the path is two calls:
+
+1. `plan_change(tool="set_traffic_split", args={...})` changes nothing and returns a plan:
+   `plan_hash`, `intended_change`, `blast_radius` (scope, extent, reversibility, rollback),
+   `required_approvals`, `preconditions` (the current state the change depends on) and
+   `expires_at` (`EXAMLOPS_PLAN_TTL`, default 900 s). The write policy is evaluated at plan time;
+   a denied action is not planned.
+2. `apply_plan(plan_hash, approval_token?)` runs exactly that call, once. It is refused with a
+   `code` of `plan_expired`, `plan_not_applicable` (already applied, or another apply won the
+   race), `precondition_changed` (the world moved; plan again), `policy_denied`,
+   `approval_required` or `approval_invalid`. Nothing else is executed. A retry with the same
+   `idempotency_key` replays the original result.
+
+When policy says `require_approval`, the plan lists `human_approval` and a **human** (not an agent
+principal) mints a one-time token with the tier-C `approve_plan(plan_hash)` tool; only its hash is
+stored. Tier-C tools (`grant_access`) cannot be planned by an agent. Every step is written to the
+audit log (`plan_created`, `plan_approved`, `plan_applied`, `plan_apply_refused`). Operators read
+plans with `exa plan list` and `exa plan show <hash>`.
+
+Stated limits: an agent running with a human's environment is indistinguishable from that human;
+the CLI itself does not yet plan (an agent principal running a mutating `exa` command is still
+refused with `plan_required`); preconditions cover the state each tool reads, not the whole
+platform.
+
 ### Idempotency keys (ADR 0147 decision 4)
 
 Every mutating tool takes an optional `idempotency_key` (use a UUID). Retrying with the same key and

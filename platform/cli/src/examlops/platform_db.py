@@ -876,6 +876,24 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 created_at   REAL NOT NULL,
                 expires_at   REAL NOT NULL
             );
+            -- ADR 0147 decision 2 — plan/apply for agent principals (`examlops.plans`). One row per
+            -- plan_hash (sha256 of tool+args+preconditions); `state` is planned | applying |
+            -- applied | failed | expired | rejected. Epoch-second REAL timestamps, like
+            -- idempotency_keys, keep the expiry arithmetic dialect-neutral.
+            CREATE TABLE IF NOT EXISTS agent_plans (
+                plan_hash     TEXT PRIMARY KEY,
+                tool          TEXT NOT NULL,
+                plan_json     TEXT NOT NULL,
+                state         TEXT NOT NULL DEFAULT 'planned',
+                actor         TEXT,
+                created_at    REAL NOT NULL,
+                expires_at    REAL NOT NULL,
+                approval_hash TEXT,
+                approved_by   TEXT,
+                applied_at    REAL,
+                applied_by    TEXT,
+                result_json   TEXT
+            );
             -- Phase 1 item 1.5 — durable admission-control queue between every trigger
             -- (drift/autopilot/API/webhook) and Prefect. Per-tenant fair-share + a global
             -- concurrency cap stop one tenant (or a fleet-wide drift event) from starving the

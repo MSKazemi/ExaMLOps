@@ -1,7 +1,7 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 463,
- "total_groups": 69,
+ "total_commands": 465,
+ "total_groups": 70,
  "panels": [
   {
    "title": "Getting Started",
@@ -2415,6 +2415,7 @@
     "auth",
     "approvals",
     "audit",
+    "plan",
     "secrets",
     "compliance",
     "governance",
@@ -2610,6 +2611,20 @@
      "help": "Verify the external WORM anchor: its own chain + agreement with the DB checkpoints (item 2.4).",
      "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
      "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa plan list",
+     "group": "plan",
+     "help": "List stored agent plans, newest first.",
+     "anchor": "governance-security",
+     "guide": null
+    },
+    {
+     "cmd": "exa plan show",
+     "group": "plan",
+     "help": "Show one plan: intended change, blast radius, approvals, preconditions and outcome.",
+     "anchor": "governance-security",
+     "guide": null
     },
     {
      "cmd": "exa secrets get",

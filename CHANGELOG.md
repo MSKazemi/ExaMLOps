@@ -5,6 +5,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — plan/apply for agent principals (ADR 0147 decision 2, second slice)
+
+New `examlops.plans` and additive `agent_plans` table. An agent principal
+(`EXAMLOPS_PRINCIPAL_KIND=agent`) is no longer just refused: MCP tools `plan_change(tool, args)` and
+`apply_plan(plan_hash, approval_token?)` give it a two-phase path. A plan is computed *without
+mutating* (the tool's own write-policy gate runs in probe mode), records the intended change, blast
+radius, required approvals, the state it depends on (preconditions) and an expiry
+(`EXAMLOPS_PLAN_TTL`, 15 min), and is stored under `plan_hash = sha256(tool + args + preconditions)`.
+`apply_plan` claims the plan with one conditional UPDATE (of N concurrent applies exactly one
+runs), re-checks policy and preconditions, refuses an expired, consumed, changed-world or
+un-approved plan, and executes exactly the planned call; plan, approval and apply are audited.
+A direct call of any mutating tool by an agent principal is refused with `plan_required`; humans
+and reads are unaffected. A policy `require_approval` is satisfied by a one-time token a *human*
+mints with the tier-C `approve_plan` tool. New read-only `exa plan list|show`. Guard
+`tests/unit/test_plan_apply.py` (fails if a mutating `ToolSpec` lacks an intent, blast radius or
+precondition snapshot). Not done: plans for CLI commands (the CLI still refuses agents with
+`plan_required`), and shadow/rollout workflow tools.
+
 ### Added — idempotency keys on mutating MCP tools (ADR 0147 decision 4, first slice)
 
 New `examlops.idempotency` and additive `idempotency_keys` table in `platform.db`. Each of the ten

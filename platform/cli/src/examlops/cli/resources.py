@@ -632,6 +632,8 @@ RESOURCES: tuple[Resource, ...] = (
 # Command groups that have a `list`-like verb but are not resources, and why. Keeps the coverage
 # check honest: a new list command must be placed in one of the two.
 NOT_RESOURCES: dict[str, str] = {
+    "plan list": "Agent plans are created and applied through the MCP plan_change/apply_plan tools "
+    "and are single-use; `exa plan show` reads one — there is nothing to create or edit here.",
     "commands list": "Asynchronous command records are created by `exa retrain --async`, not by a "
     "create form, and are read-only apart from cancel — `exa commands show/cancel` covers them.",
     "features list": "Feature *files* per model, fetched and pushed as files — the workspace covers it.",

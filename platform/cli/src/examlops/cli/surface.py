@@ -365,6 +365,8 @@ TIERS: dict[str, str] = {
     "pipeline run": A,
     "pipeline validate": R,
     "pipeline validate-model": A,
+    "plan list": A,
+    "plan show": A,
     "plugins": R,
     "policy bundle list": R,
     "policy bundle sign": A,

@@ -101,7 +101,12 @@ WRITE_ARGS: dict[str, dict[str, object]] = {
     "dataplane_pull": {"name": "does-not-exist"},
 }
 
-MUTATING = [spec for spec in tools.REGISTRY if spec.mutating]
+# plan/apply/approve delegate to each tool's own gate (probe mode / apply) — see test_plan_apply.py.
+MUTATING = [
+    spec
+    for spec in tools.REGISTRY
+    if spec.mutating and spec.name not in {"plan_change", "apply_plan", "approve_plan"}
+]
 
 
 def _write_args(spec) -> dict[str, object]:

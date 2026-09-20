@@ -2539,6 +2539,21 @@ reason is reported rather than passed over in silence.
 - `--max-latency` — Max acceptable latency in seconds
 - `--n` — Number of smoke-test requests
 
+## `exa plan`
+
+Agent plans — proposed changes, blast radius, outcome
+
+### `exa plan list`
+
+List stored agent plans, newest first.
+
+- `--state` — Filter: planned | applying | applied | failed | expired | rejected
+- `--limit, -n` — Max plans to show
+
+### `exa plan show`
+
+Show one plan: intended change, blast radius, approvals, preconditions and outcome.
+
 ## `exa plugins`
 
 List installed exa CLI plugins and whether each loaded successfully.

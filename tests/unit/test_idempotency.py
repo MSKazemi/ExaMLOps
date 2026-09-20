@@ -155,7 +155,10 @@ def test_wrapper_signature_exposes_parameter():
 
 
 def test_every_mutating_tool_exposes_idempotency_key():
-    mutating = [s for s in REGISTRY if s.mutating]
+    from examlops.plans import PLAN_TOOLS
+
+    # plan_change is content-addressed (idempotent by hash) and approve_plan is human-only.
+    mutating = [s for s in REGISTRY if s.mutating and s.name not in PLAN_TOOLS - {"apply_plan"}]
     assert mutating
     for spec in mutating:
         assert "idempotency_key" in inspect.signature(spec.fn).parameters, spec.name

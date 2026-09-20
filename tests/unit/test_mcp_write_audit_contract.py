@@ -82,8 +82,10 @@ def _cases():
 def test_the_offline_cases_cover_every_mutating_tool_but_the_networked_one():
     """If a mutating tool is added and not listed here, this file stops being a contract."""
     from examlops.mcp.tools import REGISTRY
+    from examlops.plans import PLAN_TOOLS
 
-    mutating = {t.name for t in REGISTRY if t.mutating}
+    # plan/apply/approve delegate to the tools' own gates + audits: tests/unit/test_plan_apply.py.
+    mutating = {t.name for t in REGISTRY if t.mutating and t.name not in PLAN_TOOLS}
     covered = {name for name, _ in _cases()}
     # trigger_retrain is the one that needs a live control plane; it is exercised separately.
     assert mutating - covered == {"trigger_retrain"}, mutating - covered

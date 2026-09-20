@@ -211,6 +211,10 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("Recent audit log (hash-chained)", "exa audit --last 7d"),
         ("Verify chain integrity", "exa audit verify"),
     ],
+    "plan": [
+        ("Plans agents have proposed", "exa plan list"),
+        ("One plan in full", "exa plan show <plan-hash>"),
+    ],
     "secrets": [
         ("Secret metadata (never values)", "exa secrets list"),
         ("Scan a path for leaks (CI gate)", "exa secrets scan ./config"),

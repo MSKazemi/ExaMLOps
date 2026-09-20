@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from examlops import plans as _plans
 from examlops.cli import _client
 from examlops.cli._config import Config, load_config
 from examlops.idempotency import idempotent as _idem
@@ -734,11 +735,21 @@ def _agent_write_gate(action_kind: str, context: dict[str, Any]) -> dict[str, An
     decision = policy.decide_safe(
         "agent_write", {"action_kind": action_kind, **context}, default_effect=policy.DENY
     )
+    # Plan mode (ADR 0147 d2): hand the decision to `plan_change` and stop before the tool body.
+    _plans.record_probe(
+        {
+            "action_kind": action_kind,
+            "unavailable": bool(decision.unavailable),
+            "denied": bool(decision.denied),
+            "requires_approval": bool(decision.requires_approval),
+            "reason": getattr(decision, "reason", "") or "",
+        }
+    )
     if decision.unavailable:
         return _err(f"policy unavailable; refusing agent write ({action_kind})")
     if decision.denied:
         return _err(f"policy denied agent write ({action_kind}): {decision.reason}")
-    if decision.requires_approval:
+    if decision.requires_approval and not _plans.approval_active():
         return _err(
             f"policy requires human approval for {action_kind} — not permitted to an agent "
             f"({decision.reason})"
@@ -1184,6 +1195,38 @@ def grant_access(subject: str, relation: str, obj: str) -> dict[str, Any]:
     )
 
 
+def plan_change(tool: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Plan one mutating tool call WITHOUT performing it (ADR 0147 d2); returns a plan_hash.
+
+    The plan states the intended change, blast radius, required approvals, the preconditions it
+    depends on and an expiry. Nothing is changed until ``apply_plan(plan_hash)``. An agent
+    principal must plan every mutation; a direct call is refused with ``plan_required``.
+
+    Args:
+        tool: Name of the mutating tool to plan (e.g. ``set_traffic_split``).
+        args: The arguments that tool would be called with.
+    """
+    return _plans.plan_change(tool, args)
+
+
+def apply_plan(plan_hash: str, approval_token: str | None = None) -> dict[str, Any]:
+    """Apply a stored plan exactly once (ADR 0147 d2), after re-checking policy and preconditions.
+
+    Refused when the plan expired, was already applied, its preconditions changed, or it needs a
+    human ``approval_token`` that is missing or wrong. Executes exactly the planned call.
+
+    Args:
+        plan_hash: The ``plan_hash`` returned by ``plan_change``.
+        approval_token: Token a human minted with ``approve_plan`` (only when the plan requires it).
+    """
+    return _plans.apply_plan(plan_hash, approval_token)
+
+
+def approve_plan(plan_hash: str) -> dict[str, Any]:
+    """Human approval of a plan; returns a one-time approval_token. Mutating; tier C (human-only)."""
+    return _plans.approve_plan(plan_hash)
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """Metadata describing one agent-callable tool."""
@@ -1384,6 +1427,27 @@ REGISTRY: tuple[ToolSpec, ...] = (
         use_cases=("governance",),
         tier="C",
     ),
+    ToolSpec(
+        plan_change,
+        mutating=True,
+        tags=("governance", "audit"),
+        use_cases=("governance", "management"),
+        tier="A",
+    ),
+    ToolSpec(
+        _idem(apply_plan),
+        mutating=True,
+        tags=("governance", "audit"),
+        use_cases=("governance", "management"),
+        tier="A",
+    ),
+    ToolSpec(
+        approve_plan,
+        mutating=True,
+        tags=("governance", "audit"),
+        use_cases=("governance",),
+        tier="C",
+    ),
 )
 
 
@@ -1405,6 +1469,9 @@ _ANNOTATION_FACTS: dict[str, dict[str, bool]] = {
     "set_drift_autoretrain": {"destructive": True, "idempotent": True},
     "disable_challenger": {"destructive": True, "idempotent": True},
     "grant_access": {"destructive": True},
+    "plan_change": {"idempotent": True},
+    "apply_plan": {"destructive": True},
+    "approve_plan": {"destructive": True},
 }
 
 
@@ -1415,6 +1482,19 @@ def _with_facts(specs: tuple[ToolSpec, ...]) -> tuple[ToolSpec, ...]:
 
 
 REGISTRY = _with_facts(REGISTRY)
+
+
+def _with_plan_gate(specs: tuple[ToolSpec, ...]) -> tuple[ToolSpec, ...]:
+    """An agent principal may not call a mutating tool directly — only through plan/apply."""
+    return tuple(
+        replace(s, fn=_plans.plan_gated(s.fn))
+        if s.mutating and s.name not in _plans.PLAN_TOOLS
+        else s
+        for s in specs
+    )
+
+
+REGISTRY = _with_plan_gate(REGISTRY)
 
 
 def capabilities_catalogue(include_writes: bool | None = None) -> dict[str, Any]:
