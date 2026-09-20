@@ -3501,6 +3501,32 @@ List declared SLO specs.
 - `--model` — Filter to one model
 - `--tenant` — Filter to one tenant
 
+### `exa slo pair-check`
+
+Evaluate observed samples against a pair SLO; exit 1 unless the verdict is `met`.
+
+- `--samples` — JSON file: [[ttft_ms, tpot_ms], ...] or [{"ttft_ms":..,"tpot_ms":..}]
+- `--min-samples` — Fewest valid samples (default EXAMLOPS_SLO_PAIR_MIN_SAMPLES)
+- `--tenant` — Tenant scope (D6)
+
+### `exa slo pair-list`
+
+List declared paired (TTFT, TPOT) SLOs.
+
+- `--model` — Filter to one model
+- `--tenant` — Filter to one tenant
+
+### `exa slo pair-set`
+
+Declare a paired (TTFT, TPOT) SLO — both dimensions must hold (ADR 0117 d2).
+
+- `--ttft-ms` — TTFT threshold in ms
+- `--tpot-ms` — TPOT threshold in ms per token
+- `--percentile` — Percentile both dimensions must hold
+- `--tight` — Binding dimension: ttft | tpot
+- `--class` — Request class: interactive | batch | agent
+- `--tenant` — Tenant scope (D6)
+
 ### `exa slo record`
 
 Record one SLI measurement interval (R4) — feeds budget + burn rate.

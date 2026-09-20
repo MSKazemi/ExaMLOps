@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — paired (TTFT, TPOT) serving SLOs (ADR 0117 decision 2)
+
+A first-class latency pair replaces "one number": `exa slo pair-set MODEL NAME --ttft-ms N
+--tpot-ms N [--percentile 99] [--tight ttft|tpot] [--class interactive|batch|agent]`,
+`exa slo pair-list`, and `exa slo pair-check MODEL NAME --samples file.json` (exit 1 unless `met`).
+Both dimensions must hold at the declared nearest-rank percentile; the verdict also reports
+goodput-style attainment and burn rate. Fewer than `EXAMLOPS_SLO_PAIR_MIN_SAMPLES` (20) valid samples,
+or an undeclared pair, is `no_verdict` and never passes; malformed samples are counted as rejected,
+not good. New table `slo_pairs` (via `examlops.data.slo_pairs`), evaluator `examlops.slo.pairs`.
+Not yet built (ADR 0117 stays Partially implemented): sourcing samples from live telemetry (gateway
+calls do not record TTFT/TPOT), the `--max-latency` deprecation, wiring `check_pair` into the
+promote gate, and decisions 1/1b (topology policy, three-signal routing).
+
 ### Changed — engines are never exposed directly, by construction (ADR 0126 decision 2)
 
 The base Compose file no longer publishes the `vllm` engine on host port 18011. It is reachable only

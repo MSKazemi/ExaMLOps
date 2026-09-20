@@ -492,6 +492,9 @@ TIERS: dict[str, str] = {
     "slo generate": R,
     "slo ingest": A,
     "slo list": R,
+    "slo pair-check": R,
+    "slo pair-list": R,
+    "slo pair-set": A,
     "slo record": A,
     "slo set": A,
     "slo status": R,
@@ -636,6 +639,7 @@ _NOT_FS: frozenset[tuple[str, str]] = frozenset(
 # Filesystem parameters whose name alone does not say so.
 _EXTRA_FS: frozenset[tuple[str, str]] = frozenset(
     {
+        ("slo pair-check", "samples"),
         ("secrets scan", "target"),
         ("hpc connect", "key"),
         ("hpc detect", "key"),

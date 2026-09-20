@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 465,
+ "total_commands": 468,
  "total_groups": 70,
  "panels": [
   {
@@ -2044,6 +2044,27 @@
      "cmd": "exa slo list",
      "group": "slo",
      "help": "List declared SLO specs.",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo pair-check",
+     "group": "slo",
+     "help": "Evaluate observed samples against a pair SLO; exit 1 unless the verdict is `met`.",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo pair-list",
+     "group": "slo",
+     "help": "List declared paired (TTFT, TPOT) SLOs.",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo pair-set",
+     "group": "slo",
+     "help": "Declare a paired (TTFT, TPOT) SLO — both dimensions must hold (ADR 0117 d2).",
      "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
      "guide": "guides/slos.md"
     },

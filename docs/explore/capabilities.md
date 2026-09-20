@@ -1,6 +1,6 @@
 ---
 title: Every capability
-description: All 465 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
+description: All 468 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
 hide:
   - navigation
 ---
@@ -11,7 +11,7 @@ hide:
 
 # Every capability
 
-Everything ExaMLOps can do is reachable from the `exa` CLI: **465 commands**
+Everything ExaMLOps can do is reachable from the `exa` CLI: **468 commands**
 in 70 command groups. They are grouped here the same way `exa --help` groups
 them, into twelve areas of the model lifecycle. The bar is sized by the number of commands in
 each area; select an area to filter, or search by what you want to do.
@@ -31,7 +31,7 @@ The same capabilities are available from the [dashboard](../dashboard/usage-guid
 | Serving & Inference | Serve models, split traffic, call gateways and query RAG. | `serve`, `predict`, `production`, `gateway`, `vector`, `rag` | 73 |
 | GenAI & LLMOps | Manage prompts, trace GenAI calls and enforce guardrails. | `genai`, `prompt`, `guardrails` | 13 |
 | Agents & Automation | Ask Skipper, run the autopilot loop and expose tools over MCP. | `ask`, `chat`, `agent`, `agentops`, `autopilot`, `mcp` | 31 |
-| Monitoring & Quality | Watch drift, evaluate models, track SLOs and fairness. | `drift`, `eval`, `slo`, `fairness` | 50 |
+| Monitoring & Quality | Watch drift, evaluate models, track SLOs and fairness. | `drift`, `eval`, `slo`, `fairness` | 53 |
 | HPC, Fleet & FinOps | Discover clusters, place jobs and account for cost and carbon. | `hpc`, `fleet`, `hardware`, `federated`, `finops`, `report` | 41 |
 | Governance & Security | Approve changes, audit actions, manage secrets and policy. | `auth`, `approvals`, `audit`, `plan`, `secrets`, `compliance`, `governance`, `policy`, `providers` | 59 |
 | Projects & Workspaces | Group models, people, storage and connections into projects. | `project`, `namespace`, `connection`, `workbench` | 35 |

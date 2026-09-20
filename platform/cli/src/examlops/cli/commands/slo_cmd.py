@@ -330,3 +330,117 @@ SLO_GATE_ENV = "EXAMLOPS_SLO_GATE_ENABLED"
 
 def gate_enabled() -> bool:
     return os.getenv(SLO_GATE_ENV, "").lower() in ("1", "true", "yes", "on")
+
+
+# --- Paired (TTFT, TPOT) serving SLOs (ADR 0117 decision 2) -----------------------------------
+
+
+@app.command("pair-set")
+def pair_set(
+    model: str = typer.Argument(..., help="Model name"),
+    name: str = typer.Argument(..., help="Pair SLO name (e.g. chat-interactive)"),
+    ttft_ms: float = typer.Option(..., "--ttft-ms", help="TTFT threshold in ms"),
+    tpot_ms: float = typer.Option(..., "--tpot-ms", help="TPOT threshold in ms per token"),
+    pct: float = typer.Option(99.0, "--percentile", help="Percentile both dimensions must hold"),
+    tight: str = typer.Option("ttft", "--tight", help="Binding dimension: ttft | tpot"),
+    slo_class: str = typer.Option(
+        "interactive", "--class", help="Request class: interactive | batch | agent"
+    ),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
+) -> None:
+    """Declare a paired (TTFT, TPOT) SLO — both dimensions must hold (ADR 0117 d2)."""
+    from examlops.slo.pairs import PairSLOError, set_pair
+
+    try:
+        state = set_pair(
+            model,
+            name,
+            ttft_ms=ttft_ms,
+            tpot_ms=tpot_ms,
+            percentile=pct,
+            tight=tight,
+            slo_class=slo_class,
+            tenant=tenant,
+        )
+    except PairSLOError as exc:
+        _output.error(str(exc))
+    if _output.json_mode:
+        _output.print_json({"model": model, "name": name, "tenant": tenant, "state": state})
+        return
+    _output.ok(f"Pair SLO '{name}' {state} for {model} (TTFT<={ttft_ms:g}ms, TPOT<={tpot_ms:g}ms)")
+
+
+@app.command("pair-list")
+def pair_list(
+    model: str = typer.Option(None, "--model", help="Filter to one model"),
+    tenant: str = typer.Option(None, "--tenant", help="Filter to one tenant"),
+) -> None:
+    """List declared paired (TTFT, TPOT) SLOs."""
+    from examlops.data.slo_pairs import list_pairs
+
+    rows = list_pairs(model=model, tenant=tenant)
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    if not rows:
+        _output.info(
+            "No paired SLOs — use: exa slo pair-set <MODEL> <NAME> --ttft-ms N --tpot-ms N"
+        )
+        return
+    _output.print_table(
+        "Paired SLOs",
+        ["Model", "Name", "Tenant", "TTFT ms", "TPOT ms", "Pct", "Tight", "Class"],
+        [
+            [
+                r["model"],
+                r["name"],
+                r["tenant"],
+                f"{r['ttft_ms']:g}",
+                f"{r['tpot_ms']:g}",
+                f"{r['percentile']:g}",
+                r["tight"],
+                r["slo_class"],
+            ]
+            for r in rows
+        ],
+    )
+
+
+@app.command("pair-check")
+def pair_check(
+    model: str = typer.Argument(..., help="Model name"),
+    name: str = typer.Argument(..., help="Pair SLO name"),
+    samples: str = typer.Option(
+        ...,
+        "--samples",
+        help='JSON file: [[ttft_ms, tpot_ms], ...] or [{"ttft_ms":..,"tpot_ms":..}]',
+    ),
+    min_samples: int = typer.Option(
+        None, "--min-samples", help="Fewest valid samples (default EXAMLOPS_SLO_PAIR_MIN_SAMPLES)"
+    ),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
+) -> None:
+    """Evaluate observed samples against a pair SLO; exit 1 unless the verdict is `met`."""
+    import json
+
+    from examlops.slo.pairs import check_pair
+
+    try:
+        with open(samples, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        _output.error(f"cannot read samples file: {exc}")
+    if not isinstance(data, list):
+        _output.error("samples file must contain a JSON list")
+    verdict = check_pair(model, name, data, tenant=tenant, min_samples=min_samples)
+    if _output.json_mode:
+        _output.print_json(verdict.as_dict())
+    elif verdict.passed:
+        _output.ok(
+            f"met: TTFT p={verdict.ttft_pct_ms:g}ms TPOT p={verdict.tpot_pct_ms:g}ms "
+            f"attainment {verdict.attainment:.1%} burn {verdict.burn_rate:g}x (n={verdict.n})"
+        )
+    else:
+        _output.warning(f"{verdict.verdict}: " + "; ".join(verdict.reasons))
+    if not verdict.passed:
+        raise typer.Exit(1)

@@ -316,6 +316,33 @@ if budget_exhausted("JPCP", "latency-p99"):
     ...  # block promotion
 ```
 
+## Paired (TTFT, TPOT) serving SLOs
+
+Generative latency is a pair: **TTFT** (queue + prefill) and **TPOT** (per-token decode). They trade
+against each other, so a single `--max-latency` cannot say which side is tight (ADR 0117 decision 2).
+
+```bash
+exa slo pair-set qwen chat --ttft-ms 300 --tpot-ms 40 --percentile 99 --tight ttft --class interactive
+exa slo pair-list --model qwen
+exa slo pair-check qwen chat --samples bench.json   # [[ttft_ms, tpot_ms], ...]; exit 1 unless met
+```
+
+Semantics:
+
+- **Both dimensions must hold.** `met` requires the nearest-rank percentile of TTFT <= `--ttft-ms`
+  *and* of TPOT <= `--tpot-ms`. Exactly at a threshold passes; one dimension failing is `violated`.
+- **Attainment** is the share of requests with TTFT *and* TPOT both within threshold;
+  `burn_rate = (1 - attainment) / (1 - percentile/100)` (1.0 = budget spent exactly as allowed).
+- **Absent is not pass.** Fewer than `EXAMLOPS_SLO_PAIR_MIN_SAMPLES` (default 20) valid samples, or
+  an undeclared pair, is `no_verdict` (exit 1). Malformed samples (missing, negative, NaN) are counted
+  as `rejected` and excluded.
+- `--tight` records which side binds, for the topology/routing policy to read; it does not loosen the
+  other dimension.
+
+Library: `examlops.slo.pairs.check_pair(model, name, samples)` returns a `PairVerdict`
+(`.passed` is True only for `met`). Limits today: samples are supplied by the caller (gateway calls do
+not yet record TTFT/TPOT) and the verdict is not yet wired into `exa pipeline promote`.
+
 ## Graceful degradation
 
 Rule generation is pure dict/string assembly — no Prometheus needed to produce or test

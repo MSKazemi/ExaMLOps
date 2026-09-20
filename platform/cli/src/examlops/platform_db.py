@@ -894,6 +894,20 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 applied_by    TEXT,
                 result_json   TEXT
             );
+            -- ADR 0117 decision 2 — paired (TTFT, TPOT) serving SLOs (`examlops.slo.pairs`). One row
+            -- per (model, name, tenant); `tight` names which dimension is the binding one.
+            CREATE TABLE IF NOT EXISTS slo_pairs (
+                model       TEXT NOT NULL,
+                name        TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                ttft_ms     REAL NOT NULL,
+                tpot_ms     REAL NOT NULL,
+                percentile  REAL NOT NULL DEFAULT 99,
+                tight       TEXT NOT NULL,
+                slo_class   TEXT NOT NULL DEFAULT 'interactive',
+                updated_at  REAL NOT NULL,
+                PRIMARY KEY (model, name, tenant)
+            );
             -- Phase 1 item 1.5 — durable admission-control queue between every trigger
             -- (drift/autopilot/API/webhook) and Prefect. Per-tenant fair-share + a global
             -- concurrency cap stop one tenant (or a fleet-wide drift event) from starving the
