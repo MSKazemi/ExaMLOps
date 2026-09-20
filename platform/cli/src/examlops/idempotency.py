@@ -128,10 +128,13 @@ def idempotent(fn: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any
     params = [
         *sig.parameters.values(),
         inspect.Parameter(
-            PARAM, inspect.Parameter.KEYWORD_ONLY, default=None, annotation="str | None"
+            PARAM, inspect.Parameter.KEYWORD_ONLY, default=None, annotation=str | None
         ),
     ]
     wrapper.__signature__ = sig.replace(parameters=params)  # type: ignore[attr-defined]
+    # Introspectors (pydantic validate_arguments / LangChain StructuredTool) read the function's
+    # own annotations, not __signature__: without this entry they raise KeyError.
+    wrapper.__annotations__ = {**getattr(wrapper, "__annotations__", {}), PARAM: str | None}
     wrapper.__doc__ = (fn.__doc__ or "").rstrip() + (
         "\n\n    Args (added):\n        idempotency_key: Optional unique key; a repeat with the same"
         " key and request returns the original result (``replayed: true``), a different request"

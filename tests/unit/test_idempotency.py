@@ -179,3 +179,17 @@ def test_real_tool_replay(monkeypatch):
     c = spec.fn("m", 80, 20, idempotency_key="t1")
     assert a["ok"] and b["replayed"] is True and c["code"] == "idempotency_conflict"
     assert len(calls) == 1
+
+
+def test_wrapped_tools_carry_the_key_in_their_type_hints():
+    """Introspectors (pydantic ``validate_arguments`` under LangChain's ``StructuredTool``) read
+    ``__annotations__``, not ``__signature__`` — a missing entry is a ``KeyError`` for the agent."""
+    import typing
+
+    from examlops.mcp.tools import REGISTRY
+    from examlops.plans import PLAN_TOOLS
+
+    for spec in REGISTRY:
+        if spec.mutating and spec.name not in PLAN_TOOLS - {"apply_plan"}:
+            hints = typing.get_type_hints(spec.fn)
+            assert "idempotency_key" in hints, spec.name
