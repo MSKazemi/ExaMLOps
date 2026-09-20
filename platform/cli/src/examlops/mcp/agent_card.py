@@ -46,6 +46,7 @@ def build_agent_card(
             "mutating": spec.mutating,
             "useCases": list(spec.use_cases),
             "tier": spec.tier,
+            "annotations": spec.annotations,
         }
         for spec in iter_tools(include_writes=include_writes)
     ]

@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import urllib.parse
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from examlops.cli import _client
@@ -1192,6 +1192,25 @@ class ToolSpec:
     tags: tuple[str, ...] = field(default_factory=tuple)
     use_cases: tuple[str, ...] = field(default_factory=tuple)
     tier: str = "read"
+    #: Repeating the identical call leaves the same end state (MCP ``idempotentHint``).
+    idempotent: bool = False
+    #: Overwrites or revokes existing state rather than only adding (MCP ``destructiveHint``).
+    destructive: bool = False
+    #: Reaches a network target outside the process (MCP ``openWorldHint``).
+    open_world: bool = False
+
+    @property
+    def annotations(self) -> dict[str, bool]:
+        """MCP tool annotations (spec 2025-06-18 ``ToolAnnotations``), derived from the flags.
+
+        Read tools carry only ``readOnlyHint``/``openWorldHint``; ``destructiveHint`` and
+        ``idempotentHint`` are meaningful only for tools that are not read-only (MCP spec).
+        """
+        ann = {"readOnlyHint": not self.mutating, "openWorldHint": self.open_world}
+        if self.mutating:
+            ann["destructiveHint"] = self.destructive
+            ann["idempotentHint"] = self.idempotent
+        return ann
 
     @property
     def name(self) -> str:
@@ -1367,6 +1386,36 @@ REGISTRY: tuple[ToolSpec, ...] = (
 )
 
 
+# Annotation facts that the tier vocabulary cannot express (ADR 0147 d1). ``destructive`` = the call
+# overwrites/replaces a stored rule or widens access (the MCP meaning: not purely additive);
+# ``idempotent`` = re-sending identical arguments leaves identical state; ``open_world`` = the tool
+# calls out to a service over the network. Kept in one table so a reviewer sees every claim at once.
+_ANNOTATION_FACTS: dict[str, dict[str, bool]] = {
+    "platform_status": {"open_world": True},
+    "list_models": {"open_world": True},
+    "list_production_models": {"open_world": True},
+    "model_detail": {"open_world": True},
+    "modelzoo_status": {"open_world": True},
+    "retrain_status": {"open_world": True},
+    "trigger_retrain": {"open_world": True},
+    "dataplane_pull": {"open_world": True},
+    "set_traffic_split": {"destructive": True, "idempotent": True},
+    "set_promotion_rule": {"destructive": True, "idempotent": True},
+    "set_drift_autoretrain": {"destructive": True, "idempotent": True},
+    "disable_challenger": {"destructive": True, "idempotent": True},
+    "grant_access": {"destructive": True},
+}
+
+
+def _with_facts(specs: tuple[ToolSpec, ...]) -> tuple[ToolSpec, ...]:
+    return tuple(
+        replace(s, **_ANNOTATION_FACTS[s.name]) if s.name in _ANNOTATION_FACTS else s for s in specs
+    )
+
+
+REGISTRY = _with_facts(REGISTRY)
+
+
 def capabilities_catalogue(include_writes: bool | None = None) -> dict[str, Any]:
     """Group the tool registry by lifecycle use case — the capabilities catalogue.
 
@@ -1386,6 +1435,7 @@ def capabilities_catalogue(include_writes: bool | None = None) -> dict[str, Any]
             "description": spec.description,
             "mutating": spec.mutating,
             "tier": spec.tier,
+            "annotations": spec.annotations,
             "tags": list(spec.tags),
         }
         targets = spec.use_cases or ("other",)

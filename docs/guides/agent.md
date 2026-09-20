@@ -389,6 +389,25 @@ something downstream is broken:
  "audit_warning": "action succeeded but was not audited: audit chain unavailable"}
 ```
 
+### Safety annotations
+
+Every tool is advertised with the MCP `ToolAnnotations` hints so a client can decide what to
+auto-approve without reading prose. They are derived, not hand-typed per call site:
+
+| Hint | Meaning here |
+|---|---|
+| `readOnlyHint` | `true` for every read-tier tool; `false` for every mutating tool. |
+| `destructiveHint` | Mutating tools only: `true` when the call overwrites a stored rule or widens access (`set_traffic_split`, `set_promotion_rule`, `set_drift_autoretrain`, `disable_challenger`, `grant_access`). |
+| `idempotentHint` | Mutating tools only: `true` where re-sending the same arguments leaves the same state (the `set_*` rules and `disable_challenger`). Default `false`. |
+| `openWorldHint` | `true` for tools that call a service over the network (status, registry reads, `trigger_retrain`, `dataplane_pull`). |
+
+The hints are advisory for the client; enforcement stays server-side (exposure, tier and policy
+above). `exa mcp tools` shows them in the *Hints* column and the A2A card carries them under each
+skill's `annotations`. `tests/unit/test_mcp_tool_annotations.py` fails if a registry tool has an
+inconsistent set (a read tool marked destructive, a mutating tool marked read-only). Passing them to
+FastMCP needs a version that accepts `annotations=`; on an older build the tool is served without
+them. Design: ADR 0147 decision 1 (first slice; generation from the Click tree is still to do).
+
 `tests/unit/test_mcp_write_audit_contract.py` holds the first four rows for every mutating
 tool; `tests/unit/test_cli_client.py` holds the fifth, which is shared with the `exa` CLI
 because both go through the same HTTP client.

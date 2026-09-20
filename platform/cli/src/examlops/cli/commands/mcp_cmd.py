@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 import typer
 
@@ -35,6 +36,16 @@ app = typer.Typer(
 )
 
 
+def _hints(spec: Any) -> str:
+    """Compact MCP safety hints: ro / destructive / idempotent / open-world."""
+    a = spec.annotations
+    out = ["ro"] if a["readOnlyHint"] else []
+    out += ["destructive"] if a.get("destructiveHint") else []
+    out += ["idempotent"] if a.get("idempotentHint") else []
+    out += ["open-world"] if a["openWorldHint"] else []
+    return ", ".join(out) or "—"
+
+
 @app.command("tools", epilog=_EXAMPLES)
 def tools(
     show_writes: bool = typer.Option(
@@ -49,12 +60,15 @@ def tools(
         [
             spec.name,
             "write" if spec.mutating else "read",
+            _hints(spec),
             ", ".join(spec.tags) or "—",
             spec.description,
         ]
         for spec in specs
     ]
-    _output.print_table("Agent-callable tools (MCP)", ["Tool", "Kind", "Tags", "Description"], rows)
+    _output.print_table(
+        "Agent-callable tools (MCP)", ["Tool", "Kind", "Hints", "Tags", "Description"], rows
+    )
     if not any(s.mutating for s in specs):
         _output.hint(
             "Mutating tools are hidden. Show them with --all, or enable them for the "

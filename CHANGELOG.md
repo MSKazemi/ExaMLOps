@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — MCP tool safety annotations and `AGENTS.md` (ADR 0147 decisions 1 and 8, first slice)
+
+Every registry tool now carries MCP `ToolAnnotations` (`readOnlyHint`, `destructiveHint`,
+`idempotentHint`, `openWorldHint`) derived from the write tier plus new `ToolSpec.idempotent` /
+`destructive` / `open_world` flags. They are registered with FastMCP (degrading to unannotated on a
+build without `annotations=`), shown in a new *Hints* column of `exa mcp tools`, and carried in the
+A2A card. Guard `tests/unit/test_mcp_tool_annotations.py`. A top-level `AGENTS.md` gives coding
+agents build/test targets, the `exa docs --json` catalog and the write-safety rules.
+
 ### Fixed — shell metacharacters in an HPC job script are now quoted, not interpolated raw
 
 `pipelines/pipeline_generator.py`'s `_hpc_train_command`/`slurm_submit_task` built the real

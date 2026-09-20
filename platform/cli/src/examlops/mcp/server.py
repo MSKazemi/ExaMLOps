@@ -60,7 +60,15 @@ def build_server(*, name: str = "ExaMLOps", include_writes: bool | None = None) 
     server = fast_mcp(name)
     for spec in iter_tools(include_writes=include_writes):
         # FastMCP derives the tool schema from the function's type hints + docstring.
-        server.tool(name=spec.name, description=spec.description)(spec.fn)
+        # Safety annotations (readOnly/destructive/idempotent/openWorld hints) let a client
+        # decide what to auto-approve. `annotations=` needs FastMCP >= 2.2.7; an older build
+        # rejects the keyword, so degrade to an unannotated tool rather than fail to serve.
+        try:
+            server.tool(name=spec.name, description=spec.description, annotations=spec.annotations)(
+                spec.fn
+            )
+        except TypeError:  # pragma: no cover - only on a FastMCP that predates annotations
+            server.tool(name=spec.name, description=spec.description)(spec.fn)
     for res in iter_resources():
         server.resource(
             res.uri, name=res.name, description=res.description, mime_type=res.mime_type
