@@ -2098,6 +2098,7 @@ Show which ACTIVE cluster placement would choose for a resource ask.
 - `--cpus` — CPUs the job needs
 - `--nodes, -N` — Nodes the job needs
 - `--placement-provider` — Placement scoring provider (default: least-loaded)
+- `--explain` — Also print the active scoring provider, the ask, and each candidate's ranked score breakdown (ADR 0077)
 
 ### `exa hpc preflight`
 
@@ -2671,6 +2672,13 @@ Evaluate a structured governance decision via the PolicyEngine (D5, R1/R5/GWT-5)
 ### `exa policy list`
 
 List the policy rules currently loaded from policy.yaml.
+
+### `exa policy simulate`
+
+Simulate a decision with no side effects; exit 0 allow, 1 deny, 4 require_approval.
+
+- `--set, -s` — Context key=value (repeatable), e.g. --set env=dev
+- `--context-json` — Context as a JSON object (merged under --set values)
 
 ### `exa policy test`
 

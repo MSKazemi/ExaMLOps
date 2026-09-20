@@ -20,6 +20,7 @@ _EXAMPLES = (
     "  exa policy list\n\n"
     "  exa policy test retrain --set model=JPCP --set env=dev\n\n"
     "  exa policy test promote --set rmse_new=4.1 --set rmse_prod=5.0 --set env=dev\n\n"
+    "  exa policy simulate manual_promote --set model=JPCP --set to_alias=Production\n\n"
     "Rules live in ~/.config/examlops/policy.yaml. See docs/guides/programmable-mlops.md."
 )
 
@@ -114,6 +115,70 @@ def test(
         _output.warning(f"policy file ignored — {error}")
     style = {"allow": _output.ok, "deny": _output.error}.get(decision.effect, _output.warning)
     style(f"{action}: {decision.effect} — {decision.reason}")
+
+
+#: ``exa policy simulate`` exit codes: allow / deny (the house 0/1) and a distinct code for
+#: ``require_approval`` (2 is already the CLI's usage-error code, so it cannot be reused).
+SIMULATE_EXIT_ALLOW = 0
+SIMULATE_EXIT_DENY = 1
+SIMULATE_EXIT_REQUIRE_APPROVAL = 4
+
+
+@app.command("simulate", epilog=_EXAMPLES)
+def simulate(
+    action: str = typer.Argument(
+        ...,
+        help="Action kind to simulate (retrain/manual_promote/cluster_approve/promote/"
+        "agent_write/…)",
+    ),
+    set_: list[str] = typer.Option(
+        None, "--set", "-s", help="Context key=value (repeatable), e.g. --set env=dev"
+    ),
+    context_json: str = typer.Option(
+        None, "--context-json", help="Context as a JSON object (merged under --set values)"
+    ),
+):
+    """Simulate a decision with no side effects; exit 0 allow, 1 deny, 4 require_approval."""
+    import json as _json
+
+    from examlops.policy import decide, load_policies_with_status
+
+    context: dict[str, object] = {}
+    if context_json:
+        try:
+            loaded = _json.loads(context_json)
+        except ValueError as exc:
+            _output.error(f"--context-json is not valid JSON: {exc}", exit_code=2)
+        if not isinstance(loaded, dict):
+            _output.error("--context-json must be a JSON object", exit_code=2)
+        context.update(loaded)
+    context.update(_parse_set(set_))
+
+    _, error = load_policies_with_status()
+    decision = decide(action, context, audit=False)  # never audited: a simulation is not a decision
+    code = {
+        "allow": SIMULATE_EXIT_ALLOW,
+        "deny": SIMULATE_EXIT_DENY,
+        "require_approval": SIMULATE_EXIT_REQUIRE_APPROVAL,
+    }[decision.effect]
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "action": action,
+                "context": context,
+                "effect": decision.effect,
+                "rule": decision.rule,
+                "reason": decision.reason,
+                "error": error,
+                "exit_code": code,
+            }
+        )
+    else:
+        if error:
+            _output.warning(f"policy file ignored — {error}")
+        line = f"{action}: {decision.effect} — {decision.reason} (exit {code})"
+        {"allow": _output.ok, "deny": _output.info}.get(decision.effect, _output.warning)(line)
+    raise typer.Exit(code)
 
 
 def _parse_set(pairs: list[str] | None) -> dict[str, object]:

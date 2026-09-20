@@ -41,6 +41,53 @@ fail-closed: supply_chain · deploy · budget · tenancy
 fail-open  : promotion · approval · model_card · …
 ```
 
+## Human-driven mutations: `manual_promote` and `cluster_approve` (ADR 0079 decision 2)
+
+`exa pipeline promote` and `exa hpc approve` consult `examlops.policy.decide_safe` before they
+change anything, so an operator can govern a person at the keyboard the same way the autopilot
+and the agent write gate are governed. The action kinds and the facts a `when:` can use:
+
+| Action | Facts in the decision context |
+|---|---|
+| `manual_promote` | `model`, `version`, `from_alias`, `to_alias`, `metric`, `metric_value`, `<metric>_new` (e.g. `rmse_new`), `operator`, `threshold`, `force`, `actor` |
+| `cluster_approve` | `cluster`, `target`, `scheduler`, `host`, `transport`, `actor` |
+
+```yaml
+policies:
+  - name: freeze-prod
+    action: manual_promote
+    when: "to_alias == 'Production'"
+    effect: deny
+  - name: second-look
+    action: cluster_approve
+    effect: require_approval
+```
+
+* **No file, or no rule matches** - behaviour is unchanged and no `policy:*` audit row is written.
+* **`deny`** - the command stops with exit code 1 and names the rule; the alias is not moved and
+  the cluster stays `PENDING`. `--force` on promote does **not** override a policy deny (it only
+  bypasses the built-in eval/SLO/compliance metric gates).
+* **`require_approval`** - the command's existing confirmation prompt appears with
+  "[policy requires approval]" and its default flips to *no*, exactly as `exa retrain` does. The
+  human answering `y` is the approval; `--yes`/`--json` still auto-confirm for a human's script, and
+  an agent principal is refused by the confirmation layer. (The policy layer has no separate
+  approver identity; that would be a new mechanism, not built.)
+* Any rule that decides (allow, deny or require_approval) is audited as `policy:<action>` with the
+  effect and rule name; an engine failure denies and audits `policy_unavailable:<action>`.
+* `--dry-run` on promote consults nothing (it changes nothing).
+
+### `exa policy simulate`
+
+```bash
+exa policy simulate manual_promote --set to_alias=Production --set rmse_new=4.1
+exa policy simulate cluster_approve --context-json '{"scheduler": "flux"}'
+```
+
+Evaluates the decision with **no side effects** (never audited). Exit codes: `0` allow, `1` deny,
+`4` require_approval (`2` is the CLI's usage-error code), so it works as a CI check. `-o json`
+prints `effect`, `rule`, `reason` and `exit_code`. `exa policy test` is the always-exit-0
+sibling.
+
 ### A `policy.yaml` that does not parse is not "no policy"
 
 `~/.config/examlops/policy.yaml` (the declarative layer read by `examlops.policy.decide`) defaults

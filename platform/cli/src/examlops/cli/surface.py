@@ -383,6 +383,7 @@ TIERS: dict[str, str] = {
     "policy bundle verify": R,
     "policy eval": A,
     "policy list": R,
+    "policy simulate": R,  # pure evaluation, audit=False; exit 4 = require_approval
     "policy test": R,
     "predict": R,
     "production deploy": D,

@@ -380,8 +380,25 @@ def approve(
     if merged is None:
         _output.error(f"Unknown cluster: {name}", hint="exa hpc clusters")
         return
+    from examlops.cli._policy_gate import enforce as _policy_enforce
+
+    policy_decision = _policy_enforce(
+        "cluster_approve",
+        {
+            "cluster": name,
+            "target": name,
+            "scheduler": merged.get("scheduler"),
+            "host": merged.get("host"),
+            "transport": merged.get("transport"),
+            "actor": _actor(),
+        },
+        what=f"approval of cluster {name}",
+    )
+    approval_note = " [policy requires approval]" if policy_decision.requires_approval else ""
     if not _output.confirm(
         f"Approve cluster '{name}' ({merged['scheduler']} @ {merged['host']}) for scheduling?"
+        f"{approval_note}",
+        default=not policy_decision.requires_approval,
     ):
         _output.info("Aborted — cluster left unchanged.")
         return
@@ -442,13 +459,27 @@ def place(
     provider: str | None = typer.Option(
         None, "--placement-provider", help="Placement scoring provider (default: least-loaded)"
     ),
+    explain: bool = typer.Option(
+        False,
+        "--explain",
+        help="Also print the active scoring provider, the ask, and each candidate's ranked "
+        "score breakdown (ADR 0077)",
+    ),
 ):
     """Show which ACTIVE cluster placement would choose for a resource ask."""
     from examlops import sdk
 
     result = sdk.place(gpus=gpus, cpus=cpus, nodes=nodes, provider=provider)
+    explanation = (
+        _placement_explanation(result, gpus=gpus, cpus=cpus, nodes=nodes, provider=provider)
+        if explain
+        else None
+    )
     if _output.json_mode:
-        _output.print_json(result.to_dict())
+        payload = result.to_dict()
+        if explanation is not None:
+            payload["explain"] = explanation
+        _output.print_json(payload)
         return
     if result.cluster is None:
         _output.warning(result.reason)
@@ -468,6 +499,70 @@ def place(
             for c in result.candidates
         ]
         _output.print_table("Placement candidates", cols, table)
+    if explanation is not None:
+        _print_placement_explanation(explanation)
+
+
+def _placement_explanation(result, *, gpus: int, cpus: int, nodes: int, provider: str | None):
+    """Scoring breakdown built only from data the placement already returned.
+
+    Nothing is recomputed: the provider identity comes from the same resolver ``sdk.place``
+    used, and each candidate's score/idle/total figures are the ones ``choose_cluster``
+    produced. ``margin_to_best`` is the score gap to the winner (0 for the winner itself).
+    """
+    from examlops.providers.loader import resolve_provider
+
+    try:
+        prov = resolve_provider("placement", override=provider, group="placement")
+        prov_name = getattr(prov, "name", None) or type(prov).__name__
+    except Exception as exc:  # noqa: BLE001 - explanation must not fail the command
+        prov_name = f"unresolved ({exc})"
+    fitting = [c for c in result.candidates if c["fits"]]
+    best = fitting[0]["score"] if fitting else None
+    ranked = []
+    for rank, c in enumerate(result.candidates, start=1):
+        ranked.append(
+            {
+                "rank": rank,
+                "cluster": c["name"],
+                "fits": c["fits"],
+                "score": None if c["score"] == float("-inf") else c["score"],
+                "margin_to_best": (
+                    round(c["score"] - best, 6) if c["fits"] and best is not None else None
+                ),
+                "idle_gpus": c["idle_gpus"],
+                "total_gpus": c["total_gpus"],
+                "idle_nodes": c["idle_nodes"],
+                "total_nodes": c["total_nodes"],
+            }
+        )
+    return {
+        "provider": prov_name,
+        "ask": {"gpus": gpus, "cpus": cpus, "nodes": nodes},
+        "chosen": result.cluster,
+        "candidates": ranked,
+        "objectives": result.objectives,
+        "objectives_unavailable": result.objectives_unavailable,
+    }
+
+
+def _print_placement_explanation(ex: dict) -> None:
+    ask = ex["ask"]
+    _output.info(
+        f"Scoring provider: {ex['provider']}  |  ask: gpus={ask['gpus']} "
+        f"cpus={ask['cpus']} nodes={ask['nodes']}  |  chosen: {ex['chosen'] or 'none'}"
+    )
+    for c in ex["candidates"]:
+        if c["fits"]:
+            detail = f"score {c['score']} (margin to best {c['margin_to_best']})"
+        else:
+            detail = "cannot fit the ask by total capacity - not scored"
+        _output.info(
+            f"  #{c['rank']} {c['cluster']}: {detail}; idle GPUs "
+            f"{c['idle_gpus']}/{c['total_gpus']}, idle nodes {c['idle_nodes']}/{c['total_nodes']}"
+        )
+    if ex["objectives_unavailable"]:
+        _output.info(f"Objectives unavailable: {', '.join(ex['objectives_unavailable'])}")
 
 
 @app.command(epilog=_PLACE_EXAMPLES)

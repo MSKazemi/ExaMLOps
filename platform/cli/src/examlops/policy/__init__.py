@@ -265,3 +265,13 @@ def _audit(action: str, context: Mapping[str, Any], decision: Decision) -> None:
         str(context.get("model") or context.get("target") or ""),
         {"effect": decision.effect, "rule": decision.rule},
     )
+
+
+def record_decision(action: str, context: Mapping[str, Any], decision: Decision) -> None:
+    """Public form of the audit write, for call sites that decide with ``audit=False``.
+
+    A CLI gate that must stay byte-identical when no policy applies calls
+    ``decide_safe(..., audit=False)`` and records **only** a non-default outcome (a rule
+    matched) through this; the "engine unavailable" path already audits itself.
+    """
+    _audit(action, context, decision)

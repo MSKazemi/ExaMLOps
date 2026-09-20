@@ -571,6 +571,29 @@ def promote(
         _output.ok(f"Not promoted: {model} v{version}: {status_str}  (threshold not met)")
         return
 
+    # Policy-as-code gate (ADR 0079): a `manual_promote` rule can deny or require approval.
+    # No policy file / no matching rule -> allow, no audit row: behaviour is unchanged. A deny is
+    # not overridable by --force (that flag only bypasses the built-in metric gates).
+    from examlops.cli._policy_gate import enforce as _policy_enforce
+
+    policy_decision = _policy_enforce(
+        "manual_promote",
+        {
+            "model": model,
+            "version": str(version),
+            "from_alias": from_alias,
+            "to_alias": to_alias,
+            "metric": metric,
+            "metric_value": metric_val,
+            f"{metric}_new": metric_val,
+            "operator": operator,
+            "threshold": threshold,
+            "force": force,
+            "actor": _parity_actor(),
+        },
+        what=f"promotion of {model} v{version} to {to_alias}",
+    )
+
     # C3 — eval regression gate: refuse to move the alias when a block-mode gate fails,
     # unless --force (which is audited). No configured gate → this is a no-op.
     from examlops.evaluation.gate import run_eval_gate
@@ -770,8 +793,11 @@ def promote(
             )
             _output.warning("Model is synthetic-only but --force set; overriding.")
 
+    approval_note = " [policy requires approval]" if policy_decision.requires_approval else ""
     if not _output.confirm(
-        f"Promote [bold]{model}[/bold] v{version} → [bold]{to_alias}[/bold]? ({status_str})"
+        f"Promote [bold]{model}[/bold] v{version} → [bold]{to_alias}[/bold]? "
+        f"({status_str}){approval_note}",
+        default=not policy_decision.requires_approval,
     ):
         _output.info("Cancelled.")
         return

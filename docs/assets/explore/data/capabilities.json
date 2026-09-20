@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 479,
+ "total_commands": 480,
  "total_groups": 71,
  "panels": [
   {
@@ -2876,6 +2876,13 @@
      "cmd": "exa policy list",
      "group": "policy",
      "help": "List the policy rules currently loaded from policy.yaml.",
+     "anchor": "exa-policy-policy-as-code-for-mutations",
+     "guide": "guides/policy-as-code.md"
+    },
+    {
+     "cmd": "exa policy simulate",
+     "group": "policy",
+     "help": "Simulate a decision with no side effects; exit 0 allow, 1 deny, 4 require_approval.",
      "anchor": "exa-policy-policy-as-code-for-mutations",
      "guide": "guides/policy-as-code.md"
     },

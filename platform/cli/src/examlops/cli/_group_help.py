@@ -232,6 +232,10 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     ],
     "policy": [
         ("Policy rules from policy.yaml", "exa policy list"),
+        (
+            "Simulate a decision (0 allow, 1 deny, 4 approval)",
+            "exa policy simulate manual_promote --set model=JPCP",
+        ),
     ],
     "providers": [
         ("Pluggable calculation providers", "exa providers list"),

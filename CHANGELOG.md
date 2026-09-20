@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - policy-as-code on the human paths, `exa policy simulate`, `exa hpc place --explain` (ADR 0079 / 0077)
+
+- `exa pipeline promote` and `exa hpc approve` now consult `policy.decide_safe` with the new
+  action kinds `manual_promote` and `cluster_approve`. No policy file / no matching rule leaves
+  behaviour and the audit trail byte-identical; a matching `deny` exits 1 naming the rule (not
+  overridable by `--force`); `require_approval` flips the existing confirmation default to no.
+  Decisions that a rule made are audited as `policy:<action>`.
+- `exa policy simulate <action>`: side-effect-free decision, exit 0 allow / 1 deny / 4
+  require_approval.
+- `exa hpc place --explain`: prints the scoring provider, the ask, and each candidate's rank,
+  score, margin to the winner and idle/total capacity (`explain` key under `-o json`), built only
+  from what placement already returns.
+
 ## [0.61.0] - 2026-09-20
 
 ### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)

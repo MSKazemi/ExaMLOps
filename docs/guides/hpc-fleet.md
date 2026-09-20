@@ -113,6 +113,7 @@ and fail fast before submitting.
 ```bash
 # Which ACTIVE cluster should run a 4-GPU job? (least-loaded that fits)
 exa hpc place --gpus 4
+exa hpc place --gpus 4 --explain   # scoring provider + ranked score/margin per candidate
 
 # Live scheduler queue for a cluster (squeue / flux jobs, normalized)
 exa hpc queue --cluster lxp

@@ -876,7 +876,7 @@ Discovers Slurm/Flux/nvidia-smi capacity (read-only), registers clusters behind 
 | `exa hpc clusters` | Lists registered clusters and their approval state (PENDING/ACTIVE/REJECTED). | Audit which clusters are authorized to run jobs. | `exa hpc clusters` |
 | `exa hpc approve <name>` | **(mutation, sysadmin)** Approves a cluster so ExaMLOps may schedule jobs on it (audited). | Grant scheduling authorization after review. | `exa hpc approve lxp` |
 | `exa hpc reject <name>` | **(mutation, sysadmin)** Rejects a cluster, blocking scheduling (audited). | Deny/revoke a cluster with a recorded reason. | `exa hpc reject lxp --reason "maintenance window"` |
-| `exa hpc place` | Shows which ACTIVE cluster placement would choose for a resource ask (dry preview, no submission). | Preview scheduling decisions before running a job. | `exa hpc place --gpus 2 --cpus 16 --nodes 1` |
+| `exa hpc place` | Shows which ACTIVE cluster placement would choose for a resource ask (dry preview, no submission). | Preview scheduling decisions before running a job; `--explain` adds the scoring provider and each candidate's ranked score and margin to the winner. | `exa hpc place --gpus 2 --cpus 16 --nodes 1 --explain` |
 | `exa hpc queue` | Shows the live scheduler queue for an ACTIVE cluster (read-only). | Inspect pending/running jobs on a cluster. | `exa hpc queue --cluster lxp` |
 | `exa hpc jobs` | Lists tracked HPC submissions from `platform.db` (`hpc_jobs`). | Review the platform's own submission history. | `exa hpc jobs --model JPCP --limit 20` |
 | `exa hpc preflight <cluster>` | Fail-fast pre-submit checks against a cluster; exits 1 on any failure (CI gate). | Block a pipeline before it wastes a queue slot. | `exa hpc preflight lxp --gpus 2 --nodes 1` |
@@ -1055,6 +1055,7 @@ Declarative governance rules (`policy.yaml`) gate mutating actions. `test` is a 
 |---|---|---|---|
 | `exa policy list` | List the policy rules currently loaded from `policy.yaml` (graceful when absent) | See active governance rules | `exa policy list` |
 | `exa policy test <action>` | Evaluate the policy decision for an action + context (not audited); `--set/-s key=value` repeatable | Try a rule locally before applying | `exa policy test promote --set env=dev` |
+| `exa policy simulate <action>` | Side-effect-free decision for an action + context (`--set k=v`, `--context-json`), never audited; exits 0 allow, 1 deny, 4 require_approval | Use a policy check as a CI gate or preview what `manual_promote` / `cluster_approve` would do | `exa policy simulate manual_promote --set to_alias=Production` |
 | `exa policy eval <decision>` | **[mutation]** Evaluate a structured decision via the PolicyEngine (audited unless `--dry-run`); `--action`, `--subject`, `--resource`, `--tenant`, `--set/-s`, `--dry-run` | Make and record an authoritative policy decision | `exa policy eval promote --action promote --subject alice --resource JPCP/17 --dry-run` |
 | `exa policy bundle list` | List signed policy bundle versions; `--tenant` filter | Review published bundle versions | `exa policy bundle list` |
 | `exa policy bundle sign` | **[mutation]** Version + sign the effective policy bundle for a tenant (R2); `--tenant` | Freeze and sign the current policy set | `exa policy bundle sign --tenant acme` |
