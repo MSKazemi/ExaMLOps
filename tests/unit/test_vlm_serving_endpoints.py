@@ -106,17 +106,79 @@ def test_gwtv7_hpc_resolve_endpoint_reads_the_file_the_job_writes(tmp_path):
     assert launcher.resolve_endpoint(spec) == "http://gpu-node-03:8000"
 
 
-def test_gwtv7_kserve_renders_and_validates_but_never_claims_a_deploy(monkeypatch):
-    # The retired EXAMLOPS_KSERVE_LIVE_APPLY flag used to relabel this PENDING→STARTING without
-    # applying anything (ADR 0142 d6). Setting it must change nothing now.
-    monkeypatch.setenv("EXAMLOPS_KSERVE_LIVE_APPLY", "1")
-    handle = le.KServeLauncher().start(le.EndpointSpec(model="qwen", hf_model_id="Qwen/Qwen2.5-7B"))
-    assert handle.state == "PENDING"
-    assert handle.detail["applied"] is False
+class _FakeKubectl:
+    """Duck-types `KubectlClient` (mirrors `test_substrate_seam.py`'s fake) with a live store,
+    so `status()`/`stop()` after `apply()` see what was actually applied."""
+
+    def __init__(self, *, apply_error: Exception | None = None):
+        self._apply_error = apply_error
+        self._store: dict[str, dict] = {}
+        self.applied: list[dict] = []
+        self.deleted: list[str] = []
+
+    def apply(self, objects: list[dict]) -> list[str]:
+        if self._apply_error is not None:
+            raise self._apply_error
+        refs = []
+        for obj in objects:
+            name = obj["metadata"]["name"]
+            self._store[name] = obj
+            self.applied.append(obj)
+            refs.append(f"{obj['kind']}/{name}")
+        return refs
+
+    def get_any_kind(self, name: str) -> dict | None:
+        return self._store.get(name)
+
+    def delete_any_kind(self, name: str) -> None:
+        self.deleted.append(name)
+        self._store.pop(name, None)
+
+
+def test_gwtv7_kserve_start_renders_and_really_applies(monkeypatch):
+    # ADR 0107 clause 3 close-out: KServeLauncher.start used to always dry-run. It now performs
+    # a genuine, plan-gated Server-Side Apply through the substrate seam (ADR 0142 d1/d6) — the
+    # same real mechanism `tests/integration/test_kserve_live_apply_kind_live.py` verifies
+    # against an actual cluster; this test verifies the launcher-level wiring with a fake.
+    fake = _FakeKubectl()
+    handle = le.KServeLauncher(kubectl=fake).start(
+        le.EndpointSpec(model="qwen", hf_model_id="Qwen/Qwen2.5-7B")
+    )
+    assert handle.detail["applied"] is True
+    assert fake.applied  # the substrate's real apply() ran, not a dry-run preview
     manifest = handle.detail["manifest"]
     assert manifest["apiVersion"] == "serving.kserve.io/v1alpha2"
     assert manifest["spec"]["model"]["uri"] == "hf://Qwen/Qwen2.5-7B"
     assert "predictor" not in manifest["spec"]
+    # No controller is running against the fake, so the object carries no Ready condition yet —
+    # honestly PENDING, not a fabricated READY.
+    assert handle.state == "PENDING"
+
+
+def test_gwtv7_kserve_apply_failure_raises_launcher_error_not_a_silent_pending(monkeypatch):
+    fake = _FakeKubectl(apply_error=RuntimeError("connection refused"))
+    with pytest.raises(le.LauncherError, match="connection refused"):
+        le.KServeLauncher(kubectl=fake).start(
+            le.EndpointSpec(model="qwen", hf_model_id="Qwen/Qwen2.5-7B")
+        )
+    assert fake.applied == []
+
+
+def test_gwtv7_kserve_status_and_stop_go_through_the_same_live_object(monkeypatch):
+    fake = _FakeKubectl()
+    launcher = le.KServeLauncher(kubectl=fake)
+    launcher.start(le.EndpointSpec(model="qwen", hf_model_id="Qwen/Qwen2.5-7B"))
+
+    status = launcher.status("qwen")
+    assert status["launcher"] == "kserve"
+    assert status["state"] == "PENDING"
+
+    result = launcher.stop("qwen")
+    assert result == {"launcher": "kserve", "model": "qwen", "stopped": True}
+    assert fake.deleted  # the real object name, not a raised "do it yourself" error
+
+    # Stopped: the object is gone, status reports UNKNOWN rather than crashing.
+    assert launcher.status("qwen")["state"] == "UNKNOWN"
 
 
 # ── GWT-V8: registry ──────────────────────────────────────────────────────────

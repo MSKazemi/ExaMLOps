@@ -104,18 +104,26 @@ def kind_kubeconfig(tmp_path_factory):
                 f"installing LLMInferenceService CRD failed: {applied_llm.stderr.decode()[:500]}"
             )
 
-        # A freshly-registered CRD's API is not immediately servable; wait for it.
+        # A freshly-registered CRD's API is not immediately servable; wait for BOTH — under load,
+        # the two establish at different times, and `delete_any_kind` (used by every `stop()`)
+        # unconditionally tries both kinds, so a not-yet-servable second CRD fails the delete
+        # with "the server doesn't have a resource type", which `--ignore-not-found` cannot
+        # suppress (that flag only silences a missing *instance* of a type the server does know).
         deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            ok = subprocess.run(
-                ["kubectl", "get", "inferenceservices.serving.kserve.io", "-n", NAMESPACE],
-                env=env,
-                capture_output=True,
-                timeout=10,
-            )
-            if ok.returncode == 0:
-                break
-            time.sleep(1)
+        for kind in (
+            "inferenceservices.serving.kserve.io",
+            "llminferenceservices.serving.kserve.io",
+        ):
+            while time.monotonic() < deadline:
+                ok = subprocess.run(
+                    ["kubectl", "get", kind, "-n", NAMESPACE],
+                    env=env,
+                    capture_output=True,
+                    timeout=10,
+                )
+                if ok.returncode == 0:
+                    break
+                time.sleep(1)
 
         yield str(kubeconfig)
     finally:

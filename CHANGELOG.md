@@ -5,6 +5,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — `exa serve llm start/stop/status --launcher kserve` now really applies to Kubernetes (ADR 0107, ADR 0142 decision 1)
+
+`KServeLauncher` was the one `EndpointLauncher` that never actually acted — `start` always
+rendered, validated and dry-ran a manifest (`_kubectl_apply(... --dry-run=server ...)`) no matter
+what the operator asked for; `stop` told the operator to run `kubectl delete` themselves; `status`
+returned a placeholder. This was ADR 0107 clause 3's last open gap and, since the substrate seam's
+real apply already existed one layer down (the previous entry below), it was purely a wiring gap.
+
+- `KServeLauncher.start/stop/status` (`examlops.llm_endpoints`) are cut over to
+  `KServeSubstrate` (`examlops.serving.substrates.registry`, ADR 0142 d1/d6): `start` renders and
+  performs a genuine, plan-gated, audited Server-Side Apply; `status` reads the live object;
+  `stop` deletes it. The `plan_hash` is the render's own content hash, computed and applied in
+  the same call — the approval a plan-gated apply needs is the CLI's own `exa serve llm start`
+  confirmation prompt, which every launcher already goes through.
+- `KServeLauncher(kubectl=...)` accepts an injectable fake for tests, matching
+  `KServeSubstrate`'s own constructor.
+- **Bug fixed along the way:** `KServeSubstrate.status()` crashed (`ValueError: invalid literal
+  for int()`) on an HF-only servable's `examlops.io/version` label, which is the literal string
+  `"unpinned"` (no MLflow-registry version to pin to) rather than a number — exactly the shape
+  `KServeLauncher.start` produces. `versions` is now honestly omitted when the label is not a
+  parseable version, rather than raising.
+- **A second latent bug found running the integration test for real:** its kind-cluster fixture
+  only waited for the `InferenceService` CRD to become servable before starting tests, never
+  `LLMInferenceService`; under load the second CRD could still be establishing, and
+  `stop()`/`delete_any_kind()` tries both kinds unconditionally — `--ignore-not-found` does not
+  suppress "the server doesn't have a resource type" for a CRD that has not finished
+  registering. Fixed by waiting for both.
+- `serving_backends.KServeK8s` (used only by the offline-preview `exa serve manifest`, never a
+  mutating command) is unchanged and correctly remains dry-run-only.
+- Verified against a real cluster, both at the substrate layer
+  (`tests/integration/test_kserve_live_apply_kind_live.py`, now reliably 3/3) and end-to-end
+  through the launcher itself (`examlops.llm_endpoints.KServeLauncher`, live smoke-tested against
+  a throwaway kind cluster: start → status → stop → status).
+- ADR 0107 → **Accepted** (its one remaining gap is closed, via a corrected mechanism — a CLI
+  confirm + plan-hash gate, not the named-then-retired `EXAMLOPS_KSERVE_LIVE_APPLY` env flag).
+
 ### Added — a real, live Kubernetes apply for the KServe substrate (ADR 0142 decisions 1/6)
 
 `examlops.serving.substrates.registry.KServeSubstrate` used to render and validate KServe

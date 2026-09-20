@@ -231,6 +231,21 @@ def test_a_kserve_status_reads_the_live_object():
     assert status.versions == {"chat": 7}
 
 
+def test_a_kserve_status_omits_an_unparseable_version_instead_of_crashing():
+    # An HF-only servable (ADR 0107 KServeLauncher, no MLflow registry version) renders
+    # "unpinned" as examlops.io/version — `versions` is int-valued, so this must be omitted,
+    # not raise ValueError("invalid literal for int()").
+    live = {
+        "metadata": {"labels": {"examlops.io/version": "unpinned"}},
+        "status": {"conditions": [{"type": "Ready", "status": "False"}]},
+    }
+    fake = _FakeKubectl(objects={"qwen": live})
+    status = registry.get("kserve", kubectl=fake).status("qwen")
+
+    assert status.state == "STARTING"
+    assert status.versions == {}
+
+
 def test_a_kserve_status_for_an_absent_service_is_unknown_not_an_error():
     fake = _FakeKubectl()
     status = registry.get("kserve", kubectl=fake).status("ghost")

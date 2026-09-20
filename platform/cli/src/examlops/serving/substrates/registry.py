@@ -424,7 +424,11 @@ class KServeSubstrate:
             return SubstrateStatus("UNKNOWN", {}, None, {"note": f"{name} not found in KServe"})
         state, url, detail = status_from_object(obj)
         version = (obj.get("metadata", {}).get("labels") or {}).get("examlops.io/version")
-        return SubstrateStatus(state, {name: int(version)} if version else {}, url, detail)
+        # An HF-only servable (no MLflow registry version) renders "unpinned" here (ADR 0107
+        # KServeLauncher) — `versions` is declared int-valued, so an unparseable version is
+        # honestly omitted rather than raising or inventing a number.
+        versions = {name: int(version)} if version and version.isdigit() else {}
+        return SubstrateStatus(state, versions, url, detail)
 
     def stop(self, name: str) -> None:
         self._kubectl().delete_any_kind(name)

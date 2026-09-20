@@ -460,21 +460,38 @@ def _record_serve_job(job_id: str, scheduler: str, spec: EndpointSpec) -> None:
 # ── KServe ────────────────────────────────────────────────────────────────────
 
 
-class KServeLauncher:
-    """Render an ``LLMInferenceService`` for the endpoint and validate it — nothing is applied.
+def _kserve_object_name(model: str) -> str:
+    """The Kubernetes object name a rendered manifest actually gets (ADR 0142 ``_metadata``)."""
+    from examlops.serving.substrates.kserve import service_name
 
-    The manifest is checked offline against the pinned KServe schema and, when ``kubectl`` and
-    a cluster are reachable, with a server-side dry run. The endpoint is recorded ``PENDING``
-    because nothing was deployed: the plan-gated, audited apply is USAR I3 (ADR 0142 d6). The
-    ``EXAMLOPS_KSERVE_LIVE_APPLY`` flag that used to relabel this state ``STARTING`` without
-    applying anything is gone.
+    return service_name(model)
+
+
+class KServeLauncher:
+    """Render an ``LLMInferenceService`` via the substrate seam and apply it for real.
+
+    ``exa serve llm start --launcher kserve`` already gates every launcher's mutating action
+    behind its own ``_output.confirm()`` — the same operator approval a plan-gated apply needs —
+    so render and apply happen in one call: the ``plan_hash`` is the render's own content hash,
+    never a value the operator types. This closes ADR 0107 clause 3 (``KServeLauncher.start``
+    used to always dry-run) by cutting over to ``KServeSubstrate`` (ADR 0142 d1/d6), which
+    performs a genuine, audited Server-Side Apply and is verified against a real cluster
+    (``tests/integration/test_kserve_live_apply_kind_live.py``).
     """
 
     name = "kserve"
 
+    def __init__(self, kubectl: Any = None) -> None:
+        self._kubectl = kubectl  # tests inject a fake; default resolved by KServeSubstrate
+
+    def _substrate(self) -> Any:
+        from examlops.serving.substrates.registry import KServeSubstrate
+
+        return KServeSubstrate(kubectl=self._kubectl)
+
     def start(self, spec: EndpointSpec) -> EndpointHandle:
-        from examlops.serving.substrates.resolve import RenderError, ResolvedRef, storage_uri
-        from examlops.serving_backends import _kubectl_apply, registry_to_kserve, validate_manifest
+        from examlops.serving.substrates.base import RenderError, SubstrateError
+        from examlops.serving.substrates.resolve import ResolvedRef, storage_uri
 
         model_yaml = {
             "name": spec.model,
@@ -482,6 +499,7 @@ class KServeLauncher:
             "engine": _engine_block(spec.config),
         }
         weights = spec.hf_model_id if ":" in spec.hf_model_id else f"hf://{spec.hf_model_id}"
+        substrate = self._substrate()
         try:
             ref = ResolvedRef(
                 model=spec.model.lower(),
@@ -491,34 +509,35 @@ class KServeLauncher:
                 artifact_uri=storage_uri(weights),
                 project=spec.project or "default",
             )
-            manifest = registry_to_kserve(model_yaml, ref)
+            rendered = substrate.render(model_yaml, ref)
         except RenderError as exc:
             raise LauncherError(f"cannot render KServe manifest for {spec.model}: {exc}") from exc
-        errors = validate_manifest(manifest)
-        if errors:
-            raise LauncherError(f"invalid KServe manifest for {spec.model}: {errors}")
-        # Validate the manifest built from *this spec*. Routing through KServeK8s.deploy()
-        # would re-read `<model>.yaml` from the registry dir and ignore what the caller
-        # just configured — and fail outright for an endpoint that has no pack YAML yet.
-        checked = _kubectl_apply(manifest)
+        try:
+            result = substrate.apply(rendered, dry_run=False, plan_hash=rendered.content_hash)
+        except SubstrateError as exc:
+            raise LauncherError(f"KServe apply failed for {spec.model}: {exc}") from exc
+        live = substrate.status(_kserve_object_name(spec.model))
         return EndpointHandle(
             model=spec.model,
             launcher=self.name,
-            state="PENDING",
-            base_url=os.getenv("EXAMLOPS_KSERVE_GATEWAY_URL"),
-            detail={"applied": False, "validation": checked, "manifest": manifest},
+            state=live.state,
+            base_url=live.address or os.getenv("EXAMLOPS_KSERVE_GATEWAY_URL"),
+            detail={
+                "applied": True,
+                "applied_refs": list(result.applied),
+                "manifest": dict(rendered.objects[0]),
+            },
         )
 
     def stop(self, model: str) -> dict[str, Any]:
-        raise LauncherError(
-            "deleting a KServe service is a cluster operation: "
-            f"kubectl delete llminferenceservice {model.lower()}"
-        )
+        self._substrate().stop(_kserve_object_name(model))
+        return {"launcher": self.name, "model": model, "stopped": True}
 
     def status(self, model: str) -> dict[str, Any]:
-        from examlops.serving_backends import KServeK8s
+        from dataclasses import asdict
 
-        return KServeK8s().status(model)
+        live = self._substrate().status(_kserve_object_name(model))
+        return {"launcher": self.name, "model": model, **asdict(live)}
 
 
 def _engine_block(config: EngineConfig) -> dict[str, Any]:

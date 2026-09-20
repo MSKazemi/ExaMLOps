@@ -55,7 +55,7 @@ endpoint registry. Four launchers decide *where* it runs:
 | `external` (default) | registers a server someone else runs — starts nothing, works on a CPU-only host |
 | `compose` | a GPU `vllm` service in the Docker Compose stack |
 | `slurm` / `flux` | submits a serving job to an HPC cluster (tensor-parallel in-node, pipeline-parallel across nodes) and records the allocated node's address |
-| `kserve` | renders a KServe manifest — see the limitations below |
+| `kserve` | renders and really applies an `LLMInferenceService` to a Kubernetes cluster (plan-gated, audited) — see the limitations below |
 
 ```bash
 exa serve llm start qwen --base-url http://gpu01:8000 --hf-model Qwen/Qwen3-8B
@@ -110,17 +110,20 @@ Details: [Management Agent](agent.md) · [AgentOps](agentops.md).
 
 These are the parts that exist as code but do not yet do what their names suggest. Plan around them.
 
-- **`exa serve manifest` and the `kserve` launcher are still manifest generation only.** They call
-  the older `examlops.serving_backends` module, which produces `InferenceService` /
-  `LLMInferenceService` manifests for a resolved model version, validated against the KServe schema
-  the platform pins and, when `kubectl` and a cluster are reachable, `kubectl apply
-  --dry-run=server`. Nothing is applied to a cluster from these commands. See
-  [Kubernetes serving](kubernetes-serving.md). **A real apply now exists one layer down** — the
-  `Substrate` seam's `KServeSubstrate` (`examlops.serving.substrates.registry`, ADR 0142 d1/d6)
-  performs a genuine Server-Side Apply, plan-gated and audited, verified against a real cluster
-  (`tests/integration/test_kserve_live_apply_kind_live.py`) — but no CLI command calls it yet; that
-  cutover (`ServingBackend`/`EndpointLauncher` retiring as deprecated shims over the substrate seam,
-  per the ADR's own plan) is a named follow-up, not done here.
+- **`exa serve manifest` stays manifest generation only, by design.** It calls the older
+  `examlops.serving_backends` module (`InferenceService`/`LLMInferenceService` manifests, validated
+  against the pinned KServe schema, `kubectl apply --dry-run=server` when a cluster is reachable) —
+  an offline preview command; it never applies anything, and that is the point of it. See
+  [Kubernetes serving](kubernetes-serving.md).
+- **`exa serve llm start/stop/status --launcher kserve` now perform a real, live Kubernetes
+  action.** They are cut over to the `Substrate` seam's `KServeSubstrate`
+  (`examlops.serving.substrates.registry`, ADR 0142 d1/d6, ADR 0107 clause 3): `start` renders and
+  performs a genuine, plan-gated, audited Server-Side Apply (gated by the same `exa serve llm
+  start` confirmation prompt every other launcher already uses); `status` reads the live object;
+  `stop` deletes it. Verified against a real cluster, both at the substrate layer
+  (`tests/integration/test_kserve_live_apply_kind_live.py`) and end-to-end through
+  `examlops.llm_endpoints.KServeLauncher` itself. `serving_backends.KServeK8s` (used only by
+  `exa serve manifest`) is unaffected and remains dry-run-only on purpose.
 - **The gateway is a library, not a service.** `examlops.gateway` runs inside the process that calls
   it (`exa gateway chat`, RAG, the challenger judge). There is no standalone gateway endpoint to point
   other clients at.
