@@ -139,7 +139,6 @@ async def _follow_retrain(client: httpx.AsyncClient, view: dict, headers: dict[s
         return retrain_command.outcome(view)
 
 
-from model_schema_registry import ModelSchemaRegistry  # noqa: E402
 from dataplane_bus_client import Connection  # noqa: E402
 from dataplane_bus_msgs import (  # noqa: E402
     HpcInferenceResV1,
@@ -149,6 +148,7 @@ from dataplane_bus_msgs import (  # noqa: E402
     VectorReqV1,
     VectorResV1,
 )
+from model_schema_registry import ModelSchemaRegistry  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
