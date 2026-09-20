@@ -3237,6 +3237,22 @@ Route a request through a base + adapter — refuses a base mismatch (R4/GWT-4).
 
 Autoscaling & scale-to-zero (E5)
 
+#### `exa serve autoscale manifest`
+
+Render a KEDA ScaledObject or Knative/KServe autoscaling overlay from the policy (read-only).
+
+- `--kind` — keda (ScaledObject) | knative (KServe overlay)
+- `--target` — KEDA scaleTargetRef name (default <model>-predictor)
+- `--namespace` — Kubernetes namespace
+- `--prometheus-url` — Prometheus address KEDA queries
+- `--out` — Write the YAML to this file
+
+#### `exa serve autoscale prefetch`
+
+Plan which models to keep warm / pre-pull, from policies + recent traffic (read-only).
+
+- `--top` — Only the first N entries (0 = all)
+
 #### `exa serve autoscale record`
 
 Record an executed scale event (audited D4).
@@ -3251,7 +3267,7 @@ Run the autoscale controller: signals -> decide_scale -> apply (audited, dry run
 
 - `--once` — Run one cycle and exit (default: loop)
 - `--apply` — Execute decisions (needs EXAMLOPS_AUTOSCALE_ENABLED=1). Default: dry run
-- `--applier` — record (ledger only) | ray (not built: refuses)
+- `--applier` — record (ledger only) | desired (write desired replicas) | ray (not built: refuses)
 - `--interval` — Seconds between cycles (0 = env/30)
 
 #### `exa serve autoscale savings`

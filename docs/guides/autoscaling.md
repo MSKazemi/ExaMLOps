@@ -88,8 +88,48 @@ have no per-model source in the platform, so a policy that targets them holds un
 **Appliers.** `record` writes the scale event and audit and touches no serving substrate; the change
 is then made by an operator or an external system. Current replicas are the last recorded
 `to_replicas`, so seed a model once with `exa serve autoscale record MODEL 1 1`; an unseeded model
-holds. `ray` is **not built**: Ray Serve here scales one deployment (every model in it) at deploy
+holds. `desired` writes the decided count to an `autoscale_desired` row (`exa serve autoscale status`
+shows it) and reads it back as the current count; that is **intent for whatever owns replicas** - it
+changes no running replica. `ray` is **not built**: Ray Serve here scales one deployment (every model in it) at deploy
 time via `RAY_AUTOSCALE_MAX_REPLICAS`, and no admin route changes one model's replicas, so it refuses.
+
+## Defaults in the model YAML
+
+A model YAML may declare an `autoscale:` block (same keys as `exa serve autoscale set`):
+
+```yaml
+autoscale:
+  min_replicas: 0
+  max_replicas: 6
+  target_metric: rps          # rps | p95 | queue_depth | gpu_util
+  target_value: 5
+  scale_to_zero_after_s: 300  # needs min_replicas: 0
+  warm_pool: 0
+```
+
+The block is the **default**; a row set with `exa serve autoscale set` overrides it per model
+(`exa serve autoscale status` prints `policy_source: yaml|db`). No shipped pack declares one, so
+nothing changes until a pack opts in. Invalid blocks are reported by
+`examlops.autoscale.policy_yaml.validate_autoscale_block` and ignored by the controller.
+
+## KEDA and Knative/KServe manifests
+
+```bash
+exa serve autoscale manifest JPCP --kind keda      # KEDA ScaledObject (Prometheus trigger)
+exa serve autoscale manifest JPCP --kind knative   # KServe overlay with Knative annotations
+```
+
+Generator output only: nothing is applied and no chart installs KEDA or Knative. Only `rps` and
+`p95` policies render (the series exist); `queue_depth`/`gpu_util` are refused rather than emitted
+as a trigger that never fires; the Knative overlay supports `rps` only. Assumed and unverified
+without a cluster: the `scaleTargetRef` (`<model>-predictor`, override with `--target`) and the
+Prometheus address KEDA queries.
+
+## Prefetch plan
+
+`exa serve autoscale prefetch` lists which models to keep warm (`warm_pool > 0`) or pre-pull (a
+zero-able model with recent traffic). Read-only planning; the weight cache, registry prefetcher and
+cold-start activator need a runtime and are **not built**.
 
 ## Recording executed scales
 

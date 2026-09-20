@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 486,
+ "total_commands": 488,
  "total_groups": 71,
  "panels": [
   {
@@ -968,6 +968,20 @@
      "cmd": "exa serve adapter route",
      "group": "serve",
      "help": "Route a request through a base + adapter — refuses a base mismatch (R4/GWT-4).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve autoscale manifest",
+     "group": "serve",
+     "help": "Render a KEDA ScaledObject or Knative/KServe autoscaling overlay from the policy (read-only).",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve autoscale prefetch",
+     "group": "serve",
+     "help": "Plan which models to keep warm / pre-pull, from policies + recent traffic (read-only).",
      "anchor": "exa-serve-ray-serve-operations",
      "guide": "components/ray-serve.md"
     },

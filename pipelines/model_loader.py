@@ -87,6 +87,10 @@ class ModelYAMLConfig:
     # protected/binned attributes here rather than only in `fairness_config` puts them in code
     # review and in the deployment, instead of in a runtime table that a fresh database loses.
     fairness: dict[str, Any] = field(default_factory=dict)
+    # Autoscale defaults (ADR 0031 clause 1): min/max/target/scale-to-zero for this model. Kept raw
+    # and validated by examlops.autoscale.policy_yaml.validate_autoscale_block; the
+    # `autoscale_config` table (exa serve autoscale set) overrides it. Empty = no default policy.
+    autoscale: dict[str, Any] = field(default_factory=dict)
 
     def dataset(self, name: str) -> DatasetEntry:
         for ds in self.datasets:
@@ -150,6 +154,7 @@ def load_model_yaml(path: Path) -> ModelYAMLConfig:
         project=raw.get("project") or None,
         engine=raw.get("engine") or {},
         fairness=raw.get("fairness") or {},
+        autoscale=raw.get("autoscale") or {},
     )
 
 

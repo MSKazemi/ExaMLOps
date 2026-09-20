@@ -93,6 +93,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 - `--execute` without `--train-cmd` runs the real `training_flow` (against a throw-away MLflow
   store/platform DB); `EXAMLOPS_SEED` is now applied by the flow. New `exa reproduce show`.
 
+### Added - autoscaling: YAML policy defaults, desired-replica applier, KEDA/Knative manifests, prefetch plan (ADR 0031)
+
+- A model YAML may carry an `autoscale:` block (validated; the `autoscale_config` row overrides it;
+  no shipped pack uses it, so behaviour is unchanged). `exa serve autoscale status` shows `policy_source`.
+- `exa serve autoscale run --applier desired` records the decided count in a lazily created
+  `autoscale_desired` table. It is intent for an external owner of replicas, not a change to a
+  running replica; the Ray Serve applier stays unbuilt (one deployment hosts every model).
+- `exa serve autoscale manifest MODEL --kind keda|knative` renders a KEDA `ScaledObject` or a
+  KServe/Knative autoscaling overlay (read-only; `queue_depth`/`gpu_util` are refused - no source).
+- `exa serve autoscale prefetch` plans warm/prefetch models (read-only). ADR 0031 stays partial.
+
 ## [0.61.0] - 2026-09-20
 
 ### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)

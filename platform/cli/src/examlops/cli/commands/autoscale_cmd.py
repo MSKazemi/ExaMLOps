@@ -107,16 +107,21 @@ def status(
 ) -> None:
     """Show the autoscale policy + recent scale events + cold-start time."""
     from examlops.autoscale import cold_start_seconds
-    from examlops.data.serving import get_autoscale_config, list_scale_events
+    from examlops.autoscale.policy_yaml import effective_config
+    from examlops.data.autoscale_desired import get_desired
+    from examlops.data.serving import list_scale_events
 
-    cfg = get_autoscale_config(model)
+    cfg = effective_config(model)
     if not cfg:
         _output.info(f"No autoscale policy for {model}.")
         return
     events = list_scale_events(model, last_n=10)
     cs = cold_start_seconds(model)
+    desired = get_desired(model)
     if _output.json_mode:
-        _output.print_json({"config": cfg, "events": events, "cold_start_s": cs})
+        _output.print_json(
+            {"config": cfg, "events": events, "cold_start_s": cs, "desired": desired}
+        )
         return
     _output.print_record(
         {
@@ -126,6 +131,8 @@ def status(
             "scale_to_zero_after_s": cfg["scale_to_zero_after_s"] or "disabled",
             "warm_pool": cfg["warm_pool"],
             "gpu_fraction": cfg["gpu_fraction"],
+            "policy_source": cfg.get("source", "db"),
+            "desired_replicas": desired["replicas"] if desired else "not set",
             "mean_cold_start_s": f"{cs:.2f}" if cs is not None else "not measured",
         }
     )
@@ -194,7 +201,9 @@ def run(
         help="Execute decisions (needs EXAMLOPS_AUTOSCALE_ENABLED=1). Default: dry run",
     ),
     applier: str = typer.Option(
-        "record", "--applier", help="record (ledger only) | ray (not built: refuses)"
+        "record",
+        "--applier",
+        help="record (ledger only) | desired (write desired replicas) | ray (not built: refuses)",
     ),
     interval: int = typer.Option(0, "--interval", help="Seconds between cycles (0 = env/30)"),
 ) -> None:
@@ -241,3 +250,107 @@ def run(
         ctl.run_forever(interval=interval or interval_s(), on_cycle=show)
     except KeyboardInterrupt:
         _output.info("autoscale controller stopped.")
+
+
+_MANIFEST_EXAMPLES = (
+    "Examples:\n\n"
+    "  exa serve autoscale manifest JPCP --kind keda\n\n"
+    "  exa serve autoscale manifest JPCP --kind knative --out ./k8s/jpcp-autoscale.yaml\n\n"
+    "  exa --json serve autoscale manifest JPCP --kind keda"
+)
+
+
+@app.command("manifest", epilog=_MANIFEST_EXAMPLES)
+def manifest(
+    model: str = typer.Argument(..., help="Model name (needs an autoscale policy)"),
+    kind: str = typer.Option(
+        "keda", "--kind", help="keda (ScaledObject) | knative (KServe overlay)"
+    ),
+    target: str = typer.Option(
+        None, "--target", help="KEDA scaleTargetRef name (default <model>-predictor)"
+    ),
+    namespace: str = typer.Option(None, "--namespace", help="Kubernetes namespace"),
+    prometheus_url: str = typer.Option(
+        "http://prometheus:9090", "--prometheus-url", help="Prometheus address KEDA queries"
+    ),
+    out: str = typer.Option(None, "--out", help="Write the YAML to this file"),
+) -> None:
+    """Render a KEDA ScaledObject or Knative/KServe autoscaling overlay from the policy (read-only)."""
+    import yaml
+
+    from examlops.autoscale import get_policy
+    from examlops.autoscale.manifests import ManifestError, render
+
+    policy = get_policy(model)
+    if policy is None:
+        _output.error(f"No autoscale policy for {model} - use: exa serve autoscale set {model}")
+        raise typer.Exit(1)
+    try:
+        doc = render(
+            kind,
+            model,
+            policy,
+            target_name=target,
+            namespace=namespace,
+            prometheus_url=prometheus_url,
+        )
+    except ManifestError as exc:
+        _output.error(str(exc), exit_code=2)
+    text = yaml.safe_dump(doc, sort_keys=False)
+    if out:
+        from pathlib import Path
+
+        Path(out).write_text(text)
+        _output.ok(f"{doc['kind']} written to {out} (not applied to any cluster)")
+        return
+    if _output.json_mode:
+        _output.print_json(doc)
+        return
+    typer.echo(text)
+
+
+@app.command("prefetch")
+def prefetch(
+    top: int = typer.Option(0, "--top", help="Only the first N entries (0 = all)"),
+) -> None:
+    """Plan which models to keep warm / pre-pull, from policies + recent traffic (read-only)."""
+    from examlops.autoscale import AutoscalePolicy
+    from examlops.autoscale.controller import PrometheusSignals, SignalSourceDown
+    from examlops.autoscale.policy_yaml import effective_configs
+    from examlops.autoscale.prefetch import plan_prefetch
+
+    configs = effective_configs()
+    src = PrometheusSignals()
+    rps: dict[str, float | None] = {}
+    note = ""
+    for cfg in configs:
+        try:
+            rps[str(cfg["model"])] = src.read(
+                str(cfg["model"]), AutoscalePolicy.from_config(cfg)
+            ).rps
+        except SignalSourceDown as exc:
+            note = f"traffic unavailable ({exc}); only warm-pool entries are planned"
+            break
+    plan = plan_prefetch(configs, rps, top=top or None)
+    if _output.json_mode:
+        _output.print_json({"plan": plan, "note": note})
+        return
+    if note:
+        _output.warning(note)
+    if not plan:
+        _output.info("Nothing to prefetch (no warm pool and no zero-able model with traffic).")
+        return
+    _output.print_table(
+        "Prefetch plan (read-only; the weight cache / activator are not built)",
+        ["Model", "Action", "Replicas", "RPS", "Why"],
+        [
+            [
+                p["model"],
+                p["action"],
+                str(p["replicas"]),
+                "-" if p["rps"] is None else f"{p['rps']:g}",
+                p["reason"],
+            ]
+            for p in plan
+        ],
+    )

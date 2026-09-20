@@ -172,7 +172,15 @@ def set_policy(model: str, **kw: Any) -> None:
 
 
 def get_policy(model: str) -> AutoscalePolicy | None:
+    """The effective policy: the DB override, else the model YAML's ``autoscale:`` default."""
     cfg = platform_db.get_autoscale_config(model)
+    if not cfg:
+        from examlops.autoscale.policy_yaml import yaml_config  # noqa: PLC0415
+
+        try:
+            cfg = yaml_config(model)
+        except ValueError:
+            cfg = None
     return AutoscalePolicy.from_config(cfg) if cfg else None
 
 

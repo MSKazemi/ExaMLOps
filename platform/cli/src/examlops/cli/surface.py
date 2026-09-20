@@ -461,6 +461,8 @@ TIERS: dict[str, str] = {
     "serve adapter list": R,
     "serve adapter promote": D,
     "serve adapter route": A,
+    "serve autoscale manifest": R,  # renders YAML to stdout/--out; applies nothing
+    "serve autoscale prefetch": R,
     "serve autoscale record": A,
     "serve autoscale run": A,  # dry run by default, but `--apply` scales; the verb is mutating
     "serve autoscale savings": R,

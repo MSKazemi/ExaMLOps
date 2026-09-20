@@ -20,7 +20,11 @@ What is built and what is not (be exact):
   ``examlops_predict_latency_seconds`` — the series Ray Serve already exports). ``queue_depth`` and
   ``gpu_util`` have **no per-model source anywhere in the platform**, so a policy that targets them
   holds with ``signal absent``.
-* Appliers: :class:`RecordApplier` records the executed change (scale event + audit) and touches no
+* Policies: a model's DB override (``exa serve autoscale set``) else the ``autoscale:`` block of its
+  model YAML (:mod:`examlops.autoscale.policy_yaml`).
+* Appliers: :class:`DesiredStateApplier` (``desired``) records the decided count as desired
+  replicas — intent for an external owner of replicas, not a change to a running replica.
+  :class:`RecordApplier` records the executed change (scale event + audit) and touches no
   serving substrate — the actuator is then a human or an external system (a KEDA/Knative generator).
   :class:`RayServeApplier` is **not built**: Ray Serve here is one deployment hosting every model,
   scaled through ``RAY_AUTOSCALE_MAX_REPLICAS`` / ``autoscaling_config`` at deploy time, and no
@@ -208,6 +212,38 @@ class RecordApplier:
         return None
 
 
+class DesiredStateApplier(RecordApplier):
+    """Writes the decided replica count as the model's **desired replicas** (``autoscale_desired``).
+
+    This is honest about what it does: it records intent for whatever owns replicas (an operator, a
+    deploy step, a KEDA/Knative object from ``exa serve autoscale manifest``). It does **not** change
+    a running replica — nothing in this repo consumes the row to do that, because Ray Serve here
+    serves every model from one deployment with no per-model replica admin route. Current replicas
+    are the desired row if present, else the last recorded scale event.
+    """
+
+    name = "desired"
+
+    def current_replicas(self, model: str) -> int | None:
+        from examlops.data.autoscale_desired import get_desired
+
+        row = get_desired(model)
+        return int(row["replicas"]) if row else super().current_replicas(model)
+
+    def apply(self, model: str, from_replicas: int, to_replicas: int) -> None:
+        from examlops.data.autoscale_desired import set_desired
+
+        try:
+            set_desired(
+                model,
+                to_replicas,
+                reason=f"autoscaler {from_replicas}->{to_replicas}",
+                updated_by=os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ScaleApplyError(f"could not record desired replicas: {exc}") from exc
+
+
 class RayServeApplier(RecordApplier):
     """NOT BUILT. Ray Serve serves every model from one deployment and exposes no per-model
     replica admin route; its replicas are set at deploy time (``autoscaling_config``). Refuses."""
@@ -224,6 +260,7 @@ class RayServeApplier(RecordApplier):
 def make_applier(name: str) -> ScaleApplier:
     appliers: dict[str, Callable[[], ScaleApplier]] = {
         "record": RecordApplier,
+        "desired": DesiredStateApplier,
         "ray": RayServeApplier,
     }
     if name not in appliers:
@@ -341,11 +378,11 @@ class AutoscaleController:
                 self._audit("autoscale_skipped", "*", {"reason": report.note}, "default")
                 return report
         try:
-            from examlops.data.serving import list_autoscale_configs
+            from examlops.autoscale.policy_yaml import effective_configs
 
             budget = self.cap if self.cap is not None else max_changes()
             attempted = 0
-            for cfg in list_autoscale_configs():
+            for cfg in effective_configs():
                 try:
                     res, used = self._one(cfg, budget - attempted)
                 except Exception as exc:  # noqa: BLE001 - one model never stops the cycle
@@ -478,6 +515,7 @@ class AutoscaleController:
 __all__ = [
     "AutoscaleController",
     "CycleReport",
+    "DesiredStateApplier",
     "ModelResult",
     "PrometheusSignals",
     "RayServeApplier",
