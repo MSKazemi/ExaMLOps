@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-09-20
+
 ### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)
 
 The model gateway's routes were the echo backend plus registered `exa serve llm` endpoints — no
