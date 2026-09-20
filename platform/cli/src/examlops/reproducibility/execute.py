@@ -31,7 +31,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from examlops import data as platform_db
 from examlops.reproducibility import (
@@ -44,7 +44,7 @@ from examlops.reproducibility import (
 
 METRICS_MARKER = "EXAMLOPS_REPRO_METRICS="
 STEPS = ("code", "dataset", "env", "train", "compare")
-DEFAULT_RTOL = float(DEFAULT_TOLERANCE["rel"])
+DEFAULT_RTOL = float(cast("float", DEFAULT_TOLERANCE["rel"]))
 
 # In-worktree driver: the existing training flow, metrics emitted on a marker line.
 _DRIVER = (
@@ -146,9 +146,11 @@ def _step_env(manifest: dict[str, Any], wt: Path, allow_drift: bool) -> StepResu
         if got is None:
             problem = f"{lock_path} not present in the checked-out commit"
         elif got != want:
-            problem = f"{lock_path} differs: recorded {want[:12]}, checkout {got[:12]}"
+            problem = f"{lock_path} differs: recorded {str(want)[:12]}, checkout {got[:12]}"
     if problem is None:
-        return StepResult("env", "ok", f"{lock_path} sha256 matches recorded {want[:12]}{note}")
+        return StepResult(
+            "env", "ok", f"{lock_path} sha256 matches recorded {str(want)[:12]}{note}"
+        )
     if allow_drift:
         return StepResult("env", "drift_allowed", f"{problem} — continuing (--allow-env-drift)")
     return StepResult("env", "failed", problem)
@@ -264,7 +266,7 @@ def execute_reproduction(
         record(StepResult("code", "failed", "manifest hash mismatch — bundle tampered"))
         return finish()
     tol = manifest.get("tolerance") or DEFAULT_TOLERANCE
-    res.rtol = float(rtol if rtol is not None else tol.get("rel", DEFAULT_RTOL))
+    res.rtol = float(rtol if rtol is not None else cast("float", tol.get("rel", DEFAULT_RTOL)))
 
     tmp = Path(tempfile.mkdtemp(prefix="exa-repro-"))
     wt = tmp / "worktree"

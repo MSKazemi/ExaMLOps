@@ -387,6 +387,7 @@ def plan_change(tool: str, args: dict[str, Any] | None = None) -> dict[str, Any]
 
     plan_hash = compute_hash(tool, norm, preconditions)
     now = time.time()
+    expires_at = now + ttl_seconds()
     required = ["human_approval"] if gate["requires_approval"] else []
     doc = {
         "plan_hash": plan_hash,
@@ -398,13 +399,13 @@ def plan_change(tool: str, args: dict[str, Any] | None = None) -> dict[str, Any]
         "policy": {"action_kind": gate["action_kind"], "reason": gate["reason"]},
         "required_approvals": required,
         "created_at": now,
-        "expires_at": now + ttl_seconds(),
+        "expires_at": expires_at,
     }
     from examlops.data import plans as store
 
     try:
         store.init_db()
-        outcome = store.put(plan_hash, tool, doc, _actor(), doc["expires_at"])
+        outcome = store.put(plan_hash, tool, doc, _actor(), expires_at)
         stored = store.get(plan_hash)
     except Exception as exc:  # noqa: BLE001
         return _err(f"plan store unavailable: {exc}", "plan_unavailable")

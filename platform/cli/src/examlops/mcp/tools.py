@@ -19,7 +19,7 @@ import os
 import urllib.parse
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, cast
 
 from examlops import plans as _plans
 from examlops.cli import _client
@@ -1477,7 +1477,10 @@ _ANNOTATION_FACTS: dict[str, dict[str, bool]] = {
 
 def _with_facts(specs: tuple[ToolSpec, ...]) -> tuple[ToolSpec, ...]:
     return tuple(
-        replace(s, **_ANNOTATION_FACTS[s.name]) if s.name in _ANNOTATION_FACTS else s for s in specs
+        replace(s, **cast("dict[str, Any]", _ANNOTATION_FACTS[s.name]))
+        if s.name in _ANNOTATION_FACTS
+        else s
+        for s in specs
     )
 
 
