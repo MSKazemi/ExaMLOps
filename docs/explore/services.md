@@ -23,7 +23,7 @@ Ports are the host ports of the local development stack.
 |---|---|---|---|
 | Ray Serve MultiModelServer | Serving | 18001, 18265, 18080 | Serves every model alias; hot-reloads when an alias moves |
 | Inference pipeline (InferencePipelineIngress -> FeatureTransformer -> ModelRouter) | Serving | 18001 | Validates, batches and routes each request by traffic split |
-| vLLM OpenAI-compatible server | Serving | 18011 | OpenAI-compatible LLM server on a GPU (optional profile) |
+| vLLM OpenAI-compatible server | Serving | internal only (18011 via dev overlay) | OpenAI-compatible LLM server on a GPU (optional profile) |
 | Control plane API | Control and training | 18002 | Retrain API, approval queue, ModelZoo sync, event relay |
 | Prefect server (orchestrator) | Control and training | 14200 | Stores deployments, schedules and flow-run state |
 | Prefect deployment runner + training_flow | Control and training | — | Serves each model's deployment and runs the training flow |
@@ -108,8 +108,8 @@ Answer predictions.
 
 ### vLLM OpenAI-compatible server
 
-**Port:** 18011  
-**Built on:** vllm/vllm-openai:latest, NVIDIA GPU reservation; compose profile vllm (host port EXAMLOPS_VLLM_HOST_PORT default 18011 -> 8000)
+**Port:** 8000 on the internal network (not published; 127.0.0.1:18011 only with the `docker-compose.engine-direct.yml` dev overlay)  
+**Built on:** vllm/vllm-openai:latest, NVIDIA GPU reservation; compose profile vllm; reached as vllm:8000 by the gateway, never published by the base file
 
 **What it does**
 

@@ -373,6 +373,7 @@ test:infra:helm:
         - tests/unit/test_helm_events.py
         - tests/unit/test_helm_workload_identity.py
         - tests/unit/test_helm_gateway.py
+        - tests/unit/test_engines_not_exposed.py
         - tests/unit/test_helm_prometheus_rules.py
         - .gitlab-ci.yml
       when: on_success
@@ -404,6 +405,7 @@ test:infra:helm:
         tests/unit/test_helm_events.py
         tests/unit/test_helm_workload_identity.py
         tests/unit/test_helm_gateway.py
+        tests/unit/test_engines_not_exposed.py
         tests/unit/test_helm_prometheus_rules.py
         tests/unit/test_dockerfile_build_context.py -q
     - make helm-package

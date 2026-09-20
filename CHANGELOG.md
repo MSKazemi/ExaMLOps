@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Changed — engines are never exposed directly, by construction (ADR 0126 decision 2)
+
+The base Compose file no longer publishes the `vllm` engine on host port 18011. It is reachable only
+as `vllm:8000` on the internal network. Direct host access is an explicit opt-in dev overlay,
+`platform/infra/docker-compose/docker-compose.engine-direct.yml` (loopback-bound, off by default).
+The Helm chart deploys no engine and renders no engine Service/Ingress. New guard
+`tests/unit/test_engines_not_exposed.py` (YAML-parsed Compose files + `helm template` when helm is
+present) fails on any published engine port outside the overlay. Ray Serve's own ports and gRPC
+project scoping remain open (ADR 0126 stays Partially implemented). Migration: anything using
+`localhost:18011` (including `exa serve llm start --launcher compose`) must add the overlay.
+
 ### Added — gateway span content is redacted, fail closed (ADR 0148 decision 2, redactor wiring)
 
 With `EXAMLOPS_GENAI_CAPTURE_CONTENT` on, `GatewayClient.chat` now attaches the prompt and completion

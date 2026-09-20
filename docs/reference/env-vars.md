@@ -251,7 +251,7 @@ server process — you name the weights with `--hf-model`, not by exporting them
 |---|---|---|
 | `EXAMLOPS_VLLM_BASE_URL` | unset | Point the client at an already-running server. Unset, and with no `engine.base_url` in the model YAML, the engine falls back to `EchoEngine` rather than failing. |
 | `EXAMLOPS_VLLM_PORT` | `8000` | Port the server listens on inside its container/allocation. |
-| `EXAMLOPS_VLLM_HOST_PORT` | `18011` | Port published on the host by the Compose launcher. |
+| `EXAMLOPS_VLLM_HOST_PORT` | `18011` | Host port published **only** by the opt-in `docker-compose.engine-direct.yml` overlay (loopback). The base Compose file publishes no engine port. |
 | `EXAMLOPS_VLLM_API_KEY` | empty | Bearer token the server requires, if any. |
 | `EXAMLOPS_VLLM_IMAGE` | `docker://vllm/vllm-openai:latest` | Image for the container/Apptainer launcher. |
 | `EXAMLOPS_VLLM_WORK_DIR` | unset | Scratch directory for launcher state — read per call, so it can be changed without reloading the module. |

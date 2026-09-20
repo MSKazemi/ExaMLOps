@@ -1310,8 +1310,10 @@ services:
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
       VLLM_API_KEY: ${EXAMLOPS_VLLM_API_KEY:-}
-    ports:
-      - "${EXAMLOPS_VLLM_HOST_PORT:-18011}:${EXAMLOPS_VLLM_PORT:-8000}"
+    # No `ports:` on purpose (ADR 0126 decision 2, "engines are never exposed directly"): the engine
+    # is reachable only as vllm:${EXAMLOPS_VLLM_PORT:-8000} on the internal network, by the gateway
+    # and the serving plane. Direct host access for debugging is the opt-in overlay
+    # docker-compose.engine-direct.yml. tests/unit/test_engines_not_exposed.py fails on a port here.
     volumes:
       # Cache the weights on the host: a cold pull is tens of GB per restart otherwise.
       - vllm_cache:/root/.cache/huggingface

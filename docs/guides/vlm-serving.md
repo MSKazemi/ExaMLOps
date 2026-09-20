@@ -154,6 +154,21 @@ NVIDIA devices, caches weights in the `vllm_cache` volume (a cold pull is tens o
 sets `shm_size: 8gb` because PagedAttention needs far more shared memory than Docker's
 64 MB default — too little shows up as an opaque worker crash, not an out-of-shm error.
 
+The engine publishes **no host port** in any shipped Compose file or Helm value (ADR 0126
+decision 2: engines are never exposed directly): it is reachable only as `vllm:8000` on the internal
+network, by the gateway and the serving plane. To smoke-test a model from the host, opt in with the
+dev overlay, which binds loopback only:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.engine-direct.yml --profile vllm up -d vllm
+# → http://127.0.0.1:${EXAMLOPS_VLLM_HOST_PORT:-18011}
+```
+
+Note that `exa serve llm start --launcher compose` and `exa serve llm chat` print/use
+`http://localhost:18011`, which resolves only with that overlay (or an SSH tunnel to it).
+`tests/unit/test_engines_not_exposed.py` fails the build if any engine service publishes a port
+outside that overlay or the chart renders an engine NodePort/LoadBalancer/Ingress.
+
 Its healthcheck allows a 600 s `start_period`: loading a large model takes minutes, and a
 short one would restart the container forever before it ever finished loading.
 

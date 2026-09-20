@@ -1,0 +1,14 @@
+# Opt-in DEV overlay: publish the vLLM engine on a host port, bypassing the gateway.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.engine-direct.yml --profile vllm up -d vllm
+#
+# Off by default. The base file publishes no engine port (ADR 0126 decision 2): a request that
+# reaches the engine directly carries no virtual key, no quota, no guardrail scan and no audit
+# record. Use this only to smoke-test a model on a machine you trust. The port is loopback-only;
+# to reach it from elsewhere use an SSH tunnel rather than widening the bind.
+# tests/unit/test_engines_not_exposed.py allows a published engine port in THIS file only, and only
+# on loopback.
+services:
+  vllm:
+    ports:
+      - "127.0.0.1:${EXAMLOPS_VLLM_HOST_PORT:-18011}:${EXAMLOPS_VLLM_PORT:-8000}"
