@@ -294,7 +294,9 @@ def test_single_node_script_skips_the_ray_cluster(tmp_path):
         model="qwen-vl", hf_model_id="Qwen/Qwen3-VL", nodes=1, work_dir=str(tmp_path)
     )
     script = HpcLauncher(scheduler="slurm").render_script(spec)
-    assert 'NODES="1"' in script
+    # No template-side quotes any more (BL-097): the renderer shlex.quote()s the value itself,
+    # a no-op on a plain digit string.
+    assert "NODES=1" in script
 
 
 def test_argv_omits_defaults_so_it_stays_diffable():
