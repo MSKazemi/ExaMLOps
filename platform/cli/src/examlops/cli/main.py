@@ -329,7 +329,9 @@ app.add_typer(fleet_cmd.app, name="fleet", help="Fleet Digital Twin — what-if 
 app.add_typer(
     exchange_cmd.app, name="exchange", help="NovaFabric Exchange — signed shareable packages"
 )
-app.add_typer(dataplane_bus_cmd.app, name="dataplane-bus", help="Dataplane bus bridge UUID management")
+app.add_typer(
+    dataplane_bus_cmd.app, name="dataplane-bus", help="Dataplane bus bridge UUID management"
+)
 app.add_typer(namespace_cmd.app, name="namespace", help="Project namespace isolation")
 app.add_typer(
     project_cmd.app, name="project", help="ExaMLOps Projects (CPU/memory/storage/GPU quotas)"

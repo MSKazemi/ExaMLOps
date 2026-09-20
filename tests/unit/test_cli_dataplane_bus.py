@@ -20,7 +20,9 @@ def test_dataplane_bus_status_fetches_health_and_stats():
             return {"inferences_total": 3, "errors_total": 0}
         raise AssertionError(f"unexpected URL: {url}")
 
-    with patch("examlops.cli.commands.dataplane_bus_cmd._client.get", side_effect=fake_get) as mock_get:
+    with patch(
+        "examlops.cli.commands.dataplane_bus_cmd._client.get", side_effect=fake_get
+    ) as mock_get:
         result = runner.invoke(app, ["dataplane-bus", "status"])
 
     assert result.exit_code == 0

@@ -39,7 +39,9 @@ async def test_export_env_maps_url_keys(client, db_engine):
     async with factory() as s:
         s.add(DashboardConfig(key="mlflow_url", value="http://mlflow:5000", is_secret=False))
         s.add(DashboardConfig(key="minio_url", value="http://minio:9000", is_secret=False))
-        s.add(DashboardConfig(key="dataplane_bus_host", value="dataplane-bus-host", is_secret=False))
+        s.add(
+            DashboardConfig(key="dataplane_bus_host", value="dataplane-bus-host", is_secret=False)
+        )
         await s.commit()
 
     token = await _login(client, ADMIN_PW)

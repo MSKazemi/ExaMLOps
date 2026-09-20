@@ -103,9 +103,13 @@ def test_all_five_metrics_registered():
     names = _metric_names()
     assert "dataplane_bus_bridge_up" in names
     assert "dataplane_bus_inferences" in names  # registered as dataplane_bus_inferences_total
-    assert "dataplane_bus_inference_errors" in names  # registered as dataplane_bus_inference_errors_total
+    assert (
+        "dataplane_bus_inference_errors" in names
+    )  # registered as dataplane_bus_inference_errors_total
     assert "dataplane_bus_inference_latency_seconds" in names
-    assert "dataplane_bus_retrain_triggers" in names  # registered as dataplane_bus_retrain_triggers_total
+    assert (
+        "dataplane_bus_retrain_triggers" in names
+    )  # registered as dataplane_bus_retrain_triggers_total
 
 
 def test_metrics_output_contains_expected_lines():
@@ -125,9 +129,13 @@ def test_inferences_counter_increments():
 
 
 def test_errors_counter_increments():
-    before = REGISTRY.get_sample_value("dataplane_bus_inference_errors_total", {"model": "TEST"}) or 0.0
+    before = (
+        REGISTRY.get_sample_value("dataplane_bus_inference_errors_total", {"model": "TEST"}) or 0.0
+    )
     bridge._ERRORS.labels(model="TEST").inc()
-    after = REGISTRY.get_sample_value("dataplane_bus_inference_errors_total", {"model": "TEST"}) or 0.0
+    after = (
+        REGISTRY.get_sample_value("dataplane_bus_inference_errors_total", {"model": "TEST"}) or 0.0
+    )
     assert after == before + 1
 
 

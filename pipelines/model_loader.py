@@ -32,7 +32,12 @@ _DEFAULT_STREAM_LIMITS: dict[str, Any] = {
 
 
 def _use_legacy_dataplane_bus_shim() -> bool:
-    return (os.getenv(_LEGACY_DATAPLANE_BUS_ENV) or "").strip().lower() in ("1", "true", "yes", "on")
+    return (os.getenv(_LEGACY_DATAPLANE_BUS_ENV) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 @dataclass

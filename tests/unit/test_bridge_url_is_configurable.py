@@ -55,7 +55,9 @@ def test_production_probes_the_configured_bridge_not_a_hard_coded_one(monkeypatc
         return True, {"status": "ok", "inferences_total": 7}, "ok"
 
     monkeypatch.setattr(production, "_safe_get", fake_get)
-    result = production._check_dataplane_bus(Config(dataplane_bus_bridge_url="http://elsewhere:9999/"))
+    result = production._check_dataplane_bus(
+        Config(dataplane_bus_bridge_url="http://elsewhere:9999/")
+    )
 
     assert asked == ["http://elsewhere:9999/health", "http://elsewhere:9999/stats"]
     assert result.ok is True

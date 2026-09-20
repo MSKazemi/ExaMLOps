@@ -1137,7 +1137,9 @@ async def main() -> None:
             )
 
         else:
-            log.error("Unknown DATAPLANE_BUS_MODE=%r — use pubsub | reqres | both", DATAPLANE_BUS_MODE)
+            log.error(
+                "Unknown DATAPLANE_BUS_MODE=%r — use pubsub | reqres | both", DATAPLANE_BUS_MODE
+            )
 
     async def _run_bridge_safe() -> None:
         """Run bridge with auto-reconnect; keeps status server alive on failures."""
@@ -1152,7 +1154,9 @@ async def main() -> None:
                 log.info("Bridge exited cleanly")
                 break
             except EOFError as exc:
-                log.warning("Dataplane bus connection closed: %s — reconnecting in %.0fs", exc, backoff)
+                log.warning(
+                    "Dataplane bus connection closed: %s — reconnecting in %.0fs", exc, backoff
+                )
             except Exception:
                 log.exception("Bridge connection failed — reconnecting in %.0fs", backoff)
             _bridge_stats["bridge_error"] = True

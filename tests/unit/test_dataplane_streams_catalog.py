@@ -387,7 +387,9 @@ def test_yaml_streams_legacy_shim_skipped_if_already_declared(monkeypatch):
     model_yaml = {
         "name": "JPCP",
         "dataplane_bus_uuid": "abc-123",
-        "inference": {"streams": [{"name": "sb", "connector": "dataplane-bus", "address": "explicit"}]},
+        "inference": {
+            "streams": [{"name": "sb", "connector": "dataplane-bus", "address": "explicit"}]
+        },
     }
     result = bindings.yaml_streams(model_yaml, project="")
     assert len(result) == 1
