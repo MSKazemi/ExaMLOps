@@ -17,7 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[2] / "platform" / "cli" / "src"))
 
 from examlops.platform_db import init_db  # noqa: E402
-from examlops.serving.substrates import registry  # noqa: E402
+from examlops.serving.substrates import k8s_schema, registry  # noqa: E402
 from examlops.serving.substrates.base import (  # noqa: E402
     ApplyFailed,
     CapabilityMissing,
@@ -380,6 +380,55 @@ def test_a_kserve_canary_renders_the_resolved_canary_or_is_refused():
     (entry,) = manifest["spec"]["canary"]
     assert entry["trafficPercent"] == 10
     assert entry["predictor"]["model"]["storageUri"] == "s3://mlflow-artifacts/1/m-b"
+
+
+# ── ADR 0142 d5, spec-usar-1 §5.6: LLMISVC canary is two co-routed objects ──
+
+
+def test_a_generative_canary_renders_two_objects_sharing_a_route_group():
+    canary = {
+        "version": "4",
+        "percent": 15,
+        "alias": "Canary",
+        "artifact_uri": "hf://Qwen/Qwen2.5-7B-Instruct",
+    }
+    spec = {**GEN, "rollout": {"canary": canary}}
+    rendered = registry.get("kserve").render(spec, GEN_REF)
+
+    assert len(rendered.objects) == 2
+    stable, canary_obj = rendered.objects
+    assert stable["kind"] == "LLMInferenceService"
+    assert stable["metadata"]["name"] == "chat"
+    assert canary_obj["metadata"]["name"] == "chat-canary"
+    assert stable["spec"]["router"]["route"] == {"group": "chat", "weight": 85}
+    assert canary_obj["spec"]["router"]["route"] == {"group": "chat", "weight": 15}
+    assert canary_obj["metadata"]["labels"]["examlops.io/version"] == "4"
+    assert canary_obj["metadata"]["annotations"]["examlops.io/canary-version"] == "4"
+    # both objects independently pass the pinned schema (validated inside render() itself)
+    assert k8s_schema.validate(stable) == []
+    assert k8s_schema.validate(canary_obj) == []
+
+
+def test_a_generative_canary_out_of_range_is_refused():
+    canary = {
+        "version": "4",
+        "percent": 200,
+        "alias": "Canary",
+        "artifact_uri": "hf://Qwen/Qwen2.5-7B-Instruct",
+    }
+    with pytest.raises(RenderError, match="0..100"):
+        registry.get("kserve").render({**GEN, "rollout": {"canary": canary}}, GEN_REF)
+
+
+def test_a_generative_canary_naming_the_stable_version_is_refused():
+    canary = {
+        "version": GEN_REF.version,
+        "percent": 10,
+        "alias": "Canary",
+        "artifact_uri": "hf://Qwen/Qwen2.5-7B-Instruct",
+    }
+    with pytest.raises(RenderError, match="stable version"):
+        registry.get("kserve").render({**GEN, "rollout": {"canary": canary}}, GEN_REF)
 
 
 # ── R-SUB-30/31: real starts go through the ADR 0107 launchers, exactly as planned ──

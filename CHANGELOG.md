@@ -5,6 +5,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — a generative canary now renders as two co-routed KServe objects (ADR 0142 decision 5)
+
+`LLMInferenceService` has no `spec.canary` field at the pinned KServe version (unlike the
+predictive `InferenceService`, which does), so a generative canary needed its own rendering path —
+`kserve.render()`'s single-object dispatcher used to refuse it outright.
+
+- New `examlops.serving.substrates.kserve.render_llm_inference_service_canary()`: renders **two**
+  `LLMInferenceService` objects (stable + canary), sharing `spec.router.route.group` and split
+  `weight` 100-p / p, per spec-usar-1 §5.6. Refuses an out-of-range percent or a canary equal to
+  the stable version, matching the predictive canary's own guard rails.
+- `KServeSubstrate.render()` (`examlops.serving.substrates.registry`) routes a generative canary
+  through it, returning both objects in one `Rendered`. Nothing about the plan-gate, `apply()`,
+  `status()` or `stop()` needed to change — every substrate's real apply already iterates
+  `rendered.objects`, so multi-object rendering was already supported by the seam's contract.
+- `kserve.render()`'s own single-object interface (used by the offline-preview
+  `registry_to_kserve()` / `exa serve manifest`) is unchanged and still refuses an LLMISVC canary —
+  consistent with `serving_backends.KServeK8s` staying dry-run-only (see the KServe launcher
+  cutover entry below): that tool's contract is one manifest per call.
+- Verified against a real cluster: both objects server-side apply, each reads back `PENDING`
+  independently by its own object name (`<model>`, `<model>-canary`), and each deletes cleanly.
+- ADR 0142's decision 5 status corrected: LLMISVC canary was its one remaining real gap (see the
+  decision 5/8 correction entry below); it is now built.
+
 ### Fixed — ADR 0142's decision 5/8 status text was stale; decision 8 was already fully built
 
 Re-reading the substrate seam's own test suite before starting new work (this session's

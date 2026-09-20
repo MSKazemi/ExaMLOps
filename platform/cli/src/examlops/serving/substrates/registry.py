@@ -402,6 +402,19 @@ class KServeSubstrate:
                 resolved.project,
             )
             canary_pct = split.canary_percent
+        if canary_ref is not None and kserve.is_generative(spec):
+            # LLMInferenceService has no spec.canary field at this pin (unlike ISVC Standard
+            # mode) — a generative canary is two co-routed objects (ADR 0142 d5, spec-usar-1
+            # §5.6), which kserve.render()'s single-object return cannot express.
+            assert canary_pct is not None  # set alongside canary_ref, above
+            objects = kserve.render_llm_inference_service_canary(
+                spec, resolved, canary_ref, canary_pct
+            )
+            for obj in objects:
+                errors = k8s_schema.validate(obj)
+                if errors:
+                    raise RenderError(f"render failed the pinned KServe schema: {errors}")
+            return make_rendered(self.name, objects)
         manifest = kserve.render(spec, resolved, canary=canary_ref, canary_pct=canary_pct)
         errors = k8s_schema.validate(manifest)
         if errors:

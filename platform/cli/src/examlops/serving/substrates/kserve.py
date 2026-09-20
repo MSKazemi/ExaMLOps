@@ -195,6 +195,30 @@ def render_llm_inference_service(model_yaml: dict[str, Any], ref: ResolvedRef) -
     }
 
 
+def render_llm_inference_service_canary(
+    model_yaml: dict[str, Any], ref: ResolvedRef, canary: ResolvedRef, canary_pct: int
+) -> list[dict[str, Any]]:
+    """A generative canary as **two** ``LLMInferenceService`` objects (ADR 0142 d5, spec-usar-1
+    §5.6): stable and canary each render independently (they may run different engine configs,
+    same as the predictor pair on ISVC), then share ``spec.router.route.group`` and split
+    ``weight`` 100-p / p — there is no single object with a nested canary list here, unlike ISVC
+    Standard mode, because ``LLMInferenceService`` has no ``spec.canary`` field at this pin.
+    """
+    if not 0 <= int(canary_pct) <= 100:
+        raise RenderError(f"canary percent {canary_pct} is outside 0..100")
+    if canary.version == ref.version:
+        raise RenderError(f"canary version {canary.version} is the stable version")
+    group = service_name(str(model_yaml.get("name") or ref.model))
+    stable_obj = render_llm_inference_service(model_yaml, ref)
+    canary_obj = render_llm_inference_service(model_yaml, canary)
+    canary_obj["metadata"]["name"] = service_name(f"{group}-canary")
+    canary_obj["metadata"]["annotations"]["examlops.io/canary-version"] = canary.version
+    canary_obj["metadata"]["annotations"]["examlops.io/canary-artifact-digest"] = canary.digest
+    stable_obj["spec"]["router"]["route"] = {"group": group, "weight": 100 - int(canary_pct)}
+    canary_obj["spec"]["router"]["route"] = {"group": group, "weight": int(canary_pct)}
+    return [stable_obj, canary_obj]
+
+
 def render(
     model_yaml: dict[str, Any],
     ref: ResolvedRef,
