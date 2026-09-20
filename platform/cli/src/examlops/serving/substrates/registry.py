@@ -353,9 +353,19 @@ class HpcSubstrate:
 
 
 class KServeSubstrate:
-    """The pinned KServe release (ADR 0142 d2): render + validate; real apply is USAR I3."""
+    """The pinned KServe release (ADR 0142 d2/d6): render + validate + a real, plan-gated apply."""
 
     name = "kserve"
+
+    def __init__(self, kubectl: Any = None) -> None:
+        self._injected = kubectl  # tests; default KubectlClient()
+
+    def _kubectl(self) -> Any:
+        if self._injected is not None:
+            return self._injected
+        from examlops.serving.substrates.kubectl_client import KubectlClient
+
+        return KubectlClient()
 
     def capabilities(self) -> SubstrateCaps:
         return SubstrateCaps(
@@ -367,7 +377,7 @@ class KServeSubstrate:
             gpu=True,
             accelerators=frozenset({"cuda-x86_64", "rocm", "cpu"}),
             oci_delivery=frozenset({"modelcar", "image-volume"}),
-            live_apply=False,
+            live_apply=True,
         )
 
     def render(self, spec: dict[str, Any], resolved: ResolvedRef) -> Rendered:
@@ -401,19 +411,23 @@ class KServeSubstrate:
     def apply(
         self, rendered: Rendered, *, dry_run: bool = True, plan_hash: str | None = None
     ) -> Any:
-        if not dry_run:
-            # Refused before anything is attempted, so there is nothing to audit (R-SUB-3).
-            raise SubstrateUnavailable(
-                "KServe live apply (server-side apply / GitOps, plan-gated) is USAR I3; "
-                "render with `exa serve manifest` and apply it yourself"
-            )
-        return audited_apply(self.name, rendered, dry_run=True, plan_hash=plan_hash, act=list)
+        def act() -> list[str]:
+            return self._kubectl().apply(list(rendered.objects))
+
+        return audited_apply(self.name, rendered, dry_run=dry_run, plan_hash=plan_hash, act=act)
 
     def status(self, name: str) -> SubstrateStatus:
-        return SubstrateStatus("UNKNOWN", {}, None, {"note": "cluster status is USAR I3"})
+        from examlops.serving.substrates.kubectl_client import status_from_object
+
+        obj = self._kubectl().get_any_kind(name)
+        if obj is None:
+            return SubstrateStatus("UNKNOWN", {}, None, {"note": f"{name} not found in KServe"})
+        state, url, detail = status_from_object(obj)
+        version = (obj.get("metadata", {}).get("labels") or {}).get("examlops.io/version")
+        return SubstrateStatus(state, {name: int(version)} if version else {}, url, detail)
 
     def stop(self, name: str) -> None:
-        raise SubstrateUnavailable("deleting a KServe service is USAR I3 (kubectl delete for now)")
+        self._kubectl().delete_any_kind(name)
 
 
 # ── k8s-agents ────────────────────────────────────────────────────────────────

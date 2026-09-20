@@ -5,6 +5,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — a real, live Kubernetes apply for the KServe substrate (ADR 0142 decisions 1/6)
+
+`examlops.serving.substrates.registry.KServeSubstrate` used to render and validate KServe
+manifests but refuse to apply them for real ("USAR I3"). It now performs a genuine **Server-Side
+Apply**, plan-gated and audited through the same mechanism every other substrate already uses —
+no new plan/apply system was needed, `audited_apply()`'s content-hash `plan_hash` already covers
+this.
+
+- New `examlops.serving.substrates.kubectl_client.KubectlClient`: server-side apply / get / delete
+  against the ambient kubeconfig context (`exa` is invoked by a human or an agent, not an
+  in-cluster controller, so this shells out to `kubectl` rather than embedding the official
+  Kubernetes Python client — the same shape the dry-run validation path already used).
+  `EXAMLOPS_KSERVE_NAMESPACE` (default `examlops`) and `EXAMLOPS_KSERVE_FIELD_MANAGER` configure
+  it; namespace is explicit, never the kubeconfig context's ambient default.
+- `status()`/`stop()` now read/delete the live object instead of always answering `UNKNOWN`/
+  refusing.
+- **Verified against a real cluster**, not assumed: a throwaway kind cluster with KServe v0.20.0's
+  own CRDs (no controller — this proves the apply/status/delete mechanics, not full
+  reconciliation), a real server-side apply landing an `InferenceService`/`LLMInferenceService`, a
+  real read-back and delete, and a real API-server rejection surfacing as `ApplyFailed` with an
+  audit row (`tests/integration/test_kserve_live_apply_kind_live.py`, opt-in,
+  `EXAMLOPS_KIND_KSERVE_LIVE=1`).
+- Found only by running it: **client-side `kubectl apply` fails outright** on the real
+  `InferenceService` CRD (`metadata.annotations: Too long`, its embedded OpenAPI schema exceeds
+  the 256 KiB `last-applied-configuration` annotation limit) — server-side apply is not the
+  modern preference here, it is the only mechanism that works for this specific CRD.
+- ADR 0142's own record was corrected too: decision 1 (the merged `Substrate` seam) was already
+  fully built and the status text had gone stale about it — corrected rather than left to compound
+  alongside decision 6's new work.
+
 ### Added — per-inference telemetry can cross the serving/control-plane boundary as an event, not a database write (ADR 0123 decision 4)
 
 The Dataplane bus bridge always wrote drift and input-embedding snapshots straight to `platform.db`.

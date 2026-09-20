@@ -159,15 +159,90 @@ def test_compose_apply_writes_the_split_then_reloads_the_model():
     assert events == [("traffic", "JPCP", {"Production": 90, "Canary": 10}), ("reload", "JPCP")]
 
 
-@pytest.mark.parametrize("name", ["kserve"])
-def test_substrates_without_a_real_apply_yet_refuse_before_acting(name):
-    sub = registry.get(name)
-    spec, ref = (GEN, GEN_REF)
-    rendered = sub.render(spec, ref)
+class _FakeKubectl:
+    """Duck-types `KubectlClient` for the KServe substrate's real-apply tests."""
+
+    def __init__(self, *, apply_error: Exception | None = None, objects: dict | None = None):
+        self._apply_error = apply_error
+        self.applied: list[dict] = []
+        self._objects = objects or {}
+        self.deleted: list[str] = []
+
+    def apply(self, objects: list[dict]) -> list[str]:
+        if self._apply_error is not None:
+            raise self._apply_error
+        self.applied.extend(objects)
+        return [f"{o['kind']}/{o['metadata']['name']}" for o in objects]
+
+    def get_any_kind(self, name: str) -> dict | None:
+        return self._objects.get(name)
+
+    def delete_any_kind(self, name: str) -> None:
+        self.deleted.append(name)
+
+
+def test_a_kserve_apply_server_side_applies_the_rendered_object():
+    fake = _FakeKubectl()
+    sub = registry.get("kserve", kubectl=fake)
+    rendered = sub.render(GEN, GEN_REF)
     before = _audit_rows()
-    with pytest.raises(SubstrateUnavailable):
+
+    result = sub.apply(rendered, dry_run=False, plan_hash=rendered.content_hash)
+
+    assert result.applied == ("LLMInferenceService/chat",)
+    assert fake.applied == list(rendered.objects)
+    assert _audit_rows() == before + 1
+
+
+def test_a_kserve_apply_failure_is_audited_and_raised_as_apply_failed():
+    fake = _FakeKubectl(apply_error=RuntimeError("kubectl apply failed: field is immutable"))
+    sub = registry.get("kserve", kubectl=fake)
+    rendered = sub.render(GEN, GEN_REF)
+    before = _audit_rows()
+
+    with pytest.raises(ApplyFailed, match="immutable"):
         sub.apply(rendered, dry_run=False, plan_hash=rendered.content_hash)
-    assert _audit_rows() == before
+
+    assert fake.applied == []
+    assert _audit_rows() == before + 1
+
+
+def test_a_kserve_dry_run_never_touches_kubectl():
+    fake = _FakeKubectl()
+    sub = registry.get("kserve", kubectl=fake)
+    rendered = sub.render(GEN, GEN_REF)
+
+    result = sub.apply(rendered, dry_run=True)
+
+    assert result.dry_run is True
+    assert fake.applied == []
+
+
+def test_a_kserve_status_reads_the_live_object():
+    live = {
+        "metadata": {"labels": {"examlops.io/version": "7"}},
+        "status": {"conditions": [{"type": "Ready", "status": "True"}], "url": "http://chat"},
+    }
+    fake = _FakeKubectl(objects={"chat": live})
+    status = registry.get("kserve", kubectl=fake).status("chat")
+
+    assert status.state == "READY"
+    assert status.address == "http://chat"
+    assert status.versions == {"chat": 7}
+
+
+def test_a_kserve_status_for_an_absent_service_is_unknown_not_an_error():
+    fake = _FakeKubectl()
+    status = registry.get("kserve", kubectl=fake).status("ghost")
+
+    assert status.state == "UNKNOWN"
+
+
+def test_a_kserve_stop_deletes_the_service():
+    fake = _FakeKubectl()
+    registry.get("kserve", kubectl=fake).stop("chat")
+
+    assert fake.deleted == ["chat"]
 
 
 # ── R-SUB-5 / R-SUB-17 / R-SUB-32: capabilities refuse, never degrade ───────

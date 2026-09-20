@@ -110,11 +110,17 @@ Details: [Management Agent](agent.md) · [AgentOps](agentops.md).
 
 These are the parts that exist as code but do not yet do what their names suggest. Plan around them.
 
-- **Kubernetes/KServe is manifest generation only.** `exa serve manifest` and the `kserve` launcher
-  produce `InferenceService` / `LLMInferenceService` manifests for a resolved model version,
-  validated against the KServe schema the platform pins and, when `kubectl` and a cluster are
-  reachable, `kubectl apply --dry-run=server`. Nothing is applied to a cluster. See
-  [Kubernetes serving](kubernetes-serving.md).
+- **`exa serve manifest` and the `kserve` launcher are still manifest generation only.** They call
+  the older `examlops.serving_backends` module, which produces `InferenceService` /
+  `LLMInferenceService` manifests for a resolved model version, validated against the KServe schema
+  the platform pins and, when `kubectl` and a cluster are reachable, `kubectl apply
+  --dry-run=server`. Nothing is applied to a cluster from these commands. See
+  [Kubernetes serving](kubernetes-serving.md). **A real apply now exists one layer down** — the
+  `Substrate` seam's `KServeSubstrate` (`examlops.serving.substrates.registry`, ADR 0142 d1/d6)
+  performs a genuine Server-Side Apply, plan-gated and audited, verified against a real cluster
+  (`tests/integration/test_kserve_live_apply_kind_live.py`) — but no CLI command calls it yet; that
+  cutover (`ServingBackend`/`EndpointLauncher` retiring as deprecated shims over the substrate seam,
+  per the ADR's own plan) is a named follow-up, not done here.
 - **The gateway is a library, not a service.** `examlops.gateway` runs inside the process that calls
   it (`exa gateway chat`, RAG, the challenger judge). There is no standalone gateway endpoint to point
   other clients at.
