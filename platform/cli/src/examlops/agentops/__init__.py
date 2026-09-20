@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+import math
+import os
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,6 +28,10 @@ from examlops import data as platform_db
 LOOP_REPEAT_THRESHOLD = 3  # same (tool, args) seen >= N times => loop
 STEP_BLOWUP_THRESHOLD = 40  # more than N steps => runaway reasoning
 COST_OVERRUN_DEFAULT = 1.0  # USD per session before an overrun anomaly
+# Warn-before-abort (ADR 0021 decision 4): the fraction of each hard threshold at which the
+# in-loop breaker starts *warning*. 0 disables the soft threshold; the hard abort is unaffected.
+WARN_RATIO_DEFAULT = 0.75
+WARN_RATIO_ENV = "EXAMLOPS_AGENT_BREAKER_WARN_RATIO"
 
 
 @dataclass(frozen=True)
@@ -85,6 +92,7 @@ def record_session(
     agent: str | None = None,
     model: str | None = None,
     cost_budget: float = COST_OVERRUN_DEFAULT,
+    started_at: float | None = None,
 ) -> list[Anomaly]:
     """Aggregate a completed session into ``platform_db`` and return anomalies (R2).
 
@@ -134,8 +142,14 @@ def record_session(
         status=status,
         anomalies=[a.code for a in anomalies] or None,
         ended=True,
+        started_at=_utc_stamp(started_at) if started_at is not None else None,
     )
     return anomalies
+
+
+def _utc_stamp(epoch: float) -> str:
+    """``YYYY-MM-DD HH:MM:SS`` UTC — the shape SQLite's ``CURRENT_TIMESTAMP`` writes."""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(epoch))
 
 
 def _audit_dangerous(session_id: str, tenant: str, tool: str) -> None:
@@ -263,6 +277,7 @@ class SessionRecorder:
     model: str | None = None
     cost_budget: float = COST_OVERRUN_DEFAULT
     steps: list[AgentStep] = field(default_factory=list)
+    started_at: float = field(default_factory=time.time)  # so the session has a real duration
 
     def add(self, step: AgentStep) -> None:
         self.steps.append(step)
@@ -275,6 +290,7 @@ class SessionRecorder:
             agent=self.agent,
             model=self.model,
             cost_budget=self.cost_budget,
+            started_at=self.started_at,
         )
 
 
@@ -286,6 +302,87 @@ class CircuitBreakerTripped(RuntimeError):
         self.anomaly = anomaly
 
 
+def warn_ratio_from_env() -> float:
+    """The configured soft-threshold ratio (``EXAMLOPS_AGENT_BREAKER_WARN_RATIO``), clamped."""
+    raw = os.getenv(WARN_RATIO_ENV, "").strip()
+    try:
+        value = float(raw) if raw else WARN_RATIO_DEFAULT
+    except ValueError:
+        value = WARN_RATIO_DEFAULT
+    return min(max(value, 0.0), 0.99)
+
+
+def detect_soft_warnings(
+    steps: Sequence[AgentStep],
+    *,
+    warn_ratio: float,
+    cost_budget: float = COST_OVERRUN_DEFAULT,
+    loop_threshold: int = LOOP_REPEAT_THRESHOLD,
+    step_threshold: int = STEP_BLOWUP_THRESHOLD,
+) -> list[Anomaly]:
+    """Pure pre-abort detection: what is *approaching* a hard threshold but has not crossed it.
+
+    Codes are ``loop_warning`` / ``step_blowup_warning`` / ``cost_warning`` (severity ``warn``).
+    A kind that has already crossed its hard threshold is not reported here — the hard detector
+    owns that. ``warn_ratio`` of 0 disables the soft threshold.
+    """
+    if warn_ratio <= 0:
+        return []
+    out: list[Anomaly] = []
+    counts: dict[tuple[str, str], int] = {}
+    for s in steps:
+        key = (s.tool, _redact(s.args))
+        counts[key] = counts.get(key, 0) + 1
+    loop_soft = max(2, math.ceil(warn_ratio * loop_threshold))
+    for (tool, _digest), n in counts.items():
+        if loop_soft <= n < loop_threshold:
+            out.append(
+                Anomaly(
+                    "loop_warning",
+                    "warn",
+                    f"tool '{tool}' repeated {n}x with identical args (abort at {loop_threshold}x)",
+                    tool,
+                )
+            )
+    step_soft = math.ceil(warn_ratio * step_threshold)
+    if step_soft <= len(steps) <= step_threshold:
+        out.append(
+            Anomaly(
+                "step_blowup_warning",
+                "warn",
+                f"{len(steps)} steps, abort above {step_threshold}",
+            )
+        )
+    total = sum(s.cost_usd for s in steps)
+    if cost_budget > 0 and warn_ratio * cost_budget <= total <= cost_budget:
+        out.append(
+            Anomaly(
+                "cost_warning",
+                "warn",
+                f"session cost ${total:.4f} is over {warn_ratio:.0%} of budget ${cost_budget:.4f}",
+            )
+        )
+    return out
+
+
+def _emit_breaker_event(kind: str, session_id: str | None, anomaly: Anomaly) -> None:
+    """Audit a breaker warning/trip (``agent_breaker_warning`` / ``agent_breaker_tripped``).
+
+    Fails open — telemetry never breaks the loop it watches — but a lost event is *counted*
+    (``dropped_audit_events``), not hidden. The Prometheus exposition counts these rows, so the
+    audit trail and the metric cannot disagree.
+    """
+    from examlops.data.audit import audit_best_effort
+
+    audit_best_effort(
+        "agentops",
+        "agent:breaker",
+        f"agent_breaker_{kind}",
+        anomaly.code,
+        {"session_id": session_id, "detail": anomaly.detail, "tool": anomaly.tool},
+    )
+
+
 @dataclass
 class AgentCircuitBreaker:
     """In-loop circuit-breaker wiring the pure detection into a live agent graph (item 4.4).
@@ -295,14 +392,25 @@ class AgentCircuitBreaker:
     a *critical* anomaly appears — a runaway loop, step blow-up, or all-errors burst — instead of only
     noticing post-hoc. ``cost_overrun`` (a warning) trips only when ``abort_on_cost`` is set. This is
     the guardrail that stops an autopilot/agent from burning GPU-hours or looping forever.
+
+    **Warn before abort (ADR 0021 decision 4).** At ``warn_ratio`` of each hard threshold the breaker
+    emits a *warning* — once per kind per session — into :attr:`warnings`, through ``on_event`` if
+    given, and as an ``agent_breaker_warning`` audit event; the trip itself is an
+    ``agent_breaker_tripped`` audit event. ``warn_ratio=0`` turns warnings off and leaves the hard
+    abort exactly as it was. ``session_id`` only labels the audit details.
     """
 
     cost_budget: float = COST_OVERRUN_DEFAULT
     loop_threshold: int = LOOP_REPEAT_THRESHOLD
     step_threshold: int = STEP_BLOWUP_THRESHOLD
     abort_on_cost: bool = True
+    warn_ratio: float = field(default_factory=warn_ratio_from_env)
+    session_id: str | None = None
+    on_event: Callable[[str, Anomaly], None] | None = None
+    emit_audit: bool = True
     steps: list[AgentStep] = field(default_factory=list)
     tripped_by: Anomaly | None = None
+    warnings: list[Anomaly] = field(default_factory=list)
 
     def _critical(self) -> Anomaly | None:
         anomalies = detect_anomalies_from_steps(
@@ -323,13 +431,39 @@ class AgentCircuitBreaker:
     def tripped(self) -> bool:
         return self.tripped_by is not None
 
+    def _notify(self, kind: str, anomaly: Anomaly) -> None:
+        if self.emit_audit:
+            _emit_breaker_event(kind, self.session_id, anomaly)
+        if self.on_event is not None:
+            try:
+                self.on_event(kind, anomaly)
+            except Exception:
+                pass  # a broken observer must not change the abort decision
+
+    def _warn(self) -> None:
+        seen = {w.code for w in self.warnings}
+        for w in detect_soft_warnings(
+            self.steps,
+            warn_ratio=self.warn_ratio,
+            cost_budget=self.cost_budget,
+            loop_threshold=self.loop_threshold,
+            step_threshold=self.step_threshold,
+        ):
+            if w.code in seen:
+                continue
+            seen.add(w.code)
+            self.warnings.append(w)
+            self._notify("warning", w)
+
     def guard(self, step: AgentStep) -> None:
         """Record ``step`` and abort the loop if it pushes the session into a critical anomaly."""
         self.steps.append(step)
         anomaly = self._critical()
         if anomaly is not None:
             self.tripped_by = anomaly
+            self._notify("tripped", anomaly)
             raise CircuitBreakerTripped(anomaly)
+        self._warn()
 
 
 __all__ = [
@@ -341,5 +475,7 @@ __all__ = [
     "record_session",
     "detect_anomalies",
     "detect_anomalies_from_steps",
+    "detect_soft_warnings",
+    "warn_ratio_from_env",
     "tool_success_rate",
 ]

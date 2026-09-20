@@ -206,10 +206,11 @@ CATALOG: tuple[Module, ...] = (
         "The Skipper management agent (ask/chat, dashboard copilot), agent operations and the "
         "MCP / A2A surface for external agents.",
         cli=("ask", "chat", "agent", "agentops", "mcp"),
-        dashboard_api=("/v1/copilot",),
+        dashboard_api=("/v1/copilot", "/agentops"),
         compose_services=("agent",),
         helm=("agent.enabled",),
         env_switches=("AGENT_MEMORY_ENABLED", "EXAMLOPS_MCP_ALLOW_WRITES"),
+        dashboard_pages=("/operate/agent-runs",),
         needs="an LLM endpoint (Ollama or any OpenAI-compatible API)",
     ),
     M(

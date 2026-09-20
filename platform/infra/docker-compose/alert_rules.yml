@@ -852,6 +852,57 @@ groups:
           summary: "vLLM p95 time-to-first-token above 5s"
           description: "p95 TTFT is {{ $value }}s — users are waiting before the first token."
 
+  # ── Agent runs (AgentOps, ADR 0021) ───────────────────────────────────────────
+  # The series come from `exa slo export-metrics --out …` (node_exporter textfile collector),
+  # derived from the agent_sessions / agent_tool_calls tables and the breaker's audit events.
+  # They are counters over retained rows, refreshed when the export runs — so the windows below
+  # are an hour, not minutes, and every rule carries a volume floor: a rate over three calls is
+  # noise, not a signal.
+  - name: examlops-agentops
+    rules:
+      - alert: AgentToolFailureRateHigh
+        expr: |
+          (
+            sum by (tool) (increase(examlops_agent_tool_calls_total{outcome="error"}[1h]))
+            / sum by (tool) (increase(examlops_agent_tool_calls_total{outcome=~"ok|error"}[1h]))
+          ) > 0.5
+          and sum by (tool) (increase(examlops_agent_tool_calls_total{outcome=~"ok|error"}[1h])) >= 10
+        for: 10m
+        labels:
+          severity: warning
+          service: agent
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/agentops/#agenttoolfailureratehigh"
+          summary: "Agent tool {{ $labels.tool }} is failing more than half its calls"
+          description: "{{ $value | humanizePercentage }} of the last hour's calls to {{ $labels.tool }} failed."
+
+      - alert: AgentCircuitBreakerTripped
+        expr: sum by (code) (increase(examlops_agent_breaker_events_total{event="tripped"}[1h])) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: agent
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/agentops/#agentcircuitbreakertripped"
+          summary: "The agent circuit-breaker aborted a runaway turn ({{ $labels.code }})"
+          description: "{{ $value }} turn(s) were stopped in the last hour by the {{ $labels.code }} rule."
+
+      - alert: AgentAnomalyRateHigh
+        expr: |
+          (
+            sum(increase(examlops_agent_anomalies_total[1h]))
+            / sum(increase(examlops_agent_sessions_ended_total[1h]))
+          ) > 0.25
+          and sum(increase(examlops_agent_sessions_ended_total[1h])) >= 5
+        for: 15m
+        labels:
+          severity: warning
+          service: agent
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/agentops/#agentanomalyratehigh"
+          summary: "A quarter of recent agent sessions hit a loop, blow-up, cost or error anomaly"
+          description: "{{ $value | humanizePercentage }} of the last hour's sessions were flagged."
+
   # ── Delivery heartbeat (dead-man's-switch) ────────────────────────────────────
   # Always firing. Routed to the Alertmanager `heartbeat` receiver → external monitor.
   # If these pings STOP arriving, the whole Prometheus→Alertmanager→receiver path is

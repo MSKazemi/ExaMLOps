@@ -104,6 +104,43 @@ exa drift events --model JPCP --kind data_quality
 exa --json drift events
 ```
 
+## Scheduling the detectors (`exa drift run-advanced`)
+
+Until this command nothing ran the three detectors: they fired when someone typed them. The
+scheduler sweeps every model with recorded predictions and writes `drift_events` with `drift_kind`,
+which `exa drift trigger` and the autopilot already consume (a CRITICAL concept event still starts
+the cooldown-aware retrain; a label-free estimate still only warns).
+
+```bash
+exa drift run-advanced --once --dry-run          # preview a sweep; writes nothing, no switch needed
+EXAMLOPS_DRIFT_ADVANCED_ENABLED=1 exa drift run-advanced --once
+EXAMLOPS_DRIFT_ADVANCED_ENABLED=1 exa drift run-advanced --interval 600   # loop until stopped
+```
+
+- **Kill-switch**: `EXAMLOPS_DRIFT_ADVANCED_ENABLED` (default off). A refused real run is audited
+  as `drift_advanced_skipped` and exits 1.
+- **Lease**: one scheduler acts at a time (`drift-advanced` lock through `examlops.coordination`,
+  cross-host with the Redis coordinator); TTL `EXAMLOPS_DRIFT_ADVANCED_LEASE_TTL`.
+- **Cooldown / dedupe**: an event is written when it is the first for its (model, kind, metric),
+  when its severity changed, or when an unchanged non-OK event is older than
+  `EXAMLOPS_DRIFT_ADVANCED_COOLDOWN` (default 3600 s). A repeating OK is not news. An OK label-free
+  estimate is stored at most once per cooldown.
+- **Audited**: each real cycle writes `drift_advanced_cycle`.
+- A model with too few labels or no recorded inputs is `skipped`; a crashing detector is `failed`
+  and never stops the sweep.
+
+The dashboard's Drift page has a **Concept & Quality** tab over `GET /api/drift/events`.
+
+### Detector seam and the River adapter
+
+The concept detector is selectable with `--detector` on `exa drift concept` or
+`EXAMLOPS_DRIFT_CONCEPT_DETECTOR`: `builtin` (default, the mean-shift z-test) or `river-adwin`,
+which runs River's ADWIN over the error stream and reaches CRITICAL only when ADWIN signals inside
+the recent window **and** the error rose. River is imported lazily and is not a dependency; when it
+is missing the builtin runs and the event's `detail.detector_fallback` says why. This adapter is
+tested against a stand-in `river.drift.ADWIN`, not against River itself. **Evidently, NannyML and
+whylogs are not adapted**: the estimate and profile detectors are the pure-Python ones above.
+
 ## Programmatic use
 
 ```python

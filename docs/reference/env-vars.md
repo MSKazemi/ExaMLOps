@@ -1103,3 +1103,14 @@ environment:
 | `EXAMLOPS_OPENFGA_TOKEN` | unset | Bearer token sent to OpenFGA when it is set. |
 | `EXAMLOPS_OPENFGA_TIMEOUT` | `2.0` | Seconds to wait for OpenFGA before denying. |
 | `EXAMLOPS_AUTHZ_ADMINS` | unset | Comma-separated subjects that may act on every project when `EXAMLOPS_MULTITENANCY` is on — the bootstrap path for a fresh multi-tenant deployment. Unset ⇒ no such subjects. |
+
+## Agent runs observability and advanced drift (ADR 0021 / 0022)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_AGENT_BREAKER_WARN_RATIO` | `0.75` | Fraction of each hard threshold (loop repeats, step count, session cost) at which the agent circuit-breaker starts **warning** before it aborts. A warning is an `agent_breaker_warning` audit event and a `warning` sample of `examlops_agent_breaker_events_total`; the abort is unchanged. `0` turns the warnings off; values are clamped below `1`. |
+| `EXAMLOPS_DRIFT_ADVANCED_ENABLED` | unset (off) | Kill-switch for `exa drift run-advanced`. A real sweep is refused (and audited as `drift_advanced_skipped`) unless this is truthy; `--dry-run` is a preview and never needs it. |
+| `EXAMLOPS_DRIFT_ADVANCED_COOLDOWN` | `3600` | Seconds an unchanged non-OK concept / data-quality event is not re-stated. A first event, a severity change, or an unchanged non-OK older than this is written; a repeating OK is not. |
+| `EXAMLOPS_DRIFT_ADVANCED_INTERVAL` | `300` | Seconds between sweeps when `exa drift run-advanced` runs as a loop (no `--once`). |
+| `EXAMLOPS_DRIFT_ADVANCED_LEASE_TTL` | `600` | TTL of the distributed lease that lets only one advanced-drift scheduler act; a crashed holder's lease expires after this. |
+| `EXAMLOPS_DRIFT_CONCEPT_DETECTOR` | `builtin` | Concept-drift detector: `builtin` (mean-shift z-test) or `river-adwin` (River ADWIN, lazy import). A missing library or an unknown name falls back to `builtin` and records `detector_fallback` in the event. |

@@ -290,6 +290,13 @@ def test_an_approval_decision_that_could_not_be_audited_is_counted(monkeypatch, 
 #: was twice wrong. The scan below derives the truth from the tree; this mapping only has to say
 #: which test covers what.
 COVERED_AUDIT_SITES = {
+    ("examlops/agentops/__init__.py", "_emit_breaker_event"): (
+        "tests/unit/test_agentops_observability.py"
+        "::test_a_lost_breaker_audit_is_counted_and_does_not_change_the_abort"
+    ),
+    ("examlops/drift_advanced/scheduler.py", "_audit"): (
+        "tests/unit/test_drift_scheduler.py::test_a_lost_drift_advanced_audit_is_counted"
+    ),
     ("examlops/autoscale/controller.py", "_audit"): (
         "tests/unit/test_autoscale_controller.py::test_a_lost_autoscale_audit_is_counted"
     ),

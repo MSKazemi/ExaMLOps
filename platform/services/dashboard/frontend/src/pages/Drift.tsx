@@ -11,6 +11,7 @@ import {
   useSetAutoRetrain,
   useSetInputBaseline,
   useResetInputDrift,
+  useDriftEvents,
 } from '@/lib/drift'
 
 /** Shared loading placeholder for the drift tables (F3 Skeleton convention). */
@@ -426,7 +427,50 @@ function AutoRetrainTab({ onRefresh }: { onRefresh: () => void }) {
   )
 }
 
-type DriftTab = 'prediction' | 'input' | 'auto-retrain'
+/** Concept / label-free / data-quality detections (ADR 0022) — the events `exa drift run-advanced` writes. */
+export function AdvancedDriftTab() {
+  const { data = [], isLoading, error } = useDriftEvents()
+  const advanced = data.filter((e) => e.drift_kind === 'concept' || e.drift_kind === 'data_quality')
+  if (isLoading) return <TableSkeleton />
+  if (error) return <EmptyState title="Couldn't load drift events" description="The drift events endpoint is unreachable." />
+  if (advanced.length === 0)
+    return (
+      <EmptyState
+        title="No concept or data-quality events yet"
+        description="They are written by `exa drift run-advanced` (kill-switch EXAMLOPS_DRIFT_ADVANCED_ENABLED) or `exa drift concept|profile`."
+      />
+    )
+  return (
+    <div className="overflow-x-auto rounded-xl" style={{ border: '1px solid var(--border)' }}>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-muted-foreground">
+            <th className="px-3 py-2">Time</th>
+            <th className="px-3">Model</th>
+            <th className="px-3">Kind</th>
+            <th className="px-3">Severity</th>
+            <th className="px-3">Score</th>
+            <th className="px-3">Metric</th>
+          </tr>
+        </thead>
+        <tbody>
+          {advanced.map((e) => (
+            <tr key={e.id} style={{ borderTop: '1px solid var(--border)' }}>
+              <td className="px-3 py-2">{e.ts}</td>
+              <td className="px-3 font-mono">{e.model}</td>
+              <td className="px-3">{e.drift_kind === 'data_quality' ? 'data quality' : 'concept'}</td>
+              <td className="px-3" style={statusStyle(e.severity)}>{e.severity}</td>
+              <td className="px-3">{e.score != null ? e.score.toFixed(3) : '-'}</td>
+              <td className="px-3">{e.metric ?? '-'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+type DriftTab = 'prediction' | 'input' | 'auto-retrain' | 'advanced'
 
 export function Drift() {
   const [activeTab, setActiveTab] = useState<DriftTab>('prediction')
@@ -436,6 +480,7 @@ export function Drift() {
     { id: 'prediction', label: 'Prediction Drift' },
     { id: 'input', label: 'Input Drift' },
     { id: 'auto-retrain', label: 'Auto-Retrain' },
+    { id: 'advanced', label: 'Concept & Quality' },
   ]
 
   // Refetch the three drift queries so the visible tables update on demand.
@@ -443,6 +488,7 @@ export function Drift() {
     qc.invalidateQueries({ queryKey: ['drift-status'] })
     qc.invalidateQueries({ queryKey: ['drift-input-status'] })
     qc.invalidateQueries({ queryKey: ['drift-auto-retrain'] })
+    qc.invalidateQueries({ queryKey: ['drift-events'] })
   }
 
   return (
@@ -479,6 +525,7 @@ export function Drift() {
       {activeTab === 'prediction' && <PredictionDriftTab onRefresh={handleRefresh} />}
       {activeTab === 'input' && <InputDriftTab onRefresh={handleRefresh} />}
       {activeTab === 'auto-retrain' && <AutoRetrainTab onRefresh={handleRefresh} />}
+      {activeTab === 'advanced' && <AdvancedDriftTab />}
     </div>
   )
 }

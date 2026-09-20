@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 484,
+ "total_commands": 485,
  "total_groups": 71,
  "panels": [
   {
@@ -1954,6 +1954,13 @@
      "cmd": "exa drift reset",
      "group": "drift",
      "help": "Clear all drift snapshots for a model (keeps baseline).",
+     "anchor": "exa-drift-prediction-input-concept-drift-detection",
+     "guide": "guides/drift-advanced.md"
+    },
+    {
+     "cmd": "exa drift run-advanced",
+     "group": "drift",
+     "help": "Sweep every model with the concept, label-free and data-quality detectors (C5, ADR 0022). Writes `drift_events` with a `drift_kind`, which `exa drift trigger` and the autopilot already consume. A real run needs `EXAMLOPS_DRIFT_ADVANCED_ENABLED=1` (default off), takes a distributed lease so only one scheduler acts, and re-states an unchanged non-OK event at most once per `EXAMLOPS_DRIFT_ADVANCED_COOLDOWN` seconds (default 3600). Every cycle is audited.",
      "anchor": "exa-drift-prediction-input-concept-drift-detection",
      "guide": "guides/drift-advanced.md"
     },

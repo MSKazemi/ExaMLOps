@@ -29,7 +29,8 @@ collector — everything degrades to the pure-SQLite `platform_db` layer.
 | `cost_overrun` | warn | Total session cost exceeds the budget (default $1.00). |
 | `error_burst` | critical | Every step in a ≥ 3-step session failed. |
 
-Thresholds are overridable per call (`loop_threshold`, `step_threshold`, `cost_budget`).
+Thresholds are overridable per call (`loop_threshold`, `step_threshold`, `cost_budget`). The in-loop
+breaker also emits a one-shot warning before each abort (see *Metrics, alerts and warn-before-abort*).
 
 ## CLI
 
@@ -97,6 +98,66 @@ Two additive `platform_db` tables (no migration of existing tables):
   status (`ok|anomaly|error`), and the detected anomaly codes.
 - **`agent_tool_calls`** — one row per step: tool, redacted `args_digest`, `ok`, error,
   latency.
+
+## Metrics, alerts and warn-before-abort
+
+`exa slo export-metrics --out <dir>/agentops.prom` writes the platform's Prometheus series in text
+format for the node_exporter textfile collector. The agent series are computed from the recorded
+rows on each export, so they are correct across every process that records a session:
+
+| Series | Type | Labels |
+|---|---|---|
+| `examlops_agent_sessions_started_total` | counter | `agent` |
+| `examlops_agent_sessions_ended_total` | counter | `agent`, `outcome` (`ok`/`anomaly`/`error`) |
+| `examlops_agent_tool_calls_total` | counter | `tool`, `outcome` (`ok`/`error`) |
+| `examlops_agent_tokens_total` | counter | `agent`, `direction` (`input`/`output`) |
+| `examlops_agent_cost_usd_total` | counter | `agent` |
+| `examlops_agent_anomalies_total` | counter | `agent`, `code` |
+| `examlops_agent_breaker_events_total` | counter | `event` (`warning`/`tripped`), `code` |
+| `examlops_agent_session_duration_seconds` | histogram | `agent` (buckets 1, 5, 15, 60, 300, 900 s) |
+
+There is deliberately no session-id, tenant or args label: those grow without bound. Counters are
+totals over retained rows, so a retention prune reads as a counter reset. The export refreshes when
+it is run, which is why the alerts (`AgentToolFailureRateHigh`, `AgentCircuitBreakerTripped`,
+`AgentAnomalyRateHigh`, runbook [Agent runs](../runbooks/agentops.md)) use one-hour windows and a
+minimum volume.
+
+**Warn before abort.** `AgentCircuitBreaker` still aborts a runaway turn at the hard thresholds.
+Before that, at `EXAMLOPS_AGENT_BREAKER_WARN_RATIO` (default 0.75) of each threshold it emits one
+warning per kind per session: `loop_warning` (a call repeated twice when three aborts),
+`step_blowup_warning`, `cost_warning`. Each is an `agent_breaker_warning` audit event and a
+`warning` sample of the breaker metric; the abort is an `agent_breaker_tripped` event. Set the ratio
+to `0` to turn warnings off; the abort is then exactly as before. Pass `on_event=` to receive
+`("warning" | "tripped", Anomaly)` in process.
+
+## Sending agent spans to Langfuse, Phoenix or any OTLP consumer
+
+OpenTelemetry stays the source of truth. The agent's LLM and tool calls already produce `gen_ai.*`
+spans (`agent` / `tool` operations with `gen_ai.request.model`, `gen_ai.usage.input_tokens`,
+`gen_ai.usage.output_tokens`, `examlops.cost.usd`), and `tests/unit/test_agentops_observability.py`
+asserts those attributes and the agent-to-tool parent link. Turn export on with the standard
+variables; no new dependency is involved:
+
+```bash
+export OTEL_SDK_DISABLED=false
+export OTEL_SERVICE_NAME=skipper
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:4317     # any OTLP/gRPC receiver
+export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer <token>"   # if the receiver needs one
+```
+
+The in-process exporter is OTLP over gRPC. Arize Phoenix accepts that directly. Langfuse ingests
+OTLP over HTTP only, so route through an OpenTelemetry Collector that receives the platform's gRPC
+and forwards with the `otlphttp` exporter to Langfuse's OTLP endpoint. Prompt and completion text
+stays off the spans unless `EXAMLOPS_GENAI_CAPTURE_CONTENT` is set, and then goes through the
+redactor. Nothing in this repository has been run against a live Langfuse or Phoenix; the claim is
+limited to the attributes above.
+
+## Dashboard
+
+The **Agent Runs** console (`/operate/agent-runs`) lists recent sessions, replays one, and shows the
+per-tool success table and the breaker's warnings and aborts. It is read-only, tenant-scoped, and
+shows the redacted args digest, never raw arguments (`GET /api/agentops/sessions`,
+`/sessions/{id}`, `/tools`, `/breaker`).
 
 ## Graceful degradation
 

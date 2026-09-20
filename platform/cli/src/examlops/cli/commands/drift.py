@@ -26,7 +26,19 @@ from examlops.rollback import AutonomousActionRefused, require_rollback
 
 # Help panels for `exa drift` (auto-retrain and input sub-groups are added within this module).
 _PANELS: list[tuple[str, list[str]]] = [
-    ("Detection", ["status", "snapshots", "concept", "estimate", "profile", "forecast", "events"]),
+    (
+        "Detection",
+        [
+            "status",
+            "snapshots",
+            "concept",
+            "estimate",
+            "profile",
+            "forecast",
+            "events",
+            "run-advanced",
+        ],
+    ),
     ("Baselines", ["baseline", "reset"]),
     ("Response", ["trigger", "auto-retrain", "input", "corruption", "consume-telemetry"]),
 ]
@@ -1199,12 +1211,17 @@ def concept(
     model: str = typer.Argument(..., help="Model name"),
     alias: str = typer.Option(None, "--alias", help="Restrict to one serving alias"),
     window: int = typer.Option(50, "--window", help="Recent window size (samples)"),
+    detector: str = typer.Option(
+        None,
+        "--detector",
+        help="builtin (default) | river-adwin (needs `pip install river`; falls back to builtin)",
+    ),
 ):
     """Concept-drift test on realized error as delayed labels arrive (C5·R1)."""
     from examlops.drift_advanced import detect_concept_drift
 
     init_db()
-    res = detect_concept_drift(model, alias=alias, window=window)
+    res = detect_concept_drift(model, alias=alias, window=window, detector=detector)
     if _output.json_mode:
         _output.print_json(
             {
@@ -1227,6 +1244,8 @@ def concept(
         )
     elif res.detail.get("reason"):
         _output.info(f"  {res.detail['reason']} (n={res.detail.get('n', 0)})")
+    if res.detail.get("detector_fallback"):
+        _output.warning(f"  detector fell back to builtin: {res.detail['detector_fallback']}")
 
 
 @app.command()
@@ -1354,6 +1373,75 @@ def events(
             for e in evs
         ],
     )
+
+
+_EXAMPLES_RUN_ADVANCED = (
+    "Examples:\n\n"
+    "  exa drift run-advanced --once --dry-run       # preview one sweep; writes nothing\n\n"
+    "  EXAMLOPS_DRIFT_ADVANCED_ENABLED=1 exa drift run-advanced --once\n\n"
+    "  EXAMLOPS_DRIFT_ADVANCED_ENABLED=1 exa drift run-advanced --interval 600   # loop\n\n"
+    "  exa --json drift run-advanced --once --dry-run --model JPCP"
+)
+
+
+@app.command("run-advanced", epilog=_EXAMPLES_RUN_ADVANCED)
+def run_advanced(
+    once: bool = typer.Option(False, "--once", help="Run one sweep and exit (default: loop)"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview: run the detectors, write nothing, take no lease"
+    ),
+    model: str = typer.Option(None, "--model", help="Only this model (default: every model)"),
+    interval: int = typer.Option(0, "--interval", help="Seconds between sweeps (0 = env/300)"),
+    window: int = typer.Option(50, "--window", help="Concept-drift recent window (samples)"),
+):
+    """Sweep every model with the concept, label-free and data-quality detectors (C5, ADR 0022).
+
+    Writes `drift_events` with a `drift_kind`, which `exa drift trigger` and the autopilot already
+    consume. A real run needs `EXAMLOPS_DRIFT_ADVANCED_ENABLED=1` (default off), takes a
+    distributed lease so only one scheduler acts, and re-states an unchanged non-OK event at most
+    once per `EXAMLOPS_DRIFT_ADVANCED_COOLDOWN` seconds (default 3600). Every cycle is audited.
+    """
+    from examlops.drift_advanced.scheduler import (
+        AdvancedDriftScheduler,
+        CycleReport,
+        interval_s,
+    )
+
+    init_db()
+    sched = AdvancedDriftScheduler(
+        dry_run=dry_run, models=[model] if model else None, window=window
+    )
+
+    def show(rep: CycleReport) -> None:
+        if _output.json_mode:
+            _output.print_json(rep.to_dict())
+            return
+        mode = "dry run" if rep.dry_run else "run"
+        if not rep.ran:
+            _output.warning(f"advanced drift ({mode}): not run - {rep.note}")
+            return
+        counts = ", ".join(f"{k}={v}" for k, v in rep.to_dict()["counts"].items() if v)
+        _output.info(f"advanced drift ({mode}): {counts or 'no models with predictions'}")
+        rows = [c for c in rep.checks if c.outcome in ("recorded", "failed")]
+        if rows:
+            _output.print_table(
+                "Advanced drift",
+                ["Model", "Kind", "Severity", "Outcome", "Note"],
+                [[c.model, c.kind, c.severity or "-", c.outcome, c.note] for c in rows],
+            )
+
+    if once:
+        rep = sched.run_cycle()
+        show(rep)
+        if not rep.ran or rep.count("failed"):
+            raise typer.Exit(1)
+        return
+    if _output.json_mode:
+        _output.error("--json needs --once (a loop prints one document per sweep)", exit_code=2)
+    try:
+        sched.run_forever(interval=interval or interval_s(), on_cycle=show)
+    except KeyboardInterrupt:
+        _output.info("advanced drift scheduler stopped.")
 
 
 @app.command()

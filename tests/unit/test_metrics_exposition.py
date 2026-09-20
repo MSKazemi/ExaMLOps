@@ -73,7 +73,7 @@ def test_an_empty_sample_list_renders_nothing():
 def test_every_family_has_help_text():
     """A metric nobody can interpret is barely better than one nobody exports."""
     for metric, (kind, help_text) in exposition._HELP.items():
-        assert kind in ("gauge", "counter")
+        assert kind in ("gauge", "counter", "histogram")
         assert help_text and help_text != metric
 
 

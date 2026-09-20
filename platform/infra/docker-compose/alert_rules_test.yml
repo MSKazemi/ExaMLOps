@@ -1827,3 +1827,93 @@ tests:
       - eval_time: 20m
         alertname: DataplaneBusHighLatencyP99
         exp_alerts: []
+
+  # ── Agent runs (AgentOps, ADR 0021) ─────────────────────────────────────────────────────────
+  # The textfile series are counters refreshed by `exa slo export-metrics`; each case feeds them a
+  # minute apart and checks the alert, its labels and the rendered description.
+  - name: a tool that fails most of its calls is flagged
+    interval: 1m
+    input_series:
+      - series: 'examlops_agent_tool_calls_total{tool="platform_status",outcome="error"}'
+        values: '0+1x60'
+      - series: 'examlops_agent_tool_calls_total{tool="platform_status",outcome="ok"}'
+        values: '0+0.25x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: AgentToolFailureRateHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, service: agent, tool: platform_status}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/agentops/#agenttoolfailureratehigh"
+              summary: "Agent tool platform_status is failing more than half its calls"
+              description: "80% of the last hour's calls to platform_status failed."
+
+  - name: a healthy tool, or one with too few calls, trips no failure alert
+    interval: 1m
+    input_series:
+      - series: 'examlops_agent_tool_calls_total{tool="recall_memory",outcome="error"}'
+        values: '0+0.1x60'
+      - series: 'examlops_agent_tool_calls_total{tool="recall_memory",outcome="ok"}'
+        values: '0+1x60'
+      - series: 'examlops_agent_tool_calls_total{tool="rare_tool",outcome="error"}'
+        values: '0+0.05x60'
+      - series: 'examlops_agent_tool_calls_total{tool="rare_tool",outcome="ok"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: AgentToolFailureRateHigh
+        exp_alerts: []
+
+  - name: an aborted agent turn raises the breaker alert
+    interval: 1m
+    input_series:
+      - series: 'examlops_agent_breaker_events_total{event="tripped",code="loop"}'
+        values: '0x30 1x30'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: AgentCircuitBreakerTripped
+        exp_alerts:
+          - exp_labels: {severity: warning, service: agent, code: loop}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/agentops/#agentcircuitbreakertripped"
+              summary: "The agent circuit-breaker aborted a runaway turn (loop)"
+              description: "1 turn(s) were stopped in the last hour by the loop rule."
+
+  - name: soft warnings alone do not raise the breaker alert
+    interval: 1m
+    input_series:
+      - series: 'examlops_agent_breaker_events_total{event="warning",code="loop_warning"}'
+        values: '0x30 5x30'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: AgentCircuitBreakerTripped
+        exp_alerts: []
+
+  - name: many flagged sessions raise the anomaly-rate alert
+    interval: 1m
+    input_series:
+      - series: 'examlops_agent_anomalies_total{agent="skipper",code="loop"}'
+        values: '0+0.5x60'
+      - series: 'examlops_agent_sessions_ended_total{agent="skipper",outcome="anomaly"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: AgentAnomalyRateHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, service: agent}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/agentops/#agentanomalyratehigh"
+              summary: "A quarter of recent agent sessions hit a loop, blow-up, cost or error anomaly"
+              description: "50% of the last hour's sessions were flagged."
+
+  - name: a mostly clean agent trips no anomaly-rate alert
+    interval: 1m
+    input_series:
+      - series: 'examlops_agent_anomalies_total{agent="skipper",code="loop"}'
+        values: '0+0.05x60'
+      - series: 'examlops_agent_sessions_ended_total{agent="skipper",outcome="ok"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: AgentAnomalyRateHigh
+        exp_alerts: []

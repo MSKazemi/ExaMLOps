@@ -57,6 +57,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 - `exa project scope-audit`: read-only report of `platform.db` tables without a project/tenant scope,
   with a known-exempt list and a guard test that fails on a new unscoped table.
 
+### Added - AgentOps observability and advanced-drift scheduler (ADR 0021 / 0022)
+
+- Prometheus series for agent runs, derived from `agent_sessions` / `agent_tool_calls` and exported by
+  `exa slo export-metrics` (textfile collector): sessions started/ended by outcome, tool calls by
+  tool and outcome, tokens and cost, anomalies by code, breaker events, and a session-duration
+  histogram. Labels are `agent`/`outcome`/`tool`/`code`/`event` only, never a session id or tenant.
+  Sessions now record their real start time, so durations are no longer zero.
+- Three alerts (`AgentToolFailureRateHigh`, `AgentCircuitBreakerTripped`, `AgentAnomalyRateHigh`) with
+  promtool cases, a runbook (`docs/runbooks/agentops.md`) and the Helm rules copy.
+- Warn-before-abort in `AgentCircuitBreaker`: at `EXAMLOPS_AGENT_BREAKER_WARN_RATIO` (default 0.75) of
+  each hard threshold it emits a one-shot `loop_warning` / `step_blowup_warning` / `cost_warning`
+  (audit event + metric); trips are audited too. The abort itself is unchanged; `0` disables warnings.
+- Dashboard: read-only Agent Runs console (`/operate/agent-runs`, `GET /api/agentops/*`, tenant-scoped,
+  redacted digests only) and a Concept & Quality tab on Drift (`GET /api/drift/events`).
+- `exa drift run-advanced [--once] [--dry-run] [--model M]`: schedules the concept, label-free and
+  data-quality detectors over every model with predictions; kill-switch
+  `EXAMLOPS_DRIFT_ADVANCED_ENABLED` (default off), distributed lease, cooldown/dedupe, audited.
+- Concept detector seam with a lazy `river-adwin` adapter (`--detector`, `EXAMLOPS_DRIFT_CONCEPT_DETECTOR`)
+  that degrades to the built-in test and records why. Evidently, NannyML and whylogs are not adapted.
+- Docs: OTLP export of agent spans to Langfuse / Phoenix over the standard `OTEL_*` variables.
+
 ## [0.61.0] - 2026-09-20
 
 ### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)

@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from './api'
 
 // Drift write actions (admin) — mirror `exa drift baseline|reset|auto-retrain`. Each mutation
@@ -89,3 +89,22 @@ export const useResetInputDrift = () => {
     onSuccess: () => invalidateDrift(qc),
   })
 }
+
+// Unified drift events (ADR 0022) — `exa drift events`: concept, label-free estimate and
+// data-quality detections written by `exa drift run-advanced` (or the per-command detectors).
+export interface DriftEvent {
+  id: number
+  ts: string
+  model: string
+  drift_kind: string
+  severity: string
+  score: number | null
+  metric: string | null
+  detail: Record<string, unknown> | null
+}
+
+export const useDriftEvents = (kind?: string) =>
+  useQuery<DriftEvent[]>({
+    queryKey: ['drift-events', kind ?? 'all'],
+    queryFn: () => apiFetch<DriftEvent[]>(`/api/drift/events${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
+  })

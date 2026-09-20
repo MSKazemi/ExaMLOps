@@ -107,7 +107,7 @@ class Instrumentation:
 
             self._recorder = SessionRecorder(session_id, agent=agent, model=model)
             if config.AGENT_CIRCUIT_BREAKER:
-                self._breaker = AgentCircuitBreaker()
+                self._breaker = AgentCircuitBreaker(session_id=session_id)
         except Exception:  # noqa: BLE001 - never break a chat turn
             self._enabled = False
 

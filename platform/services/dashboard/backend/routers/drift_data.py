@@ -164,6 +164,47 @@ async def drift_status(
     return results
 
 
+@router.get("/events")
+async def drift_events(
+    _=Depends(_viewer),
+    model: str | None = Query(None),
+    kind: str | None = Query(None, description="concept | data_quality | feature | prediction …"),
+    limit: int = Query(50, ge=1, le=500),
+) -> list[dict]:
+    """Unified drift events across kinds (ADR 0022), newest first - ``exa drift events``.
+
+    ``concept`` and ``data_quality`` are written by ``exa drift run-advanced`` (or the per-command
+    detectors); ``detail`` is returned parsed, as the CLI's JSON does.
+    """
+    clauses, params = [], []
+    if model:
+        clauses.append("model=?")
+        params.append(model)
+    if kind:
+        clauses.append("drift_kind=?")
+        params.append(kind)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with readable("the drift event log"):
+        conn = connect(_db_path())
+        try:
+            rows = conn.execute(
+                f"SELECT id, ts, model, drift_kind, severity, score, metric, detail "
+                f"FROM drift_events {where} ORDER BY ts DESC, id DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["detail"] = json.loads(d["detail"]) if d["detail"] else None
+        except (ValueError, TypeError):
+            d["detail"] = None
+        out.append(d)
+    return out
+
+
 @router.get("/auto-retrain")
 async def drift_auto_retrain(_=Depends(_viewer)) -> list[dict]:
     """Auto-retrain configuration for all models."""

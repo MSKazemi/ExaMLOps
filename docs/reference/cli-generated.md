@@ -1021,6 +1021,7 @@ Concept-drift test on realized error as delayed labels arrive (C5·R1).
 
 - `--alias` — Restrict to one serving alias
 - `--window` — Recent window size (samples)
+- `--detector` — builtin (default) | river-adwin (needs `pip install river`; falls back to builtin)
 
 ### `exa drift consume-telemetry`
 
@@ -1133,6 +1134,21 @@ Clear all drift snapshots for a model (keeps baseline).
 
 - `--dry-run` — Show how many snapshots would be cleared without deleting them
 - `--reason` — Why you are making this change (recorded in the audit trail)
+
+### `exa drift run-advanced`
+
+Sweep every model with the concept, label-free and data-quality detectors (C5, ADR 0022).
+
+Writes `drift_events` with a `drift_kind`, which `exa drift trigger` and the autopilot already
+consume. A real run needs `EXAMLOPS_DRIFT_ADVANCED_ENABLED=1` (default off), takes a
+distributed lease so only one scheduler acts, and re-states an unchanged non-OK event at most
+once per `EXAMLOPS_DRIFT_ADVANCED_COOLDOWN` seconds (default 3600). Every cycle is audited.
+
+- `--once` — Run one sweep and exit (default: loop)
+- `--dry-run` — Preview: run the detectors, write nothing, take no lease
+- `--model` — Only this model (default: every model)
+- `--interval` — Seconds between sweeps (0 = env/300)
+- `--window` — Concept-drift recent window (samples)
 
 ### `exa drift snapshots`
 

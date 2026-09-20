@@ -15,13 +15,20 @@ three new detectors, all unified under a ``drift_kind`` discriminator in the
 
 Graceful degradation: Evidently / River / NannyML / whylogs are all optional. Absent
 them, pure-Python statistics (mean-shift z-test, confidence-based estimate, null/range
-profile) provide the same signals against ``platform_db``.
+profile) provide the same signals against ``platform_db``. The concept detector is a small
+seam (:data:`CONCEPT_DETECTORS`, chosen by ``EXAMLOPS_DRIFT_CONCEPT_DETECTOR`` or the
+``detector=`` argument): ``builtin`` is the default and ``river-adwin`` is a lazy adapter that
+falls back to ``builtin`` — recording that it did — when River is not installed. Evidently,
+NannyML and whylogs have **no** adapter (see ADR 0022's status).
+
+:mod:`examlops.drift_advanced.scheduler` runs the detectors over every model on a schedule.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+import os
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -70,6 +77,74 @@ def _abs_error(pred: float, label: float) -> float:
     return abs(pred - label)
 
 
+#: A concept detector maps ``(baseline errors, recent errors)`` to ``(severity, score, extra)``.
+ConceptDetector = Callable[[list[float], list[float]], tuple[str, float, dict[str, Any]]]
+
+CONCEPT_DETECTOR_ENV = "EXAMLOPS_DRIFT_CONCEPT_DETECTOR"
+DEFAULT_CONCEPT_DETECTOR = "builtin"
+
+
+def _builtin_concept(baseline: list[float], recent: list[float]) -> tuple[str, float, dict]:
+    """One-sided mean-shift z-test of the recent error mean under the baseline distribution."""
+    b_mean = sum(baseline) / len(baseline)
+    b_var = sum((e - b_mean) ** 2 for e in baseline) / max(len(baseline) - 1, 1)
+    b_std = math.sqrt(b_var) or 1e-9
+    r_mean = sum(recent) / len(recent)
+    z = (r_mean - b_mean) / (b_std / math.sqrt(len(recent)))
+    z = max(z, 0.0)  # only error *increases* are concept drift
+    return (
+        _severity_from_z(z),
+        z,
+        {"baseline_error": b_mean, "recent_error": r_mean},
+    )
+
+
+def _river_adwin_concept(baseline: list[float], recent: list[float]) -> tuple[str, float, dict]:
+    """River ADWIN over the error stream (lazy import; raises ImportError when River is absent).
+
+    The whole labelled stream is fed in order. Drift counts only if ADWIN signalled **inside the
+    recent window** *and* the recent error is above the baseline (a fall in error is an
+    improvement, not a concept shift). ADWIN gives a decision, not a magnitude, so the score is the
+    builtin z and severity is ``CRITICAL`` on a confirmed drift, else whatever z alone implies but
+    never above ``WARN`` — the streaming detector is what may escalate to ``CRITICAL``.
+    """
+    from river.drift import ADWIN  # type: ignore[import-not-found]  # noqa: PLC0415
+
+    sev, z, extra = _builtin_concept(baseline, recent)
+    adwin = ADWIN()
+    first_recent = len(baseline)
+    detected_in_recent = False
+    for i, err in enumerate(baseline + recent):
+        adwin.update(err)
+        if adwin.drift_detected and i >= first_recent:
+            detected_in_recent = True
+    increased = extra["recent_error"] > extra["baseline_error"]
+    confirmed = detected_in_recent and increased
+    severity = "CRITICAL" if confirmed else ("WARN" if sev != "OK" else "OK")
+    extra["adwin_drift"] = detected_in_recent
+    return severity, z, extra
+
+
+#: Selectable concept detectors. Register another with ``CONCEPT_DETECTORS["name"] = fn``.
+CONCEPT_DETECTORS: dict[str, ConceptDetector] = {
+    "builtin": _builtin_concept,
+    "river-adwin": _river_adwin_concept,
+}
+
+
+def resolve_concept_detector(name: str | None = None) -> tuple[str, ConceptDetector, str | None]:
+    """The detector to run: ``(name used, fn, fallback_reason)``.
+
+    Unknown names and adapters whose library is missing degrade to ``builtin`` and say why — a
+    detector that silently became a different one would make the recorded ``detector`` a lie.
+    """
+    want = (name or os.getenv(CONCEPT_DETECTOR_ENV) or DEFAULT_CONCEPT_DETECTOR).strip().lower()
+    fn = CONCEPT_DETECTORS.get(want)
+    if fn is None:
+        return "builtin", _builtin_concept, f"unknown detector {want!r}"
+    return want, fn, None
+
+
 def detect_concept_drift(
     model: str,
     *,
@@ -77,14 +152,16 @@ def detect_concept_drift(
     window: int = 50,
     metric: str = "abs_error",
     persist: bool = True,
+    detector: str | None = None,
 ) -> DriftResult:
     """Concept-drift test on realized error as labels arrive (R1).
 
     Splits the labelled prediction stream into a *baseline* head and a *recent*
-    tail of ``window`` points, then runs a mean-shift z-test on per-sample error.
+    tail of ``window`` points and hands both to the concept detector (``builtin``
+    mean-shift z-test by default; ``river-adwin`` when selected and installed).
     A significant increase in realized error signals a changed input→target
     relationship. Records ``drift_kind=concept`` (R6); severity is auto-retrain
-    consumable (R2).
+    consumable (R2). The detector that actually ran is recorded in ``detail``.
     """
     pairs = platform_db.join_predictions_with_truth(model, alias)
     errors = [_abs_error(p["prediction"], p["label"]) for p in pairs]
@@ -99,22 +176,16 @@ def detect_concept_drift(
 
     w = min(window, n // 2)
     baseline, recent = errors[:-w], errors[-w:]
-    b_mean = sum(baseline) / len(baseline)
-    b_var = sum((e - b_mean) ** 2 for e in baseline) / max(len(baseline) - 1, 1)
-    b_std = math.sqrt(b_var) or 1e-9
-    r_mean = sum(recent) / len(recent)
-    # One-sided z of the recent mean under the baseline distribution of the mean.
-    z = (r_mean - b_mean) / (b_std / math.sqrt(len(recent)))
-    z = max(z, 0.0)  # only error *increases* are concept drift
-    severity = _severity_from_z(z)
-    res = DriftResult(
-        model,
-        "concept",
-        severity,
-        score=z,
-        metric=metric,
-        detail={"baseline_error": b_mean, "recent_error": r_mean, "window": w, "n": n},
-    )
+    used, fn, reason = resolve_concept_detector(detector)
+    try:
+        severity, z, extra = fn(baseline, recent)
+    except ImportError:
+        used, reason = "builtin", f"{used} is not installed"
+        severity, z, extra = _builtin_concept(baseline, recent)
+    detail = {**extra, "window": w, "n": n, "detector": used}
+    if reason:
+        detail["detector_fallback"] = reason
+    res = DriftResult(model, "concept", severity, score=z, metric=metric, detail=detail)
     if persist:
         _persist(res)
     return res
@@ -277,9 +348,11 @@ def profile_inference(
 
 
 __all__ = [
+    "CONCEPT_DETECTORS",
     "DriftResult",
     "QualityProfile",
     "detect_concept_drift",
     "estimate_performance",
     "profile_inference",
+    "resolve_concept_detector",
 ]

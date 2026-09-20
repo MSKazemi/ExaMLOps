@@ -35,6 +35,7 @@ const KNOWN_ROUTES = new Set([
   '/operate/drift',
   '/operate/alerts',
   '/operate/autopilot',
+  '/operate/agent-runs',
   '/operate/slos',
   '/operate/admission',
   '/operate/facility',

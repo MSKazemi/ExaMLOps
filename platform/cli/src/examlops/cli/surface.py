@@ -195,6 +195,7 @@ TIERS: dict[str, str] = {
     "drift input status": R,
     "drift profile": R,
     "drift reset": D,
+    "drift run-advanced": A,
     "drift snapshots": R,
     "drift status": R,
     "drift trigger": D,
@@ -590,6 +591,7 @@ BLOCKED_PARAMS: dict[str, frozenset[str]] = {
     "secrets get": frozenset({"reveal"}),
     "backup schedule": frozenset({"once", "interval"}),
     "serve autoscale run": frozenset({"once", "interval"}),
+    "drift run-advanced": frozenset({"once", "interval"}),
 }
 
 # Arguments always appended so a run terminates: `stack logs` follows by default and `backup
@@ -598,6 +600,7 @@ FORCED_ARGS: dict[str, tuple[str, ...]] = {
     "stack logs": ("--no-follow",),
     "backup schedule": ("--once",),
     "serve autoscale run": ("--once",),
+    "drift run-advanced": ("--once",),
 }
 
 # Values the command would otherwise *prompt* for. stdin is /dev/null in the console, so a prompt

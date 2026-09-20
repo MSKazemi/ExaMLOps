@@ -15,6 +15,7 @@ from examlops.platform_db import get_db, init_db, install_write_retry  # noqa: F
 
 __all__ = [
     "get_agent_session_trace",
+    "agent_metrics_rollup",
     "list_agent_sessions",
     "record_agent_session",
     "record_agent_tool_call",
@@ -77,8 +78,15 @@ def record_agent_session(
     status: str = "ok",
     anomalies: list[str] | None = None,
     ended: bool = False,
+    started_at: str | None = None,
 ) -> None:
-    """Upsert a session summary row (idempotent by ``session_id``)."""
+    """Upsert a session summary row (idempotent by ``session_id``).
+
+    ``started_at`` (``YYYY-MM-DD HH:MM:SS``, UTC) is the wall-clock time the session really began.
+    Sessions are flushed when they *end*, so without it the row's ``started_at`` defaults to the
+    flush time and every duration would read as zero. It is written on insert only — an upsert
+    never moves a session's start.
+    """
     init_db()
     anom_json = json.dumps(anomalies) if anomalies else None
     with get_db() as conn:
@@ -86,8 +94,9 @@ def record_agent_session(
             """INSERT INTO agent_sessions
                    (session_id, tenant, agent, model, steps, tool_calls, errors,
                     input_tokens, output_tokens, cost_usd, status, anomalies,
-                    ended_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?, CASE WHEN ? THEN CURRENT_TIMESTAMP END)
+                    started_at, ended_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?, COALESCE(?, CURRENT_TIMESTAMP),
+                       CASE WHEN ? THEN CURRENT_TIMESTAMP END)
                ON CONFLICT(session_id) DO UPDATE SET
                     tenant=excluded.tenant, agent=excluded.agent, model=excluded.model,
                     steps=excluded.steps, tool_calls=excluded.tool_calls,
@@ -108,6 +117,7 @@ def record_agent_session(
                 cost_usd,
                 status,
                 anom_json,
+                started_at,
                 ended,
             ),
         )
@@ -173,6 +183,84 @@ def tool_success_rate(
                 else None,
             }
         )
+    return out
+
+
+#: Session-duration histogram upper bounds in seconds (``+Inf`` is implicit).
+DURATION_BUCKETS_S = (1.0, 5.0, 15.0, 60.0, 300.0, 900.0)
+
+
+def agent_metrics_rollup() -> dict[str, Any]:
+    """Aggregates for the Prometheus exposition — every label bounded, none per-session.
+
+    Labels are the logical ``agent`` name, the ``status`` outcome and the ``tool`` name: all drawn
+    from small closed sets. A session id, a tenant or an args digest is never a label — those grow
+    without bound and would turn the scrape into a cardinality incident.
+    """
+    init_db()
+    out: dict[str, Any] = {}
+    with get_db() as conn:
+        out["sessions"] = [
+            dict(r)
+            for r in conn.execute(
+                """SELECT COALESCE(agent,'unknown') AS agent, status,
+                          COUNT(*) AS started,
+                          SUM(CASE WHEN ended_at IS NOT NULL THEN 1 ELSE 0 END) AS ended,
+                          COALESCE(SUM(steps),0) AS steps,
+                          COALESCE(SUM(input_tokens),0) AS input_tokens,
+                          COALESCE(SUM(output_tokens),0) AS output_tokens,
+                          COALESCE(SUM(cost_usd),0) AS cost_usd
+                   FROM agent_sessions GROUP BY 1, 2"""
+            ).fetchall()
+        ]
+        out["tools"] = [
+            dict(r)
+            for r in conn.execute(
+                """SELECT tool, COUNT(*) AS calls, COALESCE(SUM(ok),0) AS ok
+                   FROM agent_tool_calls GROUP BY tool"""
+            ).fetchall()
+        ]
+        anomaly_rows = conn.execute(
+            "SELECT COALESCE(agent,'unknown') AS agent, anomalies FROM agent_sessions "
+            "WHERE anomalies IS NOT NULL"
+        ).fetchall()
+        durations = [
+            (r["agent"], float(r["d"]))
+            for r in conn.execute(
+                """SELECT COALESCE(agent,'unknown') AS agent,
+                          (julianday(ended_at) - julianday(started_at)) * 86400.0 AS d
+                   FROM agent_sessions WHERE ended_at IS NOT NULL"""
+            ).fetchall()
+            if r["d"] is not None
+        ]
+        out["breaker"] = [
+            dict(r)
+            for r in conn.execute(
+                """SELECT action, target, COUNT(*) AS n FROM audit_events
+                   WHERE source='agentops' AND action IN
+                         ('agent_breaker_warning','agent_breaker_tripped')
+                   GROUP BY action, target"""
+            ).fetchall()
+        ]
+    anomalies: dict[tuple[str, str], int] = {}
+    for r in anomaly_rows:
+        try:
+            codes = json.loads(r["anomalies"])
+        except (ValueError, TypeError):
+            continue
+        for code in codes if isinstance(codes, list) else []:
+            key = (r["agent"], str(code))
+            anomalies[key] = anomalies.get(key, 0) + 1
+    out["anomalies"] = [{"agent": a, "code": c, "n": n} for (a, c), n in sorted(anomalies.items())]
+    hist: dict[str, dict[str, Any]] = {}
+    for agent, d in durations:
+        h = hist.setdefault(agent, {"buckets": [0] * len(DURATION_BUCKETS_S), "sum": 0.0, "n": 0})
+        h["sum"] += max(d, 0.0)
+        h["n"] += 1
+        for i, bound in enumerate(DURATION_BUCKETS_S):
+            if d <= bound:
+                h["buckets"][i] += 1
+    out["durations"] = hist
     return out
 
 

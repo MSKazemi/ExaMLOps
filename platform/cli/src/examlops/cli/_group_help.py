@@ -162,6 +162,7 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("Prediction-drift status", "exa drift status"),
         ("Store the current baseline", "exa drift baseline JPCP"),
         ("Preview auto-retrain triggers", "exa drift trigger --dry-run"),
+        ("Preview a concept/quality sweep", "exa drift run-advanced --once --dry-run"),
     ],
     "drift auto-retrain": [
         ("Show auto-retrain config", "exa drift auto-retrain status"),

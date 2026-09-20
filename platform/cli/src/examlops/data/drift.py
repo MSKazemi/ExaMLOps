@@ -22,6 +22,8 @@ from examlops.platform_db import (  # noqa: F401
 
 __all__ = [
     "claim_drift_trigger",
+    "prediction_models",
+    "recent_prediction_features",
     "get_corruption_baseline",
     "get_drift_auto_retrain",
     "get_drift_baseline",
@@ -355,6 +357,37 @@ def record_drift_statuses(
             if announce(conn, change, actor):
                 changes.append(change)
     return changes
+
+
+def prediction_models() -> list[str]:
+    """Every model with recorded predictions — what the advanced-drift scheduler sweeps."""
+    init_db()
+    with get_db() as conn:
+        return [
+            r["model"]
+            for r in conn.execute("SELECT DISTINCT model FROM predictions ORDER BY model")
+        ]
+
+
+def recent_prediction_features(model: str, limit: int) -> list[dict[str, Any]]:
+    """The model's newest ``limit`` recorded input-feature dicts (rows without features skipped)."""
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT features_json FROM predictions WHERE model=? ORDER BY id DESC LIMIT ?",
+            (model, limit),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if not r["features_json"]:
+            continue
+        try:
+            obj = json.loads(r["features_json"])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
 
 
 install_write_retry(__name__)

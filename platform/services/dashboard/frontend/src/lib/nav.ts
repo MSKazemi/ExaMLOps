@@ -110,6 +110,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { path: '/operate/drift', label: 'Drift', icon: Activity },
       { path: '/operate/alerts', label: 'Alerts', icon: BellRing },
       { path: '/operate/autopilot', label: 'Autopilot', icon: Rocket },
+      { path: '/operate/agent-runs', label: 'Agent Runs', icon: Bot },
       { path: '/operate/slos', label: 'SLOs', icon: Target },
       { path: '/operate/admission', label: 'Admission', icon: ListChecks },
       { path: '/operate/facility', label: 'Facility', icon: Cpu, flag: 'facilityConsole' },
