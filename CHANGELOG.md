@@ -5,6 +5,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - sampled per-inference embeddings reach the vector store as drift samples (ADR 0020 clause 4)
+
+The bridge's telemetry path kept three scalars per inference (`input_snapshots`) and discarded the
+vector, so drift could not be asked *how* the input moved. With `EXAMLOPS_DRIFT_EMBEDDING_SAMPLE_RATE`
+> 0 (default 0, off) the Dataplane bus bridge now also writes a sampled, content-addressed
+(`emb-<sha256>`) vector with model, alias, version, job and timestamp into the model's
+`drift.embeddings.<model>` collection through the `VectorStore` seam, ring-bounded by
+`EXAMLOPS_DRIFT_EMBEDDING_CAP` (default 500 per model). The write is on the telemetry worker thread
+(or, under `EXAMLOPS_TELEMETRY_VIA_EVENTBUS`, in the `serving.inference_telemetry` consumer via a new
+optional `embedding_sample` field); a failure is counted (`dataplane_bus_embedding_sample_failures_total`),
+never raised into the inference. Read path: `exa drift input baseline` also freezes the samples'
+centroid as a baseline snapshot, and `exa drift input status MODEL --similarity [-k N]
+[--min-similarity X]` reports nearest/farthest samples and recent mean cosine similarity. The
+`VectorStore` seam gained `trim` and `scan` (SQLite and pgvector). New module
+`examlops.drift_embeddings`. ADR 0020 status not changed here.
+
 ### Added - the gateway enforces a reasoning budget and accounts thinking separately (ADR 0035 clause 2)
 
 `GatewayClient.chat` now resolves a reasoning budget per request (per call, virtual key, project,

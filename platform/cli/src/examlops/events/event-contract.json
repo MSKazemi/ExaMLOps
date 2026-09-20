@@ -743,6 +743,32 @@
       "alias": {
         "type": "string"
       },
+      "embedding_sample": {
+        "properties": {
+          "ts": {
+            "type": "number"
+          },
+          "vector": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "vector"
+        ],
+        "type": [
+          "object",
+          "null"
+        ]
+      },
       "embedding_stats": {
         "properties": {
           "mean": {

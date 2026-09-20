@@ -282,6 +282,22 @@ _TELEMETRY_EVENTBUS_FAILURES = Counter(
     "(EXAMLOPS_TELEMETRY_VIA_EVENTBUS) and were dropped rather than written directly",
 )
 
+# Sampled per-inference embedding vectors into the vector store (ADR 0020 clause 4). Off unless
+# EXAMLOPS_DRIFT_EMBEDDING_SAMPLE_RATE > 0. A failed sample write is counted here, never raised.
+_EMB_SAMPLES_STORED = Counter(
+    "dataplane_bus_embedding_samples_stored_total",
+    "Input-embedding vectors written to the drift vector store (sampled, ring-bounded)",
+)
+_EMB_SAMPLES_EVICTED = Counter(
+    "dataplane_bus_embedding_samples_evicted_total",
+    "Sampled embedding vectors evicted by the per-model ring-buffer cap",
+)
+_EMB_SAMPLE_FAILURES = Counter(
+    "dataplane_bus_embedding_sample_failures_total",
+    "Sampled embedding vectors lost because the vector-store write (or the event publish "
+    "carrying it) failed; the inference itself succeeded",
+)
+
 # Input-embedding drift (phase 21). The bridge already computes norm/mean/std on every
 # inference to write `input_snapshots`; it just never exported them, so the three Grafana
 # panels built on these names rendered "No data" from the day they shipped — which reads as a
@@ -634,7 +650,7 @@ async def _call_pipeline(
     # here, so a locked or unreachable database turned a successful prediction into an error on the
     # bus and added up to busy_timeout x retries of latency to every job. They are now handed to a
     # bounded spool that a background worker drains; this call never waits on the database.
-    _telemetry_spool.offer((model_name, alias, prediction, embedding, str(job.job_id)))
+    _telemetry_spool.offer((model_name, alias, prediction, embedding, str(job.job_id), version))
     return prediction, run_id, version
 
 
@@ -709,6 +725,7 @@ def _publish_inference_telemetry_event(
     prediction: float | None,
     job_id: str,
     embedding_stats: dict[str, float] | None,
+    embedding_sample: dict[str, object] | None = None,
 ) -> None:
     """Publish, never write directly (ADR 0123 decision 4): the serving plane crosses the
     boundary to the control plane only as an event, never a transactional database write.
@@ -730,6 +747,8 @@ def _publish_inference_telemetry_event(
         payload["prediction"] = prediction
     if embedding_stats is not None:
         payload["embedding_stats"] = embedding_stats
+    if embedding_sample is not None:
+        payload["embedding_sample"] = embedding_sample
     try:
         NatsPublisher().publish(
             "serving.inference_telemetry", payload, event_id=f"telemetry:{job_id}"
@@ -745,6 +764,7 @@ def _persist_inference_telemetry(
     prediction: float | None,
     embedding: object,
     job_id: str,
+    version: str | None = None,
 ) -> None:
     """The per-inference drift / input-embedding writes, run by the telemetry spool's worker.
 
@@ -778,8 +798,47 @@ def _persist_inference_telemetry(
         _publish_input_baseline(model_name)
     if not via_eventbus and prediction is not None:
         write_drift_snapshot(model_name, alias, float(prediction), job_id)
+    sample = _sample_embedding(model_name, alias, version, job_id, embedding, via_eventbus)
     if via_eventbus and (prediction is not None or embedding_stats is not None):
-        _publish_inference_telemetry_event(model_name, alias, prediction, job_id, embedding_stats)
+        _publish_inference_telemetry_event(
+            model_name, alias, prediction, job_id, embedding_stats, sample
+        )
+
+
+def _sample_embedding(
+    model_name: str,
+    alias: str,
+    version: str | None,
+    job_id: str,
+    embedding: object,
+    via_eventbus: bool,
+) -> dict[str, object] | None:
+    """Sample one embedding into the drift vector store (ADR 0020 clause 4). Never raises.
+
+    Returns the sample payload when ``via_eventbus`` (the caller publishes it; the consumer
+    writes the store), otherwise writes it here — on the telemetry worker thread, never on the
+    reply path. A failure is counted in ``dataplane_bus_embedding_sample_failures_total``.
+    """
+    if not embedding:
+        return None
+    try:
+        from examlops import drift_embeddings as _de  # noqa: PLC0415
+
+        sample = _de.maybe_sample(model_name, alias, version, job_id, embedding)
+        if sample is None or via_eventbus:
+            return sample
+        before = _de.stats()["evicted"]
+        _de.record_sample(
+            model_name, alias, version, job_id, sample["vector"], ts=float(sample["ts"])
+        )
+        _EMB_SAMPLES_STORED.inc()
+        evicted = _de.stats()["evicted"] - before
+        if evicted > 0:
+            _EMB_SAMPLES_EVICTED.inc(evicted)
+    except Exception as exc:  # noqa: BLE001 - a lost sample must never fail or slow an inference
+        _EMB_SAMPLE_FAILURES.inc()
+        log.warning("Embedding sample not stored (inference unaffected): %s", exc)
+    return None
 
 
 # ── pubsub handler ─────────────────────────────────────────────────────────────

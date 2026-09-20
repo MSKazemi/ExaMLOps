@@ -897,7 +897,9 @@ _EXAMPLES_INPUT_STATUS = (
     "Examples:\n\n"
     "  exa drift input status\n\n"
     "  exa drift input status JPCP\n\n"
-    "  exa --json drift input status"
+    "  exa --json drift input status\n\n"
+    "  exa drift input status JPCP --similarity          # nearest-neighbour vs the baseline\n\n"
+    "  exa drift input status JPCP --similarity -k 10 --min-similarity 0.9"
 )
 _EXAMPLES_INPUT_BASELINE = "Examples:\n\n  exa drift input baseline JPCP"
 
@@ -914,8 +916,69 @@ def _input_drift_rows(model_filter: str | None) -> list[dict]:
 @input_app.command("status", epilog=_EXAMPLES_INPUT_STATUS)
 def input_status(
     model: str | None = typer.Argument(None, help="Model name filter (default: all models)"),
+    similarity: bool = typer.Option(
+        False,
+        "--similarity",
+        help="Nearest-neighbour drift of the sampled embedding vectors against the baseline "
+        "snapshot (needs MODEL, sampling on, and `exa drift input baseline`)",
+    ),
+    neighbours: int = typer.Option(
+        5, "--neighbours", "-k", min=0, help="With --similarity: nearest/farthest samples to list"
+    ),
+    min_similarity: float = typer.Option(
+        0.8,
+        "--min-similarity",
+        min=-1.0,
+        max=1.0,
+        help="With --similarity: mean cosine similarity of recent samples below which the "
+        "input is flagged as drifted",
+    ),
 ):
     """Show input embedding distribution drift for all models (or one model)."""
+    if similarity:
+        if not model:
+            _output.error(
+                "--similarity needs a MODEL", hint="exa drift input status JPCP --similarity"
+            )
+            raise typer.Exit(2)
+        from examlops.drift_embeddings import embedding_drift
+
+        try:
+            res = embedding_drift(model, k=neighbours, min_similarity=min_similarity)
+        except Exception as exc:  # noqa: BLE001 - a store outage is reported, not a traceback
+            _output.error(f"embedding similarity unavailable for {model}: {exc}")
+            raise typer.Exit(1) from exc
+        if _output.json_mode:
+            _output.print_json(res)
+        elif res["status"] != "ok":
+            _output.warning(
+                f"{model}: {res['status']} — sample with EXAMLOPS_DRIFT_EMBEDDING_SAMPLE_RATE, "
+                "then `exa drift input baseline`"
+            )
+        else:
+            _output.print_table(
+                f"Embedding similarity to baseline — {model}",
+                ["Samples", "Mean cos", "Recent cos", "Worst cos", "Drifted"],
+                [
+                    [
+                        str(res["samples"]),
+                        f"{res['mean_similarity']:.4f}",
+                        f"{res['recent_mean_similarity']:.4f}",
+                        f"{res['min_sample_similarity']:.4f}",
+                        "YES" if res["drifted"] else "no",
+                    ]
+                ],
+            )
+            if res["farthest"]:
+                _output.print_table(
+                    "Farthest from baseline",
+                    ["Job", "Version", "Cos"],
+                    [
+                        [str(r["job_id"]), str(r["version"]), f"{r['similarity']:.4f}"]
+                        for r in res["farthest"]
+                    ],
+                )
+        return
     rows = _input_drift_rows(model)
     if not rows:
         _output.ok("No input data — bridge must be running to collect embedding snapshots")
@@ -1066,6 +1129,17 @@ def input_baseline(
         f"Input baseline set for {model}: norm_μ={norm_mean:.3f}  emb_μ={mean_mean:.4f}  "
         f"emb_σ={std_mean:.4f}  n={len(snap_rows)}"
     )
+    # ADR 0020 clause 4: when sampled embedding vectors exist, freeze their centroid as the
+    # baseline snapshot `input status --similarity` measures against. Optional — no samples, no-op.
+    from examlops.drift_embeddings import set_baseline as _set_embedding_baseline
+
+    try:
+        eb = _set_embedding_baseline(model)
+        _output.info(f"Embedding baseline snapshot set from {eb['n']} sampled vector(s)")
+    except ValueError:
+        pass  # sampling is off or nothing sampled yet
+    except Exception as exc:  # noqa: BLE001
+        _output.warning(f"embedding baseline snapshot not set: {exc}")
 
 
 _EXAMPLES_INPUT_RESET = "Examples:\n\n  exa drift input reset JPCP"

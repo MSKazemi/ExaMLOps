@@ -180,6 +180,17 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                 },
                 "required": ["norm", "mean", "std"],
             },
+            # ADR 0020 clause 4: a *sampled* raw input embedding (opt-in on the bridge,
+            # EXAMLOPS_DRIFT_EMBEDDING_SAMPLE_RATE), stored by the consumer in the vector store.
+            "embedding_sample": {
+                "type": ["object", "null"],
+                "properties": {
+                    "vector": {"type": "array", "items": {"type": "number"}},
+                    "version": {"type": ["string", "null"]},
+                    "ts": {"type": "number"},
+                },
+                "required": ["vector"],
+            },
         },
     ),
 }

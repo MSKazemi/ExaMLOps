@@ -1120,3 +1120,98 @@ async def test_a_failed_audit_write_does_not_report_the_retrain_as_failed(
         "The caller may retry and fire a second retrain of the same model."
     )
     assert res.flow_run_id == "fr-88", "the accepted retrain's flow run id must still be returned"
+
+
+# ── ADR 0020 clause 4: sampled embedding vectors -> the drift vector store ─────────
+
+
+def _drift_env(monkeypatch, tmp_path, rate="1", cap="3"):
+    monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "emb.db"))
+    monkeypatch.setenv("EXAMLOPS_DRIFT_EMBEDDING_SAMPLE_RATE", rate)
+    monkeypatch.setenv("EXAMLOPS_DRIFT_EMBEDDING_CAP", cap)
+    monkeypatch.delenv("EXAMLOPS_TELEMETRY_VIA_EVENTBUS", raising=False)
+    monkeypatch.setattr(bridge, "write_drift_snapshot", lambda *a: None)
+    monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: None)
+
+
+def _emb_count(model="JPCP"):
+    from examlops.drift_embeddings import samples_collection
+    from examlops.vector_store import SqliteVectorStore
+
+    return SqliteVectorStore().count(samples_collection(model))
+
+
+def test_sampled_embedding_reaches_the_vector_store_with_version(monkeypatch, tmp_path):
+    _drift_env(monkeypatch, tmp_path)
+    before = bridge._EMB_SAMPLES_STORED._value.get()
+    bridge._persist_inference_telemetry("JPCP", "Production", 1.0, [3.0, 4.0], "job-1", "17")
+    from examlops.drift_embeddings import samples_collection
+    from examlops.vector_store import SqliteVectorStore
+
+    (item,) = SqliteVectorStore().scan(samples_collection("JPCP"), "default", 5)
+    assert item.vector == [3.0, 4.0]
+    assert item.metadata["version"] == "17" and item.metadata["job_id"] == "job-1"
+    assert bridge._EMB_SAMPLES_STORED._value.get() == before + 1
+
+
+def test_embedding_sampling_off_by_default_stores_nothing(monkeypatch, tmp_path):
+    _drift_env(monkeypatch, tmp_path, rate="0")
+    bridge._persist_inference_telemetry("JPCP", "Production", 1.0, [3.0, 4.0], "job-1", "17")
+    assert _emb_count() == 0
+
+
+def test_embedding_ring_evictions_are_counted(monkeypatch, tmp_path):
+    _drift_env(monkeypatch, tmp_path, cap="3")
+    before = bridge._EMB_SAMPLES_EVICTED._value.get()
+    for i in range(5):
+        bridge._persist_inference_telemetry(
+            "JPCP", "Production", 1.0, [1.0, float(i)], f"job-{i}", "1"
+        )
+    assert _emb_count() == 3
+    assert bridge._EMB_SAMPLES_EVICTED._value.get() == before + 2
+
+
+def test_embedding_write_failure_is_counted_never_raised(monkeypatch, tmp_path):
+    _drift_env(monkeypatch, tmp_path)
+
+    def _boom(*a, **k):
+        raise RuntimeError("vector store down")
+
+    monkeypatch.setattr("examlops.drift_embeddings.record_sample", _boom)
+    inputs = []
+    monkeypatch.setattr(bridge, "write_input_snapshot", lambda *a: inputs.append(a))
+    before = bridge._EMB_SAMPLE_FAILURES._value.get()
+    bridge._persist_inference_telemetry("JPCP", "Production", 1.0, [3.0, 4.0], "job-1", "1")
+    assert bridge._EMB_SAMPLE_FAILURES._value.get() == before + 1
+    assert len(inputs) == 1  # the scalar drift snapshot still went through
+
+
+@pytest.mark.asyncio
+async def test_a_failing_sample_write_never_reaches_the_inference_reply(monkeypatch, tmp_path):
+    """The reply path only offers to the spool; a store outage surfaces solely in the worker."""
+    _drift_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "examlops.drift_embeddings.record_sample",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")),
+    )
+    spool = bridge._TelemetrySpool(10)
+    failures = bridge._TELEMETRY_FAILURES._value.get()
+    assert spool.offer(("JPCP", "Production", 1.0, [3.0, 4.0], "job-1", "1")) is True
+    await spool.join()
+    assert bridge._TELEMETRY_FAILURES._value.get() == failures  # swallowed inside, counted there
+
+
+def test_via_eventbus_carries_the_sample_and_writes_no_store_row(monkeypatch, tmp_path):
+    _drift_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("EXAMLOPS_TELEMETRY_VIA_EVENTBUS", "1")
+    published = {}
+
+    class _P:
+        def publish(self, topic, payload, *, event_id):
+            published.update(payload)
+
+    monkeypatch.setattr("examlops.events.NatsPublisher", _P)
+    bridge._persist_inference_telemetry("JPCP", "Production", 1.0, [3.0, 4.0], "job-1", "9")
+    assert published["embedding_sample"]["vector"] == [3.0, 4.0]
+    assert published["embedding_sample"]["version"] == "9"
+    assert _emb_count() == 0  # the consumer writes it, not the bridge

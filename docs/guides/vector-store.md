@@ -85,6 +85,8 @@ returns the matching rows.
 - **Feature-store embeddings** (`exa feature apply … --embedding F`, then
   `exa feature materialize`): each entity's online embedding goes into `features.<view>`, queried
   with `exa feature similar`. See [Feature store](feature-store.md#embedding-features-nearest-neighbours).
+- **Drift embedding samples** (sampled per-inference input vectors from the bridge, opt-in): see
+  [Drift embedding samples](#drift-embedding-samples-adr-0020-clause-4).
 - Any caller through the `VectorStore` interface (below).
 
 ## Lifecycle
@@ -162,5 +164,33 @@ hits = store.sparse_search("docs", "JPCP-4711", k=5, tenant="acme")
 hits = store.hybrid_search("docs", query_vec, "why did JPCP-4711 fail", k=5, tenant="acme",
                            fusion="rrf")           # hits[i].channels → dense/sparse score + rank
 store.reindex("docs", "acme", index=IndexConfig.build("ivfflat", lists=200))
+store.trim("docs", "acme", keep=500)         # ring buffer: evict oldest, returns the count
+store.scan("docs", "acme", limit=100)         # newest-first items with their vectors
 store.drop_collection("docs", "acme")
 ```
+
+## Drift embedding samples (ADR 0020 clause 4)
+
+`input_snapshots` stores only norm/mean/std per inference. To ask nearest-neighbour questions about
+input drift, the Dataplane bus bridge can also keep a **sampled, bounded** set of the real
+embedding vectors in this store.
+
+```bash
+export EXAMLOPS_DRIFT_EMBEDDING_SAMPLE_RATE=0.05   # off (0) unless set; raw embeddings may encode PII
+export EXAMLOPS_DRIFT_EMBEDDING_CAP=500            # per-model ring buffer, oldest evicted
+# ... run the bridge; then, once enough samples exist:
+exa drift input baseline JPCP                      # also freezes the samples' centroid
+exa drift input status JPCP --similarity -k 5      # nearest/farthest samples, recent mean cosine
+exa drift input status JPCP --similarity --min-similarity 0.9 --json
+```
+
+- Collection `drift.embeddings.<model>` (cosine); baseline snapshot in `drift.baseline.<model>`.
+- Id is `emb-<sha256(model, alias, vector)>`: the same input to the same alias is one row.
+  Metadata carries model, alias, version, job id and timestamp.
+- The write is off the reply path (telemetry worker thread, or the `serving.inference_telemetry`
+  consumer when `EXAMLOPS_TELEMETRY_VIA_EVENTBUS` is on). Failures and ring evictions are counted
+  (`dataplane_bus_embedding_sample_failures_total`, `..._evicted_total`, `..._stored_total`).
+- `drifted` means the newer half of the samples has mean cosine similarity to the baseline below
+  `--min-similarity` (default 0.8, an operator-tuned threshold, not a calibrated one).
+- Retention is the ring cap; `exa vector drop drift.embeddings.<model>` removes a model's samples.
+

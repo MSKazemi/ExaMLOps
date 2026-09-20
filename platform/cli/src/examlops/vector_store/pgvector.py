@@ -638,6 +638,42 @@ class PgVectorStore:
             ).fetchone()[0]
         )
 
+    def trim(self, coll: str, tenant: str = "default", keep: int = 1000) -> int:
+        """Keep the ``keep`` most recently written items (by ``updated_at``); evict the rest."""
+        sql = _sql()
+        with self._tx() as conn:
+            table = self._collection(coll, tenant, conn)["table_name"]
+            cur = conn.execute(
+                sql.SQL(
+                    "DELETE FROM {t} WHERE item_id IN (SELECT item_id FROM {t} "
+                    "ORDER BY updated_at DESC, item_id DESC OFFSET %s)"
+                ).format(t=sql.Identifier(table)),
+                (max(0, int(keep)),),
+            )
+            evicted = int(cur.rowcount or 0)
+        if evicted:
+            self._metric(coll, tenant, "trim", 0.0, evicted)
+        return evicted
+
+    def scan(self, coll: str, tenant: str = "default", limit: int = 1000) -> list[VecItem]:
+        """Up to ``limit`` items, most recently written first."""
+        sql = _sql()
+        with self._tx() as conn:
+            table = self._collection(coll, tenant, conn)["table_name"]
+            rows = conn.execute(
+                sql.SQL(
+                    "SELECT item_id, embedding::text, metadata, text FROM {} "
+                    "ORDER BY updated_at DESC, item_id DESC LIMIT %s"
+                ).format(sql.Identifier(table)),
+                (max(0, int(limit)),),
+            ).fetchall()
+        out = []
+        for item_id, emb, md, text in rows:
+            vec = [float(x) for x in str(emb).strip("[]").split(",") if x != ""]
+            meta = md if isinstance(md, dict) else json.loads(md or "{}")
+            out.append(VecItem(item_id, vec, meta, text))
+        return out
+
     def count(self, coll: str, tenant: str = "default") -> int:
         with self._tx() as conn:
             return self._count(conn, self._collection(coll, tenant, conn)["table_name"])

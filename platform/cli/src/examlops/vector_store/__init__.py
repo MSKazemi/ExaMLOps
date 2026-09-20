@@ -196,6 +196,8 @@ class VectorStore(Protocol):
     ) -> list[Hit]: ...
     def reindex(self, coll: str, tenant: str, index: IndexConfig | None = ...) -> None: ...
     def drop_collection(self, coll: str, tenant: str) -> int: ...
+    def trim(self, coll: str, tenant: str, keep: int) -> int: ...
+    def scan(self, coll: str, tenant: str, limit: int) -> list[VecItem]: ...
     def stats(self, coll: str, tenant: str) -> dict[str, Any]: ...
 
 
@@ -550,6 +552,45 @@ class SqliteVectorStore:
             conn.execute("DELETE FROM vector_collections WHERE name=? AND tenant=?", (coll, tenant))
         self._metric(coll, tenant, "drop", 0.0, removed)
         return removed
+
+    def trim(self, coll: str, tenant: str = "default", keep: int = 1000) -> int:
+        """Keep only the ``keep`` most recently *inserted* items; return how many were evicted.
+
+        The ring-buffer primitive for collections that must stay bounded (drift embedding
+        samples, ADR 0020 clause 4). Oldest first by insertion order.
+        """
+        self._collection(coll, tenant)
+        keep = max(0, int(keep))
+        with get_db() as conn:
+            cur = conn.execute(
+                "DELETE FROM vector_items WHERE collection=? AND tenant=? AND id NOT IN ("
+                "SELECT id FROM vector_items WHERE collection=? AND tenant=? "
+                "ORDER BY id DESC LIMIT ?)",
+                (coll, tenant, coll, tenant, keep),
+            )
+            evicted = int(cur.rowcount or 0)
+        if evicted:
+            self._metric(coll, tenant, "trim", 0.0, evicted)
+        return evicted
+
+    def scan(self, coll: str, tenant: str = "default", limit: int = 1000) -> list[VecItem]:
+        """Up to ``limit`` items, newest insertion first (for centroid/baseline maths)."""
+        self._collection(coll, tenant)
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT item_id, vector_json, metadata_json, text FROM vector_items "
+                "WHERE collection=? AND tenant=? ORDER BY id DESC LIMIT ?",
+                (coll, tenant, max(0, int(limit))),
+            ).fetchall()
+        return [
+            VecItem(
+                r["item_id"],
+                json.loads(r["vector_json"]),
+                json.loads(r["metadata_json"] or "{}"),
+                r["text"],
+            )
+            for r in rows
+        ]
 
     def count(self, coll: str, tenant: str = "default") -> int:
         with get_db() as conn:

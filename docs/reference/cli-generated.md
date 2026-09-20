@@ -1089,6 +1089,10 @@ Clear all input embedding snapshots for a model (keeps baseline).
 
 Show input embedding distribution drift for all models (or one model).
 
+- `--similarity` — Nearest-neighbour drift of the sampled embedding vectors against the baseline snapshot (needs MODEL, sampling on, and `exa drift input baseline`)
+- `--neighbours, -k` — With --similarity: nearest/farthest samples to list
+- `--min-similarity` — With --similarity: mean cosine similarity of recent samples below which the input is flagged as drifted
+
 ### `exa drift profile`
 
 Profile recent inference inputs: schema / nulls / ranges / cardinality (C5·R5).

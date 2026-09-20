@@ -9,6 +9,7 @@ call time → no import cycle). ``install_write_retry(__name__)`` re-applies the
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any  # noqa: F401
 
 from examlops.platform_db import (  # noqa: F401
@@ -268,6 +269,22 @@ def handle_inference_telemetry_event(event: dict[str, Any]) -> None:
         write_input_snapshot(
             model, alias, float(stats["norm"]), float(stats["mean"]), float(stats["std"]), job_id
         )
+    sample = data.get("embedding_sample")
+    if sample:
+        # ADR 0020 clause 4. The snapshots above are already written; a vector-store failure is
+        # counted and logged, never raised — raising would make the consumer redeliver (and DLQ)
+        # an event whose drift rows are fine.
+        try:
+            from examlops import drift_embeddings
+
+            drift_embeddings.record_sample(
+                model, alias, sample.get("version"), job_id, sample["vector"], ts=sample.get("ts")
+            )
+        except Exception:  # noqa: BLE001
+            from examlops import drift_embeddings
+
+            drift_embeddings.note_failure()
+            logging.getLogger(__name__).warning("embedding sample not stored", exc_info=True)
 
 
 def drift_models() -> list[str]:
