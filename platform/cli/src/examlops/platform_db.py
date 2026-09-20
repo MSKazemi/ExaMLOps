@@ -1933,6 +1933,16 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 body       TEXT NOT NULL,             -- JSON
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            -- ADR 0123 decision 3 — per-tenant request quotas the serving gateway enforces. The
+            -- control plane compiles them into the serving snapshot; the gateway never reads this
+            -- table on the request path (rpm = 0 means "unlimited for this tenant").
+            CREATE TABLE IF NOT EXISTS serving_quotas (
+                tenant     TEXT PRIMARY KEY,
+                rpm        INTEGER NOT NULL CHECK (rpm >= 0),
+                updated_by TEXT,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         if not path.startswith("pg:"):
             # The column migrations check PRAGMA table_info and then ALTER TABLE: two statements.

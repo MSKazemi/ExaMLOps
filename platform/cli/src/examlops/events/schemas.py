@@ -104,6 +104,9 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "serving.shadow_changed": _object(
         {"model": _STR, "model_key": _STR, "enabled": _BOOL, "shadow_alias": _STR}
     ),
+    "serving.quota_changed": _object(
+        {"tenant": _STR, "rpm": {"type": ["integer", "null"]}, "removed": _BOOL}
+    ),
     "serving.snapshot_published": _object(
         {"generation": _INT, "digest": _STR, "models": _INT},
     ),

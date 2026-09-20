@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 470,
+ "total_commands": 473,
  "total_groups": 70,
  "panels": [
   {
@@ -1311,6 +1311,27 @@
      "cmd": "exa gateway key revoke",
      "group": "gateway",
      "help": "Revoke a virtual key by its stored hash.",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway quota list",
+     "group": "gateway",
+     "help": "List the per-tenant quotas (tenants without one use EXAMLOPS_GATEWAY_TENANT_RPM).",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway quota remove",
+     "group": "gateway",
+     "help": "Drop a tenant's quota so it falls back to the gateway default.",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway quota set",
+     "group": "gateway",
+     "help": "Cap a tenant's requests per minute. Reaches the gateway in the next serving snapshot.",
      "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
      "guide": "guides/model-gateway.md"
     },

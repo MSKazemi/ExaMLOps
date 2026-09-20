@@ -15,8 +15,9 @@ whether to let it through. The decision:
    Routes that name no model cannot be scoped and are refused; so is gRPC, which names its model
    in the message body, and the gateway never reads a body. Off, every model is open to every
    authenticated caller, as in a single-tenant install.
-4. **A per-tenant quota** — ``EXAMLOPS_GATEWAY_TENANT_RPM`` requests per minute — through the shared
-   coordinator, so every gateway replica counts against one budget.
+4. **A per-tenant quota** — the tenant's entry in the serving snapshot (``exa gateway quota set``,
+   ADR 0123 decision 3), else ``EXAMLOPS_GATEWAY_TENANT_RPM`` requests per minute — through the
+   shared coordinator, so every gateway replica counts against one budget.
 
 An allowed request goes upstream with ``X-ExaMLOps-Tenant``, ``X-ExaMLOps-Principal`` and
 ``X-ExaMLOps-Project`` set from the verified identity. They are **always** set on an allowed request
@@ -273,10 +274,73 @@ def _member(principal: Any, project: str, model: str) -> bool:
     return authz.check(principal.id, "viewer", f"project:{project}/model:{model}")
 
 
+# ── per-tenant quotas, from the serving snapshot (ADR 0123 decision 3) ──────────
+
+_quota_lock = threading.Lock()
+_quota_state: dict[str, Any] = {"checked": 0.0, "generation": None, "tenants": None}
+
+
+def reset_quota_cache() -> None:
+    """Forget the quotas read from the snapshot (tests; a process otherwise keeps them for life)."""
+    with _quota_lock:
+        _quota_state.update(checked=0.0, generation=None, tenants=None)
+
+
+def _snapshot_quotas() -> dict[str, int]:
+    """Per-tenant rpm overrides from the newest serving snapshot; ``{}`` when it carries none.
+
+    One indexed ``MAX(generation)`` per ``EXAMLOPS_GATEWAY_QUOTA_REFRESH_SECONDS``, and the body
+    is read only when a new generation exists. A snapshot whose digest does not match its content
+    is refused. A failed read keeps the quotas last read — a datastore outage must neither lift a
+    tenant's limit nor invent one — and a process that never read any enforces only the default.
+    """
+    ttl = float(_env_int("EXAMLOPS_GATEWAY_QUOTA_REFRESH_SECONDS", 5))
+    now = time.monotonic()
+    with _quota_lock:
+        known = _quota_state["tenants"]
+        if known is not None and now - _quota_state["checked"] < ttl:
+            return known
+        generation = _quota_state["generation"]
+    try:
+        from examlops import serving_snapshot  # noqa: PLC0415
+
+        newest = serving_snapshot.latest_generation()
+        if newest is None:
+            fresh: dict[str, int] = {}
+        elif newest == generation and known is not None:
+            fresh = known
+        else:
+            snap = serving_snapshot.latest() or {}
+            content = {k: snap[k] for k in serving_snapshot.CONTENT_KEYS if k in snap}
+            if snap and serving_snapshot.digest_of(content) != snap.get("digest"):
+                raise ValueError(f"serving snapshot {newest} fails its digest check")
+            fresh = {
+                str(t): int(v["rpm"])
+                for t, v in ((snap.get("quotas") or {}).get("tenants") or {}).items()
+                if isinstance(v, dict) and isinstance(v.get("rpm"), int) and v["rpm"] >= 0
+            }
+    except Exception as exc:  # noqa: BLE001 - keep serving with what was last known
+        logger.warning("Gateway quota snapshot unavailable, keeping the last known: %s", exc)
+        with _quota_lock:
+            _quota_state["checked"] = now
+            return _quota_state["tenants"] or {}
+    with _quota_lock:
+        _quota_state.update(checked=now, generation=newest, tenants=fresh)
+    return fresh
+
+
+def tenant_limit(tenant: str) -> int:
+    """Requests per minute for ``tenant``: its snapshot quota, else the gateway default (0 = off)."""
+    override = _snapshot_quotas().get(tenant)
+    if override is not None:
+        return override
+    return _env_int("EXAMLOPS_GATEWAY_TENANT_RPM", 600)
+
+
 def _within_quota(tenant: str) -> bool:
-    limit = _env_int("EXAMLOPS_GATEWAY_TENANT_RPM", 600)
+    limit = tenant_limit(tenant)
     if limit <= 0:
-        return True  # 0 turns the per-tenant quota off
+        return True  # 0 turns the quota off (for this tenant, or for everyone by default)
     try:
         from examlops.coordination import get_coordinator  # noqa: PLC0415
 

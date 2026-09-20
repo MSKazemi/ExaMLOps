@@ -341,6 +341,16 @@ RESOURCES: tuple[Resource, ...] = (
         columns=("key_hash", "tenant", "project", "budget_usd", "spent_usd", "revoked"),
     ),
     R(
+        "tenant-quota",
+        "Tenant quotas",
+        "Per-tenant request-per-minute limits the serving gateway enforces (via the snapshot).",
+        list="gateway quota list",
+        key="tenant",
+        create="gateway quota set",
+        delete="gateway quota remove",
+        columns=("tenant", "rpm", "updated_by", "updated_at"),
+    ),
+    R(
         "knowledge-base",
         "Knowledge bases",
         "RAG knowledge bases, ingested and queried with citations.",

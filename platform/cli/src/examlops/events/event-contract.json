@@ -812,6 +812,31 @@
     "title": "serving.inference_telemetry",
     "type": "object"
   },
+  "serving.quota_changed": {
+    "$id": "urn:examlops:event-schema:serving.quota_changed",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "removed": {
+        "type": "boolean"
+      },
+      "rpm": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "tenant": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "removed",
+      "rpm",
+      "tenant"
+    ],
+    "title": "serving.quota_changed",
+    "type": "object"
+  },
   "serving.shadow_changed": {
     "$id": "urn:examlops:event-schema:serving.shadow_changed",
     "$schema": "https://json-schema.org/draft/2020-12/schema",

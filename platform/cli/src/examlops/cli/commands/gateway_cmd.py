@@ -105,6 +105,64 @@ def key_revoke(key_hash: str = typer.Argument(..., help="Key hash prefix or full
     _output.ok(f"Revoked key {kh[:16]}…")
 
 
+quota_app = typer.Typer(
+    help="Per-tenant request quotas the serving gateway enforces (ADR 0123)",
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+app.add_typer(quota_app, name="quota")
+
+
+@quota_app.command(
+    "set",
+    epilog="Examples:\n\n  exa gateway quota set acme 120\n\n  exa gateway quota set batch 0  # unlimited",
+)
+def quota_set(
+    tenant: str = typer.Argument(..., help="Tenant name (the virtual key's tenant)"),
+    rpm: int = typer.Argument(
+        ..., min=0, help="Requests per minute; 0 = unlimited for this tenant"
+    ),
+) -> None:
+    """Cap a tenant's requests per minute. Reaches the gateway in the next serving snapshot."""
+    from examlops.data import serving_quotas
+
+    result = serving_quotas.set_quota(tenant, rpm, updated_by=_actor())
+    if _output.json_mode:
+        _output.print_json({"tenant": tenant, "rpm": rpm, "result": result})
+        return
+    _output.ok(f"{tenant}: {result}, {rpm or 'unlimited'} requests/min (via the serving snapshot)")
+
+
+@quota_app.command("list")
+def quota_list() -> None:
+    """List the per-tenant quotas (tenants without one use EXAMLOPS_GATEWAY_TENANT_RPM)."""
+    from examlops.data import serving_quotas
+
+    rows = serving_quotas.list_quotas()
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    if not rows:
+        _output.info("No per-tenant quotas set; every tenant uses the gateway default.")
+        return
+    for row in rows:
+        _output.info(f"{row['tenant']}  rpm={row['rpm']}  by={row['updated_by'] or '-'}")
+
+
+@quota_app.command("remove")
+def quota_remove(tenant: str = typer.Argument(..., help="Tenant whose quota to drop")) -> None:
+    """Drop a tenant's quota so it falls back to the gateway default."""
+    from examlops.data import serving_quotas
+
+    removed = serving_quotas.remove_quota(tenant, updated_by=_actor())
+    if _output.json_mode:
+        _output.print_json({"tenant": tenant, "result": "removed" if removed else "not_found"})
+        return
+    if not removed:
+        _output.error(f"No quota set for tenant '{tenant}'")
+    _output.ok(f"{tenant}: quota removed (gateway default applies)")
+
+
 cache_app = typer.Typer(
     help="Semantic cache (B3) — hit-rate + measured savings",
     no_args_is_help=True,

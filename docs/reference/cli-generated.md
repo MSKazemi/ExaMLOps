@@ -1797,6 +1797,22 @@ List virtual keys (hashes only).
 
 Revoke a virtual key by its stored hash.
 
+### `exa gateway quota`
+
+Per-tenant request quotas the serving gateway enforces (ADR 0123)
+
+#### `exa gateway quota list`
+
+List the per-tenant quotas (tenants without one use EXAMLOPS_GATEWAY_TENANT_RPM).
+
+#### `exa gateway quota remove`
+
+Drop a tenant's quota so it falls back to the gateway default.
+
+#### `exa gateway quota set`
+
+Cap a tenant's requests per minute. Reaches the gateway in the next serving snapshot.
+
 ### `exa gateway reasoning`
 
 Reasoning ops — budget/accounting/trace (B8)

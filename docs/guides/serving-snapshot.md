@@ -86,6 +86,24 @@ served before, from its own disk. `tests/unit/test_serving_static_stability.py` 
 real scikit-learn model and a real prediction, and a control run without the local state comes up
 empty.
 
+## Per-tenant quotas
+
+The snapshot's `quotas` section holds per-tenant request limits the serving gateway enforces
+(ADR 0123 decision 3). Set them where the control plane owns configuration:
+
+```bash
+exa gateway quota set acme 120       # 120 requests/min for tenant acme
+exa gateway quota set batch 0        # unlimited for this tenant
+exa gateway quota list
+exa gateway quota remove acme        # back to EXAMLOPS_GATEWAY_TENANT_RPM
+```
+
+A change enqueues `serving.quota_changed`; the projector compiles a new generation and the gateway
+picks it up within `EXAMLOPS_GATEWAY_QUOTA_REFRESH_SECONDS`. The gateway never reads the quota
+table on the request path, refuses a snapshot that fails its digest, and keeps the last quotas it
+read if the datastore goes away. A gateway that starts with the datastore down and has read no
+snapshot enforces only the default. Snapshots published before this section existed still verify.
+
 ## Operating it
 
 ```bash

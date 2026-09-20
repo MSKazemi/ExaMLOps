@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - per-tenant quotas travel in the serving snapshot (ADR 0123 decision 3, in part)
+
+The gateway's per-tenant request quota was one process-wide number in an environment variable, so
+changing one tenant's limit meant redeploying the gateway. Quotas are now configuration that
+crosses the control-plane / serving-plane boundary the way every other serving setting does:
+
+* `exa gateway quota set|list|remove` writes `serving_quotas` (`examlops.data.serving_quotas`) and
+  enqueues `serving.quota_changed`, which wakes the control-plane projector.
+* The serving snapshot gained a `quotas` section (`{"tenants": {"acme": {"rpm": 120}}}`), covered
+  by the digest. `0` means unlimited for that tenant. A replica still verifies snapshots published
+  before the section existed; one that loses or rewrites it fails its digest.
+* The gateway (`examlops.serving_gateway`) enforces the tenant's snapshot quota and falls back to
+  `EXAMLOPS_GATEWAY_TENANT_RPM`. It reads one indexed `MAX(generation)` per
+  `EXAMLOPS_GATEWAY_QUOTA_REFRESH_SECONDS` (5), and a datastore outage keeps the last quotas read
+  instead of lifting or inventing a limit.
+* Input schemas are the part of decision 3's list that is still not carried by the snapshot.
+
 ### Added - OpenBao is deployable in the shipped configs (ADR 0011 clause 1)
 
 The secrets client has talked to OpenBao through `EXAMLOPS_VAULT_ADDR` since D7, but no shipped

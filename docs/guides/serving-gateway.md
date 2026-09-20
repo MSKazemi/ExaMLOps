@@ -187,7 +187,7 @@ but not use the model server's admin routes. See
 
 | Limit | Value | Answer | Change it in |
 |---|---|---|---|
-| Requests per tenant per minute, across all gateway replicas | 600 | `429` with `Retry-After: 60` | `EXAMLOPS_GATEWAY_TENANT_RPM` (`0` turns it off) |
+| Requests per tenant per minute, across all gateway replicas | 600 | `429` with `Retry-After: 60` | `EXAMLOPS_GATEWAY_TENANT_RPM` (`0` turns it off) — the default; a tenant's own limit is `exa gateway quota set <tenant> <rpm>` (`0` = unlimited), carried to the gateway in the serving snapshot ([guide](serving-snapshot.md)) |
 | Requests per second for the whole gateway | 2000 | `429` with `Retry-After: 1` | `envoy.yaml`, `local_ratelimit` |
 | Request body | 8 MiB | `413` | `envoy.yaml`, `buffer.max_request_bytes` |
 | Time to answer | 35 s per attempt | `504` | `envoy.yaml`, route `timeout` |

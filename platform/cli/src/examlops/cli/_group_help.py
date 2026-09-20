@@ -373,6 +373,10 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("List virtual keys (hashes only)", "exa gateway key list"),
         ("Issue a virtual key", "exa gateway key issue --help"),
     ],
+    "gateway quota": [
+        ("List per-tenant quotas", "exa gateway quota list"),
+        ("Cap a tenant at 120 requests/min", "exa gateway quota set acme 120"),
+    ],
     "gateway cache": [
         ("Semantic-cache hit-rate + savings", "exa gateway cache stats"),
     ],

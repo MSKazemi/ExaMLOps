@@ -14,8 +14,12 @@ Now one compiler, run by the control plane, produces a snapshot::
                            "signature": {"algo": "ed25519-v2", "digest": "sha256:…",
                                          "signature": "…", "cert": "<key id>"}}}}},
      "traffic": {"jpcp": {"model": "JPCP", "rules": {"Production": 90, "Canary": 10}}},
-     "shadow":  {"jpcp": {"model": "JPCP", "alias": "Staging"}}}
+     "shadow":  {"jpcp": {"model": "JPCP", "alias": "Staging"}},
+     "quotas":  {"tenants": {"acme": {"rpm": 120}}}}
 
+* ``quotas`` are per-tenant request limits (requests per minute; ``0`` = unlimited for that tenant)
+  the serving gateway enforces in place of its own default (ADR 0123 decision 3). A tenant with no
+  entry keeps the gateway's ``EXAMLOPS_GATEWAY_TENANT_RPM``.
 * ``generation`` is monotonic and only moves when the content (``digest``) does, so a replica can
   report exactly which configuration it is serving and lag is a subtraction.
 * Snapshots are stored in ``serving_snapshots`` (the replica's pull path, and last-known-good for
@@ -43,7 +47,16 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 KV_BUCKET = "examlops-serving"
 KV_KEY = "snapshot"
-TRIGGER_TOPICS = ("serving.traffic_changed", "serving.shadow_changed", "model.alias_changed")
+TRIGGER_TOPICS = (
+    "serving.traffic_changed",
+    "serving.shadow_changed",
+    "serving.quota_changed",
+    "model.alias_changed",
+)
+# The sections the digest covers. ``quotas`` arrived after the first generations were published
+# (ADR 0123 d3), so a reader hashes only the sections a snapshot actually carries — an older
+# snapshot still verifies, and a newer one cannot lose a section without its digest failing.
+CONTENT_KEYS = ("models", "traffic", "shadow", "quotas")
 _KEEP = 50  # snapshot rows retained; older generations are pruned on publish
 
 # MLflow model versions are immutable, so what we learn about (name, version) is cached for the
@@ -136,6 +149,13 @@ def _compile_config() -> tuple[dict[str, Any], dict[str, Any]]:
     return traffic, shadow
 
 
+def _compile_quotas() -> dict[str, Any]:
+    """Per-tenant request quotas (``serving_quotas``), keyed by tenant."""
+    from examlops.data import serving_quotas  # noqa: PLC0415
+
+    return {"tenants": {q["tenant"]: {"rpm": int(q["rpm"])} for q in serving_quotas.list_quotas()}}
+
+
 def _attach_signatures(models: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Copy each version's ``model_signatures`` row into its facts, in one read."""
     from examlops.data import get_db, init_db  # noqa: PLC0415
@@ -193,7 +213,12 @@ def compile_snapshot(*, client: Any = None, mlflow_url: str | None = None) -> di
             client.close()
     models = _attach_signatures(models)
     traffic, shadow = _compile_config()
-    content = {"models": models, "traffic": traffic, "shadow": shadow}
+    content = {
+        "models": models,
+        "traffic": traffic,
+        "shadow": shadow,
+        "quotas": _compile_quotas(),
+    }
     return {
         "schema": SCHEMA_VERSION,
         "digest": digest_of(content),

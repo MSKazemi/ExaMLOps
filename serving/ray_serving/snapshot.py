@@ -34,9 +34,11 @@ def verified(snapshot: Any) -> dict[str, Any] | None:
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("generation"), int):
         return None
     try:
-        from examlops.serving_snapshot import digest_of  # noqa: PLC0415
+        from examlops.serving_snapshot import CONTENT_KEYS, digest_of  # noqa: PLC0415
 
-        content = {k: snapshot.get(k, {}) for k in ("models", "traffic", "shadow")}
+        # Only the sections this snapshot carries: generations published before ``quotas`` existed
+        # hash over three, newer ones over four (see CONTENT_KEYS).
+        content = {k: snapshot[k] for k in CONTENT_KEYS if k in snapshot}
         if digest_of(content) != snapshot.get("digest"):
             logger.error("Refusing serving snapshot %s: digest mismatch", snapshot["generation"])
             return None
