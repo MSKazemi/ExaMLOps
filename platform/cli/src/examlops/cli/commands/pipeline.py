@@ -141,6 +141,27 @@ def list_pipelines():
     _run_generator(["--list"])
 
 
+def _enforce_budget_gate(project: str | None, model: str | None) -> None:
+    """Consult the armed ``budget`` engine gate for the project this run is attributed to."""
+    from examlops.policy_engine.gates import gate_mode
+
+    if gate_mode("budget") == "off":  # the default: no DB read, no behaviour change
+        return
+    from examlops.cli._policy_gate import enforce_engine_gate
+    from examlops.data import init_db as _init_db
+
+    _init_db()
+    if not project and model:
+        from examlops.data.projects import get_project_for_model
+
+        project = get_project_for_model(model)
+    if not project:
+        return
+    from examlops.project_finops import budget_engine_gate
+
+    enforce_engine_gate(budget_engine_gate(project), what=f"a training run in project {project}")
+
+
 @app.command(epilog=_EXAMPLES_RUN)
 def run(
     model: str | None = typer.Option(None, "--model", "-m", help="Run for a single model only"),
@@ -175,6 +196,9 @@ def run(
     ),
 ):
     """Run training pipeline(s) locally via Prefect."""
+    # Budget gate (ADR 0029 decision 3): off unless armed (policy.yaml `gates:` /
+    # EXAMLOPS_POLICY_GATES). The project is the one given, else the model's own.
+    _enforce_budget_gate(project, model)
     if cluster and not _resolve_cluster_env(cluster, gpus):
         return  # resolution failed / not approved — message already printed
     # P3 (ADR 0088): scope the run to a Project so its MLflow run + recorded cost are attributed.
@@ -594,6 +618,12 @@ def promote(
         what=f"promotion of {model} v{version} to {to_alias}",
     )
 
+    # Policy-engine gates (ADR 0029 decision 3): an *armed* supply-chain / model-card gate is
+    # consulted here through the engine. Both are off unless a site arms them (policy.yaml
+    # `gates:` / EXAMLOPS_POLICY_GATES), so the default path is untouched. A deny is not
+    # overridable by --force, like the manual_promote rule above.
+    _enforce_promotion_engine_gates(model, str(version))
+
     # C3 — eval regression gate: refuse to move the alias when a block-mode gate fails,
     # unless --force (which is audited). No configured gate → this is a no-op.
     from examlops.evaluation.gate import run_eval_gate
@@ -829,6 +859,33 @@ def promote(
         set_promotion_rule(model, metric, operator, threshold, from_alias, to_alias)
 
     _output.ok(f"Promoted {model} v{version} → {to_alias}  ({status_str})")
+
+
+def _enforce_promotion_engine_gates(model: str, version: str) -> None:
+    """Consult the armed ``supply_chain`` and ``model_card`` engine gates for a promotion."""
+    from examlops.cli._policy_gate import enforce_engine_gate
+    from examlops.policy_engine import EngineDecision, card_gate, supply_chain_gate
+    from examlops.policy_engine.gates import consult
+
+    def _supply(_opts: dict) -> EngineDecision:
+        from examlops.data.registry import get_model_signature
+
+        signed = get_model_signature(model, version) is not None
+        return supply_chain_gate(model, version, signed=signed)
+
+    def _card(opts: dict) -> EngineDecision:
+        from examlops.cards import card_completeness
+
+        try:
+            score = card_completeness(model)
+        except Exception as exc:  # noqa: BLE001 - an unmeasurable card is not a complete one
+            score = 0.0
+            _output.warning(f"model-card completeness could not be measured: {exc}")
+        return card_gate(model, score, floor=float(opts.get("floor", 0.8)))
+
+    what = f"promotion of {model} v{version}"
+    enforce_engine_gate(consult("supply_chain", _supply), what=what)
+    enforce_engine_gate(consult("model_card", _card), what=what)
 
 
 def _emit_promotion_lineage(

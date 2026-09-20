@@ -398,7 +398,37 @@ def verify_before_load(
     root: Path | None = None,
     record: dict | None = None,
 ) -> bool:
-    """Gate model loading on verification (spec R7).
+    """Gate model loading on verification (spec R7), then on the policy engine's supply-chain gate.
+
+    ``enforce`` → return False (refuse) on failure; ``warn`` → return True but record. When the
+    ``supply_chain`` policy gate is armed (``examlops.policy_engine.gates``; off by default, so this
+    is unchanged unless a site opts in) an unverified artifact is also denied by the engine —
+    which can only tighten: ``warn`` mode cannot loosen an armed *enforce* gate.
+    """
+    allowed, verified = _verify_before_load(
+        model, version, artifact_paths, mode=mode, root=root, record=record
+    )
+    try:
+        from examlops.policy_engine import supply_chain_gate
+        from examlops.policy_engine.gates import consult
+    except ImportError:  # a slim serving image without the policy engine keeps the base behaviour
+        return allowed
+    gate = consult("supply_chain", lambda _opts: supply_chain_gate(model, version, signed=verified))
+    if gate is not None and not gate.allow:
+        return False
+    return allowed
+
+
+def _verify_before_load(
+    model: str,
+    version: str,
+    artifact_paths: Iterable[Path],
+    *,
+    mode: str = "enforce",
+    root: Path | None = None,
+    record: dict | None = None,
+) -> tuple[bool, bool]:
+    """``(allowed, verified)`` — gate model loading on verification (spec R7).
 
     ``enforce`` → return False (refuse) on failure; ``warn`` → return True but record.
 
@@ -422,13 +452,13 @@ def verify_before_load(
             "serving",
             {"reason": f"verification could not run: {exc}", "mode": mode},
         )
-        return mode != "enforce"
+        return mode != "enforce", False
     if result.ok:
-        return True
+        return True, True
     _audit(
         "model_verify_failed", model, version, "serving", {"reason": result.reason, "mode": mode}
     )
-    return mode != "enforce"  # warn may still load; enforce refuses
+    return mode != "enforce", False  # warn may still load; enforce refuses
 
 
 def generate_ai_bom(

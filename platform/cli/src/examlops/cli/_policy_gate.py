@@ -30,7 +30,7 @@ def enforce(action: str, context: dict[str, Any], *, what: str):
     from examlops import policy
 
     decision = policy.decide_safe(action, context, default_effect=policy.DENY, audit=False)
-    if decision.rule is not None:  # a rule the operator wrote decided this; record it
+    if decision.rule is not None or decision.shadow:  # an operator rule decided/observed this
         policy.record_decision(action, context, decision)
     if decision.denied:
         _output.error(
@@ -38,3 +38,31 @@ def enforce(action: str, context: dict[str, Any], *, what: str):
             hint="See your policy.yaml or run: exa policy list",
         )
     return decision
+
+
+def enforce_and_confirm(action: str, context: dict[str, Any], *, what: str, prompt: str) -> bool:
+    """:func:`enforce`, then — only if a rule says ``require_approval`` — a default-no confirm.
+
+    For mutating commands that have no confirmation of their own. With no policy applying, this
+    never prompts, so the command is byte-identical to before. Returns ``False`` when the human
+    declined (the caller reports "aborted" and leaves state unchanged).
+    """
+    decision = enforce(action, context, what=what)
+    if decision.requires_approval:
+        if not _output.confirm(f"{prompt} [policy requires approval]", default=False):
+            _output.info("Aborted — nothing was changed.")
+            return False
+    return True
+
+
+def enforce_engine_gate(result: Any, *, what: str) -> None:
+    """Exit 1 naming the reason when an armed engine gate (``policy_engine.gates``) denied.
+
+    ``result`` is the ``EngineDecision`` from ``gates.consult`` — ``None`` (gate off) and any
+    allow, including a monitor-mode would-deny, return silently.
+    """
+    if result is not None and not result.allow:
+        _output.error(
+            f"Policy gate denied {what}: {'; '.join(result.reasons)}",
+            hint="Gate modes: policy.yaml `gates:` or EXAMLOPS_POLICY_GATES; see: exa policy list",
+        )

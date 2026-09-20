@@ -126,6 +126,7 @@ TIERS: dict[str, str] = {
     "cards completeness": R,
     "cards dataset": A,
     "cards export": R,
+    "cards lint": R,
     "cards model": R,
     "chat": X,
     "compliance art12": A,

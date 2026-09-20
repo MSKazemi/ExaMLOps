@@ -135,6 +135,30 @@ def budget_status(
     return result
 
 
+def budget_engine_gate(
+    project: str, *, requested_gpu_hours: float = 0.0, tenant: str = "default"
+) -> Any:
+    """Consult the policy engine's ``budget`` gate for ``project`` (ADR 0029 decision 3).
+
+    Returns ``None`` when the gate is off (the default — nothing is checked, nothing audited) and an
+    ``EngineDecision`` otherwise. A project with no GPU-hour budget is never over one. The check is
+    *consumption in the budget's period + the request* against the budget, GPU-hours only: the cost
+    (USD) dimension of a budget is still reported by :func:`budget_status`, not gated here.
+    """
+    from examlops.policy_engine import EngineDecision, budget_gate
+    from examlops.policy_engine.gates import consult
+
+    def _evaluate(_opts: dict[str, Any]) -> Any:
+        status = budget_status(project)
+        limit = (status["budget"] or {}).get("gpu_hours_budget")
+        if limit is None:
+            return EngineDecision(True, [f"{project} has no GPU-hour budget"], "allow", "builtin")
+        used = float(status["consumption"]["gpu_hours"]) + float(requested_gpu_hours)
+        return budget_gate(used, float(limit), tenant=tenant)
+
+    return consult("budget", _evaluate)
+
+
 def evaluate_budget(
     project: str, *, actor: str | None = None, now: datetime | None = None
 ) -> dict[str, Any]:

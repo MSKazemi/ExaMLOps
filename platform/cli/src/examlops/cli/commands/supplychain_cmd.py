@@ -60,8 +60,16 @@ def sign(
     path: str | None = typer.Option(None, "--path", help=_PATH_HELP),
 ) -> None:
     """Sign a model version's artifacts (Ed25519; HMAC when only the legacy key is set)."""
+    from examlops.cli._policy_gate import enforce_and_confirm
     from examlops.supplychain import SigningKeyMissing, sign_model, sign_registered_version
 
+    if not enforce_and_confirm(
+        "model_sign",
+        {"model": model, "version": version, "path": path, "actor": _actor()},
+        what=f"signing {model}@{version}",
+        prompt=f"Sign {model}@{version}?",
+    ):
+        return
     try:
         if path is None:
             result = sign_registered_version(model, version, actor=_actor())

@@ -26,7 +26,8 @@ _EXAMPLES = (
     "  exa cards dataset FData --revision <rev> --out fdata_croissant.json\n\n"
     "  exa cards model JPCP\n\n"
     "  exa cards model JPCP --out jpcp_card.md\n\n"
-    "  exa cards completeness JPCP"
+    "  exa cards completeness JPCP\n\n"
+    "  exa cards lint FData --revision <rev>"
 )
 
 
@@ -189,3 +190,28 @@ def completeness(
         _output.info(f"Model-card completeness for {model}: {score:.0%}")
     if require is not None and score < require:
         _output.error(f"Completeness {score:.0%} below required {require:.0%}")
+
+
+@app.command("lint")
+def lint(
+    dataset: str = typer.Argument(..., help="Dataset name (e.g. FData)"),
+    revision: str = typer.Option(None, "--revision", help="Dataset revision (A1); required"),
+    license_: str = typer.Option("CC-BY-4.0", "--license", help="Dataset license"),
+) -> None:
+    """Lint a dataset card (datasheet) for missing required fields; exit 1 on any finding (CI)."""
+    from examlops.cards import croissant_record, lint_datasheet
+    from examlops.usecase import dataset_schema
+
+    record = croissant_record(
+        dataset, revision=revision, license=license_, schema=dataset_schema(dataset)
+    )
+    findings = lint_datasheet(record)
+    if _output.json_mode:
+        _output.print_json({"dataset": dataset, "ok": not findings, "findings": findings})
+    elif not findings:
+        _output.ok(f"Datasheet for {dataset} passes lint.")
+    else:
+        for f in findings:
+            _output.warning(f"{dataset}: {f}")
+    if findings:
+        raise typer.Exit(1)

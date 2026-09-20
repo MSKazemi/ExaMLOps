@@ -1006,7 +1006,7 @@ Unset ⇒ the carbon provider uses its static coefficient rather than a live gri
 | `EXAMLOPS_REPO_ROOT` | auto-detected | Repository root, when the platform runs from somewhere the walk-up cannot find it. |
 | `EXAMLOPS_TENANT` | `default` | Tenant recorded on writes when multi-tenancy is on. |
 | `EXAMLOPS_VAULT_TOKEN` | unset | Token for the OpenBao/Vault secrets backend. Unset ⇒ the backend degrades to Fernet, then to env. |
-| `EXAMLOPS_POLICY_ENGINE` | built-in | `opa` uses Rego via a local OPA binary, **if it is available** — otherwise the built-in engine stays in use, silently. |
+| `EXAMLOPS_POLICY_ENGINE` | built-in (`yaml`) | Selects the engine behind `policy_engine.evaluate`: `opa` uses Rego via a local OPA binary **if it is available** (otherwise the built-in engine stays in use, silently); any other value names an `exa.providers.policy` entry-point plugin (ADR 0079 d4) — one that cannot be resolved or loaded falls back to the built-in engine with a logged warning and shows its error in `exa providers list --domain policy`. |
 | `EXAMLOPS_POLICY_BUNDLE_DIR` | `~/.config/examlops/bundle` | Where Rego bundles are read from. |
 | `EXAMLOPS_LLM_LAUNCHER` | `external` | Default launcher for `exa serve llm` — one of `external`, `compose`, `slurm`, `flux`, `kserve` (`slurm` and `flux` are the same HPC launcher under two scheduler names). `--launcher` overrides it. |
 | `EXAMLOPS_LLM_COST_PROVIDER` | from `finops.yaml` | Provider for LLM token cost. |
@@ -1081,3 +1081,9 @@ environment:
   MLFLOW_URL: http://mlflow:5000
   CONTROL_PLANE_TOKEN: ${CONTROL_PLANE_TOKEN}
 ```
+
+## Policy-as-code — engine gates (ADR 0029 / 0079)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_POLICY_GATES` | unset (all gates off) | Arms the policy engine's built-in domain gates at their real decision points and sets each gate's rollout mode: comma-separated `gate=mode`, gates `supply_chain` (verify-before-load and `exa pipeline promote`), `budget` (`exa pipeline run` in a project with a GPU-hour budget), `model_card` (`exa pipeline promote` completeness floor), modes `off` / `monitor` (decision audited as `policy_gate_monitor:<gate>`, never blocks) / `enforce` (a deny blocks; `--force` does not override). Overrides a `gates:` mapping in `policy.yaml`. An unrecognized mode fails closed to `enforce`. Unset and no `gates:` block ⇒ every gate is off and behaviour is unchanged. Example: `supply_chain=enforce,budget=monitor`. |

@@ -5,6 +5,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - policy-as-code completion: rollout modes, armed engine gates, plugin engines (ADR 0029 / 0079)
+
+- Per-rule rollout: `mode: monitor` on a `policy.yaml` rule computes and audits the decision
+  (`policy_monitor:<action>`) without blocking; `enforce` is the default; a typo fails closed.
+- The engine's `supply_chain`, `budget` and `model_card` gates are now called from real decision
+  points (`verify_before_load` and `exa pipeline promote`; `exa pipeline run --project`; the promote
+  completeness floor), off by default and armed per gate with `gates:` in `policy.yaml` or
+  `EXAMLOPS_POLICY_GATES`, each `off|monitor|enforce`. Unset means unchanged behaviour.
+- `connect_cluster`, `cluster_reject`, `model_sign`, `secret_rotate`, `project_delete`,
+  `project_archive`, `project_remove_member` consult `policy.decide` (no rule: byte-identical).
+- `exa.providers.policy` entry-point group for third-party engines
+  (`EXAMLOPS_POLICY_ENGINE=<name>`); a broken plugin degrades to YAML and is listed with its error
+  by `exa providers list --domain policy`.
+- Example Rego bundle with Rego tests in `platform/infra/policy-bundle/` (tests run when `opa` is
+  present); `exa cards lint <dataset>` fails on an undocumented dataset card.
+
 ### Added - policy-as-code on the human paths, `exa policy simulate`, `exa hpc place --explain` (ADR 0079 / 0077)
 
 - `exa pipeline promote` and `exa hpc approve` now consult `policy.decide_safe` with the new

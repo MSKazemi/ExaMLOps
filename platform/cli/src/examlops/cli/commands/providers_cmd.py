@@ -27,6 +27,7 @@ _DOMAIN_MODULES: dict[str, str] = {
     "llm_cost": "examlops.llmops_providers",
     "llm_routing": "examlops.llmops_providers",
     "placement": "examlops.hpc_placement_providers",
+    "policy": "examlops.policy_engine.providers",
     "promotion": "examlops.promotion_providers",
     "rag_quality": "examlops.llmops_providers",
 }

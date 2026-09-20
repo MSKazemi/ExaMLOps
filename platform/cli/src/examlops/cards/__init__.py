@@ -354,6 +354,29 @@ def card_completeness(model: str, *, tenant: str = "default") -> float:
     return build_model_card(model, tenant=tenant).completeness
 
 
+def lint_datasheet(record: dict[str, Any]) -> list[str]:
+    """Lint a dataset card (the platform's datasheet artifact) for missing documentation.
+
+    Returns findings; empty means it passes. It fails on everything :func:`validate_croissant`
+    rejects **plus** the gaps that spec check lets through and a datasheet must not have: fields
+    whose description is the explicit "not provided" placeholder (the dataset's composition is
+    undocumented), an unpinned version (no provenance — which revision is this?), and a missing
+    provenance revision. Only what the artifact actually carries is checked — the seven Gebru
+    et al. section questionnaire is not modelled by this record.
+    """
+    findings = list(validate_croissant(record))
+    for rs in record.get("recordSet", []) or []:
+        for f in rs.get("field", []) or []:
+            if f.get("description") in (None, "", NOT_PROVIDED):
+                findings.append(f"field {f.get('name', '?')!r} has no description (composition)")
+    if record.get("version") in (None, "", "latest"):
+        findings.append("version is unpinned ('latest') — pin a dataset revision (provenance)")
+    prov = record.get("provenance") or {}
+    if prov.get("dataset_revision") in (None, "", NOT_PROVIDED):
+        findings.append("provenance.dataset_revision is not provided")
+    return findings
+
+
 __all__ = [
     "CROISSANT_CONTEXT",
     "INTERNAL_FIELDS",
@@ -363,6 +386,7 @@ __all__ = [
     "export_card",
     "croissant_record",
     "validate_croissant",
+    "lint_datasheet",
     "build_model_card",
     "card_completeness",
 ]

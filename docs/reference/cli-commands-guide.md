@@ -303,6 +303,7 @@ Generates standards-based documentation from live platform data: Croissant JSON-
 | `exa cards model <model>` | Builds a structured model card from live data, marking gaps as "not provided" (R3/R4); `--save` persists a version, `--out` writes Markdown. | Auto-generate an always-current model card. | `exa cards model jpcp --tenant reference --out jpcp-card.md --save` |
 | `exa cards export <subject>` | **[mutation]** Export a card for publication with internal fields dropped, PII and site-specific locations redacted, and a detected secret **blocking** the export (audited); `--dataset`, `--out <file>`, `--force`, `--tenant`. | Publish a model or dataset card outside the deployment without leaking tenant identity, personal data or infrastructure detail. | `exa cards export jpcp --out jpcp-card.json` |
 | `exa cards completeness <model>` | Scores model-card completeness (0..1) — the D5/C3 promotion gate signal (R6); `--require` exits 1 below a threshold. | CI gate: block promotion of under-documented models. | `exa cards completeness jpcp --tenant reference --require 0.8` |
+| `exa cards lint <dataset>` | Lints the dataset card (datasheet) and exits 1 on any missing documentation: spec errors, fields with no description, an unpinned version, no provenance revision; `--revision`, `--license`. | CI gate: block publishing or training on an undocumented dataset. | `exa cards lint FData --revision <rev>` |
 
 ## Models & Registry
 

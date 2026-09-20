@@ -555,6 +555,13 @@ judgement calls.
 - `--force` — Publish despite a secret finding (audited)
 - `--tenant` — Tenant scope
 
+### `exa cards lint`
+
+Lint a dataset card (datasheet) for missing required fields; exit 1 on any finding (CI).
+
+- `--revision` — Dataset revision (A1); required
+- `--license` — Dataset license
+
 ### `exa cards model`
 
 Build a structured model card from live data — gaps as 'not provided' (R3/R4).

@@ -294,6 +294,24 @@ def connect(
     from examlops.hpc_registry import register_pending
 
     cluster = name or host
+    # Policy-as-code gate (ADR 0079): a `connect_cluster` rule can deny registering a host. A
+    # `require_approval` effect is already the outcome of every connect (the cluster lands PENDING
+    # until a sysadmin runs `exa hpc approve`), so it only adds a note. No rule: unchanged.
+    from examlops.cli._policy_gate import enforce as _policy_enforce
+
+    connect_decision = _policy_enforce(
+        "connect_cluster",
+        {
+            "cluster": cluster,
+            "target": cluster,
+            "host": host,
+            "ssh_user": user,
+            "ssh_port": port,
+            "scheduler": scheduler,
+            "actor": _actor(),
+        },
+        what=f"connecting cluster {cluster}",
+    )
     executor = _build_executor(host, user, key, port)
     try:
         caps = (
@@ -338,6 +356,8 @@ def connect(
         f"  scheduler: {caps.get('scheduler')}  host: {host}  fingerprint: {fingerprint}"
     )
     _output.info(f"No jobs will run here until approved. Sysadmin: exa hpc approve {cluster}")
+    if connect_decision.requires_approval:
+        _output.info("Policy requires approval for this cluster: it stays PENDING until approved.")
 
 
 @app.command(epilog=_CONNECT_EXAMPLES)
@@ -420,6 +440,15 @@ def reject(
     merged = get_merged(name)
     if merged is None:
         _output.error(f"Unknown cluster: {name}", hint="exa hpc clusters")
+        return
+    from examlops.cli._policy_gate import enforce_and_confirm
+
+    if not enforce_and_confirm(
+        "cluster_reject",
+        {"cluster": name, "target": name, "reason": reason, "actor": _actor()},
+        what=f"rejection of cluster {name}",
+        prompt=f"Reject cluster '{name}'?",
+    ):
         return
     set_cluster_state(name, "REJECTED", approved_by=_actor(), reason=reason)
     write_audit_event("exa-hpc", _actor(), "cluster_rejected", name, {"reason": reason})

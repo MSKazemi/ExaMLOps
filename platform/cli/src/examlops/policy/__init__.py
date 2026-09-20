@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,12 @@ ALLOW = "allow"
 DENY = "deny"
 REQUIRE_APPROVAL = "require_approval"
 _VALID_EFFECTS = {ALLOW, DENY, REQUIRE_APPROVAL}
+
+# Per-policy rollout mode (ADR 0029 decision 4): a rule in ``monitor`` mode is evaluated and its
+# would-be effect audited, but it never blocks — evaluation carries on to the next rule.
+ENFORCE = "enforce"
+MONITOR = "monitor"
+_VALID_MODES = {ENFORCE, MONITOR}
 
 
 def _normalized_effect(rule: Mapping[str, Any], *, origin: str) -> str:
@@ -69,6 +75,27 @@ def _normalized_effect(rule: Mapping[str, Any], *, origin: str) -> str:
     return effect
 
 
+def _normalized_mode(rule: Mapping[str, Any], *, origin: str) -> str:
+    """A rule's rollout ``mode``: ``enforce`` (default) or ``monitor``.
+
+    An unrecognized value fails **closed** to ``enforce`` — a typo in ``mode: moniter`` must not
+    silently downgrade a deny rule into an observe-only one.
+    """
+    raw = rule.get("mode", ENFORCE)
+    mode = str(raw).strip().lower()
+    if mode not in _VALID_MODES:
+        label = str(rule.get("name") or rule.get("action") or "*")
+        log.warning(
+            "unknown policy mode %r on rule %r (%s) — treating as 'enforce'; valid modes: "
+            "enforce, monitor",
+            raw,
+            label,
+            origin,
+        )
+        return ENFORCE
+    return mode
+
+
 def _config_dir() -> Path:
     """``EXAMLOPS_CONFIG_DIR`` → ``<EXAMLOPS_DATA_DIR>/config`` → ``~/.config/examlops`` — one rule
     shared with providers.loader and the HPC registry (ADR 0128)."""
@@ -87,6 +114,9 @@ class Decision:
     effect: str
     rule: str | None
     reason: str
+    shadow: tuple[tuple[str, str], ...] = ()
+    """``(rule, would_effect)`` for every ``mode: monitor`` rule that matched. They never change
+    ``effect``; they exist so the rollout is observable (and audited) before it is enforced."""
     unavailable: bool = False
     """Set only by :func:`decide_safe`'s fallback path: the engine raised, ``effect`` is the
     caller's chosen default rather than a rule the policy author wrote. A caller that needs to
@@ -138,12 +168,16 @@ def load_policies_with_status(
         return [], f"{p} is not a mapping (expected a top-level 'policies:' list)"
     rules = data.get("policies")
     if rules is None:
+        if "gates" in data:  # a gates-only file (ADR 0029 built-in gate rollout) is valid
+            return [], None
         return [], f"{p} has no 'policies:' list"
     if not isinstance(rules, list):
         return [], f"{p}: 'policies' must be a list, got {type(rules).__name__}"
     loaded = [dict(r) for r in rules if isinstance(r, Mapping)]
     for r in loaded:  # normalize/validate effects at load time; unknown → deny (fail closed)
         r["effect"] = _normalized_effect(r, origin=str(p))
+        if "mode" in r:
+            r["mode"] = _normalized_mode(r, origin=str(p))
     return loaded, None
 
 
@@ -189,14 +223,20 @@ def decide(
     ctx = dict(context or {})
     rules = policies if policies is not None else _load_policies()
     decision = Decision(ALLOW, None, "no matching policy — default allow")
+    shadow: list[tuple[str, str]] = []
     for i, rule in enumerate(rules):
         if _rule_matches(rule, action, ctx):
             # Injected rules (tests / programmatic callers) skip the load-time pass, so the
             # effect is re-validated here; already-normalized values pass through unchanged.
             effect = _normalized_effect(rule, origin="injected policies")
             label = str(rule.get("name") or f"{rule.get('action', '*')}#{i}")
+            if _normalized_mode(rule, origin="injected policies") == MONITOR:
+                shadow.append((label, effect))  # observe, never block; a later rule decides
+                continue
             decision = Decision(effect, label, f"matched policy rule {label!r} → {effect}")
             break
+    if shadow:
+        decision = replace(decision, shadow=tuple(shadow))
     if audit:
         _audit(action, ctx, decision)
     return decision
@@ -250,7 +290,9 @@ def decide_safe(
         return Decision(default_effect, None, f"policy-unavailable: {exc}", unavailable=True)
 
 
-def _audit(action: str, context: Mapping[str, Any], decision: Decision) -> None:
+def _audit(
+    action: str, context: Mapping[str, Any], decision: Decision, *, primary: bool = True
+) -> None:
     """Record the decision to ``audit_events`` (never raises — audit failure must not block ops)."""
     # `audit_best_effort` keeps this docstring's promise — a policy check is never blocked by the
     # audit log — while counting a loss instead of hiding it. `policy_engine._audit` is the twin of
@@ -258,13 +300,23 @@ def _audit(action: str, context: Mapping[str, Any], decision: Decision) -> None:
     from examlops.data.audit import audit_best_effort
     from examlops.platform_db import _actor
 
-    audit_best_effort(
-        "exa-policy",
-        _actor(),
-        f"policy:{action}",
-        str(context.get("model") or context.get("target") or ""),
-        {"effect": decision.effect, "rule": decision.rule},
-    )
+    target = str(context.get("model") or context.get("target") or "")
+    if primary:
+        audit_best_effort(
+            "exa-policy",
+            _actor(),
+            f"policy:{action}",
+            target,
+            {"effect": decision.effect, "rule": decision.rule},
+        )
+    for rule, would in decision.shadow:  # monitor-mode rollout: computed, audited, not enforced
+        audit_best_effort(
+            "exa-policy",
+            _actor(),
+            f"policy_monitor:{action}",
+            target,
+            {"mode": MONITOR, "rule": rule, "would_effect": would, "enforced": False},
+        )
 
 
 def record_decision(action: str, context: Mapping[str, Any], decision: Decision) -> None:
@@ -274,4 +326,4 @@ def record_decision(action: str, context: Mapping[str, Any], decision: Decision)
     ``decide_safe(..., audit=False)`` and records **only** a non-default outcome (a rule
     matched) through this; the "engine unavailable" path already audits itself.
     """
-    _audit(action, context, decision)
+    _audit(action, context, decision, primary=decision.rule is not None)

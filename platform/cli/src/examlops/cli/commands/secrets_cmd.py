@@ -94,8 +94,16 @@ def rotate_cmd(
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
 ) -> None:
     """Rotate a secret to a fresh random value (audited, spec R4)."""
+    from examlops.cli._policy_gate import enforce_and_confirm
     from examlops.secrets import SecretNotFound, rotate_secret
 
+    if not enforce_and_confirm(
+        "secret_rotate",
+        {"target": path, "path": path, "tenant": tenant, "actor": _actor()},
+        what=f"rotation of secret {path}",
+        prompt=f"Rotate secret '{path}'?",
+    ):
+        return
     try:
         version = rotate_secret(path, tenant=tenant, actor=_actor())
     except SecretNotFound as exc:

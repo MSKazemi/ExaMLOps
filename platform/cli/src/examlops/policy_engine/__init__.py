@@ -79,9 +79,10 @@ class YamlPolicyEngine:
         # the action (matching existing policy rules) and never double-audit here — the
         # top-level `evaluate()` audits once.
         d = decide(input.action, input.flat_context(), audit=False)
+        notes = [f"monitor: rule {r!r} would {e} (not enforced)" for r, e in d.shadow]
         return EngineDecision(
             allow=d.allowed,
-            reasons=[d.reason],
+            reasons=[d.reason, *notes],
             effect=d.effect,
             engine=self.name,
         )
@@ -131,14 +132,65 @@ class RegoPolicyEngine:
             raise RuntimeError(f"opa evaluation failed: {exc}") from exc
 
 
-def get_engine() -> PolicyEngine:
-    """Select the policy engine: OPA when present + requested, else the YAML core."""
-    if os.getenv("EXAMLOPS_POLICY_ENGINE", "").lower() == "opa" and RegoPolicyEngine.available():
-        bundle = os.getenv(
-            "EXAMLOPS_POLICY_BUNDLE_DIR", str(Path.home() / ".config" / "examlops" / "bundle")
+class ProviderEngine:
+    """Adapts a ``policy``-domain :class:`Provider` (an ``exa.providers.policy`` plugin) to the
+    :class:`PolicyEngine` seam."""
+
+    def __init__(self, provider: Any) -> None:
+        self.provider = provider
+        self.name = str(getattr(provider, "name", "plugin"))
+
+    def evaluate(self, decision: str, input: PolicyInput) -> EngineDecision:  # noqa: A002
+        out = self.provider.compute(
+            {
+                "decision": decision,
+                "action": input.action,
+                "subject": input.subject,
+                "resource": input.resource,
+                "tenant": input.tenant,
+                "context": input.flat_context(),
+            }
         )
-        return RegoPolicyEngine(bundle)
-    return YamlPolicyEngine()
+        effect = str(out.get("effect") or ("allow" if out.get("allow") else "deny")).lower()
+        if effect not in ("allow", "deny", "require_approval"):
+            effect = "deny"  # an engine speaking an unknown effect is not granting anything
+        return EngineDecision(
+            allow=effect == "allow",
+            reasons=[str(r) for r in (out.get("reasons") or [f"{self.name}: {effect}"])],
+            effect=effect,
+            engine=self.name,
+        )
+
+
+def get_engine() -> PolicyEngine:
+    """Select the policy engine: the YAML core (default), OPA, or an ``exa.providers.policy`` plugin.
+
+    ``EXAMLOPS_POLICY_ENGINE`` names it. OPA requested but the binary absent falls back to YAML
+    (unchanged). A plugin that cannot be resolved/loaded falls back to YAML **audibly**
+    (``degraded_to_default``) — a configured engine that is broken must not look like none.
+    """
+    raw = os.getenv("EXAMLOPS_POLICY_ENGINE", "").strip()
+    name = raw.lower()
+    if name in ("", "yaml"):
+        return YamlPolicyEngine()
+    if name == "opa":
+        if RegoPolicyEngine.available():
+            bundle = os.getenv(
+                "EXAMLOPS_POLICY_BUNDLE_DIR", str(Path.home() / ".config" / "examlops" / "bundle")
+            )
+            return RegoPolicyEngine(bundle)
+        return YamlPolicyEngine()
+    try:
+        from examlops.providers import get_provider
+
+        from . import providers as _providers  # noqa: F401 - registers the built-ins
+
+        return ProviderEngine(get_provider(_providers.DOMAIN, name=raw))
+    except Exception as exc:  # noqa: BLE001 - an unloadable plugin degrades, never crashes
+        from examlops.providers.loader import degraded_to_default
+
+        degraded_to_default("policy", exc, configured=raw)
+        return YamlPolicyEngine()
 
 
 def evaluate(
@@ -359,6 +411,7 @@ __all__ = [
     "YamlPolicyEngine",
     "RegoPolicyEngine",
     "FAIL_CLOSED_DECISIONS",
+    "ProviderEngine",
     "get_engine",
     "evaluate",
     "supply_chain_gate",

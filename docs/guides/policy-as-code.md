@@ -126,6 +126,88 @@ card_gate("JPCP", completeness=0.5, floor=0.8)  # DENY — model card too incomp
 These encode safety that a policy bundle can make *stricter* but never loosen — an unsigned
 artifact is always denied deployment regardless of what the YAML/Rego says.
 
+## Rollout: `mode: monitor` per rule, `gates:` per built-in gate (ADR 0029 decision 4)
+
+Introduce a policy without risking an outage. A rule with `mode: monitor` is evaluated and its
+would-be effect is audited (`policy_monitor:<action>`, with `would_effect` and `enforced: false`),
+but it never blocks; evaluation carries on to the next rule. Flip the line to `mode: enforce` (the
+default) when the audit trail shows it would not have blocked anything legitimate. An unrecognized
+`mode` fails closed to `enforce`.
+
+```yaml
+policies:
+  - name: no-prod-friday
+    action: manual_promote
+    when: "to_alias == 'Production'"
+    effect: deny
+    mode: monitor          # observe first
+```
+
+The engine's built-in domain gates are **off by default** and armed per gate, also with a mode:
+
+```yaml
+gates:
+  supply_chain: enforce            # unsigned artifact -> deny (verify-before-load, promote)
+  budget: monitor                  # over-budget GPU-hours in `exa pipeline run --project`
+  model_card: {mode: enforce, floor: 0.9}   # completeness floor at `exa pipeline promote`
+```
+
+or `EXAMLOPS_POLICY_GATES=supply_chain=enforce,budget=monitor` (wins over the file). Where they run:
+
+| Gate | Decision point | Denied outcome |
+|---|---|---|
+| `supply_chain` | `supplychain.verify_before_load` (Ray Serve load path, `exa models verify`) and `exa pipeline promote` (a version with no signature on record) | load refused / exit 1; `--mode warn` cannot loosen an enforced gate |
+| `budget` | `exa pipeline run` for `--project` (or the model's project): consumption in the budget's period + the request against the project's GPU-hour budget | exit 1 before anything launches |
+| `model_card` | `exa pipeline promote` | exit 1 below the floor (default 0.8); an unmeasurable card counts as 0 |
+
+Only the GPU-hour dimension of a budget is gated; the USD budget is still only reported by
+`exa finops budget status`.
+
+## More gated mutations (ADR 0079 decision 2)
+
+Same contract as `manual_promote`/`cluster_approve` — no rule means no change and no audit row; `deny`
+exits 1 naming the rule; `require_approval` adds a default-no confirmation:
+
+| Action | Command |
+|---|---|
+| `connect_cluster` | `exa hpc connect` (a deny stops it before the host is probed; `require_approval` is already the outcome: the cluster lands PENDING) |
+| `cluster_reject` | `exa hpc reject` |
+| `model_sign` | `exa models sign` |
+| `secret_rotate` | `exa secrets rotate` |
+| `project_delete`, `project_archive` | `exa project delete` / `archive` (folded into the existing prompt; a human's own `--yes` still answers it) |
+| `project_remove_member` | `exa project remove-member` |
+
+Deliberately **not** gated: read-only commands; `exa models verify` (a check — its verify-required
+form is the `supply_chain` gate); `exa project add-member`/`assign`/`set-quota` (additive, reversible);
+`exa project grant`/`revoke` and `exa secrets set/rewrap` (own RBAC/KEK domains, D6/2.3); MCP
+tools other than through the agent write gate; and the dashboard's own write routes, which enforce
+capabilities at the BFF but do not yet call `policy.decide`.
+
+## Pluggable engines: `exa.providers.policy`
+
+`policy_engine.evaluate` (the built-in gates and `exa policy eval`) asks the engine named by
+`EXAMLOPS_POLICY_ENGINE`: `yaml` (default), `opa`, or the name of a plugin registered under the
+`exa.providers.policy` entry-point group. A plugin is a `examlops.providers.Provider` whose
+`compute({"decision", "action", "subject", "resource", "tenant", "context"})` returns
+`{"effect": "allow|deny|require_approval", "reasons": [...]}` (an unknown effect is a deny). A plugin
+that cannot be loaded degrades to the YAML engine with a logged warning and appears with its error in
+`exa providers list --domain policy`. The per-command gates above (`manual_promote`, ...) use the
+YAML rules directly via `policy.decide`; a third-party engine governs the engine's own gates.
+
+## Rego bundle and its tests
+
+`platform/infra/policy-bundle/` ships a small example bundle (`supply_chain`, `budget`,
+`model_card`) with Rego unit tests. Copy `examlops/` to `~/.config/examlops/bundle/` and set
+`EXAMLOPS_POLICY_ENGINE=opa`. `opa test platform/infra/policy-bundle/examlops -v` runs the tests; the
+unit suite runs them when an `opa` binary is on `PATH` and otherwise only validates the bundle's
+structure (no new dependency).
+
+## Datasheet lint
+
+`exa cards lint <dataset> --revision <rev>` exits 1 when the dataset card (Croissant record) fails the
+spec check or carries undocumented fields, an unpinned version or no provenance revision. It covers
+what the artifact carries; the full Gebru et al. datasheet questionnaire is not modelled.
+
 ## Dry-run explainability
 
 ```bash

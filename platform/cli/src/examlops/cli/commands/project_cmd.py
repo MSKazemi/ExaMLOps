@@ -522,6 +522,21 @@ def remove_member(
 ) -> None:
     """Remove a person's role(s) from a project."""
     init_db()
+    from examlops.cli._policy_gate import enforce_and_confirm
+
+    if not enforce_and_confirm(
+        "project_remove_member",
+        {
+            "project": project,
+            "target": project,
+            "subject": subject,
+            "role": role,
+            "actor": _actor(),
+        },
+        what=f"removal of {subject} from project {project}",
+        prompt=f"Remove {subject} from project '{project}'?",
+    ):
+        return
     n = remove_project_member(project, subject, role, actor=_actor())
     write_audit_event(
         "cli", _actor(), "project_member_removed", subject, {"project": project, "role": role}
@@ -754,7 +769,15 @@ def archive(
 ) -> None:
     """Archive a project (marks ARCHIVED; data is preserved)."""
     init_db()
-    if not _output.confirm(f"Archive project '{name}'?", auto_yes=yes):
+    from examlops.cli._policy_gate import enforce
+
+    decision = enforce(
+        "project_archive",
+        {"project": name, "target": name, "actor": _actor()},
+        what=f"archiving project {name}",
+    )
+    note = " [policy requires approval]" if decision.requires_approval else ""
+    if not _output.confirm(f"Archive project '{name}'?{note}", auto_yes=yes):
         _output.info("Cancelled.")
         return
     ok = archive_project(name)
@@ -772,8 +795,17 @@ def delete(
 ) -> None:
     """Delete a project and remove all its model assignments (irreversible)."""
     init_db()
+    from examlops.cli._policy_gate import enforce
+
+    decision = enforce(
+        "project_delete",
+        {"project": name, "target": name, "actor": _actor()},
+        what=f"deletion of project {name}",
+    )
+    note = " [policy requires approval]" if decision.requires_approval else ""
     if not _output.confirm(
-        f"[bold red]Delete[/bold red] project '{name}' and all its assignments? This is irreversible.",
+        f"[bold red]Delete[/bold red] project '{name}' and all its assignments? "
+        f"This is irreversible.{note}",
         auto_yes=yes,
     ):
         _output.info("Cancelled.")

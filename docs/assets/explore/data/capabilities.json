@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 480,
+ "total_commands": 481,
  "total_groups": 71,
  "panels": [
   {
@@ -654,6 +654,13 @@
      "cmd": "exa cards export",
      "group": "cards",
      "help": "Export a card for publication with PII, locations and internal fields scrubbed (clause 4). Internal fields are dropped, PII and site-specific locations are redacted, and a detected **secret blocks the export** — redacting it would hide that a credential reached a generated artifact at all. `--force` overrides that, audited, because the scanner is a regex heuristic and can be wrong; the dropped and redacted parts are not overridable, because they are not judgement calls.",
+     "anchor": "exa-cards-croissant-dataset-cards-structured-model-cards",
+     "guide": "guides/cards.md"
+    },
+    {
+     "cmd": "exa cards lint",
+     "group": "cards",
+     "help": "Lint a dataset card (datasheet) for missing required fields; exit 1 on any finding (CI).",
      "anchor": "exa-cards-croissant-dataset-cards-structured-model-cards",
      "guide": "guides/cards.md"
     },

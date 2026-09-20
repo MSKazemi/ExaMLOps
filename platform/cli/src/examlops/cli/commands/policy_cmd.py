@@ -29,10 +29,14 @@ _EXAMPLES = (
 def list_rules():
     """List the policy rules currently loaded from policy.yaml."""
     from examlops.policy import POLICY_YAML, load_policies_with_status
+    from examlops.policy_engine.gates import configured_gates
 
     rules, error = load_policies_with_status()
+    gates = configured_gates()
     if _output.json_mode:
-        _output.print_json({"path": str(POLICY_YAML), "policies": rules, "error": error})
+        _output.print_json(
+            {"path": str(POLICY_YAML), "policies": rules, "gates": gates, "error": error}
+        )
         if error:
             raise typer.Exit(1)
         return
@@ -46,20 +50,28 @@ def list_rules():
             "wrote (including a human-approval gate on autopilot promotes) is not in effect.",
         )
         raise typer.Exit(1)
+    armed = {n: g["mode"] for n, g in gates.items() if g["mode"] != "off"}
     if not rules:
         state = "absent" if not POLICY_YAML.is_file() else "empty"
         _output.info(f"No policies loaded ({POLICY_YAML} {state}) — default effect is 'allow'.")
-        return
-    rows = [
-        [
-            str(r.get("name") or f"#{i}"),
-            str(r.get("action", "*")),
-            str(r.get("when") or "—"),
-            str(r.get("effect", "allow")),
+    else:
+        rows = [
+            [
+                str(r.get("name") or f"#{i}"),
+                str(r.get("action", "*")),
+                str(r.get("when") or "—"),
+                str(r.get("effect", "allow")),
+                str(r.get("mode", "enforce")),
+            ]
+            for i, r in enumerate(rules)
         ]
-        for i, r in enumerate(rules)
-    ]
-    _output.print_table("Policy rules", ["Name", "Action", "Condition", "Effect"], rows)
+        _output.print_table("Policy rules", ["Name", "Action", "Condition", "Effect", "Mode"], rows)
+    if armed:
+        _output.print_table(
+            "Engine gates (armed)",
+            ["Gate", "Mode"],
+            [[n, m] for n, m in armed.items()],
+        )
 
 
 @app.command("test", epilog=_EXAMPLES)
