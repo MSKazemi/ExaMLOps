@@ -23,6 +23,6 @@ boto3>=1.43.92
 # `serve.run(...)` crashes on it before a single model loads (AttributeError, verified live on n1
 # 2026-09-19 — 6->7 was tried there and every deployment failed). Capped below 7 until Ray fixes
 # this or the pin moves off Ray Serve for deployment.
-grpcio>=1.83.1
+grpcio>=1.84.0
 protobuf>=6.31.1,<7
 httpx>=0.28.1
