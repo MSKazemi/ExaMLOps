@@ -1,4 +1,4 @@
-FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9
 WORKDIR /app
 # The gateway is `examlops.gateway.service` — a library package — so the image needs the CLI
 # package and nothing else: no pipelines, no serving, no use-case pack (ADR 0151 d5).
