@@ -9,7 +9,7 @@ import uuid
 import audit_write
 import httpx
 from auth import require_role
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from settings import settings
 from upstream import dashboard_status
@@ -101,7 +101,7 @@ def _problem_detail(resp: httpx.Response) -> str:
 
 
 @router.post("/trigger")
-async def trigger_run(body: TriggerBody, claims: dict = Depends(_admin)) -> dict:
+async def trigger_run(body: TriggerBody, request: Request, claims: dict = Depends(_admin)) -> dict:
     """Queue a retrain through the control plane (``POST /v1/retrain``), audited.
 
     This used to call Prefect directly: it bypassed the control plane's admission, audit and
@@ -123,7 +123,16 @@ async def trigger_run(body: TriggerBody, claims: dict = Depends(_admin)) -> dict
         "POST",
         "/v1/retrain",
         json={"model_name": body.model_name, "dataset_name": dataset, "is_dummy": body.dummy},
-        headers={"Idempotency-Key": str(uuid.uuid4())},
+        # The control plane gates `retrain` through policy; an admin's acknowledgement of a
+        # `require_approval` rule (ADR 0079) is theirs to give, so it travels with the request.
+        headers={
+            "Idempotency-Key": str(uuid.uuid4()),
+            **(
+                {"X-Policy-Approved": request.headers["X-Policy-Approved"]}
+                if "X-Policy-Approved" in request.headers
+                else {}
+            ),
+        },
     )
     if resp.status_code >= 400:
         # 409 = a retrain of this model × dataset is already queued or training (the lease).

@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from database import engine, init_db
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.openapi.docs import (
     get_redoc_html,
     get_swagger_ui_html,
@@ -10,6 +10,7 @@ from fastapi.openapi.docs import (
 )
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from policy_gate import policy_gate
 from routers import (
     ab_testing,
     admission,
@@ -141,6 +142,10 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
+    # Policy-as-code (ADR 0079/0029): one app-level dependency, public API only, so it behaves the
+    # same on every FastAPI release. See `policy_gate.policy_gate` for what it matches and its
+    # precedence relative to a route's own capability check.
+    dependencies=[Depends(policy_gate)],
 )
 
 # FastAPI types `openapi_url` and `swagger_ui_oauth2_redirect_url` as optional because either can

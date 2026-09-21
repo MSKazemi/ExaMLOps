@@ -69,6 +69,7 @@ import uvicorn
 
 # The control plane's modules (plan P1.1). Re-exported here so `app.<name>` — which callers and
 # tests use — keeps resolving to the same objects.
+from cplane import policy_gate as _policy_gate
 from cplane import problems as _problems
 from cplane.gateway import (  # noqa: F401
     PREFECT_BACKOFF_BASE,
@@ -2442,8 +2443,10 @@ def trigger_retrain(
     x_idempotency_key: str | None = Header(default=None),
     idempotency_key: str | None = Header(default=None),
     context: RequestContext = Depends(_require_action("retrain")),
+    http_request: Request = None,  # type: ignore[assignment]  # injected by FastAPI
 ) -> RetrainResponse:
     """Improvements 5 (dedup), 13 (metrics), 17 (idempotency), 12 (circuit breaker)."""
+    _policy_gate.enforce_retrain(req, context, http_request)  # ADR 0079: after the scope check
     registry = _get_registry()
     if req.model_name not in registry:
         raise HTTPException(400, f"Unknown model {req.model_name!r}. Known: {sorted(registry)}")
@@ -3648,8 +3651,10 @@ def submit_retrain_v1(
     response: Response,
     idempotency_key: str | None = Header(default=None),
     context: RequestContext = Depends(_require_action("retrain")),
+    http_request: Request = None,  # type: ignore[assignment]  # injected by FastAPI
 ) -> CommandView:
     """Accept a retrain as an asynchronous command: 202 + ``Location`` of its status."""
+    _policy_gate.enforce_retrain(req, context, http_request)  # ADR 0079: after the scope check
     registry = _get_registry()
     if req.model_name not in registry:
         raise HTTPException(400, f"Unknown model {req.model_name!r}. Known: {sorted(registry)}")

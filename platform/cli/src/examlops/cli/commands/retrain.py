@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 
 import typer
 
@@ -131,13 +132,20 @@ def retrain(
         _output.warning("Aborted — no retrain scheduled.")
         raise typer.Exit(0)
 
+    # The control plane consults the same `retrain` rule; a human who just confirmed a
+    # require_approval prompt has already given the approval it would ask for (ADR 0079).
+    from examlops.policy import http_gate
+
+    ack = http_gate.approval_acknowledged() if decision.requires_approval else nullcontext()
+
     if queue:
-        _submit_async(cfg, model, dataset_name, body)
+        with ack:
+            _submit_async(cfg, model, dataset_name, body)
         return
 
     from examlops import retrain_command
 
-    with _output.spinner(f"Scheduling retrain for {model}…"):
+    with _output.spinner(f"Scheduling retrain for {model}…"), ack:
         try:
             # The command API, waited on until the retrain is dispatched (plan P1.6c).
             result = retrain_command.submit(

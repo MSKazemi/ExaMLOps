@@ -60,6 +60,12 @@ async def promote(name: str, _=Depends(require_capability(MODEL_PROMOTE))):
     ...   # viewer → 403 with an explanation; admin → allowed
 ```
 
+Every mutating route must also be classified in `policy_gate.ROUTE_POLICY`: *gated* (the operator's
+`policy.yaml` is consulted by an app-level dependency that runs before the route's own capability check, and is silent when no rule matches; deny is a 403 naming the rule,
+`require_approval` a 409 until an admin re-sends with `X-Policy-Approved: true`) or *exempt* with a
+reason. A test fails on an unclassified route. See
+[Policy-as-code](policy-as-code.md#dashboard-and-control-plane-routes-adr-0079-decision-2).
+
 ### Affording on the frontend
 
 ```tsx

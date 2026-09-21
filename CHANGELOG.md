@@ -269,6 +269,27 @@ into their own modules.
   `/.well-known/agent-card.json`, A2A tasks/streaming, threads/runs, AG-UI, the OpenAI/A2A
   conformance suites. Conformance checks: `tests/unit/test_a2a_card_conformance.py`.
 
+### Added — policy-as-code now governs the dashboard's write routes and the control plane's retrain (ADR 0079 d2, ADR 0029 d3)
+
+The engine gated CLI mutations only; the same mutation made in the browser, or by a direct control
+plane call, never consulted `policy.yaml`, and nothing forced a *new* mutation to.
+
+- `examlops.policy.http_gate` — one HTTP verdict for both services, with the CLI's contract: no
+  policy means byte-identical behaviour and no audit row; `deny` is 403 naming the rule;
+  `require_approval` is 409 until the caller re-sends `X-Policy-Approved: true` (only an admin on
+  the dashboard); `mode: monitor` never blocks; an engine failure denies and is audited.
+- Dashboard: `policy_gate.ROUTE_POLICY` classifies **every** mutating route (92 method/path pairs: 59 gated, 33 exempt)
+  as gated (CLI action names reused where one exists — `manual_promote`, `cluster_approve`/
+  `cluster_reject`, `project_delete`, `project_remove_member` — else `dashboard_<router>_<verb>`)
+  or exempt with a stated reason; the gate is one app-level dependency (public FastAPI API only, so it behaves identically on 0.136.3 and the deployed 0.141.1). **Precedence:** it runs before a route's own capability check — with no rule the route answers exactly as before (a viewer still gets the capability 403); a matching `deny` rule now answers first (403, `X-Policy-Rule`); `require_approval` is 409 for an admin and 403 for anyone else; unauthenticated stays 401. The CLI console is exempt (its subprocess enforces
+  policy), as are the PlatformAdmin-gated platform-ops routes.
+- Control plane: `POST /retrain` and `/v1/retrain` consult the same `retrain` rule as `exa retrain`
+  (same context keys); `exa retrain` and the dashboard's pipeline trigger forward the human's
+  approval so it is asked for once. Its route table exempts, with reasons, the approval and admin
+  routes that have no CLI-equivalent gate.
+- Guards that fail on an unclassified mutating route in either service (enumerated from `app.openapi()`, run on FastAPI 0.136.3 and 0.141.1):
+  `tests/test_policy_route_table.py` (dashboard and control plane).
+
 ## [0.61.0] - 2026-09-20
 
 ### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)

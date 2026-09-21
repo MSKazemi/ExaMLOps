@@ -237,6 +237,65 @@ exa policy bundle list
 `verify` recomputes the content hash and checks the signature, flagging a tampered or
 unsigned bundle (and exits 1 for CI).
 
+## Dashboard and control-plane routes (ADR 0079 decision 2)
+
+The CLI gates above used to be the only door a `policy.yaml` governed: the same mutation made from
+the dashboard, or by a direct control-plane call, never consulted it. Both services now do, through
+one shared verdict (`examlops.policy.http_gate.evaluate`) that follows the CLI's contract:
+
+| `policy.yaml` says | HTTP answer | Audit |
+|---|---|---|
+| no file / no matching rule | the route behaves exactly as before | none (byte-identical) |
+| `deny` | **403**, detail names the rule (`X-Policy-Rule` header on the dashboard) | `policy:<action>` under the caller's identity |
+| `require_approval` | **409** until re-sent with `X-Policy-Approved: true` | `policy:<action>`, then `policy_approval:<action>` when acknowledged |
+| a rule with `mode: monitor` | never blocks | `policy_monitor:<action>` (would-effect) |
+| the engine raises | **403** (fail closed) | `policy_unavailable:<action>` |
+
+`X-Policy-Approved` is the HTTP form of the CLI's default-no confirmation prompt: the platform does
+not invent an approver. On the dashboard only an **admin** may give it. The acknowledgement is an
+assertion by an authenticated caller and is itself audited. `exa retrain` sends it after the
+operator answered its own prompt, and the dashboard's pipeline trigger forwards it, so a
+`require_approval` rule on `retrain` is confirmed once, not twice.
+
+**Order (dashboard).** The gate is one app-level dependency (public FastAPI API, identical on
+0.136 and 0.141), so it runs *before* a route's own capability check. With **no matching rule** it
+allows silently and the route's own 403 fires exactly as before (a viewer on an admin route still
+gets the capability answer, and no policy row is written). A matching `deny` rule now answers
+first, even for a caller who lacks the capability: 403 with `X-Policy-Rule`. A `require_approval`
+rule answers an admin with 409 (re-send with the acknowledgement) and anyone else with 403 - a
+non-admin is never invited to approve and never slips past the rule. An unauthenticated request
+still gets the normal 401. (The control plane's gate runs inside the handler, after the scope
+check, so there the scope answer always comes first.)
+
+**Action names.** A mutation with a CLI equivalent reuses its name so one rule governs both doors:
+`manual_promote` (alias moves to a model alias, with `model`, `version`, `to_alias`),
+`cluster_approve` / `cluster_reject` (`cluster`), `project_delete`, `project_remove_member`, and
+`retrain` at the control plane (`model`, `dataset`, `dummy`). The rest are
+`dashboard_<router>_<verb>` (for example `dashboard_projects_create`, `dashboard_secrets_set`,
+`dashboard_containers_restart`) plus `approval_approve` / `approval_reject`. A rule can read the
+path parameters, the caller (`actor`, `role`, `tenant`) and the request body's scalar fields as
+`body_<field>` (fields whose names look like credentials are never put in the context):
+
+```yaml
+policies:
+  - name: freeze-prod-projects
+    action: dashboard_projects_create
+    when: "body_name == 'prod'"
+    effect: deny
+  - name: four-eyes-on-retrain
+    action: retrain
+    effect: require_approval
+```
+
+**The route table.** Every mutating route is classified in exactly one place -
+`platform/services/dashboard/backend/policy_gate.py` (`ROUTE_POLICY`) and
+`platform/services/control_plane/cplane/policy_gate.py` - as *gated* (with its action) or *exempt*
+(with the reason: authentication/session, read-only-by-POST, documentation content, a proxy whose
+target gates, the CLI console whose subprocess already enforces policy). A test walks the live
+app and fails on a mutating route that is in neither column, so a new mutation cannot ship without
+someone deciding. Open gaps are recorded in the table itself: the control plane's own
+`/approve` / `/reject` have no CLI-equivalent gate and are exempt (the dashboard routes are gated).
+
 ## Auditing (R7)
 
 Every `evaluate` (unless `--dry-run`) and every bundle sign writes an `audit_events` row —

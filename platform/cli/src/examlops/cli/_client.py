@@ -131,6 +131,10 @@ def _platform_service_auth(req: urllib.request.Request, url: str) -> None:
 
 def _send(req: urllib.request.Request, url: str, timeout: float = 10.0) -> Any:
     _platform_service_auth(req, url)
+    from examlops.policy import http_gate
+
+    if http_gate.approval_ack_active():  # a human already answered this command's policy prompt
+        req.add_header(http_gate.APPROVAL_HEADER, "true")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             body = resp.read().decode("utf-8", errors="replace")
