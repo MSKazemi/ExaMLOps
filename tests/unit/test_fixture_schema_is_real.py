@@ -54,6 +54,8 @@ _SCRATCH = {
     # tests/integration/test_postgres_service_roles_live.py — stand-ins for what an existing
     # install's MLflow and Prefect databases hold, owned by the superuser, so the test can show
     # the service roles taking them over. Not platform state.
+    "checkpoints": "tests/unit/test_suspend_seam.py — the agent-owned LangGraph SqliteSaver table,"
+    " read-only from core; its DDL is copied from the agent's store, not platform state",
     "legacy_models": "test_postgres_service_roles_live.py — a superuser-owned MLflow-side table",
     "dashboard_comments": "test_postgres_service_roles_live.py — likewise",
     "legacy_flow_run": "test_postgres_service_roles_live.py — a superuser-owned Prefect-side table",

@@ -30,6 +30,7 @@ _DOMAIN_MODULES: dict[str, str] = {
     "policy": "examlops.policy_engine.providers",
     "promotion": "examlops.promotion_providers",
     "rag_quality": "examlops.llmops_providers",
+    "suspend_backend": "examlops.suspend.providers",
 }
 
 _EXAMPLES = (

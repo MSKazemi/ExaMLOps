@@ -121,6 +121,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 - Trust: pipeline files are trusted-tier Python (compile executes them); `--untrusted` adds the
   provider AST allow-list, a static gate and not a jail. Guide `docs/guides/pipeline-as-code.md`.
 
+### Added - suspend/resume seam with an honest capability report (ADR 0109)
+
+- New `examlops.suspend`: a `SuspendBackend` contract (`snapshot`/`restore`/`discard`/`capability`),
+  a typed `Capability` whose unknown values stay `None` with a `measured|declared|unknown` basis,
+  a pure `estimate_resume_cost`, and `preemption_promise` (declines with reasons).
+- `suspend_backend` provider domain (`exa providers list --domain suspend_backend`): default
+  `checkpoint-only` pins/verifies agent-session LangGraph checkpoints (read-only SQLite store,
+  `AGENT_DB`); `mock` for tests. No CRIU/GPU-state backend is registered and asking for one is
+  refused. Snapshots are stored in the additive `suspend_snapshots` table and audited
+  (`suspend_snapshot`, `suspend_resume`, `suspend_discard`, `suspend_refused`). Nothing calls the
+  seam by default. Guide `docs/guides/suspend-resume.md`.
+
 ## [0.61.0] - 2026-09-20
 
 ### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)

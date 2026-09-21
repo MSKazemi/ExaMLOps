@@ -43,7 +43,9 @@ COLLIDING: dict[str, str] = {
 }
 
 #: Keys that omit the tenant and are **fine**, because the key column is a surrogate id.
-SURROGATE_OK = {"agent_sessions", "reasoning_traces", "virtual_keys"}
+#: `suspend_snapshots.snapshot_id` is a random uuid4 hex minted per snapshot (ADR 0109), so two
+#: tenants cannot collide on it.
+SURROGATE_OK = {"agent_sessions", "reasoning_traces", "virtual_keys", "suspend_snapshots"}
 
 
 def _tenant_tables_with_keys() -> dict[str, list[str]]:

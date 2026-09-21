@@ -273,6 +273,7 @@ nav:
       - Pluggable carbon & FinOps providers: guides/finops-providers.md
       - Authored providers (edit a formula from a notebook): guides/authored-providers.md
       - Provider security & trust tiers: guides/provider-security-trust-tiers.md
+      - Suspend and resume seam: guides/suspend-resume.md
   - Components:
       - Prefect — Pipelines: components/prefect.md
       - Control Plane — Retraining API: components/control-plane.md

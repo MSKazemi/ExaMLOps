@@ -932,6 +932,27 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 updated_at  REAL NOT NULL,
                 PRIMARY KEY (model, name, tenant)
             );
+            -- ADR 0109 — suspend/resume seam (`examlops.suspend`). One row per suspended subject
+            -- (an agent session today); `pointer` locates the state, it never holds it. `status`
+            -- is suspended | resumed | discarded | failed. Access only via `examlops.data.suspend`.
+            CREATE TABLE IF NOT EXISTS suspend_snapshots (
+                snapshot_id            TEXT PRIMARY KEY,
+                ts                     REAL NOT NULL,
+                backend                TEXT NOT NULL,
+                subject_kind           TEXT NOT NULL,
+                subject_id             TEXT NOT NULL,
+                tenant                 TEXT NOT NULL DEFAULT 'default',
+                status                 TEXT NOT NULL,
+                pointer                TEXT,
+                state_bytes            INTEGER,
+                capability             TEXT,
+                actor                  TEXT,
+                resumed_at             REAL,
+                state_transfer_s       REAL,
+                communicator_rebuild_s REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_suspend_subject
+                ON suspend_snapshots(subject_kind, subject_id, ts);
             -- Phase 1 item 1.5 — durable admission-control queue between every trigger
             -- (drift/autopilot/API/webhook) and Prefect. Per-tenant fair-share + a global
             -- concurrency cap stop one tenant (or a fleet-wide drift event) from starving the
