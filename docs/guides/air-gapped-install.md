@@ -143,7 +143,7 @@ cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json --offline \
 sha256sum -c SHA256SUMS --ignore-missing
 
 # Every image and the chart, as stored in the mirror
-for image in agent backup control-plane dashboard mlflow postgres ray-serving spire-init; do
+for image in agent backup control-plane dashboard llm-gateway mlflow postgres ray-serving spire-init; do
   cosign verify --offline --trusted-root trusted_root.json \
     "$MIRROR/examlops/examlops-$image:X.Y.Z" \
     --certificate-oidc-issuer "$ISSUER" --certificate-identity-regexp "$ID" > /dev/null

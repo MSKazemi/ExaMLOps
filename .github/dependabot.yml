@@ -169,6 +169,7 @@ updates:
       - "/platform/services/agent"
       - "/platform/services/control_plane"
       - "/platform/services/dataplane"
+      - "/platform/services/llm_gateway"
       - "/serving/ray_serving"
     schedule:
       interval: "weekly"

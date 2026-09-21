@@ -7,6 +7,7 @@ project's run into its own MLflow experiment whose artifact_location is the proj
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -21,6 +22,15 @@ sys.path.insert(0, str(ROOT / "pipelines"))
 from examlops.cli.main import app  # noqa: E402
 
 runner = CliRunner()
+
+# `pipeline_generator` (imported only by the two tests below) reaches `seanergys_modelzoo`, an
+# UPSTREAM library not vendored in the public tree (ADR 0094) — see test_pipeline.py's own guard.
+# Only those two tests need it; skip precisely them rather than this whole file.
+_MZ = Path(os.environ.get("EXAMLOPS_MODELZOO_DIR") or (ROOT / "modelzoo"))
+_NEEDS_MODELZOO = pytest.mark.skipif(
+    not (_MZ / "seanergys_modelzoo").is_dir(),
+    reason="seanergys_modelzoo not present — upstream library fetched at deploy/CI time",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +72,7 @@ def test_cli_pipelines_and_show_render_anatomy() -> None:
     assert "examlops-projects" in res.output
 
 
+@_NEEDS_MODELZOO
 def test_training_run_routes_into_project_experiment(monkeypatch) -> None:
     import pipeline_generator as pg
 
@@ -83,6 +94,7 @@ def test_training_run_routes_into_project_experiment(monkeypatch) -> None:
     mlf.set_experiment.assert_called_once_with("project/demo")
 
 
+@_NEEDS_MODELZOO
 def test_non_project_model_keeps_default_experiment(monkeypatch, _db) -> None:
     import pipeline_generator as pg
 
