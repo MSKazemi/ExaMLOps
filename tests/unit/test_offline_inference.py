@@ -54,7 +54,6 @@ def registry(tmp_path_factory):
     from mlflow.models import infer_signature
 
     root = tmp_path_factory.mktemp("mlflow")
-    previous = mlflow.get_tracking_uri()
     mlflow.set_tracking_uri(f"sqlite:///{root}/mlflow.db")
     exp = mlflow.create_experiment("offline", artifact_location=(root / "art").as_uri())
     rng = np.random.default_rng(0)
@@ -68,7 +67,12 @@ def registry(tmp_path_factory):
             )
     mlflow.MlflowClient().set_registered_model_alias(MODEL, "Production", "2")
     yield MODEL
-    mlflow.set_tracking_uri(previous)
+    # NOT `set_tracking_uri(previous)`: MLflow's default `get_tracking_uri()` is an absolute
+    # `sqlite:///<cwd>/mlflow.db` — the checkout's own store — so restoring "the previous value"
+    # pinned that store as the process-wide tracking URI for every later test in this xdist worker,
+    # and the conftest guard then failed whichever one touched MLflow next (2026-09-21, CI red on
+    # test_serve_manifest_cli). `None` puts MLflow back to resolving it lazily from the environment.
+    mlflow.set_tracking_uri(None)
 
 
 def _frame(n: int, seed: int = 1) -> pd.DataFrame:
