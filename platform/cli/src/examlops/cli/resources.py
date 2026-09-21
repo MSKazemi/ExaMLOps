@@ -648,6 +648,9 @@ NOT_RESOURCES: dict[str, str] = {
     "ops list": "Operations are the control plane's command records, created by the calls that "
     "start long-running work (`exa retrain`), never by a create form; `exa ops status/wait/cancel` "
     "follow one handle - the Commands view is the read surface.",
+    "agent version list": "Agent versions are immutable, content-addressed manifests registered "
+    "from a file (`exa agent version register`); there is no create/edit form, and an alias move "
+    "(`exa agent alias set`) is gated by evaluation evidence - the CLI console is the surface.",
     "plan list": "Agent plans are created and applied through the MCP plan_change/apply_plan tools "
     "and are single-use; `exa plan show` reads one — there is nothing to create or edit here.",
     "commands list": "Asynchronous command records are created by `exa retrain --async`, not by a "

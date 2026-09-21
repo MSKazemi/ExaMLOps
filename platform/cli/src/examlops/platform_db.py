@@ -985,6 +985,45 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_offline_jobs_state
                 ON offline_jobs(state, updated_at);
+            -- ADR 0146 — an agent version is a registry artifact (`examlops.agent_versions`).
+            -- `agent_versions` rows are immutable: `version_id` is the hash of the canonical manifest,
+            -- so a stored id can never describe different content. `agent_aliases` holds the movable
+            -- pointer (Staging/Canary/Production); `agent_alias_history` keeps every move so a
+            -- rollback is a lookup, not a guess. Access only via `examlops.data.agent_versions`.
+            CREATE TABLE IF NOT EXISTS agent_versions (
+                version_id     TEXT PRIMARY KEY,
+                agent          TEXT NOT NULL,
+                manifest_json  TEXT NOT NULL,
+                signature      TEXT,
+                sign_algo      TEXT,
+                sign_key_id    TEXT,
+                actor          TEXT,
+                created_at     REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_versions_agent
+                ON agent_versions(agent, created_at);
+            CREATE TABLE IF NOT EXISTS agent_aliases (
+                agent       TEXT NOT NULL,
+                alias       TEXT NOT NULL,
+                version_id  TEXT NOT NULL,
+                actor       TEXT,
+                updated_at  REAL NOT NULL,
+                PRIMARY KEY (agent, alias)
+            );
+            CREATE TABLE IF NOT EXISTS agent_alias_history (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent         TEXT NOT NULL,
+                alias         TEXT NOT NULL,
+                version_id    TEXT NOT NULL,
+                prev_version  TEXT,
+                action        TEXT NOT NULL,
+                reason        TEXT,
+                evidence_json TEXT,
+                actor         TEXT,
+                ts            REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_alias_history
+                ON agent_alias_history(agent, alias, id);
             -- ADR 0116 — two-phase quota reservation (`examlops.admission_seam`). One row per
             -- reservation: reserved -> committed | released | expired. `reserved` and `committed`
             -- rows hold quota; a `reserved` row past `expires_at` holds nothing (it is a leak the

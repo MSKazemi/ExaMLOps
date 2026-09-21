@@ -87,6 +87,9 @@ EXEMPT: dict[str, tuple[str, str]] = {
     **{
         t: ("gap", _GAP)
         for t in (
+            "agent_alias_history",
+            "agent_aliases",
+            "agent_versions",
             "assets",
             "data_retention",
             "dataset_cards",

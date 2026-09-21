@@ -55,6 +55,26 @@ what tells a busy queue from a stranded one.
 
 Skipper agent — health, backend and memory
 
+### `exa agent alias`
+
+Agent aliases - Staging / Canary / Production pointers, promotion gated by evidence
+
+#### `exa agent alias rollback`
+
+Move an alias back to the version it held before its latest move (not re-gated).
+
+- `--reason` — Why (recorded in the history)
+
+#### `exa agent alias set`
+
+Point an alias at a version. Production requires recorded evaluation evidence.
+
+- `--reason` — Why (recorded in the history)
+
+#### `exa agent alias show`
+
+Show where an agent's aliases point, and (for one alias) its recent moves.
+
 ### `exa agent memory`
 
 Govern authenticated, owner-scoped agent memory (ADR 0034)
@@ -122,6 +142,29 @@ Exits non-zero when the agent is unreachable *or* when it is up but its backend 
 unusable. Both mean "do not trust an answer from this agent", which is the question a
 script is really asking, and collapsing them into one exit code is what makes this
 usable as a health gate.
+
+### `exa agent version`
+
+Agent versions - immutable, content-addressed manifests (ADR 0146)
+
+#### `exa agent version diff`
+
+Which components differ between two versions, by name.
+
+#### `exa agent version list`
+
+List registered versions, newest first, with the aliases pointing at each.
+
+- `--agent, -a` — Only this agent
+- `--limit, -n` — Max versions
+
+#### `exa agent version register`
+
+Validate a manifest and register it; identical content returns the existing version.
+
+#### `exa agent version show`
+
+Show one version: the pinned tuple and whether its signature verifies.
 
 ## `exa agentops`
 

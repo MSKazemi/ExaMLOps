@@ -144,6 +144,11 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("As a health gate (exits 1 if unusable)", "exa --json agent status"),
         ("Check the agent in another environment", "exa -c lxp agent status"),
         ("Hold a conversation with it", "exa chat"),
+        ("Register a pinned agent version (ADR 0146)", "exa agent version register agent.yaml"),
+        (
+            "Promote it (Production needs eval evidence)",
+            "exa agent alias set jobdoc Production av-sha256:...",
+        ),
     ],
     # GenAI & LLMOps
     "genai": [

@@ -1142,3 +1142,9 @@ environment:
 |---|---|---|
 | `EXAMLOPS_OFFLINE_LEASE_TTL` | `600` | Seconds an `exa offline run` holds its job lease, renewed after every batch. A runner that dies leaves the job `stalled` and a re-run takes it over once the lease lapses; keep it above the slowest single batch. |
 | `EXAMLOPS_OFFLINE_WORKDIR` | `<EXAMLOPS_DATA_DIR>/cache/offline`, else `~/.cache/examlops/offline` | Where a job with a `dataplane` output stages its committed batches until the snapshot is published. A `local` output stages next to itself, in `<output>/.work/`. |
+
+## Agent versions (ADR 0146)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_AGENT_VERSION_PIN` | unset | `<agent>[@<alias>]` (alias default `Production`). When set, the Skipper agent reads its `skipper-system` prompt at the version number the registered agent version pins, instead of the moving `SKIPPER_PROMPT_LABEL`. A pin that cannot be honoured (unknown agent or alias, no such prompt, registry down) is logged and the label is used. Unset changes nothing. |

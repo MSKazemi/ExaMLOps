@@ -819,3 +819,11 @@ def memory_review_reject(
 
 memory_app.add_typer(review_app, name="review")
 app.add_typer(memory_app, name="memory")
+
+
+# ADR 0146 - agent versions and aliases, nested under the existing group. Attached here so the
+# existing subcommands are untouched; imported at the bottom to keep this module's import order.
+from examlops.cli.commands import agent_version_cmd  # noqa: E402
+
+app.add_typer(agent_version_cmd.version_app, name="version")
+app.add_typer(agent_version_cmd.alias_app, name="alias")

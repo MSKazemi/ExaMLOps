@@ -169,6 +169,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 - `exa admission simulate` and `exa admission reservations` (read-only). Existing `exa admission`
   behaviour is unchanged. Guide `docs/guides/admission-seams.md`.
 
+### Added - agent versions as registry artifacts: `exa agent version|alias` (ADR 0146, partial)
+
+- `examlops.agent_versions`: a typed, strict, canonical-JSON `AgentVersion` manifest with a
+  content-addressed `version_id` (`av-sha256:...`). Prompts are pinned by version number, code by image
+  digest, tools by schema hash, models by `pin` version or `follow` alias; unknown fields and floating
+  or unpinned references are refused, listing every problem. Registering identical content returns
+  the existing version; stored versions are insert-only. A pure structural `diff` names the changed
+  components. Additive `agent_versions`, `agent_aliases` and `agent_alias_history` tables behind
+  `examlops.data.agent_versions`.
+- `exa agent version register|show|list|diff` and `exa agent alias set|show|rollback`, nested under
+  the existing `exa agent` group (its `status` and `memory` commands are untouched). Alias moves and
+  rollbacks are audited; an `agent_promote` policy rule can deny or require approval.
+- Promotion to Production requires recorded evaluation evidence through the existing eval gate
+  (`agent-<name>`, block mode, results for every declared suite) with the ADR 0111 judge-calibration
+  rule, and a valid signature where signing is configured. Absence of evidence refuses.
+- `resolve(agent, alias)` for runtimes, and an opt-in `EXAMLOPS_AGENT_VERSION_PIN` that makes Skipper
+  read a pinned system-prompt version. Not built: MLflow `LoggedModel` registration, the
+  non-inferiority test, the state-compatibility gate, session canary and replay shadow, evidence
+  pack export. Guide `docs/guides/agent-versions.md`.
+
 ## [0.61.0] - 2026-09-20
 
 ### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)

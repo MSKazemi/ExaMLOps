@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 496,
+ "total_commands": 503,
  "total_groups": 72,
  "panels": [
   {
@@ -1652,6 +1652,27 @@
      "guide": "guides/agent.md"
     },
     {
+     "cmd": "exa agent alias rollback",
+     "group": "agent",
+     "help": "Move an alias back to the version it held before its latest move (not re-gated).",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent alias set",
+     "group": "agent",
+     "help": "Point an alias at a version. Production requires recorded evaluation evidence.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent alias show",
+     "group": "agent",
+     "help": "Show where an agent's aliases point, and (for one alias) its recent moves.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
      "cmd": "exa agent memory delete",
      "group": "agent",
      "help": "Erase memories, cascading to derived ones. Audited to audit_events. The immutable audit log is a separate store and is deliberately *not* erased — ADR 0034 keeps the record that an erasure happened while removing what was remembered.",
@@ -1704,6 +1725,34 @@
      "cmd": "exa agent status",
      "group": "agent",
      "help": "Show the agent's reachability, LLM backend, model and memory tier. Exits non-zero when the agent is unreachable *or* when it is up but its backend is unusable. Both mean \"do not trust an answer from this agent\", which is the question a script is really asking, and collapsing them into one exit code is what makes this usable as a health gate.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent version diff",
+     "group": "agent",
+     "help": "Which components differ between two versions, by name.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent version list",
+     "group": "agent",
+     "help": "List registered versions, newest first, with the aliases pointing at each.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent version register",
+     "group": "agent",
+     "help": "Validate a manifest and register it; identical content returns the existing version.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent version show",
+     "group": "agent",
+     "help": "Show one version: the pinned tuple and whether its signature verifies.",
      "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
      "guide": "guides/agent.md"
     },

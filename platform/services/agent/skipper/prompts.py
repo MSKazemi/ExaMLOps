@@ -121,12 +121,54 @@ def _label() -> str:
     return os.getenv("SKIPPER_PROMPT_LABEL", "prod")
 
 
+def _pinned_template() -> str | None:
+    """The system prompt pinned by a registered agent version, or None (opt-in, ADR 0146).
+
+    ``EXAMLOPS_AGENT_VERSION_PIN=<agent>[@<alias>]`` (alias default ``Production``) reads
+    ``skipper-system`` at the prompt *version number* that agent version pins, instead of the
+    moving label. Unset means this function does nothing. A pin that cannot be honoured (unknown
+    agent, version without this prompt, registry down) is logged and falls back to the normal
+    label resolution - a broken pin must not stop the agent starting. Only the system prompt is
+    consumed; the tool set is not (Skipper's tool packs are not read from a manifest).
+    """
+    pin = os.getenv("EXAMLOPS_AGENT_VERSION_PIN", "").strip()
+    if not pin:
+        return None
+    import logging
+
+    agent, _, alias = pin.partition("@")
+    try:
+        from examlops.agent_versions import resolve
+        from examlops.data.prompts import get_prompt_version
+
+        number = resolve(agent, alias or "Production").prompt(PROMPT_NAME)
+        row = get_prompt_version(PROMPT_NAME, number) if number is not None else None
+        if row and str(row["template"]).strip():
+            return str(row["template"])
+        logging.getLogger(__name__).warning(
+            "EXAMLOPS_AGENT_VERSION_PIN=%s pins no usable %s prompt; using the label",
+            pin,
+            PROMPT_NAME,
+        )
+    except Exception as exc:  # noqa: BLE001 - never stop the agent starting over a pin
+        logging.getLogger(__name__).warning(
+            "EXAMLOPS_AGENT_VERSION_PIN=%s not applied (%s: %s); using the label",
+            pin,
+            type(exc).__name__,
+            exc,
+        )
+    return None
+
+
 def system_prompt() -> str:
     """The active system prompt: the registry's `skipper-system@<label>`, else the literal.
 
     Never raises. A registry that is absent, empty or broken must not stop the agent from
     starting — the literal is always a correct answer, just not a versioned one.
     """
+    pinned = _pinned_template()
+    if pinned is not None:
+        return pinned
     if os.getenv("SKIPPER_PROMPT_REGISTRY", "1").lower() in {"0", "false", "no", "off"}:
         return SYSTEM_PROMPT
     try:

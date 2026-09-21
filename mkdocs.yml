@@ -276,6 +276,7 @@ nav:
       - Provider security & trust tiers: guides/provider-security-trust-tiers.md
       - Suspend and resume seam: guides/suspend-resume.md
       - Offline (batch) inference: guides/offline-inference.md
+      - Agent versions: guides/agent-versions.md
   - Components:
       - Prefect — Pipelines: components/prefect.md
       - Control Plane — Retraining API: components/control-plane.md
