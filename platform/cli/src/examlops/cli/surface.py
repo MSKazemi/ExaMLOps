@@ -377,6 +377,7 @@ TIERS: dict[str, str] = {
     "pipeline distributed launch": A,
     "pipeline distributed list": R,
     "pipeline distributed resume": A,
+    "pipeline distributed run": A,  # launches torchrun worker processes; run dir is not user-chosen
     "pipeline explain": R,
     "pipeline distributed status": R,
     "pipeline export-registry": A,

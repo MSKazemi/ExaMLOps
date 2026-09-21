@@ -137,6 +137,7 @@ Multi-node/multi-GPU training with integrity-hashed sharded checkpoints and resu
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
+| `exa pipeline distributed run` | Trains the shipped reference DDP script under real `torchrun` on this machine (`--local` is required — no scheduler submission), writes sharded checkpoints, and resubmits + resumes when a worker is killed (**mutation** — launches processes, writes run files, audits every attempt). Needs PyTorch (exit 2 without it). | Prove checkpoint/resume works end to end, or smoke-test a host's `torchrun` and gloo before an HPC allocation. | `exa pipeline distributed run --local --nproc 2 --steps 12 --max-attempts 3` |
 | `exa pipeline distributed launch` | Launches a distributed training run across nodes/GPUs with a chosen strategy (**mutation** — starts a run). | Kick off FSDP/ZeRO/Megatron multi-node training. | `exa pipeline distributed launch JPCP --nodes 2 --gpus-per-node 4 --strategy fsdp --checkpoint-every 500` |
 | `exa pipeline distributed checkpoint` | Writes an integrity-hashed sharded checkpoint for a run (**mutation** — persists checkpoint). | Manually snapshot training state mid-run. | `exa pipeline distributed checkpoint <run_id> --step 1000 --epoch 3 --shards 4` |
 | `exa pipeline distributed resume` | Resumes from the last integrity-valid checkpoint (**mutation**); exit 1 if none valid. | Recover a crashed distributed run without losing progress. | `exa pipeline distributed resume <run_id>` |

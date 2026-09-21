@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - real local distributed training with sharded checkpoints and resume (ADR 0032)
+
+- `exa pipeline distributed run --local [--nproc N] [--steps S] [--checkpoint-every K]
+  [--max-attempts M] [--elastic-restarts R]` runs a shipped reference DDP script
+  (`examlops/distributed/train_ddp.py`) under real `torchrun` (gloo on CPU, nccl when CUDA is
+  present). Each rank writes its own checkpoint shard; rank 0 commits a manifest with per-shard
+  SHA-256, step, world size and config hash (temp file + atomic rename). On start the script resumes
+  from the newest checkpoint whose every shard verifies and skips a corrupt or missing one.
+  `examlops.distributed.launch.supervise` resubmits a recoverable failure (bounded, exponential
+  backoff), audits every attempt and records the run and its checkpoints; a resume is reported only
+  from the run's own metrics plus a valid manifest. Verified with 2 gloo processes, including a
+  SIGKILLed rank resuming to bit-identical weights. Not verified/built: NCCL/GPU, multi-node, FSDP,
+  DeepSpeed, scheduler submission, MinIO/NFS shards. Env vars `EXAMLOPS_DIST_FAULT_STEP`,
+  `EXAMLOPS_DIST_FAULT_RANK`, `EXAMLOPS_DIST_ATTEMPT`. Distributed-run audit events now go through
+  `audit_best_effort` (a lost event is counted, no longer swallowed). ADR 0032 stays
+  `Partially implemented`.
+
 ### Added - SLOSpec by kind and an opt-in `slo` promotion gate (ADR 0148 decision 3)
 
 - `exa slo spec set|show|list|check`: one typed, versioned SLOSpec per (servable/agent, kind, tenant)

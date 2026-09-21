@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 513,
+ "total_commands": 514,
  "total_groups": 73,
  "panels": [
   {
@@ -177,6 +177,13 @@
      "cmd": "exa pipeline distributed resume",
      "group": "pipeline",
      "help": "Resume from the last integrity-valid checkpoint (R4/GWT-3). Exit 1 if none valid.",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed run",
+     "group": "pipeline",
+     "help": "Train the reference DDP script under real torchrun; resubmit and resume on failure.",
      "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
      "guide": "components/prefect.md"
     },

@@ -1179,3 +1179,12 @@ environment:
 
 The gate itself is armed like the other engine gates: `EXAMLOPS_POLICY_GATES=slo=monitor|enforce`
 or `gates: {slo: enforce}` in `policy.yaml`. Off (the default) it is never consulted.
+
+## Distributed training test hooks (ADR 0032)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_DIST_FAULT_STEP` | unset | Fault injection for the reference DDP script (`exa pipeline distributed run`): rank `EXAMLOPS_DIST_FAULT_RANK` SIGKILLs itself once, at the start of this step. A marker file in the run directory stops it firing again after the resume. Unset = no fault. Test/demo only. |
+| `EXAMLOPS_DIST_FAULT_RANK` | `1` | Which rank the fault above kills. |
+| `EXAMLOPS_DIST_ATTEMPT` | set by the supervisor | The 1-based submission attempt, exported to the worker processes (informational; nothing branches on it). |
+| `RANK` / `WORLD_SIZE` / `LOCAL_RANK` | set by `torchrun` | Read (never set) by the reference DDP script: the worker's global rank, the process count and its rank on this node. Default `0` / `1` / `0` if run without `torchrun`. |

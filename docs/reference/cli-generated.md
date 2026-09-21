@@ -2715,6 +2715,20 @@ List distributed training runs.
 
 Resume from the last integrity-valid checkpoint (R4/GWT-3). Exit 1 if none valid.
 
+#### `exa pipeline distributed run`
+
+Train the reference DDP script under real torchrun; resubmit and resume on failure.
+
+- `--local` — Run on this machine (the only mode built; no scheduler submission)
+- `--nproc` — Worker processes (torchrun nproc-per-node)
+- `--steps` — Training steps
+- `--checkpoint-every` — Steps per checkpoint
+- `--max-attempts` — Submissions before giving up (recoverable failures only)
+- `--elastic-restarts` — torchrun in-job --max-restarts (same node)
+- `--backoff` — Base seconds between attempts
+- `--seed` — Seed (default: EXAMLOPS_SEED, else 0)
+- `--run-id` — Explicit run id
+
 #### `exa pipeline distributed status`
 
 Show a distributed run + its checkpoints.

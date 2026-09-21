@@ -290,6 +290,12 @@ def test_an_approval_decision_that_could_not_be_audited_is_counted(monkeypatch, 
 #: was twice wrong. The scan below derives the truth from the tree; this mapping only has to say
 #: which test covers what.
 COVERED_AUDIT_SITES = {
+    ("examlops/distributed/__init__.py", "_audit"): (
+        "tests/unit/test_distributed_launch.py::test_a_lost_distributed_audit_is_counted"
+    ),
+    ("examlops/distributed/launch.py", "supervise"): (
+        "tests/unit/test_distributed_launch.py::test_a_lost_attempt_audit_is_counted_and_the_run_goes_on"
+    ),
     ("examlops/policy/http_gate.py", "_audit"): (
         "tests/unit/test_policy_http_gate.py::test_a_lost_policy_audit_is_counted_and_the_verdict_stands"
     ),
@@ -525,7 +531,7 @@ def test_every_converted_site_has_a_test_that_its_loss_is_counted():
 #: hands the cause back to its caller (`mcp._audit` returns "action succeeded but was not
 #: audited: …"), and a narrow `except ImportError` falling through to a documented alternative.
 #: `log.debug` does not count as disclosure — it is invisible at any production log level.
-SWALLOWED_AUDIT_WRITES_CEILING = 16
+SWALLOWED_AUDIT_WRITES_CEILING = 15
 
 
 def _blanket(handler: ast.ExceptHandler) -> bool:

@@ -22,6 +22,7 @@ app = typer.Typer(
 
 _EXAMPLES = (
     "Examples:\n\n"
+    "  exa pipeline distributed run --local --nproc 2 --steps 12\n\n"
     "  exa pipeline distributed launch JPCP --nodes 2 --strategy fsdp\n\n"
     "  exa pipeline distributed checkpoint <run-id> --step 100 --epoch 1\n\n"
     "  exa pipeline distributed resume <run-id>\n\n"
@@ -195,3 +196,84 @@ def list_cmd(
             for r in runs
         ],
     )
+
+
+_RUN_EXAMPLES = (
+    "Examples:\n\n"
+    "  exa pipeline distributed run --local\n\n"
+    "  exa pipeline distributed run --local --nproc 2 --steps 12 --max-attempts 3\n\n"
+    "  exa --json pipeline distributed run --local --elastic-restarts 1"
+)
+
+
+@app.command("run", epilog=_RUN_EXAMPLES)
+def run_cmd(
+    local: bool = typer.Option(
+        False, "--local", help="Run on this machine (the only mode built; no scheduler submission)"
+    ),
+    nproc: int = typer.Option(
+        2, "--nproc", min=1, help="Worker processes (torchrun nproc-per-node)"
+    ),
+    steps: int = typer.Option(12, "--steps", min=1, help="Training steps"),
+    checkpoint_every: int = typer.Option(
+        4, "--checkpoint-every", min=1, help="Steps per checkpoint"
+    ),
+    max_attempts: int = typer.Option(
+        3, "--max-attempts", min=1, help="Submissions before giving up (recoverable failures only)"
+    ),
+    elastic_restarts: int = typer.Option(
+        0, "--elastic-restarts", min=0, help="torchrun in-job --max-restarts (same node)"
+    ),
+    backoff: float = typer.Option(1.0, "--backoff", min=0.0, help="Base seconds between attempts"),
+    seed: int = typer.Option(None, "--seed", help="Seed (default: EXAMLOPS_SEED, else 0)"),
+    run_id: str = typer.Option(None, "--run-id", help="Explicit run id"),
+) -> None:
+    """Train the reference DDP script under real torchrun; resubmit and resume on failure."""
+    import time
+
+    from examlops.distributed.launch import TorchNotInstalled, default_run_dir, supervise
+
+    if not local:
+        _output.error(
+            "Only --local is implemented: scheduler (Slurm/Flux) submission of distributed "
+            "training is not built. Re-run with --local.",
+            exit_code=2,
+        )
+    rid = run_id or f"dist-ref-{int(time.time())}"
+    try:
+        res = supervise(
+            rid,
+            default_run_dir(rid),
+            nproc_per_node=nproc,
+            steps=steps,
+            checkpoint_every=checkpoint_every,
+            seed=seed,
+            max_attempts=max_attempts,
+            max_restarts=elastic_restarts,
+            backoff_s=backoff,
+            actor=_actor(),
+        )
+    except TorchNotInstalled as exc:
+        _output.error(str(exc), exit_code=2)
+    if _output.json_mode:
+        _output.print_json(res.to_dict())
+    else:
+        for a in res.attempts:
+            _output.info(f"attempt {a.attempt}: {a.outcome} (exit {a.returncode}, {a.seconds}s)")
+        if res.status == "complete":
+            m = res.metrics or {}
+            resumed = (
+                f"resumed from step {res.resumed_from_step}"
+                if res.resumed_from_step is not None
+                else "no resume"
+            )
+            _output.ok(
+                f"{rid} complete: {m.get('steps')} steps, final loss {m.get('final_loss'):.6g}, "
+                f"{resumed} ({res.run_dir})"
+            )
+        else:
+            _output.error(
+                f"{rid} {res.status} after {len(res.attempts)} attempt(s); see {res.run_dir}"
+            )
+    if res.status != "complete":
+        raise typer.Exit(1)

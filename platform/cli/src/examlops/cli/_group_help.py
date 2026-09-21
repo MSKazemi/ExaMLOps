@@ -384,6 +384,7 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     ],
     "pipeline distributed": [
         ("List distributed runs", "exa pipeline distributed list"),
+        ("Train locally under torchrun, resume on failure", "exa pipeline distributed run --local"),
         ("Launch distributed training", "exa pipeline distributed launch --help"),
     ],
     "fleet": [

@@ -231,12 +231,9 @@ def _emit_lineage(run_id: str, model: str, dataset_rev: str | None) -> None:
 
 
 def _audit(run_id: str, action: str, extra: dict[str, Any], actor: str | None) -> None:
-    try:
-        from examlops.data.audit import write_audit_event
+    from examlops.data.audit import audit_best_effort
 
-        write_audit_event("exa-distributed", actor, action, run_id, extra)
-    except Exception:
-        pass
+    audit_best_effort("exa-distributed", actor, action, run_id, extra)
 
 
 __all__ = [
