@@ -1,5 +1,5 @@
 fastapi==0.141.1  # pinned exact: upgrade deliberately (aligned with the serving stack), never by float
-uvicorn[standard]==0.52.4
+uvicorn[standard]==0.53.0
 sqlalchemy[asyncio]==2.0.52
 asyncpg==0.31.0
 httpx==0.28.1
@@ -10,7 +10,7 @@ cryptography==50.0.1
 # EXAMLOPS_EVENT_PUBLISHER=nats. Same pin as uv.lock's examlops[events].
 nats-py==2.15.0
 PyJWT==2.14.0
-alembic==1.19.2
+alembic==1.20.0
 aioboto3==15.5.0
 PyYAML==6.0.3
 python-multipart==0.0.32
