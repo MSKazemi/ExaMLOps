@@ -12,4 +12,4 @@ anthropic>=1.5.0
 httpx>=0.28.1
 respx>=0.23.1
 fastapi>=0.141.1  # floats: the agent is not Ray-coupled, so it tracks latest stable
-uvicorn[standard]>=0.52.4
+uvicorn[standard]>=0.53.0
