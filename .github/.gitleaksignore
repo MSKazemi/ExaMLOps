@@ -57,3 +57,7 @@ fbb15ef60e99737280f5f9e0e41011166630e1bc:tests/unit/test_secrets.py:generic-api-
 # docs/guides/control-plane.md — an `Idempotency-Key` example value ("nightly-2026-09-1{0,1}"), not a credential
 6852e4b27e010d15d62ea9bf15b29ebfc5d70a0b:docs/guides/control-plane.md:generic-api-key:110
 6852e4b27e010d15d62ea9bf15b29ebfc5d70a0b:docs/guides/control-plane.md:generic-api-key:192
+
+# docs/guides/offline-inference.md — an `idempotency_key` example value in a job-manifest JSON
+# sample ("nightly-2026-09-21"), not a credential; same false-positive class as control-plane.md above
+85b824289ae8d88a8aadcd85516ddd4266f9d1c8:docs/guides/offline-inference.md:generic-api-key:36
