@@ -953,6 +953,38 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_suspend_subject
                 ON suspend_snapshots(subject_kind, subject_id, ts);
+            -- ADR 0149 — offline (batch) inference (`examlops.offline`). One row per job, keyed by a
+            -- hash of (tenant, idempotency key) so a retry finds its own job. `state` is queued |
+            -- running | completed | failed | cancelled; a `running` row whose `lease_expires` has
+            -- passed is a crashed run and is resumed, not refused. Access only via
+            -- `examlops.data.offline`.
+            CREATE TABLE IF NOT EXISTS offline_jobs (
+                job_id           TEXT PRIMARY KEY,
+                tenant           TEXT NOT NULL DEFAULT 'default',
+                idempotency_key  TEXT NOT NULL,
+                spec_hash        TEXT NOT NULL,
+                spec_json        TEXT NOT NULL,
+                kind             TEXT NOT NULL,
+                model            TEXT NOT NULL,
+                model_version    TEXT,
+                state            TEXT NOT NULL,
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                lease_expires    REAL,
+                attempts         INTEGER NOT NULL DEFAULT 0,
+                batches_done     INTEGER NOT NULL DEFAULT 0,
+                batches_total    INTEGER,
+                rows_ok          INTEGER NOT NULL DEFAULT 0,
+                rows_err         INTEGER NOT NULL DEFAULT 0,
+                output_revision  TEXT,
+                output_uri       TEXT,
+                result_json      TEXT,
+                error            TEXT,
+                actor            TEXT,
+                created_at       REAL NOT NULL,
+                updated_at       REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_offline_jobs_state
+                ON offline_jobs(state, updated_at);
             -- ADR 0116 — two-phase quota reservation (`examlops.admission_seam`). One row per
             -- reservation: reserved -> committed | released | expired. `reserved` and `committed`
             -- rows hold quota; a `reserved` row past `expires_at` holds nothing (it is a leak the

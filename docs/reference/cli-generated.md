@@ -2477,6 +2477,49 @@ Show namespace details and the models assigned to it.
 
 List all namespaces with model counts.
 
+## `exa offline`
+
+Offline (batch) inference — run a registered model over a pinned dataset
+
+### `exa offline cancel`
+
+Cancel a job: a live run stops after the batch in flight; committed batches are kept.
+
+### `exa offline list`
+
+List offline jobs, newest first.
+
+- `--state` — queued | running | stalled | completed | failed | cancelled
+- `--limit, -n` — Max jobs
+
+### `exa offline run`
+
+Run a registered predictive model over a dataset; resumable, idempotent, content-addressed.
+
+- `--spec` — A JSON job spec (replaces the flags)
+- `--model, -m` — Registered model name
+- `--version` — Registry version number
+- `--alias` — Registry alias, resolved once to an immutable version
+- `--input, -i` — Local Parquet file or dir
+- `--input-source` — Dataplane source name
+- `--input-table` — Snapshot table to score
+- `--input-revision` — Snapshot revision: 'latest' or a full 64-hex id
+- `--output, -o` — Local directory; receives <revision>/
+- `--output-source` — Publish as a snapshot of this dataplane source
+- `--key, -k` — Idempotency key (required): same key = replay or resume
+- `--kind` — Workload kind: predictive | generative | agentic (only predictive runs offline today)
+- `--batch-size` — Rows per batch
+- `--cpus` — Declared CPUs (for cost; 0 = undeclared)
+- `--gpus` — Declared GPUs (for cost; 0 = none)
+- `--memory-gb` — Declared memory in GB
+- `--tenant` — Tenant the job belongs to
+- `--project` — Project (default dataplane project)
+- `--fail-on-errors` — Exit 1 if any row failed (the run still completes)
+
+### `exa offline status`
+
+Show one offline job: state, progress, tallies and where the output is.
+
 ## `exa ops`
 
 Operation handles — status, wait, cancel for long-running work

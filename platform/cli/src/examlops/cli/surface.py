@@ -378,6 +378,10 @@ TIERS: dict[str, str] = {
     "pipeline run": A,
     "pipeline validate": R,
     "pipeline validate-model": A,
+    "offline cancel": A,
+    "offline list": R,
+    "offline run": A,
+    "offline status": R,
     "ops cancel": A,
     "ops list": R,
     "ops status": R,
@@ -668,6 +672,8 @@ _NOT_FS: frozenset[tuple[str, str]] = frozenset(
 _EXTRA_FS: frozenset[tuple[str, str]] = frozenset(
     {
         ("slo pair-check", "samples"),
+        ("offline run", "input_"),
+        ("offline run", "spec"),
         ("secrets scan", "target"),
         ("hpc connect", "key"),
         ("hpc detect", "key"),

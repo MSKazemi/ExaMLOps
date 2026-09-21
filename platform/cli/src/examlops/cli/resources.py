@@ -642,6 +642,9 @@ RESOURCES: tuple[Resource, ...] = (
 # Command groups that have a `list`-like verb but are not resources, and why. Keeps the coverage
 # check honest: a new list command must be placed in one of the two.
 NOT_RESOURCES: dict[str, str] = {
+    "offline list": "Offline jobs are created by `exa offline run` over a model version and a "
+    "pinned dataset (a run, not a record you fill in); `exa offline status/cancel` and "
+    "`exa ops status` follow one - the CLI console is the surface.",
     "ops list": "Operations are the control plane's command records, created by the calls that "
     "start long-running work (`exa retrain`), never by a create form; `exa ops status/wait/cancel` "
     "follow one handle - the Commands view is the read surface.",

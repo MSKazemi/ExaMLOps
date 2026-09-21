@@ -1,6 +1,6 @@
 ---
 title: Every capability
-description: All 492 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
+description: All 496 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
 hide:
   - navigation
 ---
@@ -11,8 +11,8 @@ hide:
 
 # Every capability
 
-Everything ExaMLOps can do is reachable from the `exa` CLI: **492 commands**
-in 71 command groups. They are grouped here the same way `exa --help` groups
+Everything ExaMLOps can do is reachable from the `exa` CLI: **496 commands**
+in 72 command groups. They are grouped here the same way `exa --help` groups
 them, into twelve areas of the model lifecycle. The bar is sized by the number of commands in
 each area; select an area to filter, or search by what you want to do.
 
@@ -28,7 +28,7 @@ The same capabilities are available from the [dashboard](../dashboard/usage-guid
 | Training & Pipelines | Run, schedule, promote and reproduce training pipelines. | `pipeline`, `retrain`, `retrain-status`, `commands`, `scaffold`, `finetune`, `reproduce` | 33 |
 | Data & Features | Version datasets, validate them and serve features without skew. | `data`, `dataplane`, `feature`, `features`, `assets`, `cards` | 45 |
 | Models & Registry | Browse, compare, sign and trace every registered model version. | `models`, `modelzoo`, `embedding` | 29 |
-| Serving & Inference | Serve models, split traffic, call gateways and query RAG. | `serve`, `predict`, `production`, `gateway`, `vector`, `rag` | 81 |
+| Serving & Inference | Serve models, split traffic, call gateways and query RAG. | `serve`, `predict`, `offline`, `production`, `gateway`, `vector`, `rag` | 85 |
 | GenAI & LLMOps | Manage prompts, trace GenAI calls and enforce guardrails. | `genai`, `prompt`, `guardrails` | 13 |
 | Agents & Automation | Ask Skipper, run the autopilot loop and expose tools over MCP. | `ask`, `chat`, `agent`, `agentops`, `autopilot`, `mcp`, `ops` | 35 |
 | Monitoring & Quality | Watch drift, evaluate models, track SLOs and fairness. | `drift`, `eval`, `slo`, `fairness` | 54 |

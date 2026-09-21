@@ -137,7 +137,7 @@ CATALOG: tuple[Module, ...] = (
         "Serving & inference",
         "Ray Serve multi-model serving, predictions, production verification, traffic splits, "
         "shadow/A-B/champion-challenger, batch inference, autoscaling and rollback.",
-        cli=("serve", "predict", "production"),
+        cli=("serve", "predict", "offline", "production"),
         dashboard_api=(
             "/shadow",
             "/ab-testing",

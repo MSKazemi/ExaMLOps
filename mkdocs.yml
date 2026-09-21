@@ -275,6 +275,7 @@ nav:
       - Authored providers (edit a formula from a notebook): guides/authored-providers.md
       - Provider security & trust tiers: guides/provider-security-trust-tiers.md
       - Suspend and resume seam: guides/suspend-resume.md
+      - Offline (batch) inference: guides/offline-inference.md
   - Components:
       - Prefect — Pipelines: components/prefect.md
       - Control Plane — Retraining API: components/control-plane.md

@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - offline (batch) inference: `exa offline run|status|cancel|list` (ADR 0149)
+
+- `examlops.offline`: a typed, versioned, strict `OfflineJob` spec (servable version or alias resolved
+  once to an immutable version; a dataplane snapshot revision or local Parquet as input; a local
+  directory or a new dataplane snapshot as output; batch size; declared resources; a required
+  idempotency key) and an inline executor for the **predictive** kind. It loads the model with the
+  serving replica's own `load_model_version` and converts rows with the online OIP v2 code, streams the
+  input in bounded batches, commits each batch atomically, and writes a content-addressed output with a
+  manifest (input revision, model version, engine, counts, per-batch error tally). Resumable after a
+  crash, idempotent per key, cooperative cancel, row-level error isolation.
+- `exa ops status|wait|cancel` accept an offline job id (`off-...`); cost (declared hours, `metered:
+  false`) is booked for `exa models cost`, lineage input revision + model version -> output revision is
+  emitted, runs are audited. New table `offline_jobs`; env `EXAMLOPS_OFFLINE_LEASE_TTL`,
+  `EXAMLOPS_OFFLINE_WORKDIR`.
+- Not built and refused rather than faked: `generative`/`agentic` kinds (`kind_not_supported_offline`),
+  admission/scheduler submission, `flexibility_s` > 0. Guide `docs/guides/offline-inference.md`.
+- `serving.ray_serving.app.load_model_version` is now a module-level function (the replica's
+  `_load_by_flavour` delegates to it; behaviour unchanged).
+
 ### Added - policy-as-code completion: rollout modes, armed engine gates, plugin engines (ADR 0029 / 0079)
 
 - Per-rule rollout: `mode: monitor` on a `policy.yaml` rule computes and audits the decision

@@ -323,6 +323,13 @@ COVERED_AUDIT_SITES = {
     ("examlops/cli/commands/ops_cmd.py", "_audit"): (
         "tests/unit/test_operations.py::test_a_cancel_request_that_could_not_be_audited_is_counted"
     ),
+    ("examlops/offline/executor.py", "_audit"): (
+        "tests/unit/test_offline_inference.py"
+        "::test_a_lost_offline_run_audit_is_counted_and_the_run_still_completes"
+    ),
+    ("examlops/offline/executor.py", "cancel"): (
+        "tests/unit/test_offline_inference.py::test_a_lost_offline_cancel_audit_is_counted"
+    ),
     ("examlops/secrets/__init__.py", "_audit"): "test_a_governance_audit_loss_is_counted",
     ("examlops/supplychain/__init__.py", "_audit"): "test_a_governance_audit_loss_is_counted",
     ("examlops/policy/__init__.py", "_audit"): (

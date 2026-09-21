@@ -69,6 +69,7 @@ from examlops.cli.commands import (
     modelzoo,
     modules_cmd,
     namespace_cmd,
+    offline_cmd,
     ops_cmd,
     pipeline,
     plan_cmd,
@@ -144,7 +145,10 @@ _ROOT_PANELS: list[tuple[str, list[str]]] = [
     ),
     ("Data & Features", ["data", "dataplane", "feature", "features", "assets", "cards"]),
     ("Models & Registry", ["models", "modelzoo", "embedding"]),
-    ("Serving & Inference", ["serve", "predict", "production", "gateway", "vector", "rag"]),
+    (
+        "Serving & Inference",
+        ["serve", "predict", "offline", "production", "gateway", "vector", "rag"],
+    ),
     ("GenAI & LLMOps", ["genai", "prompt", "guardrails"]),
     # The agentic surface was the platform's differentiator and the one thing a reader could not
     # find in `exa --help`: its 15 commands were correct and complete but scattered across four
@@ -482,6 +486,11 @@ app.command("retrain-status", epilog=retrain._EXAMPLES_STATUS)(retrain.retrain_s
 app.command("predict", epilog=predict._EXAMPLES)(predict.predict)
 app.command("scaffold", epilog=scaffold._EXAMPLES)(scaffold.scaffold)
 app.command("status", epilog=status._EXAMPLES)(status.status)
+app.add_typer(
+    offline_cmd.app,
+    name="offline",
+    help="Offline (batch) inference — run a registered model over a pinned dataset",
+)
 app.add_typer(audit_cmd.app, name="audit", help="Audit log — tamper-evident, hash-chained (D4)")
 app.add_typer(
     ops_cmd.app, name="ops", help="Operation handles — status, wait, cancel for long-running work"

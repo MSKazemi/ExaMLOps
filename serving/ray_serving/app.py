@@ -235,6 +235,42 @@ def _verified_uri(name: str, version: str, uri: str, *, record: dict | None = No
     return local
 
 
+def load_model_version(name: str, alias: str | None, mv: Any) -> Any:
+    """Load the right MLflow flavour based on the model-version's ``framework`` tag.
+
+    Tag absent ⇒ sklearn / pyfunc (legacy default). Phase 5 sets the tag
+    in ``log_mlflow_task`` so non-sklearn models load via their flavour
+    without any per-model special-casing in serving.
+
+    Module-level so the offline batch executor (ADR 0149, ``examlops.offline``) loads a model
+    exactly the way a replica does — same verification, artifact cache and flavour dispatch.
+    """
+    # Use importlib so we don't accidentally rebind the module-level
+    # ``mlflow`` name as a function-local (``import mlflow.pytorch`` would).
+    import importlib  # noqa: PLC0415
+
+    flavour = "sklearn"
+    try:
+        tags = getattr(mv, "tags", {}) or {}
+        flavour = (tags.get("framework") or "sklearn").lower()
+    except Exception:  # noqa: BLE001
+        pass
+
+    suffix = f"@{alias}" if alias else f"/{mv.version}"
+    uri = _verified_uri(
+        name,
+        str(mv.version),
+        f"models:/{name}{suffix}",
+        record=getattr(mv, "signature", None),
+    )
+
+    if flavour == "pytorch":
+        return importlib.import_module("mlflow.pytorch").load_model(uri)
+    if flavour == "huggingface":
+        return importlib.import_module("mlflow.transformers").load_model(uri)
+    return mlflow.pyfunc.load_model(uri)
+
+
 _REGISTRY_ENTRIES: list | None = None
 
 # Per-model YAML directory (Phase 14) takes precedence over legacy RAY_REGISTRY_PATH.
@@ -809,36 +845,8 @@ class MultiModelServer:
         )
 
     def _load_by_flavour(self, name: str, alias: str | None, mv: Any) -> Any:
-        """Load the right MLflow flavour based on the model-version's ``framework`` tag.
-
-        Tag absent ⇒ sklearn / pyfunc (legacy default). Phase 5 sets the tag
-        in ``log_mlflow_task`` so non-sklearn models load via their flavour
-        without any per-model special-casing in serving.
-        """
-        # Use importlib so we don't accidentally rebind the module-level
-        # ``mlflow`` name as a function-local (``import mlflow.pytorch`` would).
-        import importlib  # noqa: PLC0415
-
-        flavour = "sklearn"
-        try:
-            tags = getattr(mv, "tags", {}) or {}
-            flavour = (tags.get("framework") or "sklearn").lower()
-        except Exception:  # noqa: BLE001
-            pass
-
-        suffix = f"@{alias}" if alias else f"/{mv.version}"
-        uri = _verified_uri(
-            name,
-            str(mv.version),
-            f"models:/{name}{suffix}",
-            record=getattr(mv, "signature", None),
-        )
-
-        if flavour == "pytorch":
-            return importlib.import_module("mlflow.pytorch").load_model(uri)
-        if flavour == "huggingface":
-            return importlib.import_module("mlflow.transformers").load_model(uri)
-        return mlflow.pyfunc.load_model(uri)
+        """Load the right MLflow flavour for a model version (see :func:`load_model_version`)."""
+        return load_model_version(name, alias, mv)
 
     def _reload_one_model(self, model_name: str) -> int:
         """Re-pull every preload alias for a single model. Returns reload count."""

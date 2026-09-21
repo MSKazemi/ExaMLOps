@@ -1135,3 +1135,10 @@ environment:
 | `EXAMLOPS_ADMISSION_POLICY` | `fair-share` | Admission policy behind `examlops.admission_seam`: `fair-share` (the pre-seam behaviour) or `baseline-over-quota`. An unknown name is refused. Only the seam and `exa admission simulate` read it; the existing queue worker does not. |
 | `EXAMLOPS_ADMISSION_QUOTAS` | unset | Path to a JSON file of per-tenant GPU quotas (`baseline_gpus`, `limit_gpus`, `over_quota_weight`) used by `baseline-over-quota`. A malformed file is an error. |
 | `EXAMLOPS_RESERVATION_TTL_S` | `900` | Seconds a `reserved` quota reservation holds quota before it lapses and is swept to `expired`. |
+
+## Offline (batch) inference (ADR 0149)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_OFFLINE_LEASE_TTL` | `600` | Seconds an `exa offline run` holds its job lease, renewed after every batch. A runner that dies leaves the job `stalled` and a re-run takes it over once the lease lapses; keep it above the slowest single batch. |
+| `EXAMLOPS_OFFLINE_WORKDIR` | `<EXAMLOPS_DATA_DIR>/cache/offline`, else `~/.cache/examlops/offline` | Where a job with a `dataplane` output stages its committed batches until the snapshot is published. A `local` output stages next to itself, in `<output>/.work/`. |

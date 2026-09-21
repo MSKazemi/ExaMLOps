@@ -494,6 +494,17 @@ Run offline/batch predictions from a file.
 | `exa serve batch submit MODEL INPUT_FILE` | Runs synchronous batch inference from a JSON/JSONL file over Open Inference Protocol v2 (`-a/--alias` for every row that names no alias or version of its own, `-o/--output`). | Score a large offline dataset in one call. | `exa serve batch submit JPCP inputs.jsonl --alias Production -o preds.json` |
 | `exa serve batch list` | Lists recent batch inference jobs (`-m/--model` filter). | Review batch job history and status. | `exa serve batch list --model JPCP` |
 
+#### Offline inference (`exa offline`)
+
+Run a registered predictive model over a pinned dataset, resumably and idempotently (ADR 0149). Guide: [offline inference](../guides/offline-inference.md).
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa offline run` | **[mutation]** Runs a model version over a Parquet input (local or a dataplane snapshot revision) through the serving replica's loader and OIP v2 conversion, in bounded batches; writes a content-addressed output plus manifest. `--key` is required: a re-run replays a finished job or resumes an unfinished one. `--spec` takes a JSON spec; `generative`/`agentic` are refused. | Score a month of job telemetry offline without holding an online replica. | `exa offline run --model JPCP --version 7 --input ./jobs.parquet --output ./scores --key score-2026-09` |
+| `exa offline status` | Shows one job: state (`stalled` = the runner died; re-run to resume), batches, row tallies, output revision. | Follow a long batch run. | `exa -o json offline status off-3f9a…` |
+| `exa offline list` | Lists offline jobs newest first (`--state`, `--limit`). | Review what ran. | `exa offline list --state failed` |
+| `exa offline cancel` | **[mutation]** Stops a live run after the batch in flight (committed batches are kept); cancels an orphaned job at once. | Free the machine, then resume later with the same key. | `exa --yes offline cancel off-3f9a…` |
+
 #### Explainability (`exa serve explain`)
 
 Feature-importance explanations (XAI) from the serve endpoint.

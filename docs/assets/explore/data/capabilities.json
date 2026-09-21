@@ -1,7 +1,7 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 492,
- "total_groups": 71,
+ "total_commands": 496,
+ "total_groups": 72,
  "panels": [
   {
    "title": "Getting Started",
@@ -916,6 +916,7 @@
    "groups": [
     "serve",
     "predict",
+    "offline",
     "production",
     "gateway",
     "vector",
@@ -1305,6 +1306,34 @@
      "group": "predict",
      "help": "Send an inference request to the Ray Serve inference pipeline.",
      "anchor": "exa-predict-one-shot-inference",
+     "guide": null
+    },
+    {
+     "cmd": "exa offline cancel",
+     "group": "offline",
+     "help": "Cancel a job: a live run stops after the batch in flight; committed batches are kept.",
+     "anchor": "serving-inference",
+     "guide": null
+    },
+    {
+     "cmd": "exa offline list",
+     "group": "offline",
+     "help": "List offline jobs, newest first.",
+     "anchor": "serving-inference",
+     "guide": null
+    },
+    {
+     "cmd": "exa offline run",
+     "group": "offline",
+     "help": "Run a registered predictive model over a dataset; resumable, idempotent, content-addressed.",
+     "anchor": "serving-inference",
+     "guide": null
+    },
+    {
+     "cmd": "exa offline status",
+     "group": "offline",
+     "help": "Show one offline job: state, progress, tallies and where the output is.",
+     "anchor": "serving-inference",
      "guide": null
     },
     {

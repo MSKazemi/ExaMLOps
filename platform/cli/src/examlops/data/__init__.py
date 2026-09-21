@@ -38,6 +38,7 @@ __all__ = [
     "gateway",
     "governance",
     "hpc",
+    "offline",
     "projects",
     "prompts",
     "registry",

@@ -163,12 +163,25 @@ def _api() -> Any:
     return control_plane_api
 
 
+#: Offline-inference jobs (ADR 0149) are operations too, but they run inline and have no control-
+#: plane command record: their id (``off-…``) is read from the local job store instead.
+OFFLINE_PREFIX = "off-"
+
+
+def _offline() -> Any:
+    from examlops import offline
+
+    return offline
+
+
 def status(
     operation_id: str, *, base: str | None = None, token: str | None = None
 ) -> dict[str, Any]:
     """Read one operation: ``{"ok": True, "operation": {...}}`` or a structured error."""
     if not operation_id or not operation_id.strip():
         return _err("invalid_id", "operation_id must not be empty")
+    if operation_id.startswith(OFFLINE_PREFIX):
+        return _offline().operation_view(operation_id)
     try:
         view = _api().get_command(operation_id, base=base, token=token)
     except ClientError as exc:
@@ -263,6 +276,11 @@ def cancel(
     ``not_cancellable`` and the control plane is not asked. ``cancelled`` in the result is true
     only if the record returned by the control plane says ``cancelled``.
     """
+    if operation_id.startswith(OFFLINE_PREFIX):
+        out = _offline().cancel(operation_id)
+        if out.get("job") is not None:
+            out["operation"] = _offline().operation_view(operation_id).get("operation")
+        return out
     before = status(operation_id, base=base, token=token)
     if not before.get("ok"):
         return before

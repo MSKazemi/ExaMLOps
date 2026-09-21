@@ -218,6 +218,15 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("Anchor a checkpoint (cron-friendly)", "exa audit checkpoint --anchor --skip-unchanged"),
         ("Preview a retention prune", "exa audit prune"),
     ],
+    "offline": [
+        (
+            "Score a Parquet dataset with a model version",
+            "exa offline run --model JPCP --version 7 --input ./jobs.parquet "
+            "--output ./scores --key score-1",
+        ),
+        ("Where a job is", "exa offline status <job-id>"),
+        ("Resume a crashed job (same key)", "exa offline run --spec offline.json"),
+    ],
     "ops": [
         ("Operations in flight or finished", "exa ops list"),
         ("Wait at most 5 minutes for one", "exa ops wait <op-id> --timeout 300"),
