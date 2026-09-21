@@ -189,6 +189,10 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     "slo": [
         ("List declared SLOs", "exa slo list"),
     ],
+    "slo spec": [
+        ("Declare a per-kind SLOSpec", "exa slo spec set JPCP --kind predictive --error-rate 0.01"),
+        ("Is the spec met?", "exa slo spec check JPCP --kind predictive"),
+    ],
     "fairness": [
         ("Subgroup disparity report", "exa fairness report --help"),
     ],

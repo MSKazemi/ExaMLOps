@@ -538,6 +538,10 @@ TIERS: dict[str, str] = {
     "slo pair-set": A,
     "slo record": A,
     "slo set": A,
+    "slo spec check": R,
+    "slo spec list": R,
+    "slo spec set": A,
+    "slo spec show": R,
     "slo status": R,
     "stack down": X,
     "stack logs": R,
@@ -685,6 +689,7 @@ _NOT_FS: frozenset[tuple[str, str]] = frozenset(
 _EXTRA_FS: frozenset[tuple[str, str]] = frozenset(
     {
         ("slo pair-check", "samples"),
+        ("slo spec check", "samples"),
         ("offline run", "input_"),
         ("offline run", "spec"),
         ("secrets scan", "target"),

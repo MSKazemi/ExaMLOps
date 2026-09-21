@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 509,
+ "total_commands": 513,
  "total_groups": 73,
  "panels": [
   {
@@ -2320,6 +2320,34 @@
      "cmd": "exa slo set",
      "group": "slo",
      "help": "Declare or version-bump one SLO spec (R1).",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo spec check",
+     "group": "slo",
+     "help": "Evaluate the SLOSpec; exit 1 unless the verdict is `met` (no data is `no_verdict`).",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo spec list",
+     "group": "slo",
+     "help": "List declared SLOSpecs.",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo spec set",
+     "group": "slo",
+     "help": "Declare the SLOSpec for a servable/agent; the objective shape is fixed by --kind.",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo spec show",
+     "group": "slo",
+     "help": "Show one SLOSpec and the latest recorded verdict; exit 1 when it is not declared.",
      "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
      "guide": "guides/slos.md"
     },

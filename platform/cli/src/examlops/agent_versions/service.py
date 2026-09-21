@@ -299,6 +299,27 @@ def _signature_refusals(row: dict[str, Any]) -> list[str]:
     return []
 
 
+def _slo_refusals(agent: str, evidence: dict[str, Any]) -> list[str]:
+    """ADR 0148 d3: with the ``slo`` gate armed, a declared agentic SLOSpec must be ``met``.
+
+    Off (the default): never consulted, nothing added to the evidence. An agent with no agentic
+    spec is not refused here (this road only *includes* a spec's verdict when one exists).
+    """
+    from examlops.policy_engine.gates import consult
+    from examlops.slo.specs import promotion_decision
+
+    sink: dict[str, Any] = {}
+    decision = consult(
+        "slo",
+        lambda _o: promotion_decision(agent, kinds=("agentic",), require_spec=False, sink=sink),
+    )
+    if decision is None:
+        return []
+    if sink.get("slo"):
+        evidence["slo"] = sink["slo"]
+    return [] if decision.allow else list(decision.reasons)
+
+
 # -- alias moves -------------------------------------------------------------------------------
 
 
@@ -326,6 +347,7 @@ def set_alias(
     if alias == "Production":
         reasons, evidence = evidence_refusals(row)
         reasons += _signature_refusals(row)
+        reasons += _slo_refusals(agent, evidence)
         if reasons:
             audit_best_effort(
                 _SOURCE,

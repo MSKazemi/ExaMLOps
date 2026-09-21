@@ -1169,3 +1169,13 @@ environment:
 | `EXAMLOPS_ON_BEHALF_OF` | unset | The principal the agent acts for; recorded in the audit row as the actor. |
 | `EXAMLOPS_AGENT_SESSION` | unset | Session id; required by a grant that sets `max_calls_per_session` (otherwise the call is denied `session_required`). |
 | `EXAMLOPS_CORRELATION_ID` | unset | Correlation id recorded in every broker audit row (ADR 0110). |
+
+## SLOSpec by kind (ADR 0148 decision 3)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_SLO_SPEC_MIN_SAMPLES` | `20` | Fewest valid observations one SLOSpec objective (`exa slo spec check`, and the `slo` promotion gate) may rest on; fewer gives `no_verdict`, never `met`. |
+| `EXAMLOPS_SLO_SPEC_VERDICT_MAX_AGE_HOURS` | `168` | How long a verdict recorded with `exa slo spec check --record` still counts for the `slo` promotion gate (live evidence is always preferred; a recorded verdict is also ignored once the spec changes). |
+
+The gate itself is armed like the other engine gates: `EXAMLOPS_POLICY_GATES=slo=monitor|enforce`
+or `gates: {slo: enforce}` in `policy.yaml`. Off (the default) it is never consulted.

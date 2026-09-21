@@ -343,6 +343,63 @@ Library: `examlops.slo.pairs.check_pair(model, name, samples)` returns a `PairVe
 (`.passed` is True only for `met`). Limits today: samples are supplied by the caller (gateway calls do
 not yet record TTFT/TPOT) and the verdict is not yet wired into `exa pipeline promote`.
 
+## SLOSpec by kind and the `slo` promotion gate (ADR 0148 decision 3)
+
+One SLOSpec per `(servable or agent, kind, tenant)`; the objective shape is fixed by the kind, and
+every threshold is inclusive (exactly at the threshold passes).
+
+| Kind | Objectives (`exa slo spec set`) | Burn signal |
+|---|---|---|
+| `predictive` | `--latency-p99-ms` (max), `--error-rate` (max, `[0,1)`), `--availability` (min); at least one | multi-window burn rate |
+| `generative` | `--pair` (a declared **p99** TTFT/TPOT pair), `--goodput-target` (min) | goodput below target; TTFT includes queue wait |
+| `agentic` | `--task-success` (min, Wilson **lower bound**) with `--judge`; `--jct-p50-s`/`--jct-p95-s`, `--intervention-rate`, `--cost-per-task-p95-usd` (max) | success lower bound below target; JCT burn |
+
+The generative kind *references* the pair record instead of copying it, so the TTFT/TPOT thresholds and
+`tight` have one home (`exa slo pair-set`); the spec adds the goodput target. Editing a spec bumps its
+`version`; setting identical objectives is a no-op.
+
+`exa slo spec check` returns `met`, `violated` or `no_verdict` and exits 1 unless `met`. **Absence is
+not a pass**: too few valid observations, a judge that has no passing calibration (ADR 0111), a
+removed pair, or a kind whose telemetry the platform does not keep is `no_verdict` with the reason.
+A spec is `met` only when every declared objective is; any violation makes it `violated`.
+
+What the platform can observe by itself, and what it cannot:
+
+- **predictive**: `gateway_calls` rows that carry a measured latency (default tenant only, that
+  table has no tenant column) and the model's C6 `availability` SLI samples.
+- **agentic**: ended `agent_sessions` give job completion time and cost. Task success and
+  intervention are **not** recorded (a session's `status` is not a judged outcome), so they need
+  `--samples`.
+- **generative**: TTFT/TPOT are not persisted, so they need `--samples`.
+
+`--samples file.json` replaces the ledgers (`[[ttft_ms, tpot_ms], ...]` for generative,
+`[{"success": true, "jct_s": 12, "intervened": false, "cost_usd": 0.05}, ...]` for agentic, an object
+of `latency_ms[]`, `requests`, `errors`, `availability_good`, `availability_total` for predictive);
+`--record` stores the verdict.
+
+### Refusing a promotion without an SLO
+
+An opt-in gate, off by default and armed like `supply_chain`/`model_card`:
+
+```bash
+EXAMLOPS_POLICY_GATES=slo=enforce        # or  gates: {slo: enforce}  in policy.yaml
+```
+
+- `off` (default): never consulted; behaviour and audit trail are byte-identical to before.
+- `monitor`: evaluated and audited as `policy_gate_monitor:slo`; a would-deny does not block.
+- `enforce`: `exa pipeline promote` **and** the autopilot's promote refuse when the servable has no
+  SLOSpec, or any of its specs is `violated` or `no_verdict`. `--force` does not override it (that flag
+  only bypasses the metric gates).
+
+The gate takes live evidence first; when that cannot decide it accepts the latest verdict recorded
+with `exa slo spec check --record` if it is for the *current* spec version and younger than
+`EXAMLOPS_SLO_SPEC_VERDICT_MAX_AGE_HOURS`. On the agent-version road (`exa agent alias set <agent>
+Production <ref>`, ADR 0146) an armed gate additionally requires a declared `agentic` spec to be `met` and
+stores the verdict in the alias-move evidence; an agent with no agentic spec is not refused there.
+
+Limits: the kind of a servable is what its spec declares, so an armed gate refuses a model with no
+spec of any kind rather than guessing its kind; the paired-SLO evaluator is unchanged.
+
 ## Graceful degradation
 
 Rule generation is pure dict/string assembly — no Prometheus needed to produce or test

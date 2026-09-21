@@ -991,7 +991,7 @@ def _auto_bundle_on_promote(model: str, version: str, metrics: dict, run_data: d
 
 
 def _enforce_promotion_engine_gates(model: str, version: str) -> None:
-    """Consult the armed ``supply_chain`` and ``model_card`` engine gates for a promotion."""
+    """Consult the armed ``supply_chain``, ``model_card`` and ``slo`` engine gates for a promotion."""
     from examlops.cli._policy_gate import enforce_engine_gate
     from examlops.policy_engine import EngineDecision, card_gate, supply_chain_gate
     from examlops.policy_engine.gates import consult
@@ -1012,9 +1012,15 @@ def _enforce_promotion_engine_gates(model: str, version: str) -> None:
             _output.warning(f"model-card completeness could not be measured: {exc}")
         return card_gate(model, score, floor=float(opts.get("floor", 0.8)))
 
+    def _slo(_opts: dict) -> EngineDecision:
+        from examlops.slo.specs import promotion_decision
+
+        return promotion_decision(model)
+
     what = f"promotion of {model} v{version}"
     enforce_engine_gate(consult("supply_chain", _supply), what=what)
     enforce_engine_gate(consult("model_card", _card), what=what)
+    enforce_engine_gate(consult("slo", _slo), what=what)
 
 
 def _emit_promotion_lineage(

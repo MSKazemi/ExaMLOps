@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 # Security-critical decisions that MUST fail closed on engine error (R4).
-FAIL_CLOSED_DECISIONS = {"supply_chain", "deploy", "budget", "tenancy"}
+FAIL_CLOSED_DECISIONS = {"supply_chain", "deploy", "budget", "tenancy", "slo"}
 
 
 @dataclass
@@ -305,6 +305,25 @@ def card_gate(
     )
 
 
+def slo_gate(servable: str, reasons: list[str], *, tenant: str = "default") -> EngineDecision:
+    """Refuse promotion unless every declared SLOSpec is met (ADR 0148 d3).
+
+    ``reasons`` are the unmet conditions computed by :mod:`examlops.slo.specs` (no spec declared,
+    a violated objective, no verdict). Empty ``reasons`` defers to the YAML engine, so a site rule
+    on the ``slo_gate`` action can still tighten - never loosen - the built-in refusal.
+    """
+    if reasons:
+        result = EngineDecision(
+            allow=False,
+            reasons=[f"SLO gate: {r}" for r in reasons],
+            effect="deny",
+            engine="builtin",
+        )
+        _audit("slo", PolicyInput("promote", resource=servable, tenant=tenant), result)
+        return result
+    return evaluate("slo", PolicyInput("slo_gate", resource=servable, tenant=tenant))
+
+
 # --- Signed, versioned bundle (R2, D3 signing) ---------------------------------------
 def _bundle_content(tenant: str = "default") -> str:
     """The effective policy text for a tenant: base policy.yaml + optional tenant overlay (R7)."""
@@ -417,6 +436,7 @@ __all__ = [
     "supply_chain_gate",
     "budget_gate",
     "card_gate",
+    "slo_gate",
     "sign_bundle",
     "verify_bundle",
 ]

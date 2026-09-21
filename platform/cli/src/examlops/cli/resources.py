@@ -645,6 +645,9 @@ NOT_RESOURCES: dict[str, str] = {
     "broker grant list": "Tool grants are per-subject allow/deny records with constraints (arg schema, "
     "rate limits, credential bindings) authored as a document; `exa broker grant set/show/remove` "
     "and `exa broker simulate` are the surface - the CLI console renders them.",
+    "slo spec list": "An SLOSpec is keyed (servable, kind, tenant) and its fields depend on the kind "
+    "(predictive, generative or agentic objectives), so there is no single create form; "
+    "`exa slo spec set/show/check` are the surface - the CLI console renders them.",
     "offline list": "Offline jobs are created by `exa offline run` over a model version and a "
     "pinned dataset (a run, not a record you fill in); `exa offline status/cancel` and "
     "`exa ops status` follow one - the CLI console is the surface.",

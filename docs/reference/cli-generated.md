@@ -3884,6 +3884,54 @@ Declare or version-bump one SLO spec (R1).
 - `--tenant` — Tenant scope (D6)
 - `--gate` — Gate promotion when budget exhausted (C3)
 
+### `exa slo spec`
+
+SLOSpec by kind — predictive | generative | agentic objectives (ADR 0148 d3)
+
+#### `exa slo spec check`
+
+Evaluate the SLOSpec; exit 1 unless the verdict is `met` (no data is `no_verdict`).
+
+- `--kind` — predictive | generative | agentic
+- `--samples` — JSON file of observations instead of the platform's own ledgers (generative: [[ttft_ms, tpot_ms], ...]; agentic: [{success, jct_s, intervened, cost_usd}, ...]; predictive: {latency_ms[], requests, errors, availability_good, availability_total})
+- `--window-days` — Live-data window in days
+- `--min-samples` — Fewest valid observations (default EXAMLOPS_SLO_SPEC_MIN_SAMPLES)
+- `--record` — Persist the verdict; the promotion gate can then use it
+- `--tenant` — Tenant scope (D6)
+
+#### `exa slo spec list`
+
+List declared SLOSpecs.
+
+- `--servable` — Filter to one servable/agent
+- `--kind` — Filter to one kind
+- `--tenant` — Filter to one tenant
+
+#### `exa slo spec set`
+
+Declare the SLOSpec for a servable/agent; the objective shape is fixed by --kind.
+
+- `--kind` — predictive | generative | agentic
+- `--latency-p99-ms` — predictive: max p99 ms
+- `--error-rate` — predictive: max error rate [0,1)
+- `--availability` — predictive: min availability
+- `--pair` — generative: a declared TTFT/TPOT pair (p99)
+- `--goodput-target` — generative: min share of requests within both thresholds
+- `--task-success` — agentic: min success rate (Wilson lower bound)
+- `--judge` — agentic: the calibrated judge scoring success
+- `--jct-p50-s` — agentic: max median task seconds
+- `--jct-p95-s` — agentic: max p95 task seconds
+- `--intervention-rate` — agentic: max share of tasks needing a human [0,1)
+- `--cost-per-task-p95-usd` — agentic: max p95 cost per task in USD
+- `--tenant` — Tenant scope (D6)
+
+#### `exa slo spec show`
+
+Show one SLOSpec and the latest recorded verdict; exit 1 when it is not declared.
+
+- `--kind` — predictive | generative | agentic
+- `--tenant` — Tenant scope (D6)
+
 ### `exa slo status`
 
 Show SLI, remaining error budget, and burn rate per SLO (R5).

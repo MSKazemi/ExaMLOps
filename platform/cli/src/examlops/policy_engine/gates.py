@@ -1,6 +1,6 @@
 """Opt-in wiring of the engine's built-in domain gates into real decision points (ADR 0029 d3/d4).
 
-``supply_chain_gate``, ``budget_gate`` and ``card_gate`` used to be reachable only from
+``supply_chain_gate``, ``budget_gate``, ``card_gate`` (and ``slo``, ADR 0148 d3) used to be reachable only from
 ``exa policy eval`` and tests. This module lets a site *arm* them at the decision points that
 matter — verify-before-load and manual promote (supply chain, model card) and the training entry
 point (budget) — with a per-gate rollout mode:
@@ -12,12 +12,13 @@ point (budget) — with a per-gate rollout mode:
 * ``enforce`` — a deny blocks the caller.
 
 Configuration, highest precedence first: ``EXAMLOPS_POLICY_GATES`` (``supply_chain=enforce,
-budget=monitor,model_card=enforce``), then a top-level ``gates:`` mapping in ``policy.yaml``::
+budget=monitor,model_card=enforce,slo=enforce``), then a top-level ``gates:`` mapping in ``policy.yaml``::
 
     gates:
       supply_chain: enforce
       budget: monitor
       model_card: {mode: enforce, floor: 0.9}
+      slo: enforce   # refuse a promotion with no SLOSpec or one that is not met
 
 An unrecognized mode fails **closed** to ``enforce``: a typo must not turn a control off.
 """
@@ -33,7 +34,7 @@ from . import EngineDecision, PolicyInput, _audit
 
 log = logging.getLogger("examlops.policy.gates")
 
-GATE_NAMES = ("supply_chain", "budget", "model_card")
+GATE_NAMES = ("supply_chain", "budget", "model_card", "slo")
 OFF, MONITOR, ENFORCE = "off", "monitor", "enforce"
 _MODES = {OFF, MONITOR, ENFORCE}
 ENV_VAR = "EXAMLOPS_POLICY_GATES"

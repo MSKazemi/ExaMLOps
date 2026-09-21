@@ -771,6 +771,25 @@ def run_cycle(
                     )
                     continue
 
+            # ADR 0148 d3 — the opt-in `slo` gate (gates: slo: monitor|enforce). The autopilot
+            # promotes on its own road, so `exa pipeline promote`'s refusal ("no SLOSpec, or one
+            # that is not met") is enforced here too. Off (the default): never consulted.
+            from examlops.policy_engine.gates import consult as _consult_gate
+            from examlops.slo.specs import promotion_decision
+
+            slo_decision = _consult_gate("slo", lambda _o: promotion_decision(model))
+            if slo_decision is not None and not slo_decision.allow:
+                reason = "; ".join(slo_decision.reasons)
+                blocks.append({"model": model, "gate": "autopilot_promote", "reason": reason})
+                audit_best_effort(
+                    "autopilot",
+                    actor,
+                    "autopilot_promote_blocked",
+                    model,
+                    {"gate": "autopilot_promote", "slo_gate": True, "reason": reason},
+                )
+                continue
+
             # Policy check: autopilot_promote. Expose synthetic-only training as context so a
             # D5 policy rule can refuse to auto-promote a synthetic-only model (A7 spec R5/GWT-5).
             from examlops.promotion_gates import synthetic_only_training

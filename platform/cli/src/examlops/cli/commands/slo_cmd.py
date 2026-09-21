@@ -444,3 +444,207 @@ def pair_check(
         _output.warning(f"{verdict.verdict}: " + "; ".join(verdict.reasons))
     if not verdict.passed:
         raise typer.Exit(1)
+
+
+# --- One SLOSpec per (servable, kind) — the shape is decided by kind (ADR 0148 decision 3) ----
+
+spec_app = typer.Typer(
+    help="SLOSpec by kind — predictive | generative | agentic objectives (ADR 0148 d3)",
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+app.add_typer(spec_app, name="spec")
+
+_SPEC_EXAMPLES = (
+    "Examples:\n\n"
+    "  exa slo spec set JPCP --kind predictive --latency-p99-ms 300 --error-rate 0.01\n\n"
+    "  exa slo spec set chat-llm --kind generative --pair chat-interactive --goodput-target 0.95\n\n"
+    "  exa slo spec set skipper --kind agentic --task-success 0.9 --judge gpt-judge "
+    "--cost-per-task-p95-usd 0.5\n\n"
+    "  exa slo spec check skipper --kind agentic --samples tasks.json --record"
+)
+
+
+@spec_app.command("set", epilog=_SPEC_EXAMPLES)
+def spec_set(
+    servable: str = typer.Argument(..., help="Servable (model) or agent name"),
+    kind: str = typer.Option(..., "--kind", help="predictive | generative | agentic"),
+    latency_p99_ms: float = typer.Option(None, "--latency-p99-ms", help="predictive: max p99 ms"),
+    error_rate: float = typer.Option(None, "--error-rate", help="predictive: max error rate [0,1)"),
+    availability: float = typer.Option(None, "--availability", help="predictive: min availability"),
+    pair: str = typer.Option(None, "--pair", help="generative: a declared TTFT/TPOT pair (p99)"),
+    goodput_target: float = typer.Option(
+        None, "--goodput-target", help="generative: min share of requests within both thresholds"
+    ),
+    task_success: float = typer.Option(
+        None, "--task-success", help="agentic: min success rate (Wilson lower bound)"
+    ),
+    judge: str = typer.Option(
+        None, "--judge", help="agentic: the calibrated judge scoring success"
+    ),
+    jct_p50_s: float = typer.Option(None, "--jct-p50-s", help="agentic: max median task seconds"),
+    jct_p95_s: float = typer.Option(None, "--jct-p95-s", help="agentic: max p95 task seconds"),
+    intervention_rate: float = typer.Option(
+        None, "--intervention-rate", help="agentic: max share of tasks needing a human [0,1)"
+    ),
+    cost_per_task_p95_usd: float = typer.Option(
+        None, "--cost-per-task-p95-usd", help="agentic: max p95 cost per task in USD"
+    ),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
+) -> None:
+    """Declare the SLOSpec for a servable/agent; the objective shape is fixed by --kind."""
+    from examlops.slo.specs import SLOSpecError, set_spec
+
+    fields = {
+        "latency_p99_ms": latency_p99_ms,
+        "error_rate": error_rate,
+        "availability": availability,
+        "pair": pair,
+        "goodput_target": goodput_target,
+        "task_success": task_success,
+        "judge": judge,
+        "jct_p50_s": jct_p50_s,
+        "jct_p95_s": jct_p95_s,
+        "intervention_rate": intervention_rate,
+        "cost_per_task_p95_usd": cost_per_task_p95_usd,
+    }
+    actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "cli"
+    try:
+        state, version, spec = set_spec(servable, kind, fields, tenant=tenant, actor=actor)
+    except SLOSpecError as exc:
+        _output.error(str(exc))
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "servable": servable,
+                "kind": kind,
+                "tenant": tenant,
+                "state": state,
+                "version": version,
+                "spec": spec,
+            }
+        )
+        return
+    _output.ok(f"{kind} SLOSpec for {servable} {state} (v{version})")
+
+
+@spec_app.command("list", epilog=_SPEC_EXAMPLES)
+def spec_list(
+    servable: str = typer.Option(None, "--servable", help="Filter to one servable/agent"),
+    kind: str = typer.Option(None, "--kind", help="Filter to one kind"),
+    tenant: str = typer.Option(None, "--tenant", help="Filter to one tenant"),
+) -> None:
+    """List declared SLOSpecs."""
+    from examlops.data.slo_kind_specs import list_specs
+
+    rows = list_specs(servable=servable, kind=kind, tenant=tenant)
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    if not rows:
+        _output.info("No SLOSpecs — use: exa slo spec set <SERVABLE> --kind <KIND> ...")
+        return
+    _output.print_table(
+        "SLOSpecs",
+        ["Servable", "Kind", "Tenant", "Ver", "Objectives"],
+        [
+            [
+                r["servable"],
+                r["kind"],
+                r["tenant"],
+                str(r["version"]),
+                ", ".join(
+                    f"{k}={v:g}" if not isinstance(v, str) else f"{k}={v}"
+                    for k, v in r["spec"].items()
+                ),
+            ]
+            for r in rows
+        ],
+    )
+
+
+@spec_app.command("show", epilog=_SPEC_EXAMPLES)
+def spec_show(
+    servable: str = typer.Argument(..., help="Servable (model) or agent name"),
+    kind: str = typer.Option(..., "--kind", help="predictive | generative | agentic"),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
+) -> None:
+    """Show one SLOSpec and the latest recorded verdict; exit 1 when it is not declared."""
+    from examlops.data.slo_kind_specs import get, latest_verdict
+
+    row = get(servable, kind, tenant)
+    if row is None:
+        _output.error(f"no {kind} SLOSpec declared for {servable}")
+    rec = latest_verdict(servable, kind, tenant)
+    if _output.json_mode:
+        _output.print_json({**row, "latest_verdict": rec})
+        return
+    _output.print_table(
+        f"SLOSpec — {servable} ({kind}, v{row['version']})",
+        ["Objective", "Value"],
+        [[k, f"{v:g}" if not isinstance(v, str) else v] for k, v in row["spec"].items()],
+    )
+    if rec:
+        _output.info(
+            f"latest recorded verdict: {rec['verdict']} (spec v{rec['spec_version']}, "
+            f"{rec['source']}, #{rec['id']})"
+        )
+
+
+@spec_app.command("check", epilog=_SPEC_EXAMPLES)
+def spec_check(
+    servable: str = typer.Argument(..., help="Servable (model) or agent name"),
+    kind: str = typer.Option(..., "--kind", help="predictive | generative | agentic"),
+    samples: str = typer.Option(
+        None,
+        "--samples",
+        help="JSON file of observations instead of the platform's own ledgers "
+        "(generative: [[ttft_ms, tpot_ms], ...]; agentic: [{success, jct_s, intervened, "
+        "cost_usd}, ...]; predictive: {latency_ms[], requests, errors, availability_good, "
+        "availability_total})",
+    ),
+    window_days: float = typer.Option(30.0, "--window-days", help="Live-data window in days"),
+    min_samples: int = typer.Option(
+        None,
+        "--min-samples",
+        help="Fewest valid observations (default EXAMLOPS_SLO_SPEC_MIN_SAMPLES)",
+    ),
+    record: bool = typer.Option(
+        False, "--record", help="Persist the verdict; the promotion gate can then use it"
+    ),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
+) -> None:
+    """Evaluate the SLOSpec; exit 1 unless the verdict is `met` (no data is `no_verdict`)."""
+    import json
+
+    from examlops.slo.specs import SLOSpecError, check_spec
+
+    data = None
+    if samples:
+        try:
+            with open(samples, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError) as exc:
+            _output.error(f"cannot read samples file: {exc}")
+    actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "cli"
+    try:
+        verdict = check_spec(
+            servable,
+            kind,
+            tenant=tenant,
+            samples=data,
+            window_days=window_days,
+            record=record,
+            actor=actor,
+            min_samples_=min_samples,
+        )
+    except SLOSpecError as exc:
+        _output.error(str(exc))
+    if _output.json_mode:
+        _output.print_json(verdict.as_dict())
+    elif verdict.passed:
+        _output.ok(f"met: {kind} SLOSpec v{verdict.spec_version} for {servable} ({verdict.basis})")
+    else:
+        _output.warning(f"{verdict.verdict}: " + "; ".join(verdict.reasons))
+    if not verdict.passed:
+        raise typer.Exit(1)

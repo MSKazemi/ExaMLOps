@@ -932,6 +932,34 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 updated_at  REAL NOT NULL,
                 PRIMARY KEY (model, name, tenant)
             );
+            -- ADR 0148 decision 3 — one SLOSpec per (servable, kind, tenant), the objective shape
+            -- decided by kind (`examlops.slo.specs`). `spec_json` is the validated objectives;
+            -- `version` bumps only when they change. `slo_spec_verdicts` is append-only: a verdict
+            -- recorded from supplied samples for kinds whose telemetry the platform does not keep.
+            CREATE TABLE IF NOT EXISTS slo_kind_specs (
+                servable    TEXT NOT NULL,
+                kind        TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                version     INTEGER NOT NULL DEFAULT 1,
+                spec_json   TEXT NOT NULL,
+                updated_at  REAL NOT NULL,
+                updated_by  TEXT,
+                PRIMARY KEY (servable, kind, tenant)
+            );
+            CREATE TABLE IF NOT EXISTS slo_spec_verdicts (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                servable      TEXT NOT NULL,
+                kind          TEXT NOT NULL,
+                tenant        TEXT NOT NULL DEFAULT 'default',
+                spec_version  INTEGER NOT NULL,
+                verdict       TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                source        TEXT NOT NULL,
+                ts            REAL NOT NULL,
+                actor         TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_slo_spec_verdicts_key
+                ON slo_spec_verdicts (servable, kind, tenant, id);
             -- ADR 0109 — suspend/resume seam (`examlops.suspend`). One row per suspended subject
             -- (an agent session today); `pointer` locates the state, it never holds it. `status`
             -- is suspended | resumed | discarded | failed. Access only via `examlops.data.suspend`.

@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - SLOSpec by kind and an opt-in `slo` promotion gate (ADR 0148 decision 3)
+
+- `exa slo spec set|show|list|check`: one typed, versioned SLOSpec per (servable/agent, kind, tenant)
+  with the objective shape the ADR fixes by kind (predictive latency p99 / error rate / availability;
+  generative TTFT/TPOT pair + goodput target, referencing the existing pair record; agentic task
+  success with a Wilson lower bound and a calibrated judge, JCT p50/p95, intervention rate, cost per
+  task p95). Pure evaluators return `met | violated | no_verdict`; absence of data, of a judge
+  calibration or of a kind's telemetry is `no_verdict`, never a pass. Additive tables
+  `slo_kind_specs` / `slo_spec_verdicts`; `--record` keeps a verdict for the gate.
+- New engine gate `slo` (`EXAMLOPS_POLICY_GATES=slo=monitor|enforce` or `gates:` in `policy.yaml`),
+  off by default: when enforced, `exa pipeline promote` and the autopilot refuse a servable with no
+  SLOSpec or one that is not met (`--force` does not override), and an agent-version Production move
+  requires a declared agentic spec to be met. Env vars `EXAMLOPS_SLO_SPEC_MIN_SAMPLES`,
+  `EXAMLOPS_SLO_SPEC_VERDICT_MAX_AGE_HOURS`. ADR 0148 stays `Partially implemented`.
+
 ### Fixed - a conditional policy rule silently allowed everything where `simpleeval` was not installed
 
 - `simpleeval` is now a hard dependency of `examlops` (it was only in the optional `finops` extra).
