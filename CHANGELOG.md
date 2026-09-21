@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-09-21
+
 ### Added — the LLM gateway is a real, standalone service; Skipper and the dashboard copilot no longer hold a provider credential (ADR 0151-0156)
 
 `examlops.gateway` was a library other processes imported into their own address space. The LLM
