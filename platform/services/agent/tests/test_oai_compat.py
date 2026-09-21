@@ -746,10 +746,12 @@ def test_collector_falls_back_to_the_answer_in_state():
 
 
 def _gateway_status_error(status: int, error: dict):
-    import httpx
+    # openai 3.16.2 types its error constructors against its own vendored `httpx2`, not `httpx`
+    # (a plain httpx.Response/.Request is not assignable — arg-type).
+    import httpx2
     import openai
 
-    response = httpx.Response(status, request=httpx.Request("POST", "http://gw/v1/chat"))
+    response = httpx2.Response(status, request=httpx2.Request("POST", "http://gw/v1/chat"))
     return openai.APIStatusError("gateway error", response=response, body=error)
 
 
@@ -788,14 +790,14 @@ def test_a_gateway_timeout_status_stays_a_504(make_client):
 
 
 def test_an_unreachable_gateway_is_reported_as_such(make_client):
-    import httpx
+    import httpx2
     import openai
 
-    exc = openai.APIConnectionError(request=httpx.Request("POST", "http://gw/v1/chat"))
+    exc = openai.APIConnectionError(request=httpx2.Request("POST", "http://gw/v1/chat"))
     resp = _post_failing(make_client, exc)
     assert resp.status_code == 502 and resp.json()["error"]["code"] == "gateway_unreachable"
 
-    exc = openai.APITimeoutError(request=httpx.Request("POST", "http://gw/v1/chat"))
+    exc = openai.APITimeoutError(request=httpx2.Request("POST", "http://gw/v1/chat"))
     resp = _post_failing(make_client, exc)
     assert resp.status_code == 504 and resp.json()["error"]["code"] == "gateway_timeout"
 
