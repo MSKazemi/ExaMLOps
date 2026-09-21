@@ -255,6 +255,7 @@ nav:
           - EU AI Act: guides/eu-ai-act-compliance.md
           - NIST RMF: guides/governance-nist-rmf.md
           - Policy-as-code: guides/policy-as-code.md
+          - Pipeline as code: guides/pipeline-as-code.md
           - Guardrails: guides/guardrails.md
       - Serving & training:
           - "Serving overview: models, LLMs, agents": guides/serving-overview.md

@@ -2508,6 +2508,14 @@ the modelzoo and want to wire it into ExaMLOps training and inference.
 - `--direction` — [higher_is_better | lower_is_better]
 - `--force` — Overwrite existing YAML/config files
 
+### `exa pipeline compile`
+
+Compile a Python pipeline definition (@pipeline) to a validated, hashed IR.
+
+- `--out, -o` — Write the IR (JSON) to this file
+- `--yaml` — Also lower the IR to the per-model registry YAML at this path
+- `--untrusted` — Load through the provider AST allow-list (no imports/open/eval); default is trusted-tier Python
+
 ### `exa pipeline deploy`
 
 Register Prefect deployments for all models (or one model).
@@ -2552,6 +2560,10 @@ Resume from the last integrity-valid checkpoint (R4/GWT-3). Exit 1 if none valid
 #### `exa pipeline distributed status`
 
 Show a distributed run + its checkpoints.
+
+### `exa pipeline explain`
+
+Show the topological plan of a compiled IR (read-only; runs nothing).
 
 ### `exa pipeline export-registry`
 
@@ -2635,6 +2647,7 @@ Run training pipeline(s) locally via Prefect.
 - `--cluster, -C` — Target an ACTIVE HPC cluster by name, or 'auto' to let placement choose
 - `--gpus, -g` — GPUs to request (for --cluster auto placement)
 - `--project, -p` — Scope the run to a Project (ADR 0088): tags the run and attributes its cost
+- `--ir` — Train a pipeline-as-code IR (from `exa pipeline compile`); inline scheduler only
 
 ### `exa pipeline validate`
 

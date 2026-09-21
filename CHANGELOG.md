@@ -104,6 +104,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   KServe/Knative autoscaling overlay (read-only; `queue_depth`/`gpu_util` are refused - no source).
 - `exa serve autoscale prefetch` plans warm/prefetch models (read-only). ADR 0031 stays partial.
 
+### Added - pipeline-as-code: typed DSL, versioned IR, `exa pipeline compile | explain | run --ir` (ADR 0080)
+
+- New `examlops.pipeline_dsl` (stdlib-only): `@pipeline` plus `dataset`/`train`/`evaluate`/
+  `promote`/`step` helpers (also exported from `examlops.sdk`) trace a Python function into a
+  JSON IR with `schema_version`, typed ports, edges, resources, target and a canonical
+  `sha256` content hash. Validation refuses cycles, dangling edges, duplicate ids, type mismatches,
+  unknown step kinds/params and a tampered hash.
+- `exa pipeline compile FILE[:NAME] [--out ir.json] [--yaml model.yaml] [--untrusted]` and
+  `exa pipeline explain ir.json`. `exa pipeline run --ir ir.json` lowers a `training` IR to the
+  per-model YAML the existing generator already consumes (the reference JPCP twin loads to the
+  identical `ModelYAMLConfig`) and trains through the real Prefect flow. Steps with no lowering
+  (`hpo`, `custom_python`) are refused, never skipped; `run --ir` is inline (mock) scheduler only.
+- Policy actions `pipeline_compile` and `pipeline_run_ir` through the shared `enforce()` gate
+  (no policy: byte-identical, no audit row). `pipelines/pipeline_generator.py` gained `--model-yaml`.
+- Trust: pipeline files are trusted-tier Python (compile executes them); `--untrusted` adds the
+  provider AST allow-list, a static gate and not a jail. Guide `docs/guides/pipeline-as-code.md`.
+
 ## [0.61.0] - 2026-09-20
 
 ### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)

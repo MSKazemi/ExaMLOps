@@ -356,11 +356,13 @@ TIERS: dict[str, str] = {
     "namespace info": R,
     "namespace list": R,
     "pipeline add-model": A,
+    "pipeline compile": A,  # executes an operator-written Python file (trusted tier, ADR 0080)
     "pipeline deploy": D,
     "pipeline distributed checkpoint": A,
     "pipeline distributed launch": A,
     "pipeline distributed list": R,
     "pipeline distributed resume": A,
+    "pipeline explain": R,
     "pipeline distributed status": R,
     "pipeline export-registry": A,
     "pipeline hpo record": A,

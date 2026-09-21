@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 488,
+ "total_commands": 490,
  "total_groups": 71,
  "panels": [
   {
@@ -139,6 +139,13 @@
      "guide": "components/prefect.md"
     },
     {
+     "cmd": "exa pipeline compile",
+     "group": "pipeline",
+     "help": "Compile a Python pipeline definition (@pipeline) to a validated, hashed IR.",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
+     "guide": "components/prefect.md"
+    },
+    {
      "cmd": "exa pipeline deploy",
      "group": "pipeline",
      "help": "Register Prefect deployments for all models (or one model).",
@@ -178,6 +185,13 @@
      "group": "pipeline",
      "help": "Show a distributed run + its checkpoints.",
      "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline explain",
+     "group": "pipeline",
+     "help": "Show the topological plan of a compiled IR (read-only; runs nothing).",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
      "guide": "components/prefect.md"
     },
     {

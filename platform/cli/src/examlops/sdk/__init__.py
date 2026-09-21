@@ -15,7 +15,32 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+# Pipeline-as-code DSL (ADR 0080). ``examlops.pipeline_dsl`` is stdlib-only and imports nothing
+# from the CLI, so importing it here keeps the SDK cheap and cannot create an import cycle.
+from examlops.pipeline_dsl import (  # noqa: E402
+    IRError,
+    Resources,
+    custom_python,
+    dataset,
+    evaluate,
+    hpo,
+    pipeline,
+    promote,
+    step,
+    train,
+)
+
 __all__ = [
+    "pipeline",
+    "step",
+    "dataset",
+    "train",
+    "evaluate",
+    "promote",
+    "hpo",
+    "custom_python",
+    "Resources",
+    "IRError",
     "ServiceHealth",
     "PlatformStatus",
     "Result",

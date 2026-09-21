@@ -21,6 +21,7 @@ from examlops.promotion_providers import resolve_promotion_eval_fn
 # Help panels for `exa pipeline` (quality/distributed/hpo sub-groups attached in main.py).
 _PANELS: list[tuple[str, list[str]]] = [
     ("Run & Deploy", ["run", "deploy", "list", "add-model", "export-registry"]),
+    ("Pipeline as code", ["compile", "explain"]),
     ("Validate & Promote", ["validate", "validate-model", "promote", "promote-delete"]),
     ("Advanced", ["hpo", "quality", "distributed"]),
 ]
@@ -46,7 +47,25 @@ _EXAMPLES_RUN = (
     "  # Train one model from MinIO-backed data\n"
     "  exa pipeline run --model JPCP --dataset PM100Dataset --backend minio\n\n"
     "  # Use YAML registry overlays for production settings\n"
-    "  exa pipeline run --registry pipelines/model_registry.yaml --env prod"
+    "  exa pipeline run --registry pipelines/model_registry.yaml --env prod\n\n"
+    "  # Train from a compiled pipeline-as-code IR (inline scheduler only)\n"
+    "  exa pipeline run --ir jpcp.ir.json --dummy"
+)
+_EXAMPLES_COMPILE = (
+    "Examples:\n\n"
+    "  # Print the IR and its content hash\n"
+    "  exa pipeline compile flows/jpcp.py\n\n"
+    "  # Pick one pipeline from a file that defines several, and write the IR\n"
+    "  exa pipeline compile flows/jpcp.py:JPCP --out jpcp.ir.json\n\n"
+    "  # Also lower it to the per-model registry YAML\n"
+    "  exa pipeline compile flows/jpcp.py --out jpcp.ir.json --yaml jpcp.yaml\n\n"
+    "  # Compile a file you do not fully trust (static AST gate, not a jail)\n"
+    "  exa pipeline compile flows/jpcp.py --untrusted"
+)
+_EXAMPLES_EXPLAIN = (
+    "Examples:\n\n"
+    "  # Topological plan of a compiled IR (read-only)\n"
+    "  exa pipeline explain jpcp.ir.json"
 )
 _EXAMPLES_DEPLOY = (
     "Examples:\n\n"
@@ -194,13 +213,52 @@ def run(
         "-p",
         help="Scope the run to a Project (ADR 0088): tags the run and attributes its cost",
     ),
+    input_file: str | None = typer.Option(
+        None,
+        "--ir",
+        help="Train a pipeline-as-code IR (from `exa pipeline compile`); inline scheduler only",
+    ),
 ):
     """Run training pipeline(s) locally via Prefect."""
+    ir_run = None
+    if input_file:
+        from examlops.cli.commands import pipeline_ir
+
+        ir_run = pipeline_ir.prepare_ir_run(input_file, model, dataset)
+        model = ir_run.name
+        cluster = cluster or ir_run.hints.get("cluster")
+        gpus = gpus or int(ir_run.hints.get("gpus", 0))
+    try:
+        _run_body(
+            model,
+            dataset,
+            dummy,
+            backend,
+            dataset_revision,
+            env,
+            registry,
+            cluster,
+            gpus,
+            project,
+            ir_run,
+        )
+    finally:
+        if ir_run is not None:
+            ir_run.tmpdir.cleanup()
+
+
+def _run_body(
+    model, dataset, dummy, backend, dataset_revision, env, registry, cluster, gpus, project, ir_run
+):
     # Budget gate (ADR 0029 decision 3): off unless armed (policy.yaml `gates:` /
     # EXAMLOPS_POLICY_GATES). The project is the one given, else the model's own.
     _enforce_budget_gate(project, model)
     if cluster and not _resolve_cluster_env(cluster, gpus):
         return  # resolution failed / not approved — message already printed
+    if ir_run is not None:
+        from examlops.cli.commands import pipeline_ir
+
+        pipeline_ir.refuse_remote_scheduler()
     # P3 (ADR 0088): scope the run to a Project so its MLflow run + recorded cost are attributed.
     if project:
         os.environ["EXAMLOPS_PROJECT"] = project
@@ -238,7 +296,39 @@ def run(
         args += ["--registry", registry]
     if env:
         args += ["--env", env]
+    if ir_run is not None:
+        args += ["--model-yaml", ir_run.yaml_path]
     _run_generator(args)
+
+
+@app.command("compile", epilog=_EXAMPLES_COMPILE)
+def compile_cmd(
+    file: str = typer.Argument(..., help="Pipeline file, optionally FILE.py:NAME to pick one"),
+    out: str | None = typer.Option(None, "--out", "-o", help="Write the IR (JSON) to this file"),
+    yaml_path: str | None = typer.Option(
+        None, "--yaml", help="Also lower the IR to the per-model registry YAML at this path"
+    ),
+    untrusted: bool = typer.Option(
+        False,
+        "--untrusted",
+        help="Load through the provider AST allow-list (no imports/open/eval); default is "
+        "trusted-tier Python",
+    ),
+):
+    """Compile a Python pipeline definition (@pipeline) to a validated, hashed IR."""
+    from examlops.cli.commands import pipeline_ir
+
+    pipeline_ir.compile_pipeline(file, out, yaml_path, untrusted)
+
+
+@app.command("explain", epilog=_EXAMPLES_EXPLAIN)
+def explain_ir(
+    file: str = typer.Argument(..., help="IR JSON file written by `exa pipeline compile --out`"),
+):
+    """Show the topological plan of a compiled IR (read-only; runs nothing)."""
+    from examlops.cli.commands import pipeline_ir
+
+    pipeline_ir.explain_pipeline(file)
 
 
 @app.command(epilog=_EXAMPLES_DEPLOY)

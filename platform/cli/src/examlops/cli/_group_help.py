@@ -42,6 +42,10 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
             "Dry-run a training pipeline",
             "exa pipeline run --model JPCP --dataset PM100Dataset --dummy",
         ),
+        (
+            "Compile a Python pipeline to IR",
+            "exa pipeline compile flows/jpcp.py --out jpcp.ir.json",
+        ),
     ],
     "reproduce": [
         ("List reproducibility bundles", "exa reproduce list"),

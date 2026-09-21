@@ -10,6 +10,7 @@ no ``policy*`` audit row.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -48,10 +49,15 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("EXAMLOPS_ACTOR", "tester")
     monkeypatch.delenv("EXAMLOPS_POLICY_GATES", raising=False)
     monkeypatch.delenv("EXAMLOPS_POLICY_ENGINE", raising=False)
+    monkeypatch.delenv("EXAMLOPS_PROJECT", raising=False)
     from examlops import platform_db
 
     platform_db.init_db()
-    return tmp_path
+    yield tmp_path
+    # `exa pipeline run --project X` sets os.environ["EXAMLOPS_PROJECT"] for the run, and
+    # monkeypatch records nothing to undo for a variable that was absent — so pop it explicitly or
+    # it leaks into whichever test the same xdist worker runs next.
+    os.environ.pop("EXAMLOPS_PROJECT", None)
 
 
 def _policy(tmp_path, monkeypatch, text):

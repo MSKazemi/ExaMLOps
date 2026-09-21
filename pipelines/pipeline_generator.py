@@ -73,7 +73,11 @@ for _p in (str(_REPO_ROOT), str(_PLATFORM), str(_MODELZOO), str(_SLURM_ADAPTER_D
 
 from pipelines import usecase as _usecase  # noqa: E402
 from pipelines.discovery_utils import retrieve_instances_from_file
-from pipelines.model_loader import ModelYAMLConfig, scan_model_yamls  # noqa: E402
+from pipelines.model_loader import (  # noqa: E402
+    ModelYAMLConfig,
+    load_model_yaml,
+    scan_model_yamls,
+)
 
 # registry_loader has no imports from this module — no circular import risk.
 from pipelines.registry_loader import export_registry, load_registry, resolve_entries  # noqa: E402
@@ -2107,6 +2111,16 @@ if __name__ == "__main__":
         help="Environment overlay name: dev | staging | prod  (loads pipelines/envs/<ENV>.yaml)",
     )
     parser.add_argument(
+        "--model-yaml",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Register one extra per-model YAML (e.g. lowered from a pipeline-as-code IR, ADR 0080) "
+            "for this run; it replaces a same-named model. Its config_class shim must exist in "
+            "the active pack."
+        ),
+    )
+    parser.add_argument(
         "--export-registry",
         action="store_true",
         help="Export current auto-discovered state to model_registry.yaml and exit",
@@ -2130,6 +2144,8 @@ if __name__ == "__main__":
     if args.env:
         env_path = _REPO_ROOT / "pipelines" / "envs" / f"{args.env}.yaml"
     apply_yaml_registry(args.registry, env_path)
+    if args.model_yaml:
+        register_model_from_yaml(load_model_yaml(Path(args.model_yaml)))
 
     # ── Run / list ─────────────────────────────────────────────────────────────
     if args.list:
