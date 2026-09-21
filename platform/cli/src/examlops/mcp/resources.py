@@ -16,6 +16,28 @@ from typing import Any
 from examlops.mcp import tools
 
 
+def agent_card(name: str) -> dict[str, Any]:
+    """A2A card of a registered agent version: ``<agent>`` (its Production) or ``<agent>@<alias>``.
+
+    Read-only, from the ADR 0146 registry; an unknown agent/alias yields ``{"error": ...}``.
+    """
+    from examlops import agent_versions as av
+    from examlops.mcp.agent_card import build_agent_version_card
+
+    ref = name if ("@" in name or name.startswith("av-")) else f"{name}@Production"
+    row = av.get(ref)
+    if row is None:
+        return {"error": f"unknown agent version {ref!r}"}
+    return build_agent_version_card(
+        av.AgentVersion(
+            version_id=row["version_id"],
+            agent=row["agent"],
+            manifest=row["manifest"],
+            signed=bool(row.get("signature")),
+        )
+    )
+
+
 @dataclass(frozen=True)
 class ResourceSpec:
     uri: str
@@ -58,6 +80,13 @@ RESOURCES: tuple[ResourceSpec, ...] = (
         description="Full detail for one registered model: versions, aliases and metrics.",
         fn=tools.model_detail,
         tags=("registry",),
+    ),
+    ResourceSpec(
+        uri="examlops://agent/{name}/card",
+        name="Agent card",
+        description="A2A-shaped card of a registered agent version (<agent> or <agent>@<alias>).",
+        fn=agent_card,
+        tags=("agents",),
     ),
     ResourceSpec(
         uri="examlops://projects",

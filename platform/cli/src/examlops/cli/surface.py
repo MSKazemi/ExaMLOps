@@ -63,6 +63,7 @@ TIERS: dict[str, str] = {
     "agent alias set": A,
     "agent alias show": R,
     "agent status": R,
+    "agent version card": R,
     "agent version diff": R,
     "agent version list": R,
     "agent version register": A,

@@ -214,6 +214,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   non-inferiority test, the state-compatibility gate, session canary and replay shadow, evidence
   pack export. Guide `docs/guides/agent-versions.md`.
 
+### A2A Agent Cards move to 1.0 and advertise only what exists (ADR 0141 decision 5, part)
+
+- The platform card (`exa mcp agent-card`) now declares `protocolVersion: "1.0"` (was `"0.2.0"`).
+  Its `capabilities` are derived from `IMPLEMENTED_CAPABILITIES` in `examlops/mcp/agent_card.py`:
+  a flag is true only if the named code resolves. Nothing is implemented (no task store, stream or
+  push), so `streaming`, `pushNotifications` and `stateTransitionHistory` stay false and
+  `extensions` is empty. The full A2A 1.0 JSON schema is not verified offline.
+- `exa agent version card <agent>[@alias]|<version id> [--out FILE]` (read tier) and the MCP read
+  resource `examlops://agent/{name}/card` emit a per-agent card from a registered `AgentVersion`:
+  content-addressed `version`, skills from the pinned tool set, no `url`, no interfaces and no
+  security scheme (nothing serves the agent over a route yet). Not built: serving it at
+  `/.well-known/agent-card.json`, A2A tasks/streaming, threads/runs, AG-UI, the OpenAI/A2A
+  conformance suites. Conformance checks: `tests/unit/test_a2a_card_conformance.py`.
+
 ## [0.61.0] - 2026-09-20
 
 ### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)

@@ -147,6 +147,12 @@ usable as a health gate.
 
 Agent versions - immutable, content-addressed manifests (ADR 0146)
 
+#### `exa agent version card`
+
+Print the A2A-shaped Agent Card of a registered version (read-only, content-addressed).
+
+- `--out` — Write the card JSON to this file
+
 #### `exa agent version diff`
 
 Which components differ between two versions, by name.

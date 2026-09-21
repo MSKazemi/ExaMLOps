@@ -11,12 +11,101 @@ The card is intentionally transport-agnostic JSON — it can be served at
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
+import json
 from typing import Any
 
 from examlops.mcp.prompts import iter_prompts
 from examlops.mcp.resources import iter_resources
 from examlops.mcp.tools import capabilities_catalogue, iter_tools
+
+#: The A2A protocol version the cards are shaped for (ADR 0141 d5: "moves from 0.2.0 to 1.0").
+#: Only the version string and the fields this module already emitted are asserted; the full
+#: A2A 1.0 JSON schema is NOT verified offline (no copy in the evidence base), so the card does
+#: not claim schema conformance beyond what tests/unit/test_a2a_card_conformance.py checks.
+A2A_PROTOCOL_VERSION = "1.0"
+
+#: Card capability -> ``module:attribute`` of the code that backs it, or ``None`` when nothing
+#: does. A card advertises a capability only when that resolves (ADR 0141 d5, ADR 0147 d6/d8).
+#: There is no task store, no SSE stream and no push sender, so all are ``None`` today; the
+#: day one is built, put its path here and the card starts advertising it - not before.
+IMPLEMENTED_CAPABILITIES: dict[str, str | None] = {
+    "streaming": None,
+    "pushNotifications": None,
+    "stateTransitionHistory": None,
+}
+#: A2A ``extensions`` the card declares: none are implemented.
+IMPLEMENTED_EXTENSIONS: tuple[str, ...] = ()
+
+
+def _backed(path: str | None) -> bool:
+    if not path:
+        return False
+    import importlib
+
+    mod, _, attr = path.rpartition(":")
+    try:
+        return hasattr(importlib.import_module(mod), attr)
+    except ImportError:
+        return False
+
+
+def derive_capabilities() -> dict[str, Any]:
+    """Capability flags derived from :data:`IMPLEMENTED_CAPABILITIES`, never hand-set."""
+    caps: dict[str, Any] = {k: _backed(v) for k, v in IMPLEMENTED_CAPABILITIES.items()}
+    caps["extensions"] = list(IMPLEMENTED_EXTENSIONS)
+    return caps
+
+
+def card_digest(card: dict[str, Any]) -> str:
+    """``sha256:<hex>`` over the canonical JSON of ``card`` (sorted keys, no whitespace)."""
+    body = json.dumps(card, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def build_agent_version_card(version: Any) -> dict[str, Any]:
+    """A2A-shaped card for one registered ``AgentVersion`` (ADR 0146; ADR 0141 d5).
+
+    Content-addressed: ``version`` is the version id, so the card changes iff the agent's pinned
+    tuple does. Skills are the version's pinned tools, described from the MCP registry. Nothing
+    serves this agent over a network route yet, so it declares no ``url``, no interfaces and no
+    security scheme: it describes the agent, it does not claim a reachable endpoint.
+    """
+    from examlops.mcp.tools import REGISTRY
+
+    by_name = {spec.name: spec for spec in REGISTRY}
+    m = version.manifest
+    skills = []
+    for t in m["tools"]["tools"]:
+        spec = by_name.get(t["name"])
+        skills.append(
+            {
+                "id": t["name"],
+                "name": t["name"].replace("_", " ").title(),
+                "description": spec.description if spec else "(tool not in this registry)",
+                "tags": list(spec.tags) if spec else [],
+                "schemaHash": t["schema_hash"],
+            }
+        )
+    prompts = ", ".join(f"{p['name']}@{p['version']}" for p in m["prompts"])
+    return {
+        "protocolVersion": A2A_PROTOCOL_VERSION,
+        "name": version.agent,
+        "description": (
+            f"ExaMLOps agent {version.agent!r}, version {version.version_id}; autonomy "
+            f"{m['policy']['autonomy']}; prompts {prompts}."
+        ),
+        "version": version.version_id,
+        "provider": {"organization": "ExaMLOps", "url": "https://github.com/MSKazemi/ExaMLOps"},
+        "capabilities": derive_capabilities(),
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"],
+        "skills": skills,
+        "interfaces": {},
+        "securitySchemes": {},
+        "signed": bool(version.signed),
+    }
 
 
 def _version() -> str:
@@ -51,7 +140,7 @@ def build_agent_card(
         for spec in iter_tools(include_writes=include_writes)
     ]
     card: dict[str, Any] = {
-        "protocolVersion": "0.2.0",
+        "protocolVersion": A2A_PROTOCOL_VERSION,
         "name": "ExaMLOps",
         "description": (
             "End-to-end MLOps platform for HPC workloads — training pipelines, model "
@@ -61,17 +150,8 @@ def build_agent_card(
         ),
         "version": _version(),
         "provider": {"organization": "ExaMLOps", "url": "https://github.com/MSKazemi/ExaMLOps"},
-        # A2A capability flags describe *this* agent's protocol support, and each one is a
-        # promise a peer may act on. `stateTransitionHistory` means a peer can ask for a
-        # task's status-transition history — which needs a task concept, and this surface
-        # has none: no task id, no task store, no `tasks/get`. It was hard-coded `True`.
-        # `audit_events` is not the same thing; it records what the *platform* did, not the
-        # lifecycle of an A2A task. Flip this the day a task store exists, not before.
-        "capabilities": {
-            "streaming": False,
-            "pushNotifications": False,
-            "stateTransitionHistory": False,
-        },
+        # Derived from IMPLEMENTED_CAPABILITIES: a flag is true only if code backs it.
+        "capabilities": derive_capabilities(),
         "defaultInputModes": ["application/json", "text/plain"],
         "defaultOutputModes": ["application/json"],
         "skills": skills,

@@ -121,6 +121,50 @@ def show_cmd(ref: str = typer.Argument(..., help="version id, or <agent>@<alias>
     _output.print_record(_record(row))
 
 
+_EX_CARD = (
+    "Examples:\n\n  exa agent version card jobdoc\n\n  exa agent version card jobdoc@Staging"
+    " --out card.json"
+)
+
+
+@version_app.command("card", epilog=_EX_CARD)
+def card_cmd(
+    ref: str = typer.Argument(..., help="version id, <agent>@<alias>, or <agent> (Production)"),
+    out: Path | None = typer.Option(None, "--out", help="Write the card JSON to this file"),
+) -> None:
+    """Print the A2A-shaped Agent Card of a registered version (read-only, content-addressed)."""
+    import json as _json
+
+    from examlops.mcp.agent_card import build_agent_version_card, card_digest
+
+    row = av.get(ref if ("@" in ref or ref.startswith("av-")) else f"{ref}@Production")
+    if row is None:
+        _fail("not_found", f"unknown agent version {ref!r}")
+        return
+    card = build_agent_version_card(
+        av.AgentVersion(
+            version_id=row["version_id"],
+            agent=row["agent"],
+            manifest=row["manifest"],
+            signed=bool(row.get("signature")),
+        )
+    )
+    if out is not None:
+        try:
+            out.write_text(_json.dumps(card, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        except OSError as exc:
+            _fail("write_failed", f"cannot write {out}: {exc}")
+            return
+        if not _output.json_mode:
+            _output.ok(f"wrote {out} ({card_digest(card)})")
+            return
+    if _output.json_mode:
+        _output.print_json(card)
+        return
+    if out is None:
+        typer.echo(_json.dumps(card, indent=2, sort_keys=True))
+
+
 @version_app.command("list", epilog=_EX_LIST)
 def list_cmd(
     agent: str | None = typer.Option(None, "--agent", "-a", help="Only this agent"),

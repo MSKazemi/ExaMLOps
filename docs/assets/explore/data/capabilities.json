@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 508,
+ "total_commands": 509,
  "total_groups": 73,
  "panels": [
   {
@@ -1726,6 +1726,13 @@
      "cmd": "exa agent status",
      "group": "agent",
      "help": "Show the agent's reachability, LLM backend, model and memory tier. Exits non-zero when the agent is unreachable *or* when it is up but its backend is unusable. Both mean \"do not trust an answer from this agent\", which is the question a script is really asking, and collapsing them into one exit code is what makes this usable as a health gate.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent version card",
+     "group": "agent",
+     "help": "Print the A2A-shaped Agent Card of a registered version (read-only, content-addressed).",
      "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
      "guide": "guides/agent.md"
     },

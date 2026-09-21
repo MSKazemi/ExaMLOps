@@ -86,6 +86,19 @@ version pins, instead of the moving label. Unset, nothing changes. A pin that ca
 logged and the label is used. Only the system prompt is consumed; Skipper's tool set is not read from
 a manifest.
 
+## Agent Card
+
+`exa agent version card jobdoc@Staging [--out card.json]` prints an A2A-shaped card generated from a
+registered version (also readable as the MCP resource `examlops://agent/jobdoc@Staging/card`; a bare
+`jobdoc` means its Production alias). `version` is the content-addressed version id, so the card
+changes exactly when the pinned tuple does; `skills` are the pinned tools described from the MCP
+registry. The card declares `protocolVersion: "1.0"` and advertises only what exists: `streaming`,
+`pushNotifications` and `stateTransitionHistory` are false and `extensions` empty, because the
+platform has no task store, stream or push sender (the flags come from `IMPLEMENTED_CAPABILITIES`,
+so they cannot be set by hand). It declares no `url`, interfaces or security scheme because nothing
+serves the agent at `/.well-known/agent-card.json` yet. The A2A 1.0 JSON schema is not verified
+offline: the card is checked for required fields and honesty, not schema-validated.
+
 ## What is not built
 
 This slice is the registry and the evidence gate. Not built: MLflow `LoggedModel` registration and
