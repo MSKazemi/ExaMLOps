@@ -1024,6 +1024,29 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_agent_alias_history
                 ON agent_alias_history(agent, alias, id);
+            -- ADR 0145 — the agent tool broker (`examlops.tool_broker`). `tool_grants` holds one row
+            -- per (subject, tool): `subject` is an agent name, an agent-version id or a workload
+            -- identity; `tool` is a registry tool name or `*`. A subject with NO rows is not
+            -- brokered (default allow, as before); a subject with rows is default-deny.
+            -- `tool_call_counters` are the bounded rate-limit windows (pruned on every write).
+            -- Access only via `examlops.data.tool_grants`.
+            CREATE TABLE IF NOT EXISTS tool_grants (
+                subject     TEXT NOT NULL,
+                tool        TEXT NOT NULL,
+                grant_json  TEXT NOT NULL,
+                actor       TEXT,
+                updated_at  REAL NOT NULL,
+                PRIMARY KEY (subject, tool)
+            );
+            CREATE TABLE IF NOT EXISTS tool_call_counters (
+                subject     TEXT NOT NULL,
+                tool        TEXT NOT NULL,
+                scope       TEXT NOT NULL,
+                window      INTEGER NOT NULL,
+                n           INTEGER NOT NULL,
+                updated_at  REAL NOT NULL,
+                PRIMARY KEY (subject, tool, scope, window)
+            );
             -- ADR 0116 — two-phase quota reservation (`examlops.admission_seam`). One row per
             -- reservation: reserved -> committed | released | expired. `reserved` and `committed`
             -- rows hold quota; a `reserved` row past `expires_at` holds nothing (it is a leak the

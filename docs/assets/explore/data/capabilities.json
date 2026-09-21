@@ -1,7 +1,7 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 503,
- "total_groups": 72,
+ "total_commands": 508,
+ "total_groups": 73,
  "panels": [
   {
    "title": "Getting Started",
@@ -1633,6 +1633,7 @@
     "agent",
     "agentops",
     "autopilot",
+    "broker",
     "mcp",
     "ops"
    ],
@@ -1860,6 +1861,41 @@
      "help": "Show recent autopilot run history.",
      "anchor": "exa-autopilot-self-driving-mlops-closed-loop",
      "guide": "guides/programmable-mlops.md"
+    },
+    {
+     "cmd": "exa broker grant list",
+     "group": "broker",
+     "help": "List grants, grouped by subject.",
+     "anchor": "exa-broker-which-agent-may-call-which-tool",
+     "guide": null
+    },
+    {
+     "cmd": "exa broker grant remove",
+     "group": "broker",
+     "help": "Remove a grant (or all of a subject's). No grants left means default allow again.",
+     "anchor": "exa-broker-which-agent-may-call-which-tool",
+     "guide": null
+    },
+    {
+     "cmd": "exa broker grant set",
+     "group": "broker",
+     "help": "Create or replace one grant. Validated before it is stored; audited; policy-gated.",
+     "anchor": "exa-broker-which-agent-may-call-which-tool",
+     "guide": null
+    },
+    {
+     "cmd": "exa broker grant show",
+     "group": "broker",
+     "help": "Show every grant of one subject in full (credential paths, arg schema, egress).",
+     "anchor": "exa-broker-which-agent-may-call-which-tool",
+     "guide": null
+    },
+    {
+     "cmd": "exa broker simulate",
+     "group": "broker",
+     "help": "What the broker would decide for one call - runs nothing, counts no quota.",
+     "anchor": "exa-broker-which-agent-may-call-which-tool",
+     "guide": null
     },
     {
      "cmd": "exa mcp agent-card",

@@ -1148,3 +1148,15 @@ environment:
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_AGENT_VERSION_PIN` | unset | `<agent>[@<alias>]` (alias default `Production`). When set, the Skipper agent reads its `skipper-system` prompt at the version number the registered agent version pins, instead of the moving `SKIPPER_PROMPT_LABEL`. A pin that cannot be honoured (unknown agent or alias, no such prompt, registry down) is logged and the label is used. Unset changes nothing. |
+
+## Agent tool broker (ADR 0145)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_TOOL_BROKER` | `off` | `off` = the MCP server registers the tool registry untouched (byte-identical to before). `monitor` = every tool call is decided and audited against the caller's grants but never blocked and no quota is counted. `enforce` = a denied call is refused and `tools/list` shows only tools the caller may call. An unrecognised value means `enforce` (fails closed). A caller with no grants is never blocked in any mode. |
+| `EXAMLOPS_AGENT_NAME` | unset | Identity of the agent this MCP server process serves (stdio MCP is one client per process). Selects the grant set. Unset = `anonymous`, which has no grants. |
+| `EXAMLOPS_AGENT_VERSION_ID` | unset | The agent's version id (ADR 0146); a grant set stored under it takes precedence over one stored under the agent name. |
+| `EXAMLOPS_AGENT_SUBJECT` | unset | Workload-identity subject (ADR 0125), the last-resort grant subject. |
+| `EXAMLOPS_ON_BEHALF_OF` | unset | The principal the agent acts for; recorded in the audit row as the actor. |
+| `EXAMLOPS_AGENT_SESSION` | unset | Session id; required by a grant that sets `max_calls_per_session` (otherwise the call is denied `session_required`). |
+| `EXAMLOPS_CORRELATION_ID` | unset | Correlation id recorded in every broker audit row (ADR 0110). |

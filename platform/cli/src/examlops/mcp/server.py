@@ -58,7 +58,12 @@ def build_server(*, name: str = "ExaMLOps", include_writes: bool | None = None) 
     """
     fast_mcp = _import_fastmcp()
     server = fast_mcp(name)
+    broker = _broker_setup()
     for spec in iter_tools(include_writes=include_writes):
+        if broker is not None:
+            if not _broker_visible(broker, spec):
+                continue  # ADR 0145 d2: tools/list shows only what the caller may call
+            spec = _brokered_spec(broker, spec)
         # FastMCP derives the tool schema from the function's type hints + docstring.
         # Safety annotations (readOnly/destructive/idempotent/openWorld hints) let a client
         # decide what to auto-approve. `annotations=` needs FastMCP >= 2.2.7; an older build
@@ -76,6 +81,49 @@ def build_server(*, name: str = "ExaMLOps", include_writes: bool | None = None) 
     for prompt in iter_prompts():
         server.prompt(name=prompt.name, description=prompt.description)(prompt.fn)
     return server
+
+
+def _broker_setup() -> tuple[str, Any] | None:
+    """``(mode, caller)`` when ``EXAMLOPS_TOOL_BROKER`` is monitor/enforce, else ``None`` (off)."""
+    from examlops.tool_broker import ToolCaller, broker_mode, caller_from_env
+
+    mode = broker_mode()
+    if mode == "off":
+        return None
+    return mode, caller_from_env() or ToolCaller(agent="anonymous")
+
+
+def _broker_visible(broker: tuple[str, Any], spec: Any) -> bool:
+    """Enforce mode hides tools the caller cannot call; monitor mode hides nothing."""
+    mode, caller = broker
+    if mode != "enforce":
+        return True
+    from examlops.tool_broker import resolve_grant_set, tool_visible
+
+    try:
+        return tool_visible(resolve_grant_set(caller), spec.name, spec.tier)
+    except Exception:  # noqa: BLE001 - cannot read grants: list nothing the call path would refuse
+        return False
+
+
+def _brokered_spec(broker: tuple[str, Any], spec: Any) -> Any:
+    """``spec`` with its function routed through :func:`examlops.tool_broker.invoke`."""
+    import functools
+    import inspect
+    from dataclasses import replace
+
+    from examlops.tool_broker import BrokerContext, invoke
+
+    mode, caller = broker
+    fn = spec.fn
+    sig = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    def brokered(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        bound = sig.bind_partial(*args, **kwargs)
+        return invoke(caller, spec.name, dict(bound.arguments), BrokerContext(mode=mode))
+
+    return replace(spec, fn=brokered)
 
 
 def serve(

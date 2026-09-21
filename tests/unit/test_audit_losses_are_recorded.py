@@ -290,6 +290,12 @@ def test_an_approval_decision_that_could_not_be_audited_is_counted(monkeypatch, 
 #: was twice wrong. The scan below derives the truth from the tree; this mapping only has to say
 #: which test covers what.
 COVERED_AUDIT_SITES = {
+    ("examlops/tool_broker/broker.py", "_audit_decision"): (
+        "tests/unit/test_tool_broker.py::test_a_lost_decision_audit_is_counted"
+    ),
+    ("examlops/tool_broker/service.py", "_audit_change"): (
+        "tests/unit/test_tool_broker.py::test_a_lost_grant_change_audit_is_counted"
+    ),
     ("examlops/agent_versions/service.py", "register"): (
         "tests/unit/test_agent_versions.py::test_a_lost_register_audit_is_counted"
     ),

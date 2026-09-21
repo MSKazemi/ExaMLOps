@@ -24,6 +24,7 @@ from examlops.cli.commands import (
     autoscale_cmd,
     backup_cmd,
     batch_cmd,
+    broker_cmd,
     cards_a6_cmd,
     cards_cmd,
     challenger_cmd,
@@ -157,7 +158,10 @@ _ROOT_PANELS: list[tuple[str, list[str]]] = [
     # category simply had no name, which reads identically to absence.
     # `explain` deliberately stays in Getting Started: it introspects the Click tree and involves
     # no agent, so filing it here would make the panel a lie.
-    ("Agents & Automation", ["ask", "chat", "agent", "agentops", "autopilot", "mcp", "ops"]),
+    (
+        "Agents & Automation",
+        ["ask", "chat", "agent", "agentops", "autopilot", "broker", "mcp", "ops"],
+    ),
     ("Monitoring & Quality", ["drift", "eval", "slo", "fairness"]),
     ("HPC, Fleet & FinOps", ["hpc", "fleet", "hardware", "federated", "finops", "report"]),
     (
@@ -486,6 +490,11 @@ app.command("retrain-status", epilog=retrain._EXAMPLES_STATUS)(retrain.retrain_s
 app.command("predict", epilog=predict._EXAMPLES)(predict.predict)
 app.command("scaffold", epilog=scaffold._EXAMPLES)(scaffold.scaffold)
 app.command("status", epilog=status._EXAMPLES)(status.status)
+app.add_typer(
+    broker_cmd.app,
+    name="broker",
+    help="Agent tool broker - which agent may call which tool (ADR 0145)",
+)
 app.add_typer(
     offline_cmd.app,
     name="offline",

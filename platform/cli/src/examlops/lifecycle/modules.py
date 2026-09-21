@@ -205,7 +205,7 @@ CATALOG: tuple[Module, ...] = (
         "Skipper agent & MCP",
         "The Skipper management agent (ask/chat, dashboard copilot), agent operations and the "
         "MCP / A2A surface for external agents.",
-        cli=("ask", "chat", "agent", "agentops", "mcp"),
+        cli=("ask", "chat", "agent", "agentops", "broker", "mcp"),
         dashboard_api=("/v1/copilot", "/agentops"),
         compose_services=("agent",),
         helm=("agent.enabled",),

@@ -602,6 +602,54 @@ Verify a backup: checksum vs manifest + SQLite integrity + audit hash-chain. Exi
 
 Verify a whole bundle: manifest + every tier item's checksum + platform.db audit chain.
 
+## `exa broker`
+
+Agent tool broker - which agent may call which tool (ADR 0145)
+
+### `exa broker grant`
+
+Tool grants - per-subject allow/deny with constraints
+
+#### `exa broker grant list`
+
+List grants, grouped by subject.
+
+- `--subject, -s` — Only this subject
+
+#### `exa broker grant remove`
+
+Remove a grant (or all of a subject's). No grants left means default allow again.
+
+#### `exa broker grant set`
+
+Create or replace one grant. Validated before it is stored; audited; policy-gated.
+
+- `--effect` — allow | deny
+- `--tier-ceiling` — read | A | B | C
+- `--needs-approval` — Human approval per call
+- `--max-per-minute`
+- `--max-per-session`
+- `--arg-schema-json` — JSON-Schema subset the call arguments must satisfy
+- `--credential` — PARAM=SECRET_NAME injected at call time (repeatable)
+- `--egress-url-arg` — URL-valued argument
+- `--egress-host` — Allowed host (or *.suffix)
+- `--from-file` — Grant document (JSON/YAML)
+
+#### `exa broker grant show`
+
+Show every grant of one subject in full (credential paths, arg schema, egress).
+
+### `exa broker simulate`
+
+What the broker would decide for one call - runs nothing, counts no quota.
+
+- `--agent` — Agent name
+- `--tool` — Tool name
+- `--args-json` — Call arguments as a JSON object
+- `--version-id` — Agent version id
+- `--subject` — Workload identity subject
+- `--session` — Session id
+
 ## `exa cards`
 
 Croissant dataset cards + structured model cards

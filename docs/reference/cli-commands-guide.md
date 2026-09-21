@@ -740,6 +740,18 @@ with `enabled_state="disabled"` so history never implies the loop was live. A re
 | `exa autopilot quarantine <model>` | **[mutation]** Exclude one model from all autonomous action until released (audited; shown in skip reasons). | Contain a misbehaving model while everything else stays automated. | `exa autopilot quarantine JPCP --reason "drift sensor suspect"` |
 | `exa autopilot release <model>` | **[mutation]** Release a quarantined model back to autonomous eligibility. | End the containment once the cause is fixed. | `exa autopilot release JPCP` |
 
+### `exa broker` — which agent may call which tool
+
+The agent tool broker (ADR 0145, tool half): per-subject grants (an agent name, an agent-version id or a workload identity) with constraints, and a dry-run of its decision. A subject with no grants is not brokered (default allow); one with grants is default-deny. The MCP server consults the grants only when `EXAMLOPS_TOOL_BROKER=monitor|enforce`; the default `off` changes nothing.
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa broker grant set <subject> <tool>` | **[mutation]** Create or replace one grant: `--effect allow\|deny`, `--tier-ceiling`, `--needs-approval`, `--max-per-minute`, `--max-per-session`, `--arg-schema-json`, `--credential PARAM=secret/path`, `--egress-url-arg`/`--egress-host`. Validated first; passes the `tool_grant_change` policy hook; audited. | Give an agent exactly the tools it needs, with limits. | `exa broker grant set jobdoc set_traffic_split --tier-ceiling A --needs-approval --max-per-minute 5` |
+| `exa broker grant list` | Lists grants, optionally for one `--subject`. | See who may call what. | `exa broker grant list --subject jobdoc` |
+| `exa broker grant show <subject>` | Shows every grant of a subject in full (credential paths, arg schema, egress). | Review one agent's policy. | `exa broker grant show jobdoc` |
+| `exa broker grant remove <subject> [tool]` | **[mutation]** Removes one grant, or all of a subject's (which un-brokers it: default allow again). Policy-gated; audited. | Withdraw access. | `exa --yes broker grant remove jobdoc list_models` |
+| `exa broker simulate --agent A --tool T` | What the broker would decide for one call (`--args-json`, `--version-id`, `--subject`, `--session`); runs nothing, counts no quota, reads no secret. Exit 1 on deny. | Check a grant before an agent hits it. | `exa broker simulate --agent jobdoc --tool set_traffic_split --args-json '{"model":"jpcp","production":100}'` |
+
 ### `exa mcp` — MCP server + Agent-to-Agent (A2A) surface
 
 Exposes ExaMLOps platform capabilities as agent-callable MCP tools/resources/prompts and an A2A Agent Card. Writes are off by default; enable mutating tools with `--allow-writes` or `EXAMLOPS_MCP_ALLOW_WRITES`.

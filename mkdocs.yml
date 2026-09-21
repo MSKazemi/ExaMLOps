@@ -277,6 +277,7 @@ nav:
       - Suspend and resume seam: guides/suspend-resume.md
       - Offline (batch) inference: guides/offline-inference.md
       - Agent versions: guides/agent-versions.md
+      - Agent tool broker: guides/tool-broker.md
   - Components:
       - Prefect — Pipelines: components/prefect.md
       - Control Plane — Retraining API: components/control-plane.md

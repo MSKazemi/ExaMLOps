@@ -223,6 +223,18 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("Anchor a checkpoint (cron-friendly)", "exa audit checkpoint --anchor --skip-unchanged"),
         ("Preview a retention prune", "exa audit prune"),
     ],
+    "broker": [
+        ("Let an agent call one tool", "exa broker grant set jobdoc list_models"),
+        (
+            "Cap a write and require a human",
+            "exa broker grant set jobdoc set_traffic_split --tier-ceiling A --needs-approval",
+        ),
+        (
+            "See what the broker would decide",
+            "exa broker simulate --agent jobdoc --tool list_models",
+        ),
+        ("Where grants stand", "exa broker grant list"),
+    ],
     "offline": [
         (
             "Score a Parquet dataset with a model version",

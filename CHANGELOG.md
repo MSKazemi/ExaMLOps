@@ -5,6 +5,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - agent tool broker: typed tool grants, an enforcing wrapper, `exa broker` (ADR 0145, tool half)
+
+- `examlops.tool_broker`: a typed, versioned `ToolGrant` (per subject - an agent name, an agent-version
+  id or a workload subject - and per tool or `*`): `effect`, `tier_ceiling`, `needs_approval`,
+  `max_calls_per_minute` / `max_calls_per_session`, an `arg_schema` (a validated JSON-Schema subset,
+  bounded regex), credential bindings and an egress allow-list. `decide_tool_call(grant_set, call)`
+  is pure. **Default, exactly:** a caller with no grant set is not brokered (allow, as today); a caller
+  with a grant set is default-deny; the most specific set (version id, then agent name, then workload
+  subject) wins whole.
+- `invoke(caller, tool, args, ctx)` runs the real `examlops.mcp.tools` function after the grant, an
+  optional operator `tool_call` policy rule, DNS-level egress (`examlops.dataplane.safety`) and
+  bounded rate counters; every decision - allow, deny, require_approval, rate limit - is audited
+  (`tool_broker:<effect>`) with redacted arguments. The tool keeps its own plan gate and
+  `agent_write` policy gate, so `plan_required` still binds an agent principal; a grant for
+  `apply_plan` does not cover a tool the caller holds no grant for. Credentials are read from
+  `examlops.secrets` at call time, refused if the agent supplies them, and scrubbed from results and
+  audit rows.
+- `exa broker grant set|list|show|remove` (changes go through the `tool_grant_change` policy hook and
+  are audited) and `exa broker simulate` (runs nothing, counts no quota, reads no secret).
+- Opt-in `EXAMLOPS_TOOL_BROKER=off|monitor|enforce` (default `off`: the MCP server registers the
+  registry functions untouched). `enforce` also filters `tools/list`. New tables `tool_grants`,
+  `tool_call_counters`. Guide `docs/guides/tool-broker.md`.
+- Not built: the MCP/A2A gateway product (agentgateway / Envoy AI Gateway), RFC 9728 metadata,
+  RFC 8693 token exchange, the sandbox seam, and the whole model half of ADR 0145.
+
 ### Added - offline (batch) inference: `exa offline run|status|cancel|list` (ADR 0149)
 
 - `examlops.offline`: a typed, versioned, strict `OfflineJob` spec (servable version or alias resolved
