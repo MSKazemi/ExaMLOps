@@ -57,6 +57,13 @@ dependencies = [
     # Undeclared, `exa secrets set` failed with an error whose own remedy — "python -c 'from
     # cryptography.fernet import Fernet ...'" — could not be run either.
     "cryptography>=43.0",
+    # Policy-as-code (examlops.policy) evaluates a rule's `when:` condition with it. It is a hard
+    # dependency because its absence FAILS OPEN: a condition that cannot be evaluated does not
+    # match, so a `deny ... when: ...` rule silently allowed everything in any process installed
+    # without the `finops` extra (the control-plane and dashboard images and the control-plane CI
+    # job were exactly that). Small, pure Python; the `finops` extra keeps listing it so existing
+    # `examlops[finops]` installs still resolve.
+    "simpleeval>=1.0",
 ]
 
 [project.optional-dependencies]

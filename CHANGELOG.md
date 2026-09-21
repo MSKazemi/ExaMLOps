@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed - a conditional policy rule silently allowed everything where `simpleeval` was not installed
+
+- `simpleeval` is now a hard dependency of `examlops` (it was only in the optional `finops` extra).
+  `examlops.policy` evaluates a rule's `when:` condition with it, and a condition that cannot be
+  evaluated does not match — so, without the package, `deny … when: "model == 'JPCP'"` never
+  matched and the default `allow` applied. The **control-plane and dashboard images** and the
+  **control-plane CI job** were installed without the extra, so the retrain and dashboard write
+  gates could not enforce a conditional rule there (CI's `control plane tests` failed three tests
+  for exactly this; a rule with no `when:` was unaffected). The `finops` extra still lists it.
+
 ## [0.62.0] - 2026-09-21
 
 ### Added — the LLM gateway is a real, standalone service; Skipper and the dashboard copilot no longer hold a provider credential (ADR 0151-0156)

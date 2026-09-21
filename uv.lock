@@ -1663,6 +1663,7 @@ dependencies = [
     { name = "prometheus-client" },
     { name = "pyyaml" },
     { name = "rich" },
+    { name = "simpleeval" },
     { name = "tomli-w" },
     { name = "typer" },
 ]
@@ -1791,6 +1792,7 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'analysis'", specifier = ">=1.11" },
     { name = "sdv", marker = "extra == 'synth'", specifier = ">=1.37" },
     { name = "sglang", marker = "extra == 'serving-sglang'", specifier = ">=0.4" },
+    { name = "simpleeval", specifier = ">=1.0" },
     { name = "simpleeval", marker = "extra == 'finops'", specifier = ">=1.0" },
     { name = "sqlalchemy", marker = "extra == 'dataplane-sql'", specifier = ">=2.0" },
     { name = "tomli-w", specifier = ">=1.0" },
