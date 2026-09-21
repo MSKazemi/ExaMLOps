@@ -95,7 +95,7 @@ oidc = [
 # backup profile (SQLite + config tiers) works without it. The Postgres tier additionally
 # needs the `pg_dump`/`pg_restore` binaries (postgresql-client) on PATH.
 backup = [
-    "boto3>=1.43.88",
+    "boto3>=1.43.93",
 ]
 # In-process vLLM engine (`engine.mode: inproc`) for offline batch scoring on a GPU host.
 # NOT needed to *serve*: the production path (VLLMServerEngine, ADR 0107) talks HTTP to a

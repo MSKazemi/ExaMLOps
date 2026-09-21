@@ -26,7 +26,7 @@ dependencies = [
     "scikit-learn>=1.9.0",
     "pandas>=2.0.0",
     "joblib>=1.6.0",
-    "boto3>=1.43.88",        # S3-compatible artifact store (MinIO / production MinIO)
+    "boto3>=1.43.93",        # S3-compatible artifact store (MinIO / production MinIO)
     "pyyaml>=6.0",
     # modelzoo dependencies
     "torch",
@@ -76,7 +76,7 @@ dev = [
     "fairlearn>=0.14",  # ADR 0025's named engine: tests/unit/test_fairness_engine.py holds its
                         # MetricFrame to exact parity with the pure-Python fallback, and skips
                         # without it — so CI must install it or the parity is never checked.
-    "simpleeval>=1.0",  # Declarative-expression provider (ADR 0074) + policy `when`
+    "simpleeval>=1.0.8",  # Declarative-expression provider (ADR 0074) + policy `when`
                         # conditions (ADR 0079). The runtime dep is the optional
                         # `examlops[finops]` extra, but CI installs only root `.[dev]`;
                         # without it here 17 provider/policy tests that exercise the
