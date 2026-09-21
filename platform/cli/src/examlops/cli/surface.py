@@ -48,6 +48,8 @@ R, A, D, X = READ, ADMIN, DESTRUCTIVE, CLI_ONLY
 # dashboard already restricts to admins (audit, approvals, compliance, fairness, secrets, backups,
 # Skipper memory) stay admin here too, so the console can never widen what a viewer sees.
 TIERS: dict[str, str] = {
+    "admission reservations": R,
+    "admission simulate": R,  # reads a request file, so a path escalates it to admin
     "admission stats": R,
     "admission submit": A,
     "agent memory delete": D,
@@ -672,6 +674,8 @@ _EXTRA_FS: frozenset[tuple[str, str]] = frozenset(
         ("hpc gpus", "key"),
         ("hpc nodes", "key"),
         ("serve llm chat", "image"),
+        ("admission simulate", "request"),
+        ("admission simulate", "cluster_state"),
         ("agent memory export", "out"),
         ("audit prune", "archive"),
         ("auth decide", "token_file"),

@@ -133,6 +133,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
   (`suspend_snapshot`, `suspend_resume`, `suspend_discard`, `suspend_refused`). Nothing calls the
   seam by default. Guide `docs/guides/suspend-resume.md`.
 
+### Added - admission seam above the execution seam, quota reservations, Kueue render (ADR 0116)
+
+- `examlops.admission_seam`: a typed, versioned `JobRequest` (gang, network tier, scale-up domain,
+  flexibility, priority class); an `AdmissionPolicy.decide` seam returning Admit/Queue/Reject. The
+  default `fair-share` policy is the existing fair-share logic as pure functions, proven equal to
+  `claim_next_admission` by test; `baseline-over-quota` (baseline, over-quota borrowing, hard
+  limit) is opt-in via `EXAMLOPS_ADMISSION_POLICY`.
+- Optional adapter capability probe (`supports_gang`/`supports_preempt`/`supports_reservations`,
+  unknown by default) and a `preempt` verb that refuses with `PreemptUnsupported` where the backend
+  has not declared support. The Slurm/Flux/mock adapters are unchanged.
+- Additive `quota_reservations` table and two-phase reserve/commit/release with TTL expiry, atomic
+  under a scoped write lock, counted against project GPU limit and GPU-hour headroom, audited.
+- `render_kueue`: generator-only ClusterQueue/LocalQueue/ResourceFlavor/AdmissionCheck manifests;
+  refuses what it cannot express. There is no Kueue adapter and no admission-check controller.
+- `exa admission simulate` and `exa admission reservations` (read-only). Existing `exa admission`
+  behaviour is unchanged. Guide `docs/guides/admission-seams.md`.
+
 ## [0.61.0] - 2026-09-20
 
 ### Added — a real Ollama gateway provider, egress-checked (ADR 0152/0154, first slice)

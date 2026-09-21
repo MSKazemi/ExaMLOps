@@ -288,6 +288,8 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     ],
     "admission": [
         ("Admission queue depth", "exa admission stats"),
+        ("What would the seam decide?", "exa admission simulate --request job.json"),
+        ("Leaked quota reservations", "exa admission reservations --expire-preview"),
     ],
     "dataplane-bus": [
         ("Models + Dataplane bus UUIDs", "exa dataplane-bus list"),

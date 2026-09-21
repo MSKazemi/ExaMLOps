@@ -953,6 +953,25 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_suspend_subject
                 ON suspend_snapshots(subject_kind, subject_id, ts);
+            -- ADR 0116 — two-phase quota reservation (`examlops.admission_seam`). One row per
+            -- reservation: reserved -> committed | released | expired. `reserved` and `committed`
+            -- rows hold quota; a `reserved` row past `expires_at` holds nothing (it is a leak the
+            -- next sweep marks `expired`, visibly). Access only via `examlops.data.quota_reservations`.
+            CREATE TABLE IF NOT EXISTS quota_reservations (
+                id           TEXT PRIMARY KEY,
+                project      TEXT NOT NULL,
+                tenant       TEXT NOT NULL DEFAULT 'default',
+                gpus         INTEGER NOT NULL DEFAULT 0,
+                gpu_hours    REAL NOT NULL DEFAULT 0,
+                state        TEXT NOT NULL DEFAULT 'reserved',
+                holder       TEXT,
+                created_at   REAL NOT NULL,
+                expires_at   REAL NOT NULL,
+                resolved_at  REAL,
+                reason       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_quota_reservations_project
+                ON quota_reservations(project, state, expires_at);
             -- Phase 1 item 1.5 — durable admission-control queue between every trigger
             -- (drift/autopilot/API/webhook) and Prefect. Per-tenant fair-share + a global
             -- concurrency cap stop one tenant (or a fleet-wide drift event) from starving the

@@ -14,6 +14,24 @@ ExaMLOps platform CLI — manage models, training, inference, and services.
 
 Admission-control queue (per-tenant fair-share)
 
+### `exa admission reservations`
+
+List two-phase quota reservations, or preview which leaked ones would expire. Read-only.
+
+- `--state` — reserved | committed | released | expired
+- `--project` — Only this project
+- `--expire-preview` — List reservations whose TTL lapsed (nothing is changed)
+- `--limit` — Most recent N
+
+### `exa admission simulate`
+
+Show what the admission seam would decide for a job request. Read-only: nothing is queued,
+reserved or executed, and no audit event is written.
+
+- `--request` — JobRequest JSON file to evaluate
+- `--policy` — fair-share (default) | baseline-over-quota; else $EXAMLOPS_ADMISSION_POLICY
+- `--cluster-state` — JSON file overriding the live state (what-if): total_gpus, free_gpus, gpus_in_use_by_tenant, running_by_tenant, largest_free_domain_gpus
+
 ### `exa admission stats`
 
 Show queue depth by state (queued/running/done/rejected/failed).

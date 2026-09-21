@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 490,
+ "total_commands": 492,
  "total_groups": 71,
  "panels": [
   {
@@ -3538,6 +3538,20 @@
      "group": "events",
      "help": "Show the most recent CloudEvents on the NATS backbone (needs EXAMLOPS_NATS_URL, ADR 0124).",
      "anchor": "exa-events-novafabric-event-backbone-transactional-outbox",
+     "guide": null
+    },
+    {
+     "cmd": "exa admission reservations",
+     "group": "admission",
+     "help": "List two-phase quota reservations, or preview which leaked ones would expire. Read-only.",
+     "anchor": "exa-admission-admission-control-queue-per-tenant-fair-share",
+     "guide": null
+    },
+    {
+     "cmd": "exa admission simulate",
+     "group": "admission",
+     "help": "Show what the admission seam would decide for a job request. Read-only: nothing is queued, reserved or executed, and no audit event is written.",
+     "anchor": "exa-admission-admission-control-queue-per-tenant-fair-share",
      "guide": null
     },
     {

@@ -58,3 +58,105 @@ def stats() -> None:
         ["State", "Count"],
         [[k, str(v)] for k, v in s.items()],
     )
+
+
+@app.command("simulate")
+def simulate(
+    request: str = typer.Option(..., "--request", help="JobRequest JSON file to evaluate"),
+    policy: str | None = typer.Option(
+        None,
+        "--policy",
+        help="fair-share (default) | baseline-over-quota; else $EXAMLOPS_ADMISSION_POLICY",
+    ),
+    cluster_state: str | None = typer.Option(
+        None,
+        "--cluster-state",
+        help="JSON file overriding the live state (what-if): total_gpus, free_gpus, "
+        "gpus_in_use_by_tenant, running_by_tenant, largest_free_domain_gpus",
+    ),
+) -> None:
+    """Show what the admission seam would decide for a job request. Read-only: nothing is queued,
+    reserved or executed, and no audit event is written."""
+    from pathlib import Path
+
+    from examlops.admission_seam import JobRequest, JobRequestError
+    from examlops.admission_seam.policy import ClusterState
+    from examlops.admission_seam.service import current_state, decide
+
+    try:
+        req = JobRequest.from_dict(json.loads(Path(request).read_text(encoding="utf-8")))
+        st = current_state()
+        if cluster_state:
+            over = json.loads(Path(cluster_state).read_text(encoding="utf-8"))
+            by_tenant = over.get("running_by_tenant", st.running_by_tenant)
+            st = ClusterState(
+                running_total=sum(by_tenant.values()),
+                running_by_tenant=by_tenant,
+                gpus_in_use_by_tenant=over.get("gpus_in_use_by_tenant", st.gpus_in_use_by_tenant),
+                total_gpus=over.get("total_gpus", st.total_gpus),
+                free_gpus=over.get("free_gpus", st.free_gpus),
+                largest_free_domain_gpus=over.get("largest_free_domain_gpus"),
+                capabilities=st.capabilities,
+            )
+        decision, meta = decide(req, state=st, policy=policy, record=False)
+    except (OSError, json.JSONDecodeError, JobRequestError, ValueError) as exc:
+        _output.error(f"cannot simulate: {exc}")
+        raise typer.Exit(1) from exc
+    out = {"request": req.to_dict(), **decision.to_dict(), **meta}
+    if _output.json_mode:
+        _output.print_json(out)
+        return
+    _output.print_table(
+        "Admission simulation",
+        ["Field", "Value"],
+        [
+            ["policy", meta["policy"]],
+            ["verdict", decision.verdict],
+            ["reason", decision.reason],
+            ["ignored fields", ", ".join(meta["ignored_fields"]) or "-"],
+        ],
+    )
+
+
+@app.command("reservations")
+def reservations(
+    state: str | None = typer.Option(
+        None, "--state", help="reserved | committed | released | expired"
+    ),
+    project: str | None = typer.Option(None, "--project", help="Only this project"),
+    expire_preview: bool = typer.Option(
+        False, "--expire-preview", help="List reservations whose TTL lapsed (nothing is changed)"
+    ),
+    limit: int = typer.Option(100, "--limit", help="Most recent N"),
+) -> None:
+    """List two-phase quota reservations, or preview which leaked ones would expire. Read-only."""
+    import time
+
+    from examlops.data import quota_reservations as store
+
+    if expire_preview:
+        rows = store.expire_due(dry_run=True)
+    else:
+        rows = store.list_reservations(state=state, project=project, limit=limit)
+    now = time.time()
+    for r in rows:
+        r["lapsed"] = r["state"] == "reserved" and r["expires_at"] <= now
+    if _output.json_mode:
+        _output.print_json({"reservations": rows, "expire_preview": expire_preview})
+        return
+    _output.print_table(
+        "Quota reservations" + (" (expire preview)" if expire_preview else ""),
+        ["ID", "Project", "Tenant", "GPUs", "GPU-h", "State", "Lapsed"],
+        [
+            [
+                r["id"][:12],
+                r["project"],
+                r["tenant"],
+                str(r["gpus"]),
+                f"{r['gpu_hours']:.2f}",
+                r["state"],
+                "yes" if r["lapsed"] else "no",
+            ]
+            for r in rows
+        ],
+    )

@@ -1246,6 +1246,8 @@ A durable work queue drained under a global concurrency cap plus per-tenant fair
 |---|---|---|---|
 | `exa admission stats` | Shows queue depth by state (queued/running/done/rejected/failed) **and `oldest_queued_age_s`** — a rising wait with a flat `running` is a queue nothing is draining. | Watch admission-queue pressure; tell a busy queue from a stranded one | `exa admission stats` |
 | `exa admission submit` | Enqueues a work item (durable); `--tenant`, `--project`, `--priority`. **Enqueues only — it does not dispatch**: `examlops.admission` takes an injected `dispatch`, and the control plane runs its own admission accounting on this table rather than through the facade, so an item submitted here waits until something claims it. **(mutation)** | Submit throttled, fair-shared work to a worker that drains this queue | `exa admission submit -p '{"job":"retrain"}' --tenant team-a --priority 5` |
+| `exa admission simulate` | Shows what the admission seam (ADR 0116) would decide for a `JobRequest` JSON file: `admit` / `queue` / `reject` with a reason, plus the request fields the policy ignored. `--policy fair-share\|baseline-over-quota`, `--cluster-state` for a what-if. Read-only: nothing is queued, reserved or audited. | Check a gang or quota-heavy request before submitting it | `exa admission simulate --request job.json --policy baseline-over-quota` |
+| `exa admission reservations` | Lists two-phase quota reservations (`--state`, `--project`); `--expire-preview` lists reserved rows whose TTL lapsed without changing them. Read-only. | Find a leaked reservation holding a project's GPUs | `exa admission reservations --expire-preview` |
 
 ### `exa exchange` — NovaFabric Exchange (signed shareable packages)
 

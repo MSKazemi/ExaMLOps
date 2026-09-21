@@ -1127,3 +1127,11 @@ environment:
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_SUSPEND_BACKEND_PROVIDER` | `checkpoint-only` | Suspend backend for `examlops.suspend` (`checkpoint-only`, `mock`, or an `exa.providers.suspend_backend` plugin). An unregistered name is refused, never substituted. The checkpoint-only backend reads the agent checkpoint SQLite file named by `AGENT_DB` (read-only) and refuses when it is unset or missing. |
+
+## Admission seam and quota reservations (ADR 0116)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_ADMISSION_POLICY` | `fair-share` | Admission policy behind `examlops.admission_seam`: `fair-share` (the pre-seam behaviour) or `baseline-over-quota`. An unknown name is refused. Only the seam and `exa admission simulate` read it; the existing queue worker does not. |
+| `EXAMLOPS_ADMISSION_QUOTAS` | unset | Path to a JSON file of per-tenant GPU quotas (`baseline_gpus`, `limit_gpus`, `over_quota_weight`) used by `baseline-over-quota`. A malformed file is an error. |
+| `EXAMLOPS_RESERVATION_TTL_S` | `900` | Seconds a `reserved` quota reservation holds quota before it lapses and is swept to `expired`. |

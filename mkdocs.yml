@@ -198,6 +198,7 @@ nav:
       - Production Hardening Checklist: guides/production-hardening.md
       - Backup, Restore & Disaster Recovery: guides/backup-restore.md
       - HPC Fleet (discover · connect · schedule): guides/hpc-fleet.md
+      - Admission seam and quota reservations: guides/admission-seams.md
       - HPC Training Workflow (run on a real cluster): guides/hpc-training-workflow.md
   - Runbooks:
       - Overview and SLOs: runbooks/index.md

@@ -291,6 +291,14 @@ def test_an_approval_decision_that_could_not_be_audited_is_counted(monkeypatch, 
 #: which test covers what.
 COVERED_AUDIT_SITES = {
     (
+        "examlops/admission_seam/reservations.py",
+        "_audit",
+    ): "tests/unit/test_quota_reservations.py::test_service_uses_project_limits_audits_and_counts_a_lost_audit",
+    (
+        "examlops/admission_seam/service.py",
+        "decide",
+    ): "tests/unit/test_quota_reservations.py::test_a_lost_admission_decision_audit_is_counted",
+    (
         "examlops/suspend/service.py",
         "suspend",
     ): "tests/unit/test_suspend_seam.py::test_a_lost_suspend_audit_is_counted",

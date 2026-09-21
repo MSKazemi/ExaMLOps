@@ -1,6 +1,6 @@
 ---
 title: Every capability
-description: All 490 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
+description: All 492 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
 hide:
   - navigation
 ---
@@ -11,7 +11,7 @@ hide:
 
 # Every capability
 
-Everything ExaMLOps can do is reachable from the `exa` CLI: **490 commands**
+Everything ExaMLOps can do is reachable from the `exa` CLI: **492 commands**
 in 71 command groups. They are grouped here the same way `exa --help` groups
 them, into twelve areas of the model lifecycle. The bar is sized by the number of commands in
 each area; select an area to filter, or search by what you want to do.
@@ -35,7 +35,7 @@ The same capabilities are available from the [dashboard](../dashboard/usage-guid
 | HPC, Fleet & FinOps | Discover clusters, place jobs and account for cost and carbon. | `hpc`, `fleet`, `hardware`, `federated`, `finops`, `report` | 42 |
 | Governance & Security | Approve changes, audit actions, manage secrets and policy. | `auth`, `approvals`, `audit`, `plan`, `secrets`, `compliance`, `governance`, `policy`, `providers` | 61 |
 | Projects & Workspaces | Group models, people, storage and connections into projects. | `project`, `namespace`, `connection`, `workbench` | 37 |
-| Platform & Integrations | Operate the stack, back it up and connect external systems. | `stack`, `backup`, `instance`, `upgrade`, `modules`, `events`, `admission`, `exchange`, `dataplane-bus` | 46 |
+| Platform & Integrations | Operate the stack, back it up and connect external systems. | `stack`, `backup`, `instance`, `upgrade`, `modules`, `events`, `admission`, `exchange`, `dataplane-bus` | 48 |
 
 </div>
 
