@@ -85,3 +85,41 @@ def test_existing_sync_gateway_client_serves_through_the_provider():
     assert added == [MODEL]
     comp = GatewayClient(router, guardrail=None).chat(MODEL, _msg(), max_tokens=8, temperature=0)
     assert comp.text.strip() and comp.backend == "live" and comp.completion_tokens > 0
+
+
+# ── routing core over a real Ollama (ADR 0153) ────────────────────────────────
+
+
+def _core_with_dead_primary():
+    from examlops.gateway.routing import Catalog, Deployment, GatewayCore, Route
+
+    dead = OllamaProvider("dead", "http://127.0.0.1:9")  # connection refused
+    live = OllamaProvider("live", URL)
+    route = Route("chat", [Deployment(dead, MODEL), Deployment(live, MODEL)])
+    return GatewayCore(Catalog([route])), dead
+
+
+async def test_a_dead_primary_fails_over_to_the_live_ollama():
+    core, _ = _core_with_dead_primary()
+    attempts: list = []
+    res = await core.chat(
+        "chat", ChatRequest(MODEL, _msg(), max_tokens=8, temperature=0), attempts=attempts
+    )
+    assert res.text.strip() and res.provider == "live"
+    assert [a["outcome"] for a in attempts] == ["upstream_unavailable", "ok"]
+    assert core.snapshot()[f"live/{MODEL}"]["ewma_ttft_ms"] > 0
+
+
+async def test_a_stream_fails_over_before_its_first_token_over_a_real_ollama():
+    core, _ = _core_with_dead_primary()
+    attempts: list = []
+    chunks = [
+        c
+        async for c in core.chat_stream(
+            "chat",
+            ChatRequest(MODEL, _msg("Count 1 to 3"), max_tokens=16, temperature=0),
+            attempts=attempts,
+        )
+    ]
+    assert len(chunks) > 1 and chunks[-1].finish_reason in ("stop", "length")
+    assert [a["outcome"] for a in attempts] == ["upstream_unavailable", "ok"]

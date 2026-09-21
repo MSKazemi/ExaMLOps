@@ -50,6 +50,7 @@ async def ask(req: AskRequest, claims: dict = Depends(_viewer)) -> dict[str, Any
         ctx,
         agent_url=settings.agent_url,
         token=settings.copilot_agent_api_key,
+        timeout=settings.copilot_timeout_s,
         # Never trust a browser-supplied checkpoint key. The signed login id isolates users while
         # preserving multi-turn context. Legacy tokens without a jti get a fresh, safe thread.
         session=f"dashboard-copilot-{claims.get('jti') or uuid.uuid4().hex}",

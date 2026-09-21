@@ -497,6 +497,44 @@ async def _stream_completion(
     yield "data: [DONE]\n\n"
 
 
+# ── Model errors ──────────────────────────────────────────────────────────────
+
+
+def _model_error(exc: Exception) -> tuple[int, dict[str, Any]]:
+    """The HTTP status and JSON body for a turn that failed in the model layer.
+
+    When the model sits behind the LLM gateway (ADR 0151) its failure arrives as an
+    ``openai`` exception carrying the gateway's typed envelope (ADR 0156). Its stable ``code`` is
+    kept — ``upstream_unavailable``, ``model_not_found``, ``key_invalid`` … — because that code is
+    what lets the dashboard say *why* instead of "the request failed". Anything else keeps the
+    bridge's historical shape (500 + the message).
+    """
+    try:
+        import openai
+    except ImportError:  # pragma: no cover - the agent always ships it
+        return 500, {"error": {"message": str(exc)}}
+    if isinstance(exc, openai.APITimeoutError):
+        return 504, {"error": {"message": "the LLM gateway timed out", "code": "gateway_timeout"}}
+    if isinstance(exc, openai.APIConnectionError):
+        return 502, {
+            "error": {"message": "the LLM gateway is unreachable", "code": "gateway_unreachable"}
+        }
+    if isinstance(exc, openai.APIStatusError):
+        raw = exc.body if isinstance(exc.body, dict) else {}
+        err = raw.get("error", raw) if isinstance(raw.get("error", raw), dict) else {}
+        code = err.get("code")
+        if isinstance(code, str) and code:
+            out: dict[str, Any] = {
+                "message": str(err.get("message") or exc.message),
+                "code": code,
+                "source": "llm-gateway",
+            }
+            if isinstance(err.get("request_id"), str):
+                out["request_id"] = err["request_id"]
+            return (504 if exc.status_code == 504 else 502), {"error": out}
+    return 500, {"error": {"message": str(exc)}}
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 
@@ -584,7 +622,8 @@ async def chat_completions(
             content={"error": {"message": "agent graph exceeded its execution timeout"}},
         )
     except Exception as exc:
-        return JSONResponse(status_code=500, content={"error": {"message": str(exc)}})
+        status, content = _model_error(exc)
+        return JSONResponse(status_code=status, content=content)
 
     hitl = intr is not None
     if hitl:

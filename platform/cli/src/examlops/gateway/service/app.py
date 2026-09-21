@@ -1,0 +1,787 @@
+"""The LLM gateway service (ADR 0151): an OpenAI-compatible API in front of every model.
+
+This module is the *edge*: authentication, request parsing, the OpenAI wire shapes, SSE framing, the
+typed error envelope (ADR 0156 d1), readiness, admin and metrics. Which deployment serves a request,
+and what happens when one fails, is :class:`examlops.gateway.routing.GatewayCore`; where the models
+are is :mod:`examlops.gateway.config`. Keys, budgets and usage accounting reuse the gateway library
+so the in-process client and this service can never disagree about them.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hmac
+import json
+import logging
+import os
+import re
+import time
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from examlops.gateway import (
+    BudgetExceeded,
+    GatewayError,
+    KeyInvalid,
+    ModelNotAllowed,
+    _account,
+    _estimate_cost,
+    _hash_key,
+    authorize,
+)
+from examlops.gateway.config import (
+    ConfigError,
+    ProviderFactory,
+    Runtime,
+    build_runtime,
+    default_config_path,
+    default_provider_factory,
+    generated_config,
+    load_config_file,
+)
+from examlops.gateway.providers import (
+    ChatChunk,
+    ChatRequest,
+    ChatResult,
+    ProbeResult,
+    ProviderError,
+)
+
+logger = logging.getLogger(__name__)
+
+_MAX_BODY = 8 * 1024 * 1024  # parity with the serving gateway (ADR 0126)
+_WEAK_TOKENS = frozenset(
+    {"changeme", "change-me", "changeme123", "password", "secret", "admin", "token"}
+)
+_RID = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+_BREAKER_VALUE = {"closed": 0, "half_open": 1, "open": 2}
+
+
+class _ChatBody(BaseModel):
+    """The OpenAI chat request. Unknown fields are ignored: real clients send many we do not use."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    model: str = Field(min_length=1, max_length=200)
+    messages: list[dict[str, Any]] = Field(min_length=1)
+    stream: bool = False
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
+    max_completion_tokens: int | None = None
+    stop: str | list[str] | None = None
+    seed: int | None = None
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: Any = None
+    response_format: dict[str, Any] | None = None
+    stream_options: dict[str, Any] | None = None
+    examlops: dict[str, Any] | None = None
+    extra_body: dict[str, Any] | None = None
+
+
+class _Http(Exception):
+    """A failure the edge itself detects before any routing (body too large, admin denied)."""
+
+    def __init__(self, status: int, code: str, message: str) -> None:
+        super().__init__(message)
+        self.status, self.code, self.message = status, code, message
+
+
+def _envelope(
+    code: str,
+    message: str,
+    request_id: str,
+    *,
+    attempts: list[dict[str, Any]] | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    err: dict[str, Any] = {
+        "message": message,
+        "type": "invalid_request_error" if code in _CLIENT_CODES else "server_error",
+        "code": code,
+        "param": None,
+        "request_id": request_id,
+    }
+    if attempts:
+        err["attempts"] = attempts  # provider / model / outcome / ms — never prompt content
+    err.update(extra)
+    return {"error": err}
+
+
+_CLIENT_CODES = frozenset(
+    {
+        "invalid_request",
+        "capability_unavailable",
+        "context_overflow",
+        "model_not_found",
+        "key_invalid",
+    }
+)
+
+
+class _State:
+    """Everything mutable in the app. One reference to the routing table, swapped atomically."""
+
+    def __init__(self, loader: Callable[[], Awaitable[Runtime]]) -> None:
+        self.loader = loader
+        self.runtime: Runtime | None = None
+        self.lock = asyncio.Lock()
+        self.latched = False
+        self.last_reload_error: list[str] | None = None
+        self.probes: dict[str, ProbeResult] = {}
+        self.probed_at = 0.0
+        self.background: set[asyncio.Task[Any]] = set()
+
+    async def ensure_runtime(self) -> Runtime:
+        if self.runtime is None:
+            async with self.lock:
+                if self.runtime is None:
+                    self.runtime = await self.loader()
+        return self.runtime
+
+    async def probe_all(self, rt: Runtime, max_age: float = 5.0) -> dict[str, ProbeResult]:
+        if time.monotonic() - self.probed_at > max_age or set(self.probes) != set(rt.providers):
+            names = list(rt.providers)
+            results = await asyncio.gather(*(rt.providers[n].probe() for n in names))
+            self.probes = dict(zip(names, results, strict=True))
+            self.probed_at = time.monotonic()
+        return self.probes
+
+    def spawn(self, coro: Awaitable[Any]) -> None:
+        task = asyncio.ensure_future(coro)
+        self.background.add(task)
+        task.add_done_callback(self.background.discard)
+
+
+class _Metrics:
+    def __init__(self) -> None:
+        self.registry = CollectorRegistry()
+        reg = self.registry
+        self.requests = Counter(
+            "llm_gateway_requests",
+            "Requests by route, serving provider and model, HTTP status and error code.",
+            ["route", "provider", "model", "status", "code"],
+            registry=reg,
+        )
+        self.seconds = Histogram(
+            "llm_gateway_request_seconds", "End-to-end request time.", ["route"], registry=reg
+        )
+        self.ttft = Histogram(
+            "llm_gateway_ttft_seconds",
+            "Time to first token (includes any model load).",
+            ["route", "provider"],
+            buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
+            registry=reg,
+        )
+        self.tokens = Counter("llm_gateway_tokens", "Tokens by kind.", ["kind"], registry=reg)
+        self.denials = Counter(
+            "llm_gateway_policy_denials", "Requests refused by policy.", ["reason"], registry=reg
+        )
+        self.reloads = Counter(
+            "llm_gateway_config_reload", "Config reloads by result.", ["result"], registry=reg
+        )
+        self.breaker = Gauge(
+            "llm_gateway_breaker_state",
+            "Circuit breaker: 0 closed, 1 half-open, 2 open.",
+            ["provider", "model"],
+            registry=reg,
+        )
+        self.inflight = Gauge(
+            "llm_gateway_inflight", "Requests in flight.", ["provider", "model"], registry=reg
+        )
+        self.provider_up = Gauge(
+            "llm_gateway_provider_up",
+            "1 when the provider's last probe succeeded.",
+            ["provider"],
+            registry=reg,
+        )
+
+
+def _check_admin_token(token: str) -> str:
+    if token and (token.lower() in _WEAK_TOKENS or len(token) < 16):
+        raise ValueError(
+            "the LLM gateway admin token is a placeholder or shorter than 16 characters; "
+            "set LLM_GATEWAY_ADMIN_TOKEN to a real secret (or leave it empty to disable the admin API)"
+        )
+    return token
+
+
+def _request_id(request: Request) -> str:
+    given = request.headers.get("x-request-id", "")
+    return given if _RID.fullmatch(given) else f"req_{uuid.uuid4().hex[:24]}"
+
+
+def _sse(obj: Any) -> str:
+    return f"data: {obj if isinstance(obj, str) else json.dumps(obj, separators=(',', ':'))}\n\n"
+
+
+def create_app(
+    *,
+    config: dict[str, Any] | None = None,
+    config_path: str | Path | None = None,
+    provider_factory: ProviderFactory = default_provider_factory,
+    auth: str | None = None,
+    admin_token: str | None = None,
+    max_body_bytes: int = _MAX_BODY,
+    probe_ttl_s: float = 5.0,
+) -> FastAPI:
+    auth_mode = (auth or os.getenv("LLM_GATEWAY_AUTH") or "keys").lower()
+    if auth_mode not in ("keys", "off"):
+        raise ValueError(f"LLM_GATEWAY_AUTH must be 'keys' or 'off', got {auth_mode!r}")
+    if auth_mode == "off":
+        logger.warning(
+            "LLM gateway auth is OFF: any caller that can reach the port can use every model"
+        )
+    token = _check_admin_token(
+        os.getenv("LLM_GATEWAY_ADMIN_TOKEN", "") if admin_token is None else admin_token
+    )
+    metrics = _Metrics()
+
+    async def load() -> Runtime:
+        if config is not None:
+            return await build_runtime(config, provider_factory=provider_factory, source="file")
+        path = Path(config_path) if config_path else default_config_path()
+        if path is not None:
+            return await build_runtime(
+                load_config_file(path), provider_factory=provider_factory, source="file"
+            )
+        url = os.getenv("EXAMLOPS_LLM_OLLAMA_URL", "http://127.0.0.1:11434")
+        return await build_runtime(
+            generated_config(url), provider_factory=provider_factory, source="generated"
+        )
+
+    state = _State(load)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        rt = await state.ensure_runtime()  # an invalid config fails the start, loudly
+        logger.info(
+            "llm-gateway up: %d routes, source=%s, warnings=%d",
+            len(rt.catalog.routes),
+            rt.source,
+            len(rt.warnings),
+        )
+        yield
+
+    app = FastAPI(
+        title="ExaMLOps LLM Gateway",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
+    app.state.gateway = state
+
+    # ── errors ───────────────────────────────────────────────────────────────
+
+    def error_response(
+        exc: Exception,
+        rid: str,
+        route: str = "unknown",
+        provider: str = "none",
+        model: str = "unknown",
+    ) -> JSONResponse:
+        headers = {"x-request-id": rid}
+        if isinstance(exc, ProviderError):
+            code, status, message, attempts = exc.kind, exc.http_status, exc.message, exc.attempts
+            if exc.retry_after:
+                headers["retry-after"] = str(max(1, round(exc.retry_after)))
+        elif isinstance(exc, KeyInvalid):
+            code, status, message, attempts = "key_invalid", 401, str(exc), []
+            metrics.denials.labels("key").inc()
+        elif isinstance(exc, ModelNotAllowed):
+            code, status, message, attempts = "model_not_allowed", 403, str(exc), []
+            metrics.denials.labels("model").inc()
+        elif isinstance(exc, BudgetExceeded):
+            code, status, message, attempts = "budget_exceeded", 429, str(exc), []
+            metrics.denials.labels("budget").inc()
+        elif isinstance(exc, _Http):
+            code, status, message, attempts = exc.code, exc.status, exc.message, []
+        else:
+            logger.exception("unhandled error in request %s", rid)
+            code, status, message, attempts = "internal_error", 500, "internal gateway error", []
+        if code == "locality_denied":
+            metrics.denials.labels("locality").inc()
+        metrics.requests.labels(route, provider, model, str(status), code).inc()
+        return JSONResponse(
+            _envelope(code, message, rid, attempts=attempts), status, headers=headers
+        )
+
+    # ── auth ─────────────────────────────────────────────────────────────────
+
+    def bearer(request: Request) -> str | None:
+        header = request.headers.get("authorization", "")
+        return header[7:].strip() if header[:7].lower() == "bearer " else None
+
+    async def authenticate(request: Request, model: str | None) -> tuple[str | None, list[str]]:
+        """→ (key hash, model allow-list). Off ⇒ (None, [])."""
+        if auth_mode == "off":
+            return None, []
+        raw = bearer(request)
+        if not raw:
+            raise KeyInvalid("missing bearer token: send `Authorization: Bearer <virtual key>`")
+        rec: dict[str, Any] | None
+        if model is not None:
+            rec = await asyncio.to_thread(authorize, raw, model)
+        else:  # listing models: the key must be valid; the allow-list narrows what it sees
+            from examlops.data.gateway import get_virtual_key
+
+            rec = await asyncio.to_thread(get_virtual_key, _hash_key(raw))
+            if rec is None or rec.get("revoked"):
+                raise KeyInvalid("unknown or revoked virtual key")
+        if rec is None:  # unreachable: authorize() raises instead of returning None
+            raise KeyInvalid("unknown or revoked virtual key")
+        return _hash_key(raw), list(rec.get("models") or [])
+
+    def require_admin(request: Request) -> None:
+        if not token:
+            raise _Http(
+                503, "gateway_unavailable", "admin API disabled: LLM_GATEWAY_ADMIN_TOKEN is not set"
+            )
+        given = bearer(request) or ""
+        if not hmac.compare_digest(given.encode(), token.encode()):
+            raise _Http(401, "key_invalid", "admin token required")
+
+    # ── accounting ───────────────────────────────────────────────────────────
+
+    def record(
+        rt: Runtime,
+        route: str,
+        key_hash: str | None,
+        provider: str,
+        usage: Any,
+        ms: float,
+        *,
+        error: bool,
+    ) -> None:
+        from examlops.data.finops import add_key_spend
+        from examlops.data.gateway import record_gateway_call
+
+        locality = rt.providers[provider].locality if provider in rt.providers else "external"
+        prompt = getattr(usage, "prompt_tokens", 0)
+        completion = getattr(usage, "completion_tokens", 0)
+        # A local model has no per-token price; only an external one is billed (ADR 0156 d6).
+        cost = 0.0 if locality in ("local", "site") else _estimate_cost(route, prompt, completion)
+        _account(
+            "usage" if not error else "error",
+            record_gateway_call,
+            key_hash,
+            route,
+            backend=provider if provider != "none" else None,
+            cost_usd=cost,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            latency_ms=ms,
+            error=error,
+        )
+        if key_hash and cost:
+            _account("key spend", add_key_spend, key_hash, cost)
+
+    # ── /v1/chat/completions ─────────────────────────────────────────────────
+
+    async def read_body(request: Request) -> _ChatBody:
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > max_body_bytes:
+            raise _Http(413, "invalid_request", f"request body exceeds {max_body_bytes} bytes")
+        raw = await request.body()
+        if len(raw) > max_body_bytes:
+            raise _Http(413, "invalid_request", f"request body exceeds {max_body_bytes} bytes")
+        try:
+            return _ChatBody.model_validate_json(raw)
+        except ValidationError as exc:
+            first = exc.errors()[0]
+            where = ".".join(str(p) for p in first["loc"]) or "body"
+            raise ProviderError("invalid_request", f"{where}: {first['msg']}") from None
+
+    def build_request(body: _ChatBody, rt: Runtime) -> tuple[ChatRequest, tuple[str, ...]]:
+        hints = body.examlops or (body.extra_body or {}).get("examlops") or {}
+        allowed = rt.allowed_localities
+        if isinstance(hints.get("allowed_localities"), list):  # a caller may narrow, never widen
+            allowed = tuple(loc for loc in allowed if loc in hints["allowed_localities"])
+        stop = [body.stop] if isinstance(body.stop, str) else body.stop
+        req = ChatRequest(
+            model=body.model,
+            messages=body.messages,
+            temperature=body.temperature,
+            top_p=body.top_p,
+            max_tokens=body.max_completion_tokens or body.max_tokens,
+            stop=stop,
+            seed=body.seed,
+            tools=body.tools,
+            tool_choice=body.tool_choice,
+            response_format=body.response_format,
+            extra=dict(hints.get("ollama") or {}),
+        )
+        return req, allowed
+
+    def completion_json(result: ChatResult, model: str, rid: str) -> dict[str, Any]:
+        message: dict[str, Any] = {"role": "assistant", "content": result.text}
+        if result.tool_calls:
+            message["tool_calls"] = result.tool_calls
+            message["content"] = result.text or None
+        if result.reasoning:
+            message["reasoning_content"] = result.reasoning
+        return {
+            "id": f"chatcmpl-{rid}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{"index": 0, "message": message, "finish_reason": result.finish_reason}],
+            "usage": {
+                "prompt_tokens": result.usage.prompt_tokens,
+                "completion_tokens": result.usage.completion_tokens,
+                "total_tokens": result.usage.prompt_tokens + result.usage.completion_tokens,
+            },
+        }
+
+    def chunk_json(chunk: ChatChunk, model: str, cid: str, first: bool) -> dict[str, Any]:
+        delta: dict[str, Any] = {}
+        if first:
+            delta["role"] = "assistant"
+        if chunk.text:
+            delta["content"] = chunk.text
+        if chunk.reasoning:
+            delta["reasoning_content"] = chunk.reasoning
+        if chunk.tool_calls:
+            delta["tool_calls"] = [{"index": i, **c} for i, c in enumerate(chunk.tool_calls)]
+        return {
+            "id": cid,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": chunk.finish_reason}],
+        }
+
+    @app.post("/v1/chat/completions")
+    async def chat_completions(request: Request) -> Response:
+        rid = _request_id(request)
+        started = time.perf_counter()
+        route_label, provider, upstream = "unknown", "none", "unknown"
+        rt: Runtime | None = None
+        key_hash: str | None = None
+        try:
+            rt = await state.ensure_runtime()
+            body = await read_body(request)
+            route = rt.catalog.resolve(body.model)
+            route_label = route.name if route else "unknown"
+            key_hash, _ = await authenticate(request, body.model)
+            req, allowed = build_request(body, rt)
+            budget = request.headers.get("x-examlops-budget-ms")
+            budget_ms = float(budget) if budget and budget.replace(".", "", 1).isdigit() else None
+            attempts: list[dict[str, Any]] = []
+
+            if not body.stream:
+                result = await rt.core.chat(
+                    body.model,
+                    req,
+                    allowed_localities=allowed,
+                    caller_budget_ms=budget_ms,
+                    attempts=attempts,
+                )
+                provider, upstream = result.provider, result.model
+                ms = (time.perf_counter() - started) * 1000.0
+                await asyncio.to_thread(
+                    record, rt, route_label, key_hash, provider, result.usage, ms, error=False
+                )
+                metrics.requests.labels(route_label, provider, upstream, "200", "ok").inc()
+                metrics.seconds.labels(route_label).observe(ms / 1000.0)
+                if result.ttft_ms is not None:
+                    metrics.ttft.labels(route_label, provider).observe(result.ttft_ms / 1000.0)
+                metrics.tokens.labels("prompt").inc(result.usage.prompt_tokens)
+                metrics.tokens.labels("completion").inc(result.usage.completion_tokens)
+                headers = {
+                    "x-request-id": rid,
+                    "x-examlops-route": route_label,
+                    "x-examlops-provider": provider,
+                    "x-examlops-model": upstream,
+                }
+                if result.load_ms and result.load_ms >= 500:
+                    headers["x-examlops-cold"] = (
+                        "1"  # the model was loaded for this request (ADR 0153 d8)
+                    )
+                return JSONResponse(completion_json(result, body.model, rid), headers=headers)
+
+            gen = rt.core.chat_stream(
+                body.model,
+                req,
+                allowed_localities=allowed,
+                caller_budget_ms=budget_ms,
+                attempts=attempts,
+            )
+            first = await anext(
+                gen, None
+            )  # a failure before the first token is still a proper HTTP error
+            served = attempts[-1] if attempts else {}
+            provider, upstream = served.get("provider", "none"), served.get("model", "unknown")
+        except Exception as exc:  # noqa: BLE001 - every failure leaves as the typed envelope
+            if (
+                rt is not None
+                and route_label != "unknown"
+                and not isinstance(exc, _Http | KeyInvalid | ModelNotAllowed | BudgetExceeded)
+            ):
+                ms = (time.perf_counter() - started) * 1000.0
+                await asyncio.to_thread(
+                    record, rt, route_label, key_hash, "none", None, ms, error=True
+                )
+            return error_response(exc, rid, route_label, provider, upstream)
+
+        include_usage = bool((body.stream_options or {}).get("include_usage"))
+        cid = f"chatcmpl-{rid}"
+
+        async def events() -> AsyncIterator[str]:
+            usage = None
+            sent_role = False
+            failed = False
+            try:
+                stream: AsyncIterator[ChatChunk] = _prepend(first, gen)
+                async for chunk in stream:
+                    if chunk.ttft_ms is not None:
+                        metrics.ttft.labels(route_label, provider).observe(chunk.ttft_ms / 1000.0)
+                    if chunk.usage is not None:
+                        usage = chunk.usage
+                    yield _sse(chunk_json(chunk, body.model, cid, not sent_role))
+                    sent_role = True
+                if include_usage and usage is not None:
+                    yield _sse(
+                        {
+                            "id": cid,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": body.model,
+                            "choices": [],
+                            "usage": {
+                                "prompt_tokens": usage.prompt_tokens,
+                                "completion_tokens": usage.completion_tokens,
+                                "total_tokens": usage.prompt_tokens + usage.completion_tokens,
+                            },
+                        }
+                    )
+            except ProviderError as exc:
+                failed = True
+                env = _envelope(exc.kind, exc.message, rid, attempts=exc.attempts, partial=True)
+                yield _sse(env)
+            finally:
+                await gen.aclose()
+                ms = (time.perf_counter() - started) * 1000.0
+                status, code = ("502", "stream_interrupted") if failed else ("200", "ok")
+                metrics.requests.labels(route_label, provider, upstream, status, code).inc()
+                metrics.seconds.labels(route_label).observe(ms / 1000.0)
+                if usage is not None:
+                    metrics.tokens.labels("prompt").inc(usage.prompt_tokens)
+                    metrics.tokens.labels("completion").inc(usage.completion_tokens)
+                assert rt is not None
+                state.spawn(
+                    asyncio.to_thread(
+                        record, rt, route_label, key_hash, provider, usage, ms, error=failed
+                    )
+                )
+            yield _sse("[DONE]")
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={
+                "x-request-id": rid,
+                "x-examlops-route": route_label,
+                "x-examlops-provider": provider,
+                "x-examlops-model": upstream,
+                "cache-control": "no-cache",
+            },
+        )
+
+    # ── /v1/models, health, readiness ────────────────────────────────────────
+
+    @app.get("/v1/models")
+    async def list_models(request: Request) -> Response:
+        rid = _request_id(request)
+        try:
+            rt = await state.ensure_runtime()
+            _, allow = await authenticate(request, None)
+            snap = rt.core.snapshot()
+            data = []
+            for name, route in rt.catalog.routes.items():
+                if all(snap[d.key]["breaker"] == "open" for d in route.deployments):
+                    continue  # listed models are ones that can currently be served
+                data.append((name, route.deployments[0].provider.name))
+            aliases = [
+                (a, rt.catalog.routes[t].deployments[0].provider.name)
+                for a, t in rt.catalog.aliases.items()
+                if t in rt.catalog.routes
+            ]
+            listing = [
+                {"id": n, "object": "model", "created": int(rt.built_at), "owned_by": owner}
+                for n, owner in data + aliases
+                if not allow or n in allow
+            ]
+            return JSONResponse({"object": "list", "data": listing}, headers={"x-request-id": rid})
+        except Exception as exc:  # noqa: BLE001
+            return error_response(exc, rid)
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/ready")
+    async def ready() -> JSONResponse:
+        rt = await state.ensure_runtime()
+        probes = await state.probe_all(rt, max_age=probe_ttl_s)
+        snap = rt.core.snapshot()
+        routes: dict[str, dict[str, Any]] = {}
+        for name, route in rt.catalog.routes.items():
+            healthy = any(
+                probes[d.provider.name].ok and snap[d.key]["breaker"] != "open"
+                for d in route.deployments
+            )
+            routes[name] = {
+                "healthy": healthy,
+                "required": route.required,
+                "deployments": len(route.deployments),
+            }
+        required = [r for r in routes.values() if r["required"]] or []
+        healthy_now = bool(routes) and (
+            all(r["healthy"] for r in required)
+            if required
+            else any(r["healthy"] for r in routes.values())
+        )
+        state.latched = (
+            state.latched or healthy_now
+        )  # never un-ready on a later outage (ADR 0153 d10)
+        return JSONResponse(
+            {
+                "ready": state.latched,
+                "healthy_now": healthy_now,
+                "latched": state.latched and not healthy_now,
+                "routes": routes,
+                "warnings": rt.warnings,
+            },
+            status_code=200 if state.latched else 503,
+        )
+
+    # ── admin ────────────────────────────────────────────────────────────────
+
+    def route_summary(rt: Runtime) -> dict[str, Any]:
+        return {
+            name: {
+                "strategy": r.strategy,
+                "required": r.required,
+                "fallbacks": r.fallbacks,
+                "deployments": [
+                    {"provider": d.provider.name, "model": d.model, "priority": d.priority}
+                    for d in r.deployments
+                ],
+            }
+            for name, r in rt.catalog.routes.items()
+        }
+
+    @app.get("/admin/health")
+    async def admin_health(request: Request) -> Response:
+        rid = _request_id(request)
+        try:
+            require_admin(request)
+            rt = await state.ensure_runtime()
+            probes = await state.probe_all(rt, max_age=0.0)
+            providers = {
+                n: {
+                    "ok": pr.ok,
+                    "latency_ms": round(pr.latency_ms, 1),
+                    "detail": pr.detail,
+                    "resident": pr.resident,
+                    "type": rt.providers[n].type,
+                    "locality": rt.providers[n].locality,
+                }
+                for n, pr in probes.items()
+            }
+            return JSONResponse({"providers": providers, "deployments": rt.core.snapshot()})
+        except Exception as exc:  # noqa: BLE001
+            return error_response(exc, rid)
+
+    @app.get("/admin/config")
+    async def admin_config(request: Request) -> Response:
+        rid = _request_id(request)
+        try:
+            require_admin(request)
+            rt = await state.ensure_runtime()
+            return JSONResponse(
+                {
+                    "source": rt.source,
+                    "built_at": rt.built_at,
+                    "auth": auth_mode,
+                    "warnings": rt.warnings,
+                    "last_reload_error": state.last_reload_error,
+                    "aliases": rt.catalog.aliases,
+                    "routes": route_summary(rt),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            return error_response(exc, rid)
+
+    @app.post("/admin/reload")
+    async def admin_reload(request: Request) -> Response:
+        rid = _request_id(request)
+        try:
+            require_admin(request)
+            await state.ensure_runtime()
+            try:
+                new = await state.loader()
+            except ConfigError as exc:  # keep serving the last good table; say why
+                state.last_reload_error = exc.errors
+                metrics.reloads.labels("rejected").inc()
+                body = _envelope(
+                    "config_invalid", "config rejected; the previous one is still serving", rid
+                )
+                body["error"]["errors"] = exc.errors
+                return JSONResponse(body, status_code=422, headers={"x-request-id": rid})
+            state.runtime, state.last_reload_error = new, None
+            metrics.reloads.labels("applied").inc()
+            return JSONResponse(
+                {"reloaded": True, "routes": sorted(new.catalog.routes), "warnings": new.warnings}
+            )
+        except Exception as exc:  # noqa: BLE001
+            return error_response(exc, rid)
+
+    @app.get("/metrics")
+    async def metrics_endpoint(request: Request) -> Response:
+        rid = _request_id(request)
+        try:
+            require_admin(request)
+            rt = await state.ensure_runtime()
+            probes = await state.probe_all(
+                rt, max_age=max(probe_ttl_s, 10.0 if probe_ttl_s else 0.0)
+            )
+            for name, pr in probes.items():
+                metrics.provider_up.labels(name).set(1 if pr.ok else 0)
+            for route in rt.catalog.routes.values():
+                snap = rt.core.snapshot()
+                for d in route.deployments:
+                    s = snap[d.key]
+                    metrics.breaker.labels(d.provider.name, d.model).set(
+                        _BREAKER_VALUE[s["breaker"]]
+                    )
+                    metrics.inflight.labels(d.provider.name, d.model).set(s["inflight"])
+            return Response(
+                generate_latest(metrics.registry), media_type="text/plain; version=0.0.4"
+            )
+        except Exception as exc:  # noqa: BLE001
+            return error_response(exc, rid)
+
+    return app
+
+
+async def _prepend(
+    first: ChatChunk | None, rest: AsyncIterator[ChatChunk]
+) -> AsyncIterator[ChatChunk]:
+    if first is not None:
+        yield first
+    async for chunk in rest:
+        yield chunk
+
+
+__all__ = ["GatewayError", "create_app"]

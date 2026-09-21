@@ -78,3 +78,24 @@ describe('CopilotPanel', () => {
     expect(body.context.entity).toEqual({ type: 'models', id: 'jpcp' })
   })
 })
+
+describe('CopilotPanel failure messages', () => {
+  it('shows what failed instead of one generic sentence', async () => {
+    const { ApiError } = await import('@/lib/errors')
+    const api = await import('@/lib/api')
+    vi.spyOn(api, 'apiFetch').mockRejectedValue(new ApiError(403, { title: 'Forbidden' }))
+    const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <CopilotPanel />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Open copilot' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'why is jpcp drifting?' } })
+    fireEvent.submit(screen.getByRole('textbox').closest('form')!)
+    await waitFor(() => expect(screen.getByText(/not permitted to use the copilot/i)).toBeInTheDocument())
+    expect(screen.queryByText(/The copilot request failed\. Please try again\./)).not.toBeInTheDocument()
+  })
+})

@@ -79,8 +79,8 @@ class CliState:
     thread_id: str = field(default_factory=lambda: f"cli-{uuid.uuid4().hex[:8]}")
     model: str = field(
         default_factory=lambda: (
-            config.AZURE_OPENAI_DEPLOYMENT
-            if config.AZURE_OPENAI_API_KEY and config.AZURE_OPENAI_ENDPOINT
+            config.AGENT_LLM_GATEWAY_MODEL
+            if config.AGENT_LLM_GATEWAY_URL
             else config.ANTHROPIC_MODEL
             if config.ANTHROPIC_API_KEY
             else config.AGENT_MODEL
@@ -381,8 +381,8 @@ def main() -> None:
 
     if info["type"] == "claude":
         backend_label = f"claude · {state.model}"
-    elif info["type"] == "azure":
-        backend_label = f"azure · {state.model}  ·  {config.AZURE_OPENAI_ENDPOINT}"
+    elif info["type"] == "gateway":
+        backend_label = f"gateway · {state.model}  ·  {config.AGENT_LLM_GATEWAY_URL}"
     else:
         backend_label = f"ollama · {state.model}  ·  {config.AGENT_OLLAMA_URL}"
 

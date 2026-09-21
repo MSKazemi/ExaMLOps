@@ -19,7 +19,7 @@ Use `make skipper-server` when running the HTTP service directly outside Compose
 ```
 skipper/
 ├── graph.py        ReAct graph: create_react_agent(llm, tools=TOOLS, prompt=SYSTEM_PROMPT, checkpointer)
-├── llm.py          Backend selection: Azure Foundry → Claude → Ollama (build_llm / check_backend)
+├── llm.py          Backend selection: LLM gateway → Claude → Ollama (build_llm / check_backend)
 ├── memory.py       SqliteSaver checkpointer (persistent threads, keyed by thread_id)
 ├── prompts.py      SYSTEM_PROMPT — tool groups, reasoning rules, write-protection policy
 ├── confirm.py      @confirmed_write decorator → LangGraph interrupt() human-in-the-loop gate
@@ -58,11 +58,11 @@ policy / `platform.db` / hosted model, the agent still works.
 
 | Order | Backend | Trigger vars | Default model | Notes |
 |---|---|---|---|---|
-| 1 | **Azure OpenAI / AI Foundry** | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` | `gpt-5.5` (`AZURE_OPENAI_DEPLOYMENT`) | Driven via `langchain-openai` `ChatOpenAI` against the OpenAI-compatible Foundry **v1** endpoint (`base_url` + `api_key`, deployment name as model id). Temperature left unset — gpt-5.x reasoning models reject overrides. |
+| 1 | **LLM gateway** | `AGENT_LLM_GATEWAY_URL` (+ `AGENT_LLM_GATEWAY_KEY`) | `default` (`AGENT_LLM_GATEWAY_MODEL`) | Driven via `langchain-openai` `ChatOpenAI` against the gateway's OpenAI-compatible `/v1` (ADR 0151). The agent holds a virtual key and no provider credential; Ollama's `num_ctx` / `keep_alive` / `think` travel in the request and the gateway applies them. Probed with `/ready` **and** `/v1/models` using the key, so a ready gateway that rejects the key is reported unusable. The client does not retry (`max_retries=0`): failover and retry budgets are the gateway's. |
 | 2 | **Claude API** | `ANTHROPIC_API_KEY` | `claude-opus-4-8` (`ANTHROPIC_MODEL`) | `ChatAnthropic` with **adaptive thinking** (`thinking={"type": "adaptive"}`), `max_tokens=16000`. |
 | 3 | **Ollama** (fallback) | none required | `llama3.1:8b` (`AGENT_MODEL`) | `ChatOllama` at `AGENT_OLLAMA_URL`, `temperature=0`, with `keep_alive` / `reasoning` tuning for CPU-only servers. |
 
-`check_backend()` reports the backend that will actually be used as `{ok, type, model}` and drives the startup banner. The sections below default to the Ollama setup (most common for local dev); set the Azure or Claude vars in `.env` to switch.
+`check_backend()` reports the backend that will actually be used as `{ok, type, model}` and drives the startup banner. The sections below default to the Ollama setup (most common for local dev); set `AGENT_LLM_GATEWAY_URL` (or the Claude vars) in `.env` to switch.
 
 **Preferred means preferred-when-usable.** A configured backend whose credential is *rejected* is skipped, not used: the candidates are probed in order and the first working one wins. `build_llm()` then builds whichever one was found working, so the backend the banner reports and the backend that serves your question are always the same. Two extra fields appear when it matters:
 
@@ -679,10 +679,10 @@ indistinguishable from a wrong token. Nothing used to say which had happened.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AZURE_OPENAI_API_KEY` | unset | API key for the Azure OpenAI / AI Foundry backend. When set together with `AZURE_OPENAI_ENDPOINT`, this backend is preferred over Claude and Ollama. |
-| `AZURE_OPENAI_ENDPOINT` | unset | Foundry **v1** project endpoint base URL, e.g. `https://<resource>.services.ai.azure.com/openai/v1/` (OpenAI-compatible). |
-| `AZURE_OPENAI_DEPLOYMENT` | `gpt-5.5` | Deployment name shown in Foundry, used as the model id. |
-| `ANTHROPIC_API_KEY` | unset | API key for the Claude backend. Used when Azure is not configured. |
+| `AGENT_LLM_GATEWAY_URL` | unset | Base URL of the LLM gateway. When set, it is preferred over Claude and Ollama. |
+| `AGENT_LLM_GATEWAY_KEY` / `AGENT_LLM_GATEWAY_KEY_FILE` | unset | Gateway virtual key, directly or from a mounted secret file. |
+| `AGENT_LLM_GATEWAY_MODEL` | `default` | Route or alias to ask the gateway for. |
+| `ANTHROPIC_API_KEY` | unset | API key for the Claude backend. Used when no gateway is configured. |
 | `ANTHROPIC_MODEL` | `claude-opus-4-8` | Claude model id (adaptive thinking enabled, `max_tokens=16000`). |
 | `AGENT_MODEL` | `llama3.1:8b` | Ollama model name (fallback backend). Must support tool/function calling. Set in `.env`. |
 | `AGENT_OLLAMA_URL` | `http://localhost:11436` | Ollama server base URL. `11436` for ollama-tunnel Omega; `11434` for local `ollama serve`. |
@@ -709,7 +709,7 @@ indistinguishable from a wrong token. Nothing used to say which had happened.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Error: Ollama is not running at http://localhost:11436` at startup | Omega tunnel is not active | Run `ollama-tunnel start` and verify with `ollama-tunnel status`. |
-| Startup banner shows the Azure backend but every request fails | `AZURE_OPENAI_API_KEY` is revoked, rotated, or belongs to a different Foundry resource | Confirm with `check_backend()` — it now returns `ok: false` on `401`/`403`. Regenerate the key in the Azure AI Foundry portal (Keys and Endpoint) and update `AZURE_OPENAI_API_KEY`. A quick manual check: `curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AZURE_OPENAI_API_KEY" "$AZURE_OPENAI_ENDPOINT/models"` — `200` is good, `401` is the key. |
+| Startup banner shows the gateway backend but every request fails | The gateway key is revoked, over budget or not allowed the model; or no model is reachable behind the gateway | Confirm with `check_backend()` — it returns `ok: false` when `/ready` is not 200 or `/v1/models` answers `401`/`403`. Manual check: `curl -s localhost:18020/ready` (which deployment is up) and `curl -s -H "Authorization: Bearer $AGENT_LLM_GATEWAY_KEY" localhost:18020/v1/models` (`200` is good, `401` is the key). The dashboard copilot shows the gateway's error code in plain words. |
 | Ollama tunnel unit is `active (running)` but nothing listens on the port | The tunnel uses `ExitOnForwardFailure=yes`, so a dead remote makes it exit and systemd restart it in a loop — the unit looks healthy between respawns | Check the port, not the unit: `ss -ltnp \| grep 11436`. If the remote Ollama host is retired, the tunnel cannot succeed; point `AGENT_OLLAMA_URL` at a live host or use another backend. |
 | `Error: Ollama is not running at http://localhost:11434` | Using local Ollama URL but `ollama serve` is not running | Run `ollama serve`, or switch to the tunnel: `AGENT_OLLAMA_URL=http://localhost:11436 make skipper`. |
 | `Error: Cannot reach MLflow at http://localhost:15000 — ...` in a tool response | MLflow container not running | Run `make stack-up` or `exa status` to check which services are up. |

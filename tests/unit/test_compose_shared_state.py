@@ -32,6 +32,7 @@ STATEFUL = {
     "autopilot-follower": "runs autopilot cycles on retrain.run_completed (ADR 0124)",
     "skipper-watch": "raises watch alerts to the outbox and audit (ADR 0104, ADR 0124)",
     "gateway-authz": "serving-gateway virtual keys and per-tenant quota counters (ADR 0126)",
+    "llm-gateway": "LLM gateway virtual keys, budgets and per-call usage (ADR 0151)",
 }
 SHARED_DB = "/state/platform.db"
 

@@ -882,6 +882,7 @@ build:images:
           - ray-serving
           - control-plane
           - dataplane
+          - llm-gateway
           - agent
           - prometheus
           - grafana

@@ -19,8 +19,8 @@ def reset_resolved() -> None:
 def _configured_types() -> list[str]:
     """The backends this process could use, in preference order. Ollama is always last."""
     types = []
-    if config.AZURE_OPENAI_API_KEY and config.AZURE_OPENAI_ENDPOINT:
-        types.append("azure")
+    if config.AGENT_LLM_GATEWAY_URL:
+        types.append("gateway")
     if config.ANTHROPIC_API_KEY:
         types.append("claude")
     types.append("ollama")
@@ -30,9 +30,11 @@ def _configured_types() -> list[str]:
 def build_llm(model: str | None = None):
     """Build the LLM backend.
 
-    Preference order: Azure OpenAI / Foundry (AZURE_OPENAI_API_KEY +
-    AZURE_OPENAI_ENDPOINT) → Claude API (ANTHROPIC_API_KEY) → Ollama. Claude
-    uses adaptive thinking so the model decides when to reason step-by-step.
+    Preference order: the LLM gateway (``AGENT_LLM_GATEWAY_URL``) → Claude API
+    (``ANTHROPIC_API_KEY``) → Ollama. The gateway is the platform's one governed path to a model
+    (ADR 0151): the agent holds a virtual key, never a provider credential, and gets typed errors
+    and failover for free. Claude uses adaptive thinking so the model decides when to reason
+    step-by-step.
 
     **Preferred means preferred-when-usable.** If :func:`check_backend` has already probed the
     candidates, this builds whichever one it found *working* — not merely whichever one has
@@ -42,20 +44,26 @@ def build_llm(model: str | None = None):
     belongs at the process entry points, which already call ``check_backend()`` at startup.
     """
     chosen = _RESOLVED_TYPE if _RESOLVED_TYPE in _configured_types() else None
-    if chosen == "azure" or (
-        chosen is None and config.AZURE_OPENAI_API_KEY and config.AZURE_OPENAI_ENDPOINT
-    ):
+    if chosen == "gateway" or (chosen is None and config.AGENT_LLM_GATEWAY_URL):
         from langchain_openai import ChatOpenAI
 
-        # The Foundry v1 endpoint is OpenAI-compatible: base_url + api_key, with
-        # the deployment name used as the model id. Temperature is left unset —
-        # gpt-5.x reasoning models reject anything other than the default.
-        # api_key/model are accepted as plain str at runtime (pydantic coerces);
-        # the stub types api_key as SecretStr, hence the ignore.
+        # The gateway speaks the OpenAI chat API. Ollama's own knobs travel in the request under
+        # `examlops.ollama` (the gateway forwards them only to an Ollama provider), so the tuned
+        # context window and keep-alive keep applying. `max_retries=0`: retrying is the gateway's
+        # job (bounded by its retry budget); a second layer here would multiply every retry.
+        hints: dict = {"keep_alive": config.AGENT_OLLAMA_KEEP_ALIVE}
+        if config.AGENT_OLLAMA_NUM_CTX:
+            hints["num_ctx"] = config.AGENT_OLLAMA_NUM_CTX
+        if config.AGENT_OLLAMA_REASONING is not None:
+            hints["think"] = config.AGENT_OLLAMA_REASONING
         return ChatOpenAI(
-            model=model or config.AZURE_OPENAI_DEPLOYMENT,
-            base_url=config.AZURE_OPENAI_ENDPOINT,
-            api_key=config.AZURE_OPENAI_API_KEY,  # type: ignore[arg-type]
+            model=model or config.AGENT_LLM_GATEWAY_MODEL,
+            base_url=f"{config.AGENT_LLM_GATEWAY_URL}/v1",
+            api_key=config.AGENT_LLM_GATEWAY_KEY or "no-key",  # type: ignore[arg-type]
+            temperature=0,
+            timeout=config.AGENT_LLM_GATEWAY_TIMEOUT,
+            max_retries=0,
+            extra_body={"examlops": {"ollama": hints}},
         )
     if chosen == "claude" or (chosen is None and config.ANTHROPIC_API_KEY):
         from langchain_anthropic import ChatAnthropic
@@ -112,16 +120,36 @@ def _endpoint_reachable(url: str, *, timeout: float = 5.0, headers: dict | None 
     return resp.status_code not in _AUTH_REJECTED
 
 
+def _gateway_usable() -> bool:
+    """Is the gateway ready to serve *and* does it accept our key?
+
+    Two probes, because each catches a different fault: ``/ready`` (unauthenticated) says a model
+    is reachable behind the gateway, and ``/v1/models`` *with the key* says the key is valid —
+    the same "healthy but unusable" trap the 401 handling above exists for. A gateway that is
+    ready in the past but unhealthy now reports ``healthy_now: false`` and is treated as down.
+    """
+    base = config.AGENT_LLM_GATEWAY_URL
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{base}/ready", headers={})
+    except httpx.RequestError:
+        return False
+    if resp.status_code != 200:
+        return False
+    try:
+        if resp.json().get("healthy_now") is False:
+            return False
+    except Exception:  # noqa: BLE001 - an unparseable body says nothing against a 200
+        pass
+    return _endpoint_reachable(
+        f"{base}/v1/models", headers={"Authorization": f"Bearer {config.AGENT_LLM_GATEWAY_KEY}"}
+    )
+
+
 def _probe(backend_type: str) -> bool:
     """Is this backend usable *right now* — routable and not refusing our credential?"""
-    if backend_type == "azure":
-        # Probe /models *with* the key. Probing the bare endpoint unauthenticated
-        # returned the same 401 whether or not a key was supplied, so it could
-        # never distinguish a good key from a revoked one.
-        return _endpoint_reachable(
-            config.AZURE_OPENAI_ENDPOINT.rstrip("/") + "/models",
-            headers={"Authorization": f"Bearer {config.AZURE_OPENAI_API_KEY}"},
-        )
+    if backend_type == "gateway":
+        return _gateway_usable()
     if backend_type == "claude":
         return _endpoint_reachable(
             "https://api.anthropic.com/v1/models",
@@ -135,7 +163,7 @@ def _probe(backend_type: str) -> bool:
 
 def _model_of(backend_type: str) -> str:
     return {
-        "azure": config.AZURE_OPENAI_DEPLOYMENT,
+        "gateway": config.AGENT_LLM_GATEWAY_MODEL,
         "claude": config.ANTHROPIC_MODEL,
     }.get(backend_type, config.AGENT_MODEL)
 
@@ -144,9 +172,8 @@ def _model_of(backend_type: str) -> str:
 # "Ollama not reachable" whatever had actually failed, which sent them looking everywhere
 # except at the credential that was rejected.
 _FIX_HINT = {
-    "azure": "AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT (endpoint must be the "
-    "OpenAI-compatible base, e.g. https://<resource>.openai.azure.com/openai/v1, and "
-    "AZURE_OPENAI_DEPLOYMENT must be a deployment *name*)",
+    "gateway": "AGENT_LLM_GATEWAY_URL / AGENT_LLM_GATEWAY_KEY (issue a key with "
+    "'exa gateway key issue'; check the gateway with 'curl $AGENT_LLM_GATEWAY_URL/ready')",
     "claude": "ANTHROPIC_API_KEY",
     "ollama": "AGENT_OLLAMA_URL (start it with 'ollama-tunnel start')",
 }
@@ -157,7 +184,7 @@ def check_backend() -> dict:
 
     Two behaviours, both learned from outages:
 
-    * **Every backend is actively probed.** Azure/Claude used to be assumed healthy from mere
+    * **Every backend is actively probed.** Claude/the gateway used to be assumed healthy from mere
       env-var presence, so a dead endpoint reported ``ok: True`` and masked the outage.
     * **A rejected backend is skipped, not merely reported.** The candidates are tried in
       preference order and the first *usable* one wins, so one stale key no longer takes the agent

@@ -235,6 +235,9 @@ jobs:
           - name: ray-serving
             dockerfile: serving/ray_serving/Dockerfile
             description: ExaMLOps multi-model Ray Serve inference
+          - name: llm-gateway
+            dockerfile: platform/services/llm_gateway/Dockerfile
+            description: ExaMLOps LLM gateway — the one governed path to a model (ADR 0151)
           # Thin wrappers over upstream images, published under our name so a pull-only
           # install references one namespace and every image it runs passed this scan.
           - name: postgres

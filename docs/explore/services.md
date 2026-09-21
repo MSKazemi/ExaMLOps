@@ -106,6 +106,23 @@ Answer predictions.
 
 **Guide:** [interfaces](../guides/interfaces.md)
 
+### LLM gateway (llm-gateway)
+
+**Port:** 8020 in the container (18020 on the host, loopback); Compose profile `llm-gateway`  
+**Built on:** FastAPI + uvicorn (platform/services/llm_gateway/Dockerfile); ADR 0151
+
+**What it does**
+
+- Is the one OpenAI-compatible path from Skipper, the dashboard copilot and `exa ask` to a model: `/v1/chat/completions` (streaming included) and `/v1/models`
+- Routes a model name to a deployment, fails over on an upstream fault, and never fails over once a stream has started
+- Discovers the models of the Ollama at `EXAMLOPS_LLM_OLLAMA_URL` with no configuration; a `gateway.yaml` takes control of routes, fallbacks and providers
+- Answers every failure with a typed error (`upstream_unavailable`, `model_not_found`, `locality_denied`, …) that names the provider, never the prompt
+- Refuses to send a prompt off the site unless the deployment and the caller both allow it, and refuses Azure endpoints outright
+
+**Talks to:** Ollama (native API, through the container relay); vLLM endpoints and OpenAI-compatible routers as providers; Shared platform datastore (platform.db) (virtual keys, usage)
+
+**Operate:** `exa gateway key issue ...` for a key; `/ready`, `/admin/health` and `/metrics` (admin token) show which deployments are up and why one is not
+
 ### vLLM OpenAI-compatible server
 
 **Port:** 8000 on the internal network (not published; 127.0.0.1:18011 only with the `docker-compose.engine-direct.yml` dev overlay)  

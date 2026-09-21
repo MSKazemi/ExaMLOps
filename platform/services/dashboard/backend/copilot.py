@@ -195,6 +195,62 @@ def audit_copilot(
         return False
 
 
+# What the operator is told for each LLM-gateway error code (ADR 0156). Deliberately not the
+# gateway's own message: that names internal addresses. The request id is appended so a report can
+# be matched to the gateway's audit and metrics.
+_LLM_MESSAGES: dict[str, str] = {
+    "upstream_unavailable": (
+        "No language model is reachable: the LLM gateway could not connect to its model server "
+        "(Ollama). Check that the model server is running, then try again."
+    ),
+    "upstream_timeout": (
+        "The language model did not answer in time. It may be loading; try again in a minute."
+    ),
+    "upstream_error": "The language model server returned an error. Try again; if it persists, "
+    "check the LLM gateway logs.",
+    "model_loading": "The language model is still loading. Try again in a moment.",
+    "model_not_found": (
+        "The copilot's model is not available on the LLM gateway. Check AGENT_LLM_GATEWAY_MODEL "
+        "and the gateway's model list (`/v1/models`)."
+    ),
+    "key_invalid": (
+        "The LLM gateway rejected the agent's key. Issue a new key with `exa gateway key issue` "
+        "and set AGENT_LLM_GATEWAY_KEY."
+    ),
+    "model_not_allowed": "The agent's LLM gateway key is not allowed to use this model.",
+    "budget_exceeded": "The agent's LLM gateway key has used up its budget.",
+    "rate_limited": "The LLM gateway is rate limiting requests. Wait a moment and try again.",
+    "queue_full": "The language model is busy with other requests. Try again in a moment.",
+    "locality_denied": (
+        "No model permitted for this data location is available (nothing may leave the site)."
+    ),
+    "capability_unavailable": "No available model supports what this question needs.",
+    "guardrail_blocked": "The request was blocked by a safety guardrail.",
+    "stream_interrupted": "The model stopped mid-answer. Try again.",
+    "gateway_unreachable": (
+        "The agent cannot reach the LLM gateway. Check that the llm-gateway service is running "
+        "and AGENT_LLM_GATEWAY_URL is correct."
+    ),
+    "gateway_timeout": "The LLM gateway did not answer in time. Try again in a moment.",
+}
+
+
+def _llm_failure(resp: Any) -> dict[str, Any] | None:
+    """A degraded envelope naming the LLM-gateway error the agent reported, else ``None``."""
+    try:
+        err = resp.json().get("error")
+    except (ValueError, AttributeError):
+        return None
+    code = err.get("code") if isinstance(err, dict) else None
+    message = _LLM_MESSAGES.get(code) if isinstance(code, str) else None
+    if message is None:
+        return None
+    request_id = err.get("request_id")
+    if isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", request_id):
+        message += f" (request {request_id})"
+    return _degraded(message, f"llm_{code}")
+
+
 async def ask_copilot(
     question: str,
     ctx: dict[str, Any] | None,
@@ -228,7 +284,7 @@ async def ask_copilot(
                 "credential map (or that the legacy AGENT_API_KEY matches), then try again.",
                 "agent_auth",
             )
-        return _degraded(
+        return _llm_failure(exc.response) or _degraded(
             "The Skipper agent was reached but could not answer. Check its model backend and "
             "service logs, then try again.",
             "agent_response",

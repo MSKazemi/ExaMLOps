@@ -524,9 +524,11 @@ services:
       AGENT_OLLAMA_KEEP_ALIVE: ${AGENT_OLLAMA_KEEP_ALIVE:-30m}
       AGENT_OLLAMA_REASONING: ${AGENT_OLLAMA_REASONING:-false}
       AGENT_OLLAMA_NUM_CTX: ${AGENT_OLLAMA_NUM_CTX:-16384}
-      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
-      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
-      AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-gpt-5.5}
+      # The LLM gateway (ADR 0151): set the URL (http://llm-gateway:8020) and a virtual key and the
+      # agent holds no provider credential at all. Empty ⇒ the direct backends below (break-glass).
+      AGENT_LLM_GATEWAY_URL: ${AGENT_LLM_GATEWAY_URL:-}
+      AGENT_LLM_GATEWAY_KEY: ${AGENT_LLM_GATEWAY_KEY:-}
+      AGENT_LLM_GATEWAY_MODEL: ${AGENT_LLM_GATEWAY_MODEL:-default}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-4-8}
       MLFLOW_TRACKING_URI: http://mlflow:5000
@@ -1280,6 +1282,64 @@ services:
       ray-serving:
         condition: service_started
     restart: unless-stopped
+
+  # LLM gateway (ADR 0151): the one OpenAI-compatible path from Skipper, the dashboard copilot and
+  # `exa ask` to every model — the local Ollama first, then vLLM endpoints and routers (OmniRoute,
+  # LiteLLM, …) as providers. Routing, failover, keys, typed errors and metrics live here, so a
+  # consumer holds a virtual key and never a provider credential. Opt in with
+  # `docker compose --profile llm-gateway up -d llm-gateway` (`--profile gateway` starts it too).
+  # No config file is needed: it discovers the models at EXAMLOPS_LLM_OLLAMA_URL; put a
+  # gateway.yaml in <state>/config/ to take control (ADR 0155). Issue a key with
+  # `exa gateway key issue`; set LLM_GATEWAY_ADMIN_TOKEN to enable /admin and /metrics.
+  llm-gateway:
+    build:
+      context: ../../..
+      dockerfile: platform/services/llm_gateway/Dockerfile
+      network: host
+      args:
+        APP_UID: ${EXAMLOPS_UID:-1000}
+        APP_GID: ${EXAMLOPS_GID:-1000}
+    image: ${EXAMLOPS_IMAGE_PREFIX:-examlops}-llm-gateway:${EXAMLOPS_IMAGE_TAG:-latest}
+    container_name: examlops-llm-gateway
+    profiles: [llm-gateway, gateway]
+    mem_limit: ${LLM_GATEWAY_MEM_LIMIT:-512m}
+    stop_grace_period: 35s
+    environment:
+      LLM_GATEWAY_PORT: "8020"
+      # keys = every caller needs a virtual key (the safe default); off = no auth, loopback only.
+      LLM_GATEWAY_AUTH: ${LLM_GATEWAY_AUTH:-keys}
+      # Empty ⇒ the admin API and /metrics are disabled (fail closed). A placeholder is refused.
+      LLM_GATEWAY_ADMIN_TOKEN: ${LLM_GATEWAY_ADMIN_TOKEN:-}
+      EXAMLOPS_GATEWAY_CONFIG: ${EXAMLOPS_GATEWAY_CONFIG:-}
+      # The relay on the docker bridge; the same hop the agent uses today.
+      EXAMLOPS_LLM_OLLAMA_URL: ${EXAMLOPS_LLM_OLLAMA_URL:-http://host.docker.internal:11436}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      AGENT_OLLAMA_KEEP_ALIVE: ${AGENT_OLLAMA_KEEP_ALIVE:-30m}
+      AGENT_OLLAMA_NUM_CTX: ${AGENT_OLLAMA_NUM_CTX:-16384}
+      EXAMLOPS_ACTOR: llm-gateway
+      PLATFORM_DB: /state/platform.db
+      EXAMLOPS_DATA_DIR: /state
+      EXAMLOPS_DB_BACKEND: ${EXAMLOPS_DB_BACKEND:-sqlite}
+      EXAMLOPS_POSTGRES_DSN: ${EXAMLOPS_POSTGRES_DSN:-}
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4317}
+      OTEL_SERVICE_NAME: llm-gateway
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${EXAMLOPS_STATE_DIR:-../../..}:/state:rw
+    ports:
+      # Loopback by default: reach it from other containers by service name, from the host here.
+      - "${LLM_GATEWAY_BIND:-127.0.0.1}:18020:8020"
+    restart: unless-stopped
+    healthcheck:
+      # /ready, not /health: healthy should mean "can serve a request", and it latches, so a later
+      # model outage degrades to typed 503s instead of a restart loop (ADR 0153 d10).
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8020/ready')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   # ── vLLM OpenAI-compatible server (Track V / ADR 0107) ──────────────────────
   # Behind the `vllm` profile: it is the only GPU service in the stack, so a plain

@@ -32,6 +32,8 @@ ERROR_STATUS: dict[str, int] = {
     "upstream_timeout": 504,
     "upstream_error": 502,
     "stream_interrupted": 502,
+    "config_invalid": 422,
+    "internal_error": 500,
 }
 #: Failure classes worth another attempt (ADR 0153 d4). A client mistake never is.
 _RETRYABLE = frozenset(
@@ -59,6 +61,8 @@ class ProviderError(Exception):
         self.retry_after = retry_after
         self.status = status  # the *upstream's* HTTP status, when there was one
         self.provider = provider
+        #: Every attempt made before this failure (provider, model, outcome, ms) — never prompt content.
+        self.attempts: list[dict[str, Any]] = []
 
     @property
     def http_status(self) -> int:

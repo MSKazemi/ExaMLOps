@@ -5,6 +5,7 @@ import { sanitizeMarkdown } from '@/lib/sanitize'
 import { useFocusTrap } from '@/hooks/useFocusTrap'
 import {
   buildContext,
+  describeCopilotError,
   isDegraded,
   proposalGateLabel,
   useCopilotAsk,
@@ -101,11 +102,8 @@ export function CopilotPanel() {
       { question, context: buildContext(pathname) },
       {
         onSuccess: (res) => setTurns((t) => [...t, { role: 'assistant', text: res.answer, response: res }]),
-        onError: () =>
-          setTurns((t) => [
-            ...t,
-            { role: 'assistant', text: 'The copilot request failed. Please try again.' },
-          ]),
+        onError: (err) =>
+          setTurns((t) => [...t, { role: 'assistant', text: describeCopilotError(err) }]),
       },
     )
   }

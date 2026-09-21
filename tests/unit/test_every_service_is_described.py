@@ -47,6 +47,7 @@ HEADING_FOR = {
     "backup": "Backup sidecar",
     "marquez": "Marquez",
     "dataplane": "Dataplane service",
+    "llm-gateway": "LLM gateway",
     "jupyterhub": "JupyterHub",
     "docker-socket-proxy": "Docker socket proxy",
     "dataplane-bus-bridge": "bridge",

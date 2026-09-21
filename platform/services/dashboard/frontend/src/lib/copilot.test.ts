@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { buildContext, isDegraded, proposalGateLabel, type CopilotResponse } from './copilot'
+import {
+  buildContext,
+  describeCopilotError,
+  isDegraded,
+  proposalGateLabel,
+  type CopilotResponse,
+} from './copilot'
+import { ApiError } from './errors'
 
 describe('buildContext', () => {
   it('derives an entity from a two-segment path', () => {
@@ -43,5 +50,31 @@ describe('proposalGateLabel', () => {
   it('labels approval-gated vs read-only proposals', () => {
     expect(proposalGateLabel({ command: 'exa retrain m', requiresApproval: true })).toBe('Needs approval')
     expect(proposalGateLabel({ command: 'exa status', requiresApproval: false })).toBe('Read-only')
+  })
+})
+
+describe('describeCopilotError', () => {
+  it.each([
+    [401, /session has expired/i],
+    [403, /not permitted/i],
+    [429, /too many/i],
+    [500, /HTTP 500/],
+    [503, /HTTP 503/],
+  ])('says something specific for HTTP %i', (status, pattern) => {
+    expect(describeCopilotError(new ApiError(status, { title: 'x' }))).toMatch(pattern)
+  })
+
+  it('names a rejected request and its reason', () => {
+    expect(describeCopilotError(new ApiError(422, { title: 'Invalid', detail: 'question is empty' }))).toMatch(
+      /HTTP 422.*question is empty/,
+    )
+  })
+
+  it('tells a network failure apart from an API failure', () => {
+    expect(describeCopilotError(new TypeError('Failed to fetch'))).toMatch(/cannot reach the dashboard API/i)
+  })
+
+  it('keeps a generic sentence only for the truly unknown', () => {
+    expect(describeCopilotError('boom')).toMatch(/failed unexpectedly/)
   })
 })

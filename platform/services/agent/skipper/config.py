@@ -6,16 +6,27 @@ from pathlib import Path
 # skipper/config.py → parents: [0]=skipper [1]=agent [2]=services [3]=platform [4]=repo
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
-# Azure OpenAI / AI Foundry backend (preferred when configured).
-# AZURE_OPENAI_ENDPOINT is the Foundry "v1" project endpoint base URL, e.g.
-#   https://<resource>.services.ai.azure.com/openai/v1/
-# which is OpenAI-compatible, so we drive it with langchain-openai's ChatOpenAI
-# (base_url + api_key) rather than AzureChatOpenAI (that one expects the classic
-# https://<resource>.openai.azure.com shape). AZURE_OPENAI_DEPLOYMENT is the
-# deployment name shown in Foundry (e.g. "gpt-5.5"), used as the model id.
-AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5.5")
+
+# LLM gateway (ADR 0151) — the one path to a model, preferred when configured. With
+# AGENT_LLM_GATEWAY_URL set the agent holds a gateway *virtual key* and no provider credential:
+# which model answers, failover, budgets and the typed errors are the gateway's. Unset ⇒ the
+# direct backends below, kept as documented break-glass. AGENT_LLM_GATEWAY_MODEL is a route or
+# alias the gateway knows ("default" resolves to its configured/discovered default model).
+def _secret(env: str, file_env: str) -> str:
+    """A secret from ``$env``, else from the file named by ``$file_env`` (Docker/K8s secrets)."""
+    if value := os.getenv(env, ""):
+        return value
+    path = os.getenv(file_env, "")
+    try:
+        return Path(path).read_text(encoding="utf-8").strip() if path else ""
+    except OSError:
+        return ""
+
+
+AGENT_LLM_GATEWAY_URL = os.getenv("AGENT_LLM_GATEWAY_URL", "").strip().rstrip("/")
+AGENT_LLM_GATEWAY_KEY = _secret("AGENT_LLM_GATEWAY_KEY", "AGENT_LLM_GATEWAY_KEY_FILE")
+AGENT_LLM_GATEWAY_MODEL = os.getenv("AGENT_LLM_GATEWAY_MODEL", "default")
+AGENT_LLM_GATEWAY_TIMEOUT = float(os.getenv("AGENT_LLM_GATEWAY_TIMEOUT", "300"))
 
 # Claude API backend
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")

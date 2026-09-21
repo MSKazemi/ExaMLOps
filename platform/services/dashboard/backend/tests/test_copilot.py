@@ -258,3 +258,77 @@ async def test_copilot_endpoint_degrades_when_agent_unreachable(client, tmp_path
     n = conn.execute("SELECT COUNT(*) FROM audit_events WHERE action='copilot_query'").fetchone()[0]
     conn.close()
     assert n == 1
+
+
+# ── the LLM gateway's typed errors become specific messages (ADR 0156) ────────
+
+
+def _agent_error(status: int, code: str, request_id: str | None = None):
+    err = {"message": "internal detail http://10.0.0.5:11434", "code": code}
+    if request_id:
+        err["request_id"] = request_id
+
+    def handler(request):
+        return httpx.Response(status, json={"error": err})
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "needle"),
+    [
+        ("upstream_unavailable", "could not connect to its model server"),
+        ("upstream_timeout", "did not answer in time"),
+        ("model_not_found", "not available on the LLM gateway"),
+        ("key_invalid", "exa gateway key issue"),
+        ("budget_exceeded", "budget"),
+        ("gateway_unreachable", "llm-gateway service is running"),
+        ("locality_denied", "leave the site"),
+    ],
+)
+async def test_each_gateway_code_gets_its_own_message(code, needle):
+    out = await copilot.ask_copilot(
+        "hi", None, agent_url="http://agent", transport=_agent_error(502, code, "req_9f2")
+    )
+    assert out["error_code"] == f"llm_{code}" and out["_partial"] == ["agent"]
+    assert needle in out["answer"]
+    assert "(request req_9f2)" in out["answer"]  # so a report can be matched to the gateway
+    assert "10.0.0.5" not in out["answer"]  # the gateway's message names internal addresses
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_code_or_a_hostile_request_id_falls_back_safely():
+    out = await copilot.ask_copilot(
+        "hi", None, agent_url="http://agent", transport=_agent_error(500, "something_new")
+    )
+    assert out["error_code"] == "agent_response"  # the existing generic degrade
+
+    out = await copilot.ask_copilot(
+        "hi",
+        None,
+        agent_url="http://agent",
+        transport=_agent_error(502, "upstream_unavailable", "<script>alert(1)</script>"),
+    )
+    assert out["error_code"] == "llm_upstream_unavailable" and "<script>" not in out["answer"]
+
+
+@pytest.mark.asyncio
+async def test_copilot_endpoint_waits_as_long_as_the_agent_is_allowed_to_think(client, monkeypatch):
+    """A CPU-only model takes 2-3 minutes to read the agent's prompt; a 120 s wait failed real turns."""
+    seen = []
+
+    async def fake_ask(question, ctx, *, agent_url, token, session, timeout, **kwargs):
+        seen.append(timeout)
+        return {"answer": "ok", "hitl_required": False, "proposals": [], "trace": []}
+
+    monkeypatch.setattr(copilot, "ask_copilot", fake_ask)
+    token = await _login(client, VIEWER_PW)
+    r = await client.post(
+        "/api/v1/copilot/ask",
+        json={"question": "status"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    assert seen == [copilot_router.settings.copilot_timeout_s]
+    assert seen[0] >= 300.0  # never below the agent's own AGENT_GRAPH_TIMEOUT default

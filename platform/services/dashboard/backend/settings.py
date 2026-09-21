@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     # `control_plane_token` secret is unset (control_plane_auth.py). Never sent to the browser.
     control_plane_token: str = ""
     agent_url: str = "http://localhost:18004"
+    # How long the copilot BFF waits for the agent. A turn carries ~6.6k tokens of system prompt and
+    # tool schemas, and on a CPU-only Ollama (n1: ~47 tokens/s prefill) that is 2-3 minutes before the
+    # first word — so the old 120 s default failed real turns. Kept level with the agent's own
+    # AGENT_GRAPH_TIMEOUT (300 s), which is the point where the agent itself gives up.
+    copilot_timeout_s: float = 300.0
     dashboard_agent_api_key: str = ""
     agent_api_key: str = ""
     jupyterhub_url: str = "http://localhost:18888"

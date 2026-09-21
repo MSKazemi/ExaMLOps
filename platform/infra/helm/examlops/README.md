@@ -111,14 +111,14 @@ each automation caller a distinct entry and place only that caller's bearer valu
 The legacy `CONTROL_PLANE_TOKEN` maps to `legacy/default` with both scopes. Malformed structured
 configuration fails closed, including for the legacy credential.
 
-For Azure, the provider set is `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, and
-`AZURE_OPENAI_DEPLOYMENT`; Anthropic needs `ANTHROPIC_API_KEY`. Give the dashboard and each CLI
+The preferred backend is the LLM gateway: `AGENT_LLM_GATEWAY_URL` plus a virtual key
+(`AGENT_LLM_GATEWAY_KEY` or a mounted `AGENT_LLM_GATEWAY_KEY_FILE`); Anthropic needs `ANTHROPIC_API_KEY`. Give the dashboard and each CLI
 operator different agent credentials. The keys in `AGENT_API_KEYS_JSON` are authenticated principal
 names used to own agent sessions and memory. Configure an operator's local CLI with the hidden
 `exa config set agent_token` prompt. Existing installations may keep `AGENT_API_KEY`; the dashboard
 uses it only when `DASHBOARD_AGENT_API_KEY` is absent.
 
-Use either the shown Azure credentials, `ANTHROPIC_API_KEY`, or override
+Use either the gateway settings above, `ANTHROPIC_API_KEY`, or override
 `agent.extraEnv` with a reachable Ollama URL. The agent pod's own `localhost` is not the host.
 
 ## Install / validate

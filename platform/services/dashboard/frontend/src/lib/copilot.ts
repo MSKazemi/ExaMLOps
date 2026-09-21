@@ -1,5 +1,6 @@
 import { useMutation } from '@tanstack/react-query'
 import { apiFetch } from './api'
+import { ApiError } from './errors'
 
 // Embedded copilot client (F11 / ADR 0065). Talks to the BFF `/api/v1/copilot/ask`, which proxies the
 // existing Skipper agent. Proposals are advisory — the copilot never executes anything (R5).
@@ -71,4 +72,27 @@ export function useCopilotAsk() {
         }),
       }),
   })
+}
+
+/**
+ * What to tell the user when the copilot request itself failed (the dashboard API, not the model:
+ * a model failure arrives as a normal 200 answer that already says why).
+ *
+ * The panel used to show one sentence for every failure, so an expired session, a missing
+ * permission and a down API all looked the same. Each is a different next step.
+ */
+export function describeCopilotError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 401) return 'Your session has expired. Sign in again, then retry.'
+    if (err.status === 403) return 'Your role is not permitted to use the copilot.'
+    if (err.status === 429) return 'Too many copilot requests. Wait a moment, then try again.'
+    if (err.status >= 500) {
+      return `The dashboard API failed (HTTP ${err.status}). Try again; if it keeps failing, check the dashboard logs.`
+    }
+    return `The copilot request was rejected (HTTP ${err.status}): ${err.message}`
+  }
+  if (err instanceof TypeError) {
+    return 'Cannot reach the dashboard API. Check your network connection, then try again.'
+  }
+  return 'The copilot request failed unexpectedly. Please try again.'
 }

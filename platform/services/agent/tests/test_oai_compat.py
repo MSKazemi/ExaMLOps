@@ -740,3 +740,67 @@ def test_collector_falls_back_to_the_answer_in_state():
         lambda c: c if isinstance(c, str) else "",
     )
     assert "exa status" in answer
+
+
+# ── model errors keep the LLM gateway's stable code (ADR 0156) ────────────────
+
+
+def _gateway_status_error(status: int, error: dict):
+    import httpx
+    import openai
+
+    response = httpx.Response(status, request=httpx.Request("POST", "http://gw/v1/chat"))
+    return openai.APIStatusError("gateway error", response=response, body=error)
+
+
+def _post_failing(make_client, exc):
+    graph = _fake_graph()
+    graph.stream.side_effect = exc
+    client = make_client(graph)
+    return client.post(
+        "/v1/chat/completions",
+        json={"model": "m", "messages": [{"role": "user", "content": "q"}], "stream": False},
+        headers={"X-Session-ID": "sess-err"},
+    )
+
+
+def test_a_gateway_error_keeps_its_code_and_request_id(make_client):
+    exc = _gateway_status_error(
+        503,
+        {
+            "code": "upstream_unavailable",
+            "message": "cannot connect to http://10.0.0.5:11434",
+            "request_id": "req_abc123",
+        },
+    )
+    resp = _post_failing(make_client, exc)
+    assert resp.status_code == 502
+    err = resp.json()["error"]
+    assert err["code"] == "upstream_unavailable" and err["request_id"] == "req_abc123"
+    assert err["source"] == "llm-gateway"
+
+
+def test_a_gateway_timeout_status_stays_a_504(make_client):
+    resp = _post_failing(
+        make_client, _gateway_status_error(504, {"code": "upstream_timeout", "message": "slow"})
+    )
+    assert resp.status_code == 504 and resp.json()["error"]["code"] == "upstream_timeout"
+
+
+def test_an_unreachable_gateway_is_reported_as_such(make_client):
+    import httpx
+    import openai
+
+    exc = openai.APIConnectionError(request=httpx.Request("POST", "http://gw/v1/chat"))
+    resp = _post_failing(make_client, exc)
+    assert resp.status_code == 502 and resp.json()["error"]["code"] == "gateway_unreachable"
+
+    exc = openai.APITimeoutError(request=httpx.Request("POST", "http://gw/v1/chat"))
+    resp = _post_failing(make_client, exc)
+    assert resp.status_code == 504 and resp.json()["error"]["code"] == "gateway_timeout"
+
+
+def test_other_failures_keep_the_historical_500_shape(make_client):
+    resp = _post_failing(make_client, RuntimeError("tool exploded"))
+    assert resp.status_code == 500
+    assert resp.json() == {"error": {"message": "tool exploded"}}

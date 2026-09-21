@@ -398,6 +398,12 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_GATEWAY_DEFAULT_MODEL` | `default` | **B2** logical model name for the default gateway route. |
 | `EXAMLOPS_LLM_OLLAMA_URL` | unset | Base URL of an Ollama server (or the container relay, e.g. `http://host.docker.internal:11436`). When set, every chat model it reports becomes a gateway route under its own name (ADR 0152). Unset ⇒ no Ollama routes. An unreachable server or a refused address is logged and skipped; the gateway keeps serving its other routes. |
 | `EXAMLOPS_LLM_OLLAMA_NAME` | `ollama` | Provider name shown as the backend on completions and in health for the server at `EXAMLOPS_LLM_OLLAMA_URL`. |
+| `EXAMLOPS_GATEWAY_CONFIG` | `<config dir>/gateway.yaml` when present | Path to the LLM gateway's routing config (ADR 0155). Absent ⇒ the service generates one from the Ollama at `EXAMLOPS_LLM_OLLAMA_URL` (default `http://127.0.0.1:11434`), one route per chat model it reports. |
+| `LLM_GATEWAY_AUTH` | `keys` | LLM gateway service caller authentication: `keys` = every caller needs a virtual key (`exa gateway key issue`); `off` = no authentication — only safe when nothing but this host can reach the port. |
+| `LLM_GATEWAY_ADMIN_TOKEN` | unset | Bearer token for the LLM gateway's `/admin/*` and `/metrics`. Unset ⇒ both are disabled (fail closed). A placeholder (`changeme`, `password`, …) or a token under 16 characters stops the service at start. |
+| `LLM_GATEWAY_HOST` / `LLM_GATEWAY_PORT` | `0.0.0.0` / `8020` | Bind address and port of the LLM gateway service inside its container; Compose publishes it on loopback `18020`. |
+| `LLM_GATEWAY_LOG_LEVEL` | `INFO` | Log level of the LLM gateway service. Prompts and completions are never logged. |
+| `LLM_GATEWAY_DRAIN_SECONDS` | `30` | Graceful-shutdown budget: in-flight requests and streams get this long to finish after SIGTERM. |
 | `EXAMLOPS_GATEWAY_ALLOWED_HOSTS` | unset | Comma-separated hosts an **`external`** gateway provider may use even though they are private or platform-internal (ADR 0154 d2). Deliberate, operator-set; local and site providers do not need it. |
 | `EXAMLOPS_GATEWAY_DENY_HOSTS` | unset | Comma-separated host suffixes the gateway refuses to send prompts to, added to the built-in list (Azure endpoints, cloud-metadata targets). It can only add to the deny-list, never reduce it (ADR 0154 d5). |
 | `EXAMLOPS_CACHE_EMBED_BACKEND` | unset | **B3** semantic cache — use a real local embedder instead of the token-hash fallback. |
@@ -668,16 +674,18 @@ The bridge (`platform/clients/dataplane_bus_bridge.py`) connects to the real Dat
 
 The LangGraph agent (`platform/services/agent/`) runs as a developer REPL with `make skipper` or as
 the HTTP/WebSocket service with `make skipper-server` (`skipper.server`, port 18004). The LLM backend
-is chosen by which keys are set, in order: **Azure Foundry → Claude → Ollama**. When using
+is chosen by what is configured and answering, in order: **LLM gateway → Claude → Ollama**. When using
 `ollama-tunnel` (Omega server, port 11436), start the tunnel first. Vars are set in `.env` and sourced
 automatically.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AZURE_OPENAI_API_KEY` | unset | Azure OpenAI / AI Foundry key. With `AZURE_OPENAI_ENDPOINT` set, this backend is preferred over Claude/Ollama. |
-| `AZURE_OPENAI_ENDPOINT` | unset | Foundry v1 endpoint base URL (`https://<resource>.services.ai.azure.com/openai/v1/`, OpenAI-compatible). |
-| `AZURE_OPENAI_DEPLOYMENT` | `gpt-5.5` | Foundry deployment name, used as the model id. |
-| `ANTHROPIC_API_KEY` | unset | Claude backend key. Used when Azure is not configured. |
+| `AGENT_LLM_GATEWAY_URL` | unset | Base URL of the LLM gateway (e.g. `http://llm-gateway:8020`). When set, the gateway is the preferred backend: the agent holds a gateway virtual key and no provider credential (ADR 0151). Unset ⇒ the direct backends below. |
+| `AGENT_LLM_GATEWAY_KEY` | unset | Gateway virtual key (`exa gateway key issue`). Sent as a bearer token. Prefer `AGENT_LLM_GATEWAY_KEY_FILE` so it never appears in the environment listing. |
+| `AGENT_LLM_GATEWAY_KEY_FILE` | unset | Path to a file (a Docker/Kubernetes secret) holding the key; used when `AGENT_LLM_GATEWAY_KEY` is empty. |
+| `AGENT_LLM_GATEWAY_MODEL` | `default` | Route or alias the gateway serves; `default` resolves to the gateway's configured or discovered default model. |
+| `AGENT_LLM_GATEWAY_TIMEOUT` | `300` | Seconds the agent waits for the gateway. Covers a cold model load; retrying is the gateway's job, so the client does not retry. |
+| `ANTHROPIC_API_KEY` | unset | Claude backend key. Used when no gateway is configured. Sends prompts off the site. |
 | `ANTHROPIC_MODEL` | `claude-opus-4-8` | Claude model id (adaptive thinking, `max_tokens=16000`). |
 | `AGENT_MODEL` | `llama3.1:8b` | Ollama model name (fallback). Via ollama-tunnel: any model from the Omega/Kapa list. Must support tool calling. |
 | `AGENT_OLLAMA_URL` | `http://localhost:11436` | Ollama server base URL. Omega tunnel default. Use `localhost:11434` for a local `ollama serve`. |
@@ -688,6 +696,7 @@ automatically.
 | `AGENT_SERVER_PORT` | `18004` | Port for the HTTP/WebSocket chat server (`skipper.server`). |
 | `AGENT_API_KEY` | unset | Legacy single credential protecting completions, status, history, and WebSocket tools. It remains the dashboard fallback and maps to the `primary` principal. Prefer distinct caller credentials in `AGENT_API_KEYS_JSON`. |
 | `AGENT_API_KEYS_JSON` | unset | JSON object mapping trusted principal names to distinct bearer credentials, for example `{"dashboard":"<dashboard-key>","cli-operator":"<cli-key>"}`. Names become server-derived conversation and memory owners; callers cannot choose them. Use distinct credentials wherever memory isolation matters. Entries are validated individually: a non-string or empty value, or an empty principal name, is refused for that principal only — logged once at `WARNING` and counted on the agent's `GET /healthz` as `credential_config_problems`. A map that does not parse at all leaves authentication on, never off. |
+| `COPILOT_TIMEOUT_S` | `300` | Seconds the dashboard copilot waits for the agent before reporting a timeout. A turn carries ~6.6k tokens of prompt and tool schemas; on a CPU-only Ollama that is 2-3 minutes before the first word, so this matches the agent's own `AGENT_GRAPH_TIMEOUT` (300 s). |
 | `DASHBOARD_AGENT_API_KEY` | unset | Dashboard BFF credential forwarded to the agent. Its value must appear under the `dashboard` principal (or another intentionally named dashboard principal) in `AGENT_API_KEYS_JSON`. The dashboard prefers this over legacy `AGENT_API_KEY`. |
 | `AGENT_REQUIRE_API_KEY` | `false` | Refuse agent-server startup when no API key is configured. The Helm deployment sets this to `true`. |
 | `PROMETHEUS_URL` | `http://localhost:19090` | Prometheus endpoint for the `get_metrics` tool |

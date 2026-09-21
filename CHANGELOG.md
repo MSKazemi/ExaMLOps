@@ -5,6 +5,47 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added — the LLM gateway is a real, standalone service; Skipper and the dashboard copilot no longer hold a provider credential (ADR 0151-0156)
+
+`examlops.gateway` was a library other processes imported into their own address space. The LLM
+Gateway program's umbrella decision — "one gateway service is the only path to a model" — is now
+built: `platform/services/llm_gateway` is a FastAPI service (`ghcr.io/mskazemi/examlops-llm-gateway`,
+Compose profile `llm-gateway`/`gateway`, port 8020/18020) fronting the same `Provider`/`Router`
+code the library already had, with routing, resilience, configuration and typed errors promoted
+into their own modules.
+
+- **Skipper and the dashboard copilot are cut over.** `AZURE_OPENAI_API_KEY`/`_ENDPOINT`/
+  `_DEPLOYMENT` are gone from `skipper/config.py` and `skipper/llm.py` — replaced by
+  `AGENT_LLM_GATEWAY_URL` (+ `_KEY`/`_KEY_FILE`/`_MODEL`/`_TIMEOUT`). With the gateway configured,
+  the agent holds a virtual key and never a provider credential; Ollama's `num_ctx`/`keep_alive`/
+  `think` still travel through, carried in the request under `examlops.ollama` rather than set on
+  a direct client. `check_backend()` probes `/ready` **and** an authenticated `/v1/models`, so a
+  gateway that is up but rejects the key reports unusable rather than silently falling through.
+  The dashboard copilot (`copilot.py`) now surfaces the gateway's own typed error codes
+  (`upstream_unavailable`, `model_not_found`, `key_invalid`, `locality_denied`, …) as plain-language
+  operator messages instead of one generic "could not answer."
+- **New modules:** `examlops.gateway.config` (declarative, validated `gateway.yaml`, ADR 0155),
+  `examlops.gateway.resilience` (bounded retry/circuit-breaker/timeout policy, ADR 0153),
+  `examlops.gateway.routing` (explicit route resolution and failover, ADR 0153),
+  `examlops.gateway.service.app` (the FastAPI app: `/v1/chat/completions` incl. streaming,
+  `/v1/models`, `/ready`, `/admin/*` and `/metrics` behind `LLM_GATEWAY_ADMIN_TOKEN`).
+- **Auth and secrets:** `LLM_GATEWAY_AUTH=keys` (default) requires every caller to hold a virtual
+  key (`exa gateway key issue`); `off` disables it for a loopback-only deployment. A placeholder
+  or under-16-character `LLM_GATEWAY_ADMIN_TOKEN` refuses to start the admin surface rather than
+  serving it insecurely.
+- **No config required to start:** with no `gateway.yaml`, the service discovers chat models from
+  the Ollama at `EXAMLOPS_LLM_OLLAMA_URL` and renders one route per model — the same
+  zero-config path the library already had (ADR 0152), now reachable over HTTP.
+- Docker Compose: new opt-in `llm-gateway` service with a `/ready`-based healthcheck (readiness
+  latches — a later model outage degrades to typed 503s, not a restart loop, ADR 0153 d10);
+  `.gitlab-ci.yml`'s image-build matrix gained the new service.
+- Docs: `docs/guides/agent.md`, `docs/reference/env-vars.md` and `docs/explore/services.md`
+  updated; the release image list (`docs/guides/release-process.md`) and
+  `.github/workflows/release.yml`'s image matrix gained `llm-gateway` so it is built, signed and
+  published like every other service image.
+- Tests: `tests/unit/test_gateway_config.py`, `test_gateway_resilience.py`, `test_gateway_routing.py`,
+  `test_llm_gateway_service.py` (95 tests) plus updated agent/dashboard coverage.
+
 ### Added - agent tool broker: typed tool grants, an enforcing wrapper, `exa broker` (ADR 0145, tool half)
 
 - `examlops.tool_broker`: a typed, versioned `ToolGrant` (per subject - an agent name, an agent-version

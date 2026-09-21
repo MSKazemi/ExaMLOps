@@ -107,6 +107,11 @@ services:
     networks: [control, ops]
   gateway-authz:
     networks: [db, control, ops]
+  # LLM gateway (`--profile llm-gateway`): consumers (agent, dashboard, control-plane) reach it on
+  # `control`; it reads virtual keys and writes usage in the platform store (`db`); `ops` is for
+  # Prometheus and the trace exporter.
+  llm-gateway:
+    networks: [db, control, ops]
   # Secrets manager (`--profile secrets`): its consumers (control-plane, dashboard, agent,
   # dataplane) all share `control`, and nothing else needs to reach it.
   openbao:

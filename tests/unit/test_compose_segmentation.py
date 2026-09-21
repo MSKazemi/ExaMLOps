@@ -51,6 +51,7 @@ STATEFUL = {
     "autopilot-follower",
     "skipper-watch",
     "gateway-authz",
+    "llm-gateway",
 }
 RUNTIME_EDGES |= {(s, "postgres") for s in STATEFUL}
 
