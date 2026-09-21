@@ -33,13 +33,22 @@ images released with it.
 ## Install a release
 
 ```bash
-# CLI + SDK
-pipx install examlops==X.Y.Z
+# CLI + SDK — until PyPI publishing is on (see the note above), install straight from the
+# release's own wheel asset instead of `pipx install examlops==X.Y.Z` (that command needs PyPI
+# and fails with "No matching distribution found" until the Trusted Publisher is configured):
+pipx install "https://github.com/MSKazemi/ExaMLOps/releases/download/vX.Y.Z/examlops-X.Y.Z-py3-none-any.whl"
+# or, into your own virtualenv:
+pip install "https://github.com/MSKazemi/ExaMLOps/releases/download/vX.Y.Z/examlops-X.Y.Z-py3-none-any.whl"
 
 # Kubernetes
 helm install examlops oci://ghcr.io/mskazemi/charts/examlops --version X.Y.Z \
   --set global.imageRegistry=ghcr.io/mskazemi/
 ```
+
+Verified working end to end (2026-09-21, v0.61.0): downloading the release wheel and `pip
+install`-ing it into a fresh virtualenv gives a real `exa` command reporting the right version and
+running commands correctly. Once PyPI publishing is on, `pipx install examlops==X.Y.Z` becomes the
+simpler form — the URL install above keeps working regardless.
 
 Apptainer / Singularity sites pull the same images: `apptainer pull docker://ghcr.io/mskazemi/examlops-control-plane:X.Y.Z`.
 The Kubernetes prerequisites (Postgres, object storage, the secret the chart reads) are in
