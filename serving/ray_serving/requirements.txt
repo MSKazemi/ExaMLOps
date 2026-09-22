@@ -13,7 +13,7 @@ pandas==2.3.3
 scikit-learn==1.9.1
 xgboost==3.2.0
 numpy
-boto3>=1.43.92
+boto3>=1.43.94
 # Open Inference Protocol v2 over gRPC (serving/oip_grpc, ADR 0126): its generated stubs need
 # grpcio >= 1.80 and protobuf >= 6.31.1 at run time; httpx calls the REST implementation. Our own
 # stubs are the modern "NO CHECKED-IN PROTOBUF GENCODE" style and tolerate protobuf 7 fine
