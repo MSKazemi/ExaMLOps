@@ -5,6 +5,13 @@ typed error envelope (ADR 0156 d1), readiness, admin and metrics. Which deployme
 and what happens when one fails, is :class:`examlops.gateway.routing.GatewayCore`; where the models
 are is :mod:`examlops.gateway.config`. Keys, budgets and usage accounting reuse the gateway library
 so the in-process client and this service can never disagree about them.
+
+D8 guardrails (input + output scan), the B3 semantic cache and B1 prompt-registry references are
+also reused from the gateway library here (2026-09-23) — the in-process
+:class:`examlops.gateway.GatewayClient` and this network edge must not disagree about what is
+scanned, cached or templated any more than they already agree about keys and budgets. The streaming
+path gets the same input scan and prompt-ref resolution as the non-streaming one; output scanning
+and the semantic cache are non-streaming only for now (see the docstrings on ``chat_completions``).
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -30,12 +38,19 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from examlops.gateway import (
     BudgetExceeded,
     GatewayError,
+    GuardrailBlocked,
     KeyInvalid,
     ModelNotAllowed,
     _account,
+    _cache_params,
+    _cacheable,
     _estimate_cost,
+    _guard_messages,
     _hash_key,
+    _truthy,
     authorize,
+    default_guardrail,
+    resolve_prompt_ref,
 )
 from examlops.gateway.config import (
     ConfigError,
@@ -53,7 +68,9 @@ from examlops.gateway.providers import (
     ChatResult,
     ProbeResult,
     ProviderError,
+    Usage,
 )
+from examlops.semantic_cache import SemanticCache, bind_to_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +140,47 @@ _CLIENT_CODES = frozenset(
         "context_overflow",
         "model_not_found",
         "key_invalid",
+        "guardrail_blocked",
     }
 )
+
+
+@dataclass
+class _CacheCompletion:
+    """Duck-types the ``.text``/``.completion_tokens``/``.cost_usd`` a B3 cache store hook expects.
+
+    :func:`examlops.semantic_cache.bind_to_gateway` was written against
+    :class:`examlops.gateway.Completion`; this service has its own :class:`ChatResult` shape, so a
+    tiny shim is cheaper and clearer than importing the client's dataclass just for these 3 fields.
+    """
+
+    text: str
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+def prepare_messages(
+    messages: list[dict[str, Any]],
+    tenant: str,
+    guard: Any,
+    prompt_ref: str | None,
+) -> list[dict[str, Any]]:
+    """Guard-scan the caller's own messages, then prepend a registry prompt template if named.
+
+    Same order and reasoning :class:`examlops.gateway.GatewayClient` uses: only the caller's text
+    is untrusted input, so only it is scanned before dispatch — a registry template is reviewed,
+    versioned text and must not block every request it serves. Runs in a worker thread (guard
+    scanning and prompt lookup are both synchronous, occasionally-blocking calls).
+    """
+    if guard is not None:
+        messages = _guard_messages(guard, messages, tenant)
+    if prompt_ref:
+        try:
+            template, _name, _version = resolve_prompt_ref(prompt_ref)
+        except LookupError as exc:
+            raise ProviderError("invalid_request", str(exc)) from exc
+        messages = [{"role": "system", "content": template}, *messages]
+    return messages
 
 
 class _State:
@@ -139,6 +195,7 @@ class _State:
         self.probes: dict[str, ProbeResult] = {}
         self.probed_at = 0.0
         self.background: set[asyncio.Task[Any]] = set()
+        self.guardrails: dict[str, Any] = {}  # tenant -> guard instance or None, built once
 
     async def ensure_runtime(self) -> Runtime:
         if self.runtime is None:
@@ -159,6 +216,17 @@ class _State:
         task = asyncio.ensure_future(coro)
         self.background.add(task)
         task.add_done_callback(self.background.discard)
+
+    def guardrail_for(self, tenant: str) -> Any:
+        """The D8 guardrail for one tenant (ADR 0026 clause 3), built once and cached.
+
+        ``default_guardrail`` may construct an optional NER model; building it per-request would
+        pay that cost on every call, so each tenant's instance — or its absence, when
+        ``EXAMLOPS_GUARDRAIL_MODE=off`` — is resolved once and reused for the process lifetime.
+        """
+        if tenant not in self.guardrails:
+            self.guardrails[tenant] = default_guardrail(tenant)
+        return self.guardrails[tenant]
 
 
 class _Metrics:
@@ -244,6 +312,12 @@ def create_app(
         os.getenv("LLM_GATEWAY_ADMIN_TOKEN", "") if admin_token is None else admin_token
     )
     metrics = _Metrics()
+    # D8/B3 wiring (BL-103, 2026-09-23): guardrails always run (governed by the same
+    # EXAMLOPS_GUARDRAIL_MODE the in-process GatewayClient honours, default "monitor" — scan and
+    # record, never block, until an operator opts into "enforce"). The semantic cache changes
+    # response behaviour for repeat-ish prompts, so it stays opt-in per deployment.
+    cache_enabled = _truthy(os.getenv("LLM_GATEWAY_SEMANTIC_CACHE", ""))
+    semantic_cache = SemanticCache() if cache_enabled else None
 
     async def load() -> Runtime:
         if config is not None:
@@ -264,10 +338,11 @@ def create_app(
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         rt = await state.ensure_runtime()  # an invalid config fails the start, loudly
         logger.info(
-            "llm-gateway up: %d routes, source=%s, warnings=%d",
+            "llm-gateway up: %d routes, source=%s, warnings=%d, cache=%s",
             len(rt.catalog.routes),
             rt.source,
             len(rt.warnings),
+            "on" if semantic_cache is not None else "off",
         )
         yield
 
@@ -303,6 +378,9 @@ def create_app(
         elif isinstance(exc, BudgetExceeded):
             code, status, message, attempts = "budget_exceeded", 429, str(exc), []
             metrics.denials.labels("budget").inc()
+        elif isinstance(exc, GuardrailBlocked):
+            code, status, message, attempts = "guardrail_blocked", 400, str(exc), []
+            metrics.denials.labels("guardrail").inc()
         elif isinstance(exc, _Http):
             code, status, message, attempts = exc.code, exc.status, exc.message, []
         else:
@@ -321,10 +399,12 @@ def create_app(
         header = request.headers.get("authorization", "")
         return header[7:].strip() if header[:7].lower() == "bearer " else None
 
-    async def authenticate(request: Request, model: str | None) -> tuple[str | None, list[str]]:
-        """→ (key hash, model allow-list). Off ⇒ (None, [])."""
+    async def authenticate(
+        request: Request, model: str | None
+    ) -> tuple[str | None, list[str], str]:
+        """→ (key hash, model allow-list, tenant). Off ⇒ (None, [], "default")."""
         if auth_mode == "off":
-            return None, []
+            return None, [], "default"
         raw = bearer(request)
         if not raw:
             raise KeyInvalid("missing bearer token: send `Authorization: Bearer <virtual key>`")
@@ -339,7 +419,7 @@ def create_app(
                 raise KeyInvalid("unknown or revoked virtual key")
         if rec is None:  # unreachable: authorize() raises instead of returning None
             raise KeyInvalid("unknown or revoked virtual key")
-        return _hash_key(raw), list(rec.get("models") or [])
+        return _hash_key(raw), list(rec.get("models") or []), str(rec.get("tenant") or "default")
 
     def require_admin(request: Request) -> None:
         if not token:
@@ -401,7 +481,9 @@ def create_app(
             where = ".".join(str(p) for p in first["loc"]) or "body"
             raise ProviderError("invalid_request", f"{where}: {first['msg']}") from None
 
-    def build_request(body: _ChatBody, rt: Runtime) -> tuple[ChatRequest, tuple[str, ...]]:
+    def build_request(
+        body: _ChatBody, rt: Runtime, messages: list[dict[str, Any]]
+    ) -> tuple[ChatRequest, tuple[str, ...]]:
         hints = body.examlops or (body.extra_body or {}).get("examlops") or {}
         allowed = rt.allowed_localities
         if isinstance(hints.get("allowed_localities"), list):  # a caller may narrow, never widen
@@ -409,7 +491,7 @@ def create_app(
         stop = [body.stop] if isinstance(body.stop, str) else body.stop
         req = ChatRequest(
             model=body.model,
-            messages=body.messages,
+            messages=messages,
             temperature=body.temperature,
             top_p=body.top_p,
             max_tokens=body.max_completion_tokens or body.max_tokens,
@@ -462,6 +544,21 @@ def create_app(
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Response:
+        """The one HTTP entry point every caller (Skipper, RAG, `exa gateway`, a router) uses.
+
+        Order on the non-streaming path: authenticate → D8 **input** scan + B1 prompt-ref
+        (``prepare_messages``) → B3 cache lookup → dispatch (skipped on a cache hit) → accounting
+        (skipped on a cache hit — no cost was incurred) → D8 **output** scan → B3 cache store
+        (skipped on a cache hit — it is already in the cache). This mirrors
+        :meth:`examlops.gateway.GatewayClient.chat` exactly, clause for clause.
+
+        The streaming path gets the same input scan and prompt-ref resolution — the request is no
+        less untrusted for asking to stream — but not the output scan or the cache: blocking or
+        redacting a response after tokens have already been sent to the caller does not undo the
+        send, and a cache keyed on a complete answer has nothing to key a partial one on. Closing
+        that gap needs a buffering or chunk-level design this pass does not attempt (queued,
+        `.claude/plans/BACKLOG.md` BL-115).
+        """
         rid = _request_id(request)
         started = time.perf_counter()
         route_label, provider, upstream = "unknown", "none", "unknown"
@@ -472,37 +569,98 @@ def create_app(
             body = await read_body(request)
             route = rt.catalog.resolve(body.model)
             route_label = route.name if route else "unknown"
-            key_hash, _ = await authenticate(request, body.model)
-            req, allowed = build_request(body, rt)
+            key_hash, _, tenant = await authenticate(request, body.model)
+            hints = body.examlops or (body.extra_body or {}).get("examlops") or {}
+            guard = state.guardrail_for(tenant)
+            messages = await asyncio.to_thread(
+                prepare_messages, body.messages, tenant, guard, hints.get("prompt_ref")
+            )
+            req, allowed = build_request(body, rt, messages)
             budget = request.headers.get("x-examlops-budget-ms")
             budget_ms = float(budget) if budget and budget.replace(".", "", 1).isdigit() else None
             attempts: list[dict[str, Any]] = []
 
+            cache_kw = {
+                "temperature": body.temperature,
+                "max_tokens": req.max_tokens,
+                "top_p": body.top_p,
+                "stop": req.stop,
+                "seed": body.seed,
+            }
+            cache_params = _cache_params(cache_kw, body.response_format)
+            use_cache = (
+                semantic_cache is not None
+                and not body.stream
+                and _cacheable(messages)
+                and not bool(hints.get("no_cache"))
+            )
+
             if not body.stream:
-                result = await rt.core.chat(
-                    body.model,
-                    req,
-                    allowed_localities=allowed,
-                    caller_budget_ms=budget_ms,
-                    attempts=attempts,
-                )
+                result: ChatResult | None = None
+                cache_hit = False
+                if use_cache:
+                    assert semantic_cache is not None  # implied by use_cache's own condition
+                    lookup, _store = bind_to_gateway(semantic_cache, tenant)
+                    hit_text = await asyncio.to_thread(lookup, body.model, messages, cache_params)
+                    if hit_text is not None:
+                        result = ChatResult(
+                            text=hit_text, model=body.model, provider="cache", usage=Usage()
+                        )
+                        cache_hit = True
+
+                if result is None:
+                    result = await rt.core.chat(
+                        body.model,
+                        req,
+                        allowed_localities=allowed,
+                        caller_budget_ms=budget_ms,
+                        attempts=attempts,
+                    )
+
                 provider, upstream = result.provider, result.model
                 ms = (time.perf_counter() - started) * 1000.0
-                await asyncio.to_thread(
-                    record, rt, route_label, key_hash, provider, result.usage, ms, error=False
-                )
+                if not cache_hit:  # a cache hit spent nothing and reused an already-accounted call
+                    await asyncio.to_thread(
+                        record, rt, route_label, key_hash, provider, result.usage, ms, error=False
+                    )
                 metrics.requests.labels(route_label, provider, upstream, "200", "ok").inc()
                 metrics.seconds.labels(route_label).observe(ms / 1000.0)
                 if result.ttft_ms is not None:
                     metrics.ttft.labels(route_label, provider).observe(result.ttft_ms / 1000.0)
                 metrics.tokens.labels("prompt").inc(result.usage.prompt_tokens)
                 metrics.tokens.labels("completion").inc(result.usage.completion_tokens)
+
+                # D8 outbound scan (ADR 0026 clause 3). After accounting on purpose: the tokens, if
+                # any were spent, are already billed, so a blocked answer disappearing must not
+                # make the bill disagree with the provider's. Before the cache store, so a blocked
+                # answer is never cached and a redacted one is cached redacted.
+                if guard is not None:
+                    verdict = await asyncio.to_thread(
+                        guard.check_output, result.text, {"tenant": tenant, "model": body.model}
+                    )
+                    if verdict.blocked:
+                        raise GuardrailBlocked("response", verdict.findings, verdict.reason)
+                    result.text = verdict.text
+
+                if use_cache and not cache_hit:
+                    assert semantic_cache is not None  # implied by use_cache's own condition
+                    _lookup, store = bind_to_gateway(semantic_cache, tenant)
+                    await asyncio.to_thread(
+                        store,
+                        body.model,
+                        messages,
+                        _CacheCompletion(result.text, result.usage.completion_tokens),
+                        cache_params,
+                    )
+
                 headers = {
                     "x-request-id": rid,
                     "x-examlops-route": route_label,
                     "x-examlops-provider": provider,
                     "x-examlops-model": upstream,
                 }
+                if use_cache:
+                    headers["x-examlops-cache"] = "hit" if cache_hit else "miss"
                 if result.load_ms and result.load_ms >= 500:
                     headers["x-examlops-cold"] = (
                         "1"  # the model was loaded for this request (ADR 0153 d8)
@@ -525,7 +683,10 @@ def create_app(
             if (
                 rt is not None
                 and route_label != "unknown"
-                and not isinstance(exc, _Http | KeyInvalid | ModelNotAllowed | BudgetExceeded)
+                and not isinstance(
+                    exc,
+                    _Http | KeyInvalid | ModelNotAllowed | BudgetExceeded | GuardrailBlocked,
+                )
             ):
                 ms = (time.perf_counter() - started) * 1000.0
                 await asyncio.to_thread(
@@ -604,7 +765,7 @@ def create_app(
         rid = _request_id(request)
         try:
             rt = await state.ensure_runtime()
-            _, allow = await authenticate(request, None)
+            _, allow, _ = await authenticate(request, None)
             snap = rt.core.snapshot()
             data = []
             for name, route in rt.catalog.routes.items():
