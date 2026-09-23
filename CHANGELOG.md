@@ -5,6 +5,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed - the live LLM gateway service had no guardrails, cache or prompt registry (ADR 0151-0156)
+
+- The deployed `llm-gateway` HTTP service — the real network edge Skipper/RAG/any external router
+  reach — never imported `examlops.guardrails`, `examlops.semantic_cache` or the prompt registry;
+  only the in-process `GatewayClient` enforced them, so the real edge shipped with zero
+  prompt-injection/PII protection. Now wired in directly from the same client functions: D8 input +
+  output guard scan on every non-streaming request (input-only on streaming), governed by the
+  existing `EXAMLOPS_GUARDRAIL_MODE` (default `monitor`, no behaviour change unless an operator
+  already runs `enforce`); B1 `examlops.prompt_ref` template resolution (streaming + non-streaming);
+  an opt-in (`LLM_GATEWAY_SEMANTIC_CACHE=1`) B3 semantic cache, non-streaming only. New
+  `x-examlops-cache: hit|miss` response header (named in ADR 0156 d1, never emitted before) and a
+  `guardrail_blocked` typed error code. Streaming output-scan/cache remain a documented, filed gap
+  (`.claude/plans/BACKLOG.md` BL-115).
+- ADRs 0151–0156 (the LLM gateway program) shipped in code the day after being written but their
+  status lines were never updated from `Proposed` — flipped all six to `Partially implemented` with
+  the evidence and the specific unmet clause named per ADR.
+- Three stale/false doc claims fixed: `model-gateway.md` said no standalone gateway service ships
+  (false since the service above landed); `llm-serving-engines.md` and `genai-observability.md` both
+  claimed GenAI Grafana dashboard panels ship that do not exist (0 of 7 real dashboards chart any
+  GenAI metric — the underlying metrics are real, the dashboard panel itself is queued as BL-114).
+
 ### Added - real local distributed training with sharded checkpoints and resume (ADR 0032)
 
 - `exa pipeline distributed run --local [--nproc N] [--steps S] [--checkpoint-every K]
