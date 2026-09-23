@@ -61,7 +61,17 @@ with unknown fields rejected the way `kubectl apply --validate=strict` rejects t
 covers structure only; CEL rules and admission webhooks run in the cluster. A test fails once the
 pinned release is older than KServe's support window, so the pin is refreshed rather than left to
 age. When `kubectl` and a cluster are reachable, the manifest is also checked with
-`kubectl apply --dry-run=server`. Nothing is applied for real.
+`kubectl apply --dry-run=server`. **Nothing is applied for real through this `exa serve
+manifest`/`kserve-k8s` path** — it is a generate-and-validate-only surface (E1's `ServingBackend`
+seam).
+
+A **separate, newer path does apply for real**: `exa serve llm start --launcher kserve` (ADR 0142
+decision 6, the `examlops.serving.substrates` seam) performs a genuine Kubernetes Server-Side
+Apply through `KServeSubstrate.apply()`, plan-gated and audited, live-verified against a real kind
+cluster running KServe's own CRDs (`tests/integration/test_kserve_live_apply_kind_live.py`) — and
+`status()`/`stop()` read and delete the live object the same way. If you need KServe to actually
+touch a cluster today, that is the command; this page's `exa serve manifest` remains the
+render-only, review-before-you-apply surface for the `kserve-k8s` `ServingBackend`.
 
 ## Canary rollouts
 

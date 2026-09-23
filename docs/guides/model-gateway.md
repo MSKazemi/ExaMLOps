@@ -4,14 +4,28 @@ One OpenAI-compatible gateway sits in front of every LLM backend — Anthropic, 
 self-hosted vLLM/SGLang (E2) — with **weighted routing + failover**, per-tenant/project
 **virtual keys** (allow-list + budget), per-call **C1 span + FinOps cost**, and a B3
 semantic-cache hook. `exa gateway chat`, RAG (`exa rag query`) and the challenger judge
-(`exa serve challenger judge`) go through the gateway client. **Skipper does not yet:** it builds
-its model client directly from its own configuration, so gateway keys, budgets, guardrails and
-per-call cost do not apply to its calls. `exa serve llm chat` also talks to an endpoint directly,
-by design.
+(`exa serve challenger judge`) go through the gateway client. **Skipper now does too** — it
+cut over from building its model client directly (`skipper/llm.py`, which used to hold an Azure
+provider path) to going through the gateway, so gateway keys, budgets, guardrails and per-call
+cost apply to Skipper's calls as of 2026-09-21 (ADR 0151-0156). `exa serve llm chat` still talks
+to an endpoint directly, by design.
 
 Design: ADR 0010 · spec `design/vision/specs/B2-model-gateway.md`. `examlops.gateway` is an
-in-process client + policy layer; no standalone gateway service ships with the stack. It works
-standalone (backends are callables), so routing/governance/cost logic runs with no external service.
+in-process client + policy layer, and it works standalone with no external service (backends are
+callables), which is what the rest of this page describes.
+
+**A separate, standalone `llm-gateway` HTTP service also ships** (ADR 0151-0156, the LLM Gateway
+program) — a containerized FastAPI/uvicorn process (`platform/services/llm_gateway/`,
+Compose profile `llm-gateway`/`gateway`) with an OpenAI-compatible `/v1/chat/completions`
+(SSE streaming), async provider adapters (`examlops.gateway.providers`, Ollama today), explicit
+bounded routing/resilience (`gateway/routing.py`, `gateway/resilience.py`), declarative
+`gateway.yaml` config, and real token-level Prometheus metrics on `/metrics`. It is a different
+deployment shape from the in-process library on this page — a network service other processes
+call over HTTP, rather than a Python import — and currently does **not** wire in guardrails,
+the semantic cache or the prompt registry on its request path (tracked
+`.claude/plans/llm-gateway/PLAN.md` P2). See `docs/guides/agent.md` and `docs/guides/env-vars.md`
+for how Skipper reaches it (`AGENT_LLM_GATEWAY_URL`) until a dedicated guide for the service
+itself lands.
 
 ## Routing & failover
 

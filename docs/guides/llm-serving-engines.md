@@ -97,9 +97,12 @@ exa models quantize JPCP 17 --method awq --path ./artifacts/jpcp \
 ```
 
 Before promotion, a quantized version must clear the **C3 eval-gate** (quality floor)
-— wire it into `exa pipeline promote`. On a GPU host the real engine quantizer runs; in
-degraded mode the transformation is recorded as provenance so the sign+BOM path stays
-exercisable.
+— wire it into `exa pipeline promote`. **No quantization compute runs today, on any
+host** (CPU or GPU) — `quantize_model()`'s own docstring states this explicitly and
+`weights_transformed` is unconditionally `False`. The command records the intended
+transformation as provenance-only (signed + BOM'd), so the sign+BOM path stays
+exercisable ahead of a real AWQ/GPTQ/FP8 compute backend being wired in (tracked, not
+yet built — see ADR 0016).
 
 ## Speculative decoding
 
@@ -126,5 +129,8 @@ exa serve llm bench qwen-vl    # TTFT p50 + output tokens/s
 
 Per-generation cost lands in C1 GenAI spans and FinOps, via the swappable `llm_cost`
 provider when one is configured (`EXAMLOPS_LLM_COST_PROVIDER`). Spec-decode acceptance
-and prefix-cache hit rate surface in Grafana. GPU requests honour E3 sharing where
+and prefix-cache hit rate are recorded to C1 GenAI telemetry spans (see above) and to
+`vllm:*` Prometheus metrics scraped from the running process — **no Grafana dashboard
+panel ships for them yet**; read them via `exa serve llm bench`/`status`, a raw
+Prometheus query, or a span in Tempo/Jaeger. GPU requests honour E3 sharing where
 configured.

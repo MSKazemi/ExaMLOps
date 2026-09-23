@@ -4,7 +4,14 @@ The **LLMOps** page surfaces the platform's LLM-serving substrate: the LLM endpo
 continuous-eval scores. Surfaces whose backends aren't wired yet degrade gracefully — they appear as
 "not yet available" rather than errors.
 
-Open it from the sidebar (**LLMOps**) or navigate to `/llmops`.
+Open it from the sidebar (**LLMOps**) or navigate to `/serve/llmops` (the ADR 0097 nav
+reorganization moved it here; the old `/llmops` path still works via a one-release-only redirect
+shim in `ROUTE_REDIRECTS`, do not depend on it).
+
+Two sibling consoles have since shipped alongside this one and aren't yet cross-linked from here:
+**Gateway** (`/serve/gateway`) for the LLM gateway's virtual keys/routes/health, and **Prompts**
+(`/build/prompts`) for the versioned prompt registry (ADR 0009). This page's own scope stays the
+endpoint registry + continuous-eval surfaces described below.
 
 - **Feature:** F10 · **Design:** ADR 0064 (`design/adr/0064-dashboard-llmops-console.md`) ·
   **Spec:** `design/vision/specs/F10-llmops-console.md`
@@ -36,8 +43,12 @@ Returns `{endpoints, evals}`. See [`docs/reference/api.md`](../reference/api.md)
 ## Notes & limits
 
 - Reads from `platform.db` (`PLATFORM_DB`); missing tables degrade to empty sections, never an error.
-- This slice ships the endpoint registry + eval scores. The richer F10 surfaces — a **prompt studio**
-  (version/diff/eval/rollback + sanitized editor, R1), the **LiteLLM gateway** (routing/rate-limit/
-  fallback + cost attribution to `model_costs`, R2), **semantic-cache** metrics (R3), **RAG-ops**
-  pipeline + retrieval quality (R4), and **vector-DB/embedding-lifecycle** views (R5) — build on this
-  and are tracked in the dashboard-nextgen plan.
+- This slice ships the endpoint registry + eval scores. Some of the richer F10 surfaces have since
+  shipped as their own pages rather than growing inside this one: a versioned **prompt registry**
+  (`/build/prompts`, ADR 0009 — not the originally-planned "prompt studio" diff/rollback editor,
+  which remains unbuilt) and a real LLM **gateway** (`/serve/gateway`, ADR 0151-0156 — not a
+  LiteLLM proxy, see `docs/guides/model-gateway.md`, with routing/resilience/virtual-key cost
+  attribution; rate-limiting beyond per-key dollar budgets is not yet built, see
+  `.claude/plans/BACKLOG.md` BL-107). **semantic-cache** metrics (R3), **RAG-ops** pipeline +
+  retrieval quality (R4), and **vector-DB/embedding-lifecycle** views (R5) remain unbuilt and are
+  tracked in the dashboard-nextgen plan.
