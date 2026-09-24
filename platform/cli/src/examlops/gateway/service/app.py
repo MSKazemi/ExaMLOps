@@ -664,12 +664,29 @@ def create_app(
         (skipped on a cache hit — it is already in the cache). This mirrors
         :meth:`examlops.gateway.GatewayClient.chat` exactly, clause for clause.
 
-        The streaming path gets the same input scan and prompt-ref resolution — the request is no
-        less untrusted for asking to stream — but not the output scan or the cache: blocking or
-        redacting a response after tokens have already been sent to the caller does not undo the
-        send, and a cache keyed on a complete answer has nothing to key a partial one on. Closing
-        that gap needs a buffering or chunk-level design this pass does not attempt (queued,
-        `.claude/plans/BACKLOG.md` BL-115).
+        The streaming path (BL-115) gets the same input scan and prompt-ref resolution, plus:
+
+        - **B3 cache lookup** runs before dispatch exactly as the non-streaming path does; a hit
+          is re-checked by the D8 output guard (a cached answer is not exempt from the policy
+          that applies right now) and served as a single-chunk synthetic SSE stream — honest
+          about not being token-by-token, since it never called a model.
+        - **D8 output scan in ``monitor`` mode (the default) streams straight through, unbuffered
+          — zero added latency.** Monitor never alters text, so scanning the growing response
+          once at stream end for ``guardrail_events`` parity with the non-streaming path costs
+          nothing a caller can observe.
+        - **D8 output scan in ``enforce`` mode buffers text behind a small lookback window**
+          (``_STREAM_GUARD_FLUSH_CHARS`` new chars trigger a flush, holding back the last
+          ``_STREAM_GUARD_LOOKBACK`` chars so a PII/secret pattern split across a flush boundary
+          is never released half-redacted). A block detected before anything has reached the
+          caller refuses the whole response, matching the non-streaming path; a block detected
+          after partial content was already sent cannot undo that send, so the stream is instead
+          truncated with a ``content_filter`` finish reason — the same "cannot unsend bytes"
+          bound named in ADR 0026, made as small as the lookback window rather than the whole
+          response. Only the ``.text`` field is scanned/redacted, matching the non-streaming
+          path's scope (``.reasoning``/``.tool_calls`` are forwarded untouched there too).
+        - **B3 cache store** runs once the stream completes successfully (not blocked, not
+          failed), using the accumulated (guard-redacted, in enforce mode) text — a cache entry
+          keyed on a complete answer, never a partial one.
         """
         rid = _request_id(request)
         started = time.perf_counter()
@@ -705,7 +722,6 @@ def create_app(
             cache_params = _cache_params(cache_kw, body.response_format)
             use_cache = (
                 semantic_cache is not None
-                and not body.stream
                 and _cacheable(messages)
                 and not bool(hints.get("no_cache"))
             )
@@ -792,6 +808,58 @@ def create_app(
                     )
                 return JSONResponse(completion_json(result, body.model, rid), headers=headers)
 
+            if use_cache:
+                assert semantic_cache is not None  # implied by use_cache's own condition
+                lookup, _store = bind_to_gateway(semantic_cache, tenant)
+                cache_hit_text = await asyncio.to_thread(lookup, body.model, messages, cache_params)
+                if cache_hit_text is not None:
+                    # A cache hit is not exempt from whatever the D8 output policy says right
+                    # now -- re-checked exactly like the non-streaming path's cache hit is.
+                    if guard is not None:
+                        verdict = await asyncio.to_thread(
+                            guard.check_output,
+                            cache_hit_text,
+                            {"tenant": tenant, "model": body.model},
+                        )
+                        if verdict.blocked:
+                            metrics.denials.labels("guardrail").inc()
+                            return error_response(
+                                GuardrailBlocked("response", verdict.findings, verdict.reason),
+                                rid,
+                                route_label,
+                                "cache",
+                                body.model,
+                            )
+                        cache_hit_text = verdict.text
+                    metrics.cache.labels("hit").inc()
+                    metrics.requests.labels(route_label, "cache", body.model, "200", "ok").inc()
+                    metrics.seconds.labels(route_label).observe(time.perf_counter() - started)
+                    cache_cid = f"chatcmpl-{rid}"
+
+                    async def cache_events(text: str = cache_hit_text) -> AsyncIterator[str]:
+                        yield _sse(
+                            chunk_json(
+                                ChatChunk(text=text, finish_reason="stop"),
+                                body.model,
+                                cache_cid,
+                                True,
+                            )
+                        )
+                        yield _sse("[DONE]")
+
+                    return StreamingResponse(
+                        cache_events(),
+                        media_type="text/event-stream",
+                        headers={
+                            "x-request-id": rid,
+                            "x-examlops-route": route_label,
+                            "x-examlops-provider": "cache",
+                            "x-examlops-model": body.model,
+                            "x-examlops-cache": "hit",
+                            "cache-control": "no-cache",
+                        },
+                    )
+
             gen = rt.core.chat_stream(
                 body.model,
                 req,
@@ -830,7 +898,13 @@ def create_app(
             usage = None
             sent_role = False
             failed = False
+            blocked = False
             ttft_seen: float | None = None
+            raw_text = ""  # accumulated completion .text (unredacted), for cache store + scans
+            redacted_text = ""  # accumulated .text actually released, when enforce_guard
+            enforce_guard = guard is not None and getattr(guard, "mode", "enforce") == "enforce"
+            emitted_raw = 0
+            emitted_out = 0
             try:
                 stream: AsyncIterator[ChatChunk] = _prepend(first, gen)
                 async for chunk in stream:
@@ -839,8 +913,76 @@ def create_app(
                         metrics.ttft.labels(route_label, provider).observe(chunk.ttft_ms / 1000.0)
                     if chunk.usage is not None:
                         usage = chunk.usage
-                    yield _sse(chunk_json(chunk, body.model, cid, not sent_role))
-                    sent_role = True
+                    if chunk.text:
+                        raw_text += chunk.text
+
+                    if not enforce_guard:
+                        yield _sse(chunk_json(chunk, body.model, cid, not sent_role))
+                        sent_role = True
+                        continue
+
+                    # enforce mode (BL-115): release whatever buffered text is now safe before
+                    # forwarding this chunk's own tool_calls/reasoning/finish_reason -- untouched,
+                    # matching the non-streaming path's .text-only scan scope -- so ordering is
+                    # preserved between redacted content and the metadata that follows it.
+                    emitted_raw, emitted_out, new_text, verdict = await _stream_guard_flush(
+                        guard,
+                        tenant,
+                        body.model,
+                        raw_text,
+                        emitted_raw,
+                        emitted_out,
+                        final=bool(chunk.finish_reason),
+                    )
+                    if verdict is not None and verdict.blocked:
+                        blocked = True
+                        yield _sse(
+                            _envelope(
+                                "guardrail_blocked",
+                                verdict.reason or "output blocked",
+                                rid,
+                                partial=True,
+                            )
+                        )
+                        break
+                    if new_text:
+                        redacted_text += new_text
+                    has_meta = bool(chunk.tool_calls or chunk.reasoning or chunk.finish_reason)
+                    if new_text or has_meta:
+                        out_chunk = ChatChunk(
+                            text=new_text,
+                            reasoning=chunk.reasoning,
+                            tool_calls=chunk.tool_calls,
+                            finish_reason=chunk.finish_reason,
+                        )
+                        yield _sse(chunk_json(out_chunk, body.model, cid, not sent_role))
+                        sent_role = True
+
+                if enforce_guard and not blocked:
+                    # A provider stream with no chunk carrying `finish_reason` (the contract does
+                    # not guarantee one) still needs its trailing buffered text released.
+                    emitted_raw, emitted_out, new_text, verdict = await _stream_guard_flush(
+                        guard, tenant, body.model, raw_text, emitted_raw, emitted_out, final=True
+                    )
+                    if verdict is not None and verdict.blocked:
+                        blocked = True
+                        yield _sse(
+                            _envelope(
+                                "guardrail_blocked",
+                                verdict.reason or "output blocked",
+                                rid,
+                                partial=True,
+                            )
+                        )
+                    elif new_text:
+                        redacted_text += new_text
+                        yield _sse(
+                            chunk_json(ChatChunk(text=new_text), body.model, cid, not sent_role)
+                        )
+                        sent_role = True
+                elif guard is not None and not enforce_guard and not blocked:
+                    await _stream_monitor_scan(guard, tenant, body.model, raw_text)
+
                 if include_usage and usage is not None:
                     yield _sse(
                         {
@@ -863,7 +1005,11 @@ def create_app(
             finally:
                 await gen.aclose()
                 ms = (time.perf_counter() - started) * 1000.0
-                status, code = ("502", "stream_interrupted") if failed else ("200", "ok")
+                if blocked:
+                    status, code = "400", "guardrail_blocked"
+                    metrics.denials.labels("guardrail").inc()
+                else:
+                    status, code = ("502", "stream_interrupted") if failed else ("200", "ok")
                 metrics.requests.labels(route_label, provider, upstream, status, code).inc()
                 metrics.seconds.labels(route_label).observe(ms / 1000.0)
                 if usage is not None:
@@ -873,6 +1019,9 @@ def create_app(
                     if tpot is not None:
                         metrics.tpot.labels(route_label, provider).observe(tpot / 1000.0)
                 assert rt is not None
+                # A block only fires on content the provider actually generated -- the tokens, if
+                # any were spent, are billed here exactly as the non-streaming path bills them
+                # before its own D8 output check can raise (see that path's own comment).
                 state.spawn(
                     asyncio.to_thread(
                         record, rt, route_label, key_hash, provider, usage, ms, error=failed
@@ -882,19 +1031,33 @@ def create_app(
                     state.spawn(
                         record_token_usage(auth, usage.prompt_tokens + usage.completion_tokens)
                     )
+                if use_cache and not failed and not blocked:
+                    final_text = redacted_text if enforce_guard else raw_text
+                    if final_text:
+                        assert semantic_cache is not None  # implied by use_cache's condition
+                        _lookup, store = bind_to_gateway(semantic_cache, tenant)
+                        completion_tokens = usage.completion_tokens if usage else 0
+                        state.spawn(
+                            asyncio.to_thread(
+                                store,
+                                body.model,
+                                messages,
+                                _CacheCompletion(final_text, completion_tokens),
+                                cache_params,
+                            )
+                        )
             yield _sse("[DONE]")
 
-        return StreamingResponse(
-            events(),
-            media_type="text/event-stream",
-            headers={
-                "x-request-id": rid,
-                "x-examlops-route": route_label,
-                "x-examlops-provider": provider,
-                "x-examlops-model": upstream,
-                "cache-control": "no-cache",
-            },
-        )
+        stream_headers = {
+            "x-request-id": rid,
+            "x-examlops-route": route_label,
+            "x-examlops-provider": provider,
+            "x-examlops-model": upstream,
+            "cache-control": "no-cache",
+        }
+        if use_cache:
+            stream_headers["x-examlops-cache"] = "miss"  # a hit already returned above
+        return StreamingResponse(events(), media_type="text/event-stream", headers=stream_headers)
 
     # ── /v1/models, health, readiness ────────────────────────────────────────
 
@@ -1082,6 +1245,62 @@ async def _prepend(
         yield first
     async for chunk in rest:
         yield chunk
+
+
+# ── BL-115: streaming D8 output guard ──────────────────────────────────────────
+#
+# Only the `enforce` mode needs to hold text back — `monitor` never alters text (see
+# `DefaultGuardrail.check_output`), so it costs nothing to stream straight through and scan once
+# at the end purely for `guardrail_events` parity with the non-streaming path.
+_STREAM_GUARD_FLUSH_CHARS = 512  # new raw chars accumulated before an enforce-mode redaction pass
+_STREAM_GUARD_LOOKBACK = 64  # raw chars held back each pass (every D8 pattern is well under this)
+
+
+async def _stream_guard_flush(
+    guard: Any,
+    tenant: str,
+    model: str,
+    raw_text: str,
+    emitted_raw: int,
+    emitted_out: int,
+    *,
+    final: bool,
+) -> tuple[int, int, str, Any]:
+    """One enforce-mode D8 output-guard pass over newly-buffered stream text.
+
+    Returns ``(new_emitted_raw, new_emitted_out, text_to_release, verdict)``. ``verdict`` is
+    ``None`` when nothing was scanned this call (not enough new raw text yet, or nothing new at
+    all). The caller releases ``text_to_release`` and stops the stream when ``verdict.blocked``.
+
+    Holding back the last `_STREAM_GUARD_LOOKBACK` raw chars (unless ``final``) means a
+    PII/secret pattern split across a flush boundary is never released half-redacted: every
+    detector in `examlops.guardrails._PII_PATTERNS` matches well under that many characters.
+    Flushing only once `_STREAM_GUARD_FLUSH_CHARS` new raw chars have accumulated bounds the
+    number of rescans of the growing buffer to `total_length / _STREAM_GUARD_FLUSH_CHARS` rather
+    than one per provider chunk.
+    """
+    safe_to = len(raw_text) if final else len(raw_text) - _STREAM_GUARD_LOOKBACK
+    safe_to = max(safe_to, emitted_raw)
+    if safe_to == emitted_raw or (not final and safe_to - emitted_raw < _STREAM_GUARD_FLUSH_CHARS):
+        return emitted_raw, emitted_out, "", None
+    verdict = await asyncio.to_thread(
+        guard.check_output, raw_text[:safe_to], {"tenant": tenant, "model": model}
+    )
+    if verdict.blocked:
+        return safe_to, emitted_out, "", verdict
+    return safe_to, len(verdict.text), verdict.text[emitted_out:], verdict
+
+
+async def _stream_monitor_scan(guard: Any, tenant: str, model: str, raw_text: str) -> None:
+    """Monitor-mode output scan at stream end — `guardrail_events` parity with the non-streaming
+    path. Monitor never alters text, so this runs after every chunk has already been sent;
+    failures are swallowed, matching every other best-effort telemetry call in this module."""
+    if not raw_text:
+        return
+    try:
+        await asyncio.to_thread(guard.check_output, raw_text, {"tenant": tenant, "model": model})
+    except Exception:  # noqa: BLE001 - telemetry-only; must never affect an already-sent stream
+        pass
 
 
 __all__ = ["GatewayError", "create_app"]

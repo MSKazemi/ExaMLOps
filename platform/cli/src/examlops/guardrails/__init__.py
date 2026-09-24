@@ -310,8 +310,14 @@ class DefaultGuardrail:
         # of a block was lost because a counters table was unavailable, which is a different
         # system having a different problem.
         try:
-            from examlops.data import get_db
+            from examlops.data import get_db, init_db
 
+            # A guardrail check can be the very first thing to touch platform.db in a request
+            # (e.g. a streaming output scan with no virtual key and no cache) -- without this,
+            # the INSERT below silently no-ops on an uninitialized schema and the swallow-all
+            # except makes that failure indistinguishable from "nothing to record" (found by
+            # BL-115's streaming guardrail tests). Near-free after the first call per DB path.
+            init_db()
             with get_db() as conn:
                 conn.execute(
                     """INSERT INTO guardrail_events (tenant, direction, action, rule, mode)

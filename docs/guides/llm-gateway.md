@@ -79,8 +79,10 @@ upper bound on a fixed-window limiter, not a promise of exactly that wait).
    `EXAMLOPS_GUARDRAIL_MODE` (`monitor` default: scan + record, never block; `enforce`: block/redact;
    `off`: skip). Runs on **every** request, streaming included.
 4. **B3 semantic cache, lookup** — only when `LLM_GATEWAY_SEMANTIC_CACHE=1` (off by default —
-   caching changes response behaviour for repeat-ish prompts) and only on the **non-streaming**
-   path. A hit skips dispatch entirely and is not billed. `x-examlops-cache: hit|miss` reports it.
+   caching changes response behaviour for repeat-ish prompts). Runs on both the non-streaming and
+   the **streaming** path (BL-115): a streaming hit is re-checked by the D8 output guard, then
+   served as a single-chunk synthetic SSE stream. A hit skips dispatch entirely and is not billed.
+   `x-examlops-cache: hit|miss` reports it (a streaming hit also gets `x-examlops-provider: cache`).
 5. **Routing** (`GatewayCore`) — `priority` (default), `weighted`, `least_inflight`,
    `lowest_latency`, or `cost_aware` (locality-based: local/site free, external non-zero — see
    `docs/guides/model-gateway.md`'s routing section for the strategy semantics, shared code).
@@ -89,18 +91,34 @@ upper bound on a fixed-window limiter, not a promise of exactly that wait).
 6. **Dispatch** — DNS-rebinding-safe: the real TCP connection is pinned to a freshly re-resolved,
    re-validated address on every connect (`AsyncGuardedBackend`), not just checked once at
    provider construction.
-7. **D8 guardrail, outbound** — only on the **non-streaming** path (see Known gaps). After
-   accounting, so a blocked answer disappearing never makes the bill disagree with the upstream's.
-8. **B3 cache store** — only on a genuine cache miss that passed the outbound scan.
+7. **D8 guardrail, outbound** — on both paths (BL-115). Non-streaming: after accounting, so a
+   blocked answer disappearing never makes the bill disagree with the upstream's. Streaming: see
+   below — `monitor` mode (the default) never alters the stream; `enforce` mode buffers text
+   behind a small lookback window.
+8. **B3 cache store** — only on a genuine cache miss that passed the outbound scan, on both paths.
 9. **Accounting** — cost (local/site = $0, external = the `llm_cost` provider's estimate),
    token counts, latency — all through the same accounting path `GatewayClient` uses.
 
 ## Streaming
 
-`"stream": true` gets Server-Sent Events, same OpenAI chunk shape. Steps 1–3 and 6 above still
-apply to a streaming request; steps 4, 7 and 8 (cache, outbound guardrail scan) do **not** — see
-Known gaps. Once the first byte has gone out, the stream is never re-routed to a different
-deployment (ADR 0153 d9); a mid-stream failure ends with a typed `stream_interrupted` error event
+`"stream": true` gets Server-Sent Events, same OpenAI chunk shape. Every step above applies to a
+streaming request, with two caveats specific to a live (non-cached) generation:
+
+- **D8 output guard in `monitor` mode (default) streams straight through, unbuffered** — monitor
+  never alters text, so scanning the accumulated response once at stream end (purely for
+  `guardrail_events` parity with the non-streaming path) costs nothing a caller can observe.
+- **D8 output guard in `enforce` mode buffers text behind a small lookback window**
+  (`_STREAM_GUARD_FLUSH_CHARS` = 512 new chars trigger a flush, holding back the last
+  `_STREAM_GUARD_LOOKBACK` = 64 chars so a PII/secret pattern split across a flush boundary is
+  never released half-redacted). A block caught before anything reached the caller refuses the
+  whole response; a block caught after partial content was already sent cannot undo that send, so
+  the stream ends with a `guardrail_blocked` SSE error event instead — the tokens already
+  generated are still billed (they were real), matching the non-streaming path's own "billed
+  before the block can raise" ordering. Only `.text` is scanned, matching the non-streaming path's
+  scope (`.reasoning`/`.tool_calls` forward untouched on both paths).
+
+Once the first byte has gone out, a live stream is never re-routed to a different deployment
+(ADR 0153 d9); a mid-stream provider failure ends with a typed `stream_interrupted` error event
 before `[DONE]`, not a silently truncated response.
 
 ## Config: `gateway.yaml`
@@ -173,10 +191,13 @@ text-only deployment), `model_not_found` (404), `key_invalid` (401), `model_not_
 terminal SSE event, not an HTTP status), `config_invalid` (422, `/admin/reload` only),
 `gateway_unavailable` (503). `context_overflow` and `model_loading` are declared in ADR 0156's
 code table but nothing in the gateway currently raises them — no context-length check or
-cold-start-specific signal exists yet, so treat them as reserved, not live. Every response also
-carries `x-request-id`, `x-examlops-route`, `x-examlops-provider`, `x-examlops-model`; a cold-start
-response adds `x-examlops-cold: 1` (ADR 0153 d8); a cache-enabled **non-streaming** response adds
-`x-examlops-cache: hit|miss`.
+cold-start-specific signal exists yet, so treat them as reserved, not live. A blocked live stream
+(BL-115) ends with `guardrail_blocked` as a terminal SSE error event, not an HTTP status — the
+response is already `200` and streaming by the time enforce mode can detect it. Every response
+also carries `x-request-id`, `x-examlops-route`, `x-examlops-provider`, `x-examlops-model`; a
+cold-start response adds `x-examlops-cold: 1` (ADR 0153 d8); a cache-enabled response (streaming
+or not) adds `x-examlops-cache: hit|miss` (a streaming miss only knows this after the cache
+lookup, so the header is set before dispatch either way).
 
 ## Observability
 
@@ -207,10 +228,11 @@ spans, only the metrics above.
 
 ## Known gaps (tracked, not silent)
 
-- **Streaming output scan + cache** — the D8 outbound guardrail scan and the B3 semantic cache both
-  apply to the non-streaming path only. Blocking or redacting a response after tokens have already
-  streamed to the caller, or caching a partial stream, needs a buffering/chunk-level design this
-  service does not yet have.
+- **Streaming enforce-mode redaction has a bounded lookback window, not perfect atomicity** — a
+  block detected after partial content was already sent (BL-115) truncates the stream with a
+  `guardrail_blocked` SSE event rather than un-sending the earlier bytes; this is a hard physical
+  limit (TCP bytes already on the wire), not a design gap, and matches the smallest window that
+  ADR 0026's D8 detectors need (64 raw chars, all well under any pattern's match length).
 - **`/v1/embeddings`** is not implemented — chat only.
 - **OpenAI-compatible upstream providers** (a real router, LiteLLM, OpenRouter, a remote vLLM) are
   not built — only the native Ollama adapter exists today (ADR 0152). `gateway.yaml`'s `type` field

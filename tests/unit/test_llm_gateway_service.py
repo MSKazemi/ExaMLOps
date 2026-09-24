@@ -39,8 +39,19 @@ CFG = {
 }
 
 
+#: BL-115 streaming D8 fixtures: two content halves that split a detector's match across a
+#: provider-chunk boundary, so a test can prove the lookback window actually reassembles it
+#: rather than missing (or half-redacting) a pattern no single chunk contains on its own.
+_TOXIC_STREAM_HALVES = ("i hate", " you")
+_PII_STREAM_HALVES = ("contact me at al", "ice@example.com please")
+
+
 class Upstream:
-    """A scriptable fake Ollama. ``mode``: ok | down | cut (stream dies) | toxic (D8 output test)."""
+    """A scriptable fake Ollama.
+
+    ``mode``: ok | down | cut (stream dies) | toxic (D8 output test) | pii_split (D8 streaming
+    lookback test — an email address split across two stream chunks).
+    """
 
     def __init__(self) -> None:
         self.mode = "ok"
@@ -64,11 +75,17 @@ class Upstream:
             body = json.loads(request.content)
             self.chat_bodies.append(body)
             if body.get("stream"):
+                if self.mode == "toxic":
+                    half_a, half_b = _TOXIC_STREAM_HALVES
+                elif self.mode == "pii_split":
+                    half_a, half_b = _PII_STREAM_HALVES
+                else:
+                    half_a, half_b = "he", "llo"
                 lines = [
-                    {"message": {"role": "assistant", "content": "he"}, "done": False},
+                    {"message": {"role": "assistant", "content": half_a}, "done": False},
                     {"error": "runner died"}
                     if self.mode == "cut"
-                    else {"message": {"role": "assistant", "content": "llo"}, "done": False},
+                    else {"message": {"role": "assistant", "content": half_b}, "done": False},
                     {
                         "message": {"role": "assistant", "content": ""},
                         "done": True,
@@ -668,6 +685,85 @@ async def test_guardrail_is_scoped_per_tenant_not_shared_globally(upstream, monk
     assert r1.status_code == 400 and r2.status_code == 400  # both tenants are guarded
 
 
+# ── BL-115: D8 output guard on the streaming path ──────────────────────────────────────────────
+# `_TOXIC_STREAM_HALVES`/`_PII_STREAM_HALVES` split a detector's match across two provider
+# chunks, so these prove the buffered lookback window reassembles it rather than a naive
+# per-chunk-only scan silently missing (or half-redacting) a pattern no single chunk contains.
+
+
+def _stream_text(events: list) -> str:
+    """Every ``delta.content`` from a parsed SSE event list, concatenated in order."""
+    return "".join(
+        e["choices"][0]["delta"].get("content", "")
+        for e in events
+        if e != "[DONE]" and e.get("choices")
+    )
+
+
+async def test_streaming_enforce_mode_redacts_a_pii_match_split_across_chunks(
+    upstream, monkeypatch
+):
+    monkeypatch.setenv("EXAMLOPS_GUARDRAIL_MODE", "enforce")
+    upstream.mode = "pii_split"
+    async with client(make_app(upstream)) as c:
+        r = await c.post("/v1/chat/completions", json={**BODY, "stream": True})
+    assert r.status_code == 200
+    text = _stream_text(sse(r.text))
+    assert "alice@example.com" not in text
+    assert "[redacted-email]" in text
+
+
+async def test_streaming_enforce_mode_blocks_toxic_content_split_across_chunks(
+    upstream, monkeypatch
+):
+    monkeypatch.setenv("EXAMLOPS_GUARDRAIL_MODE", "enforce")
+    upstream.mode = "toxic"
+    async with client(make_app(upstream)) as c:
+        r = await c.post("/v1/chat/completions", json={**BODY, "stream": True})
+    assert r.status_code == 200  # the block arrives as an SSE error frame, not an HTTP status
+    events = sse(r.text)
+    assert events[-1] == "[DONE]"
+    errors = [e for e in events if isinstance(e, dict) and "error" in e]
+    assert errors and errors[0]["error"]["code"] == "guardrail_blocked"
+    assert upstream.chat_bodies  # the backend was called — the tokens were real and are billed
+    text = _stream_text(events)
+    assert "i hate you" not in text  # the toxic content itself never reached the client
+
+
+async def test_streaming_enforce_mode_blocked_response_is_never_cached(upstream, monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_GUARDRAIL_MODE", "enforce")
+    monkeypatch.setenv("LLM_GATEWAY_SEMANTIC_CACHE", "1")
+    upstream.mode = "toxic"
+    async with client(make_app(upstream)) as c:
+        await c.post("/v1/chat/completions", json={**BODY, "stream": True})
+        r2 = await c.post("/v1/chat/completions", json=BODY)
+    assert "x-examlops-cache" not in r2.headers  # nothing was ever stored
+    assert len(upstream.chat_bodies) == 2  # both requests reached the backend
+
+
+async def test_streaming_monitor_mode_never_alters_text_but_still_records_the_scan(upstream):
+    # No EXAMLOPS_GUARDRAIL_MODE set: default monitor. Text streams through unchanged (monitor
+    # never redacts), but the scan still runs once at stream end for guardrail_events parity
+    # with the non-streaming path -- closing the gap where a streaming response was never
+    # scanned on output at all.
+    upstream.mode = "pii_split"
+    async with client(make_app(upstream)) as c:
+        r = await c.post("/v1/chat/completions", json={**BODY, "stream": True})
+    assert r.status_code == 200
+    text = _stream_text(sse(r.text))
+    assert "alice@example.com" in text  # unchanged -- monitor never redacts
+
+    from examlops.data import get_db, init_db
+
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT action, rule FROM guardrail_events WHERE direction='output'"
+        ).fetchall()
+    assert rows and any("email" in r["rule"] for r in rows)
+    assert all(r["action"] == "allow" for r in rows)  # monitor: recorded, never blocked
+
+
 # ── B3 semantic cache wired into the real edge (ADR 0018, opt-in per deployment) ──────────────
 
 
@@ -701,13 +797,41 @@ async def test_no_cache_hint_bypasses_a_warm_cache(upstream, monkeypatch):
     assert len(upstream.chat_bodies) == 2
 
 
-async def test_streaming_requests_never_use_the_cache(upstream, monkeypatch):
+async def test_a_streaming_request_can_serve_a_cache_hit(upstream, monkeypatch):
+    # BL-115: a non-streaming request warms the cache; the streaming request that follows is
+    # served from it (single synthetic SSE chunk) instead of reaching the backend again.
     monkeypatch.setenv("LLM_GATEWAY_SEMANTIC_CACHE", "1")
     async with client(make_app(upstream)) as c:
-        await c.post("/v1/chat/completions", json=BODY)
+        r1 = await c.post("/v1/chat/completions", json=BODY)
         r2 = await c.post("/v1/chat/completions", json={**BODY, "stream": True})
-    assert "x-examlops-cache" not in r2.headers
-    assert len(upstream.chat_bodies) == 2  # the streamed request still reached the backend
+    assert r1.status_code == 200
+    assert r2.headers["x-examlops-cache"] == "hit"
+    assert r2.headers["x-examlops-provider"] == "cache"
+    assert len(upstream.chat_bodies) == 1  # only the first request reached the backend
+    events = [ln for ln in r2.text.splitlines() if ln.startswith("data: ") and ln != "data: [DONE]"]
+    assert events  # at least one real content chunk before [DONE]
+    payload = json.loads(events[0][len("data: ") :])
+    assert payload["choices"][0]["delta"]["content"]
+    assert "[DONE]" in r2.text
+
+
+async def test_a_streaming_cache_miss_still_reports_the_header(upstream, monkeypatch):
+    monkeypatch.setenv("LLM_GATEWAY_SEMANTIC_CACHE", "1")
+    async with client(make_app(upstream)) as c:
+        r = await c.post("/v1/chat/completions", json={**BODY, "stream": True})
+    assert r.headers["x-examlops-cache"] == "miss"  # parity with the non-streaming path
+
+
+async def test_a_streaming_response_populates_the_cache(upstream, monkeypatch):
+    # BL-115: the cache is stored from a streaming response too, so a later non-streaming
+    # request for the same prompt is served from it without dispatching a second time.
+    monkeypatch.setenv("LLM_GATEWAY_SEMANTIC_CACHE", "1")
+    async with client(make_app(upstream)) as c:
+        r1 = await c.post("/v1/chat/completions", json={**BODY, "stream": True})
+        assert r1.status_code == 200
+        r2 = await c.post("/v1/chat/completions", json=BODY)
+    assert r2.headers["x-examlops-cache"] == "hit"
+    assert len(upstream.chat_bodies) == 1  # only the streaming request reached the backend
 
 
 async def test_a_blocked_response_is_never_cached(upstream, monkeypatch):

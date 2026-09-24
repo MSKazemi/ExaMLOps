@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - streaming D8 output guard + B3 cache for the LLM gateway service
+
+- The `llm-gateway` service's D8 outbound guardrail scan and B3 semantic cache now cover the
+  streaming path, not just non-streaming (BL-115, ADR 0018/0026). Cache: a lookup runs before
+  dispatch and, on a hit, serves a single-chunk synthetic SSE stream (re-checked by the output
+  guard first); a store runs once a live stream completes successfully. Guard: `monitor` mode
+  (default) streams unbuffered and scans once at stream end for `guardrail_events` parity;
+  `enforce` mode buffers text behind a small lookback window so a PII/secret pattern split across
+  a flush boundary is never released half-redacted, ending a mid-stream block with a
+  `guardrail_blocked` SSE event when partial content was already sent. Also fixed:
+  `DefaultGuardrail._record()` silently lost its telemetry row when it was the first thing to
+  touch an uninitialized `platform.db`.
+
 ### Added - weighted/canary rollout of a prompt version
 
 - `exa prompt canary <name> <label> --split v:w,v:w,... | --clear` (ADR 0009, BL-109): a label
