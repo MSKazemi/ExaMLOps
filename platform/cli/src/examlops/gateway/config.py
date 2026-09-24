@@ -70,7 +70,9 @@ class DeploymentCfg(_Model):
 
 
 class ModelCfg(_Model):
-    strategy: Literal["priority", "weighted", "least_inflight", "lowest_latency"] = "priority"
+    strategy: Literal["priority", "weighted", "least_inflight", "lowest_latency", "cost_aware"] = (
+        "priority"
+    )
     deployments: list[DeploymentCfg] = Field(min_length=1)
     fallbacks: list[str] = Field(default_factory=list)
     required: bool = False

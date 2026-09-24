@@ -42,6 +42,9 @@ _TRIPS = frozenset(
 )
 #: Free failovers: capacity and per-deployment configuration, not load the upstream is failing under.
 _FREE_FAILOVER = frozenset({"queue_full", "model_not_found"})
+#: The `cost_aware` strategy's marker cost for every external deployment (ADR 0153 d2) — a nominal
+#: non-zero value, not a real price; see `GatewayCore._cost_score`'s docstring for why.
+_EXTERNAL_MARKER_COST = 1.0
 
 
 @dataclass
@@ -69,7 +72,7 @@ class Deployment:
 class Route:
     name: str
     deployments: list[Deployment]
-    strategy: str = "priority"  # priority | weighted | least_inflight | lowest_latency
+    strategy: str = "priority"  # priority | weighted | least_inflight | lowest_latency | cost_aware
     fallbacks: list[str] = field(default_factory=list)
     total_timeout_s: float = 300.0
     required: bool = False
@@ -208,8 +211,28 @@ class GatewayCore:
                 group.sort(key=lambda d: self._state(d).inflight)
             elif route.strategy == "lowest_latency":
                 group.sort(key=lambda d: self._state(d).ewma_ttft_ms or 0.0)  # unknown = 0: explore
+            elif route.strategy == "cost_aware":
+                # Higher score wins (the llm_routing provider's caller "maximizes"); reverse=True.
+                group.sort(key=self._cost_score, reverse=True)
             ordered.extend(group)
         return ordered
+
+    def _cost_score(self, dep: Deployment) -> float:
+        """A deployment's `cost_aware` ranking score (ADR 0153 d2) via the ``llm_routing`` provider.
+
+        The only cost signal available at routing time — before a request's token count is known —
+        is locality: "FinOps rate, local = 0 marginal" (the ADR's own words). Every local/site
+        deployment costs nothing; every external one is charged the same non-zero marker cost, so
+        `cost_aware` prefers any local/site deployment over any external one and otherwise falls
+        back to the group's existing order (Python's stable sort preserves it on a tie). A provider
+        that wants finer-grained per-deployment pricing can already express it — that is what
+        `EXAMLOPS_LLM_ROUTING_PROVIDER`/a custom provider is for (ADR 0074/0083); this platform does
+        not yet carry a per-deployment price in `gateway.yaml` to feed one.
+        """
+        from examlops.llmops_providers import route_score_via_provider
+
+        cost = 0.0 if dep.provider.locality in ("local", "site") else _EXTERNAL_MARKER_COST
+        return route_score_via_provider(cost_usd=cost, healthy=True)
 
     def _candidates(
         self, model: str, req: ChatRequest, allowed: tuple[str, ...]

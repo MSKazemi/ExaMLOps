@@ -41,13 +41,26 @@ def cache_stats(tenant: str | None = None) -> dict[str, Any]:
             params,
         ).fetchone()
     hits, total = int(row["hits"]), int(row["total"])
+    hit_rate = (hits / total) if total else 0.0
+    cost_saved = float(row["cost_saved"])
+    # ADR 0083: swap the formula, not just the coefficients (opt-in — see cache_savings_via_provider).
+    try:
+        from examlops.llmops_providers import cache_savings_via_provider
+
+        via_provider = cache_savings_via_provider(
+            total_calls=total, cache_hits=hits, cost_saved_usd=cost_saved
+        )
+    except Exception:
+        via_provider = None
+    if via_provider is not None:
+        hit_rate, cost_saved = via_provider["hit_rate"], via_provider["cost_saved_usd"]
     return {
         "hits": hits,
         "misses": int(row["misses"]),
         "total": total,
-        "hit_rate": (hits / total) if total else 0.0,
+        "hit_rate": hit_rate,
         "tokens_saved": int(row["tokens_saved"]),
-        "cost_saved": float(row["cost_saved"]),
+        "cost_saved": cost_saved,
     }
 
 

@@ -86,6 +86,27 @@ def test_gwt4_retrieval_eval_metrics():
     assert rag.context_recall(retrieved, relevant) == pytest.approx(1.0)
 
 
+def test_gwt4b_metrics_route_through_the_rag_quality_provider_when_selected(monkeypatch):
+    """BL-104 (2026-09-24): context_precision/recall consult the swappable rag_quality provider,
+    reproducing the same set-membership answer to the provider's declared 4-decimal rounding."""
+    retrieved = ["d1#0", "d2#0", "d3#0"]
+    relevant = ["d1#0", "d3#0"]
+    monkeypatch.delenv("EXAMLOPS_RAG_QUALITY_PROVIDER", raising=False)
+    default_precision = rag.context_precision(retrieved, relevant)
+    default_recall = rag.context_recall(retrieved, relevant)
+
+    monkeypatch.setenv("EXAMLOPS_RAG_QUALITY_PROVIDER", "retrieval-lite")
+    assert rag.context_precision(retrieved, relevant) == pytest.approx(default_precision, abs=1e-4)
+    assert rag.context_recall(retrieved, relevant) == pytest.approx(default_recall, abs=1e-4)
+
+
+def test_gwt4c_a_broken_rag_quality_provider_degrades_to_the_existing_math(monkeypatch):
+    monkeypatch.setenv("EXAMLOPS_RAG_QUALITY_PROVIDER", "no-such-provider")
+    retrieved, relevant = ["d1#0", "d2#0"], ["d1#0"]
+    assert rag.context_precision(retrieved, relevant) == pytest.approx(0.5)
+    assert rag.context_recall(retrieved, relevant) == pytest.approx(1.0)
+
+
 def test_gwt2_retrieval_span_recorded():
     p = rag.RagPipeline()
     p.ingest("kb", _DOCS, tenant="acme")

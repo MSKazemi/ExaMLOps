@@ -91,6 +91,30 @@ def test_gwt6_savings_recorded():
     assert stats["cost_saved"] == pytest.approx(0.0012)
 
 
+def test_gwt6b_stats_route_through_the_llm_cache_provider_when_selected(monkeypatch):
+    """BL-104 (2026-09-24): cache_stats() consults the swappable llm_cache provider."""
+    cache = _cache(threshold=0.8)
+    cache.store(
+        "another heavy prompt",
+        Completion("ans", "m", "b"),
+        "m",
+        {},
+        "acme",
+        tokens=40,
+        cost_usd=0.5,
+    )
+    cache.lookup("another heavy prompt now", "m", {}, "acme")  # hit
+
+    monkeypatch.delenv("EXAMLOPS_LLM_CACHE_PROVIDER", raising=False)
+    default_stats = cache_stats("acme")
+
+    monkeypatch.setenv("EXAMLOPS_LLM_CACHE_PROVIDER", "hit-savings")
+    via_provider = cache_stats("acme")
+    # The default provider reconstructs the already-summed numbers to its declared rounding.
+    assert via_provider["hit_rate"] == pytest.approx(default_stats["hit_rate"], abs=1e-4)
+    assert via_provider["cost_saved"] == pytest.approx(default_stats["cost_saved"], abs=1e-6)
+
+
 def test_ttl_eviction():
     cache = _cache(threshold=0.5, ttl_seconds=0.0)
     cache.store("hello world", Completion("hi", "m", "b"), "m", {}, "acme")

@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - `cost_aware` gateway routing strategy + 3 unused LLMOps providers wired in (ADR 0083)
+
+- `llm_cache`, `llm_routing` and `rag_quality` (ADR 0083) computed real formulas that nothing
+  called; only `llm_cost` was wired. Now: `llm_cache` powers `exa gateway cache stats`/the
+  dashboard caching panel (`EXAMLOPS_LLM_CACHE_PROVIDER`); a new `cost_aware` gateway routing
+  strategy (`gateway/routing.py`, ADR 0153 d2 — did not exist before this) scores deployments via
+  `llm_routing` (`EXAMLOPS_LLM_ROUTING_PROVIDER`, default: local/site free, external non-zero,
+  cheapest wins); `rag_quality` now backs `examlops.rag.context_precision`/`context_recall`
+  (`EXAMLOPS_RAG_QUALITY_PROVIDER`). All three keep today's exact math unless a provider is
+  explicitly selected. ADR 0083 and 0153 status text updated to match.
+
 ### Fixed - the live LLM gateway service had no guardrails, cache or prompt registry (ADR 0151-0156)
 
 - The deployed `llm-gateway` HTTP service — the real network edge Skipper/RAG/any external router

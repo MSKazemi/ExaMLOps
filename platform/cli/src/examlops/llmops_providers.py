@@ -222,6 +222,150 @@ class RetrievalLiteQualityProvider(Provider):
 # ── gateway façade (ADR 0107 / R-A10) ─────────────────────────────────────────
 
 
+def cache_savings_via_provider(
+    *,
+    total_calls: int,
+    cache_hits: int,
+    cost_saved_usd: float,
+    provider: str | None = None,
+) -> dict[str, float] | None:
+    """Hit-rate + cost-saved via the ``llm_cache`` provider — or ``None`` if none is selected.
+
+    ``None`` means: the caller keeps computing ``hit_rate = hits/total`` and ``cost_saved_usd``
+    directly from the already-summed ``cache_events`` rows — today's exact math, unchanged when no
+    provider is selected at all. Same "default is the legacy path, opt in to swap the formula"
+    rule as :func:`estimate_llm_cost_via_provider` — this is about the *unconfigured* case; an
+    *explicitly* selected provider, including the built-in default, is a formal contract with its
+    own declared rounding, not a promise to reproduce an unrounded float bit-for-bit.
+
+    ``cost_saved_usd`` is already a sum over many individual calls, whereas the provider's own
+    formula (``cache_hits × cost_per_call_usd``) is written for a single representative call — so a
+    per-call average (``cost_saved_usd / cache_hits``) is derived here and handed in. For the
+    default ``hit-savings`` provider this reconstructs the already-summed total to the 6 decimal
+    places it declares (:class:`HitSavingsCacheProvider`); a custom provider is free to do
+    something else with it (weight recent calls differently, apply a different distribution
+    assumption, …), which is the whole point of the formula being swappable.
+    """
+    import os as _os
+
+    from .providers import get_provider
+    from .providers.loader import load_domain_config
+
+    try:
+        block = load_domain_config(_DOMAIN_CACHE)
+    except Exception:
+        block = {}
+    name = provider or _os.getenv("EXAMLOPS_LLM_CACHE_PROVIDER") or block.get("provider")
+    if not name:
+        return None  # no explicit selection — caller keeps its own aggregate
+    try:
+        prov = get_provider(_DOMAIN_CACHE, name=name, config=block)
+        cost_per_call = (cost_saved_usd / cache_hits) if cache_hits else 0.0
+        out = prov.compute(
+            {
+                "total_calls": total_calls,
+                "cache_hits": cache_hits,
+                "cost_per_call_usd": cost_per_call,
+                **{k: v for k, v in block.items() if k != "provider"},
+            }
+        )
+        return {
+            "hit_rate": float(out.get("hit_rate", 0.0)),
+            "cost_saved_usd": float(out.get("cost_saved_usd", cost_saved_usd)),
+        }
+    except Exception:
+        # A bad plugin/config must never break stats reporting — degrade to the caller's own math.
+        return None
+
+
+def route_score_via_provider(
+    *,
+    cost_usd: float,
+    healthy: bool = True,
+    latency_ms: float | None = None,
+    quality: float | None = None,
+    provider: str | None = None,
+) -> float:
+    """One deployment's routing score via the ``llm_routing`` provider (ADR 0153 d2, `cost_aware`).
+
+    Unlike the cost/cache facades above, this one always returns a usable value rather than
+    ``None`` on "nothing configured": the domain's registered default (``least-cost``, "cheapest
+    healthy candidate wins") is safe to run with zero configuration — selecting among deployments
+    is the `cost_aware` strategy's entire job, so there is no legacy caller-side formula to defer to.
+    A broken plugin degrades to ``0.0`` (no preference) rather than breaking routing.
+    """
+    import os as _os
+
+    from .providers import get_provider
+    from .providers.loader import load_domain_config
+
+    try:
+        block = load_domain_config(_DOMAIN_ROUTING)
+    except Exception:
+        block = {}
+    name = provider or _os.getenv("EXAMLOPS_LLM_ROUTING_PROVIDER") or block.get("provider")
+    try:
+        prov = get_provider(_DOMAIN_ROUTING, name=name, config=block)
+        out = prov.compute(
+            {
+                "cost_usd": cost_usd,
+                "healthy": healthy,
+                "latency_ms": latency_ms if latency_ms is not None else 0.0,
+                "quality": quality if quality is not None else 0.0,
+                **{k: v for k, v in block.items() if k != "provider"},
+            }
+        )
+        score = out.get("score")
+        return float(score) if score is not None else _NEG_INF
+    except Exception:
+        return 0.0
+
+
+def rag_quality_via_provider(
+    *,
+    retrieved_relevances: list[float],
+    relevant_total: int,
+    k: int,
+    threshold: float = _DEFAULT_RELEVANCE_THRESHOLD,
+    provider: str | None = None,
+) -> dict[str, float] | None:
+    """RAG retrieval quality via the ``rag_quality`` provider — or ``None`` if none is selected.
+
+    ``None`` means: the caller keeps its own set-membership precision/recall math — today's exact
+    behaviour, unchanged, following the same rule as the other facades in this module.
+    """
+    import os as _os
+
+    from .providers import get_provider
+    from .providers.loader import load_domain_config
+
+    try:
+        block = load_domain_config(_DOMAIN_RAG)
+    except Exception:
+        block = {}
+    name = provider or _os.getenv("EXAMLOPS_RAG_QUALITY_PROVIDER") or block.get("provider")
+    if not name:
+        return None
+    try:
+        prov = get_provider(_DOMAIN_RAG, name=name, config=block)
+        out = prov.compute(
+            {
+                "retrieved_relevances": retrieved_relevances,
+                "relevant_total": relevant_total,
+                "k": k,
+                "threshold": threshold,
+                **{kk: v for kk, v in block.items() if kk != "provider"},
+            }
+        )
+        return {
+            "precision": float(out.get("precision", 0.0)),
+            "recall": float(out.get("recall", 0.0)),
+            "relevance": float(out.get("relevance", 0.0)),
+        }
+    except Exception:
+        return None
+
+
 def estimate_llm_cost_via_provider(
     *,
     model: str,

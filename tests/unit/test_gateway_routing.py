@@ -372,6 +372,47 @@ async def test_priority_groups_are_honoured_before_the_strategy():
     assert (await c.chat("r", req())).provider == "hi"
 
 
+_ALL_LOCALITIES = ("local", "site", "external")
+
+
+async def test_cost_aware_prefers_local_over_external(monkeypatch):
+    monkeypatch.delenv("EXAMLOPS_LLM_ROUTING_PROVIDER", raising=False)
+    cloud, onsite = Fake("cloud", locality="external"), Fake("onsite", locality="local")
+    c = core([Route("r", [dep(cloud, external_ok=True), dep(onsite)], strategy="cost_aware")])
+    result = await c.chat("r", req(), allowed_localities=_ALL_LOCALITIES)
+    assert result.provider == "onsite"
+
+
+async def test_cost_aware_ties_among_externals_keep_the_original_order():
+    a, b = Fake("a", locality="external"), Fake("b", locality="external")
+    c = core(
+        [Route("r", [dep(a, external_ok=True), dep(b, external_ok=True)], strategy="cost_aware")]
+    )
+    result = await c.chat("r", req(), allowed_localities=_ALL_LOCALITIES)
+    assert result.provider == "a"  # equal marker cost: stable sort, no churn
+
+
+async def test_cost_aware_consults_the_llm_routing_provider(monkeypatch):
+    """A custom llm_routing provider can override which deployment `cost_aware` prefers."""
+    from examlops.providers import Provider, ProviderMeta, register_provider
+
+    class PreferExternal(Provider):
+        name, version = "prefer-external", "1.0"
+
+        def metadata(self):
+            return ProviderMeta(outputs=("score",), params=("cost_usd",))
+
+        def compute(self, inputs):
+            return {"score": inputs["cost_usd"]}  # inverted: a HIGHER cost now wins
+
+    register_provider("llm_routing", "prefer-external", PreferExternal)
+    monkeypatch.setenv("EXAMLOPS_LLM_ROUTING_PROVIDER", "prefer-external")
+    cloud, onsite = Fake("cloud", locality="external"), Fake("onsite", locality="local")
+    c = core([Route("r", [dep(onsite), dep(cloud, external_ok=True)], strategy="cost_aware")])
+    result = await c.chat("r", req(), allowed_localities=_ALL_LOCALITIES)
+    assert result.provider == "cloud"
+
+
 # ── streaming ─────────────────────────────────────────────────────────────────
 
 

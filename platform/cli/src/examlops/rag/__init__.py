@@ -311,17 +311,62 @@ class RagPipeline:
             return None
 
 
-def context_precision(retrieved_ids: list[str], relevant_ids: list[str]) -> float:
-    """Fraction of retrieved chunks that are relevant (C2/Ragas-style, R5/GWT-4)."""
+def _rag_quality_via_provider(
+    retrieved_ids: list[str], relevant_ids: list[str], *, provider: str | None
+) -> dict[str, float] | None:
+    """Recast the id-set inputs as the ``rag_quality`` provider's relevance-score shape.
+
+    A binary "in the relevant set or not" is exactly a relevance score of 1.0/0.0 against the
+    provider's default 0.5 threshold, so the default ``retrieval-lite`` provider reproduces
+    ``context_precision``/``context_recall``'s own set-membership math to the 4 decimal places it
+    declares (:class:`~examlops.llmops_providers.RetrievalLiteQualityProvider`) — the "default is
+    the legacy path when unconfigured, a formal rounded contract when explicitly selected" rule
+    (ADR 0074/0083), verified rather than assumed (see ``test_rag.py``).
+    """
+    from examlops.llmops_providers import rag_quality_via_provider
+
+    rel = set(relevant_ids)
+    relevances = [1.0 if d in rel else 0.0 for d in retrieved_ids]
+    return rag_quality_via_provider(
+        retrieved_relevances=relevances,
+        relevant_total=len(relevant_ids),
+        k=len(retrieved_ids) or 1,
+        provider=provider,
+    )
+
+
+def context_precision(
+    retrieved_ids: list[str], relevant_ids: list[str], *, provider: str | None = None
+) -> float:
+    """Fraction of retrieved chunks that are relevant (C2/Ragas-style, R5/GWT-4).
+
+    Routes through the swappable ``rag_quality`` provider when one is configured
+    (``EXAMLOPS_RAG_QUALITY_PROVIDER`` or a config ``provider:`` key, ADR 0083); unconfigured
+    (the default) computes the exact set-membership fraction below, unchanged.
+    """
     if not retrieved_ids:
         return 0.0
+    try:
+        via_provider = _rag_quality_via_provider(retrieved_ids, relevant_ids, provider=provider)
+    except Exception:
+        via_provider = None
+    if via_provider is not None:
+        return via_provider["precision"]
     rel = set(relevant_ids)
     return sum(1 for d in retrieved_ids if d in rel) / len(retrieved_ids)
 
 
-def context_recall(retrieved_ids: list[str], relevant_ids: list[str]) -> float:
-    """Fraction of relevant chunks that were retrieved (R5/GWT-4)."""
+def context_recall(
+    retrieved_ids: list[str], relevant_ids: list[str], *, provider: str | None = None
+) -> float:
+    """Fraction of relevant chunks that were retrieved (R5/GWT-4). See ``context_precision``."""
     if not relevant_ids:
         return 0.0
+    try:
+        via_provider = _rag_quality_via_provider(retrieved_ids, relevant_ids, provider=provider)
+    except Exception:
+        via_provider = None
+    if via_provider is not None:
+        return via_provider["recall"]
     ret = set(retrieved_ids)
     return sum(1 for d in relevant_ids if d in ret) / len(relevant_ids)

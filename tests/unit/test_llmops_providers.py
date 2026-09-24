@@ -15,9 +15,18 @@ from examlops.llmops_providers import (
     LeastCostRoutingProvider,
     RetrievalLiteQualityProvider,
     TokenRateCostProvider,
+    cache_savings_via_provider,
+    rag_quality_via_provider,
     register_builtins,
+    route_score_via_provider,
 )
-from examlops.providers import default_provider_name, list_providers
+from examlops.providers import (
+    Provider,
+    ProviderMeta,
+    default_provider_name,
+    list_providers,
+    register_provider,
+)
 
 # ── llm_cost: TokenRateCostProvider ──────────────────────────────────────────
 
@@ -218,6 +227,94 @@ class TestRetrievalLiteQualityProvider:
             }
         )
         assert out["precision"] == pytest.approx(1 / 3, rel=1e-4)
+
+
+# ── gateway façade wiring (BL-104, 2026-09-24): the 3 previously-unwired domains ──────────────
+
+
+class TestCacheSavingsViaProvider:
+    def test_unconfigured_returns_none(self, monkeypatch):
+        monkeypatch.delenv("EXAMLOPS_LLM_CACHE_PROVIDER", raising=False)
+        assert cache_savings_via_provider(total_calls=10, cache_hits=4, cost_saved_usd=0.02) is None
+
+    def test_explicit_default_provider_reconstructs_the_summed_total(self):
+        out = cache_savings_via_provider(
+            total_calls=10, cache_hits=4, cost_saved_usd=0.02, provider="hit-savings"
+        )
+        assert out is not None
+        assert out["hit_rate"] == pytest.approx(0.4)
+        assert out["cost_saved_usd"] == pytest.approx(0.02)  # 4 * (0.02/4) == 0.02
+
+    def test_zero_hits_no_division_error(self):
+        out = cache_savings_via_provider(
+            total_calls=5, cache_hits=0, cost_saved_usd=0.0, provider="hit-savings"
+        )
+        assert out == {"hit_rate": 0.0, "cost_saved_usd": 0.0}
+
+    def test_env_var_selects_the_provider(self, monkeypatch):
+        monkeypatch.setenv("EXAMLOPS_LLM_CACHE_PROVIDER", "hit-savings")
+        out = cache_savings_via_provider(total_calls=2, cache_hits=1, cost_saved_usd=0.5)
+        assert out is not None and out["hit_rate"] == pytest.approx(0.5)
+
+    def test_a_broken_plugin_degrades_to_none(self, monkeypatch):
+        monkeypatch.setenv("EXAMLOPS_LLM_CACHE_PROVIDER", "no-such-provider")
+        assert cache_savings_via_provider(total_calls=1, cache_hits=1, cost_saved_usd=1.0) is None
+
+
+class TestRouteScoreViaProvider:
+    def test_default_provider_scores_cheaper_higher(self, monkeypatch):
+        monkeypatch.delenv("EXAMLOPS_LLM_ROUTING_PROVIDER", raising=False)
+        cheap = route_score_via_provider(cost_usd=0.0)
+        pricey = route_score_via_provider(cost_usd=1.0)
+        assert cheap > pricey
+
+    def test_unhealthy_scores_negative_infinity(self, monkeypatch):
+        monkeypatch.delenv("EXAMLOPS_LLM_ROUTING_PROVIDER", raising=False)
+        assert route_score_via_provider(cost_usd=0.0, healthy=False) == float("-inf")
+
+    def test_never_returns_none_even_unconfigured(self, monkeypatch):
+        monkeypatch.delenv("EXAMLOPS_LLM_ROUTING_PROVIDER", raising=False)
+        assert isinstance(route_score_via_provider(cost_usd=0.3), float)
+
+    def test_a_broken_plugin_degrades_to_zero(self, monkeypatch):
+        monkeypatch.setenv("EXAMLOPS_LLM_ROUTING_PROVIDER", "no-such-provider")
+        assert route_score_via_provider(cost_usd=1.0) == 0.0
+
+    def test_env_var_selects_a_custom_provider(self, monkeypatch):
+        class AlwaysTen(Provider):
+            name, version = "always-ten", "1.0"
+
+            def metadata(self):
+                return ProviderMeta(outputs=("score",), params=())
+
+            def compute(self, inputs):
+                return {"score": 10.0}
+
+        register_provider("llm_routing", "always-ten", AlwaysTen)
+        monkeypatch.setenv("EXAMLOPS_LLM_ROUTING_PROVIDER", "always-ten")
+        assert route_score_via_provider(cost_usd=999.0) == 10.0
+
+
+class TestRagQualityViaProvider:
+    def test_unconfigured_returns_none(self, monkeypatch):
+        monkeypatch.delenv("EXAMLOPS_RAG_QUALITY_PROVIDER", raising=False)
+        out = rag_quality_via_provider(retrieved_relevances=[1.0, 0.0], relevant_total=2, k=2)
+        assert out is None
+
+    def test_explicit_default_matches_the_underlying_formula(self):
+        out = rag_quality_via_provider(
+            retrieved_relevances=[1.0, 1.0, 0.0],
+            relevant_total=2,
+            k=3,
+            provider="retrieval-lite",
+        )
+        assert out is not None
+        assert out["precision"] == pytest.approx(2 / 3, rel=1e-4)
+        assert out["recall"] == pytest.approx(1.0)
+
+    def test_a_broken_plugin_degrades_to_none(self, monkeypatch):
+        monkeypatch.setenv("EXAMLOPS_RAG_QUALITY_PROVIDER", "no-such-provider")
+        assert rag_quality_via_provider(retrieved_relevances=[1.0], relevant_total=1, k=1) is None
 
 
 # ── registry ──────────────────────────────────────────────────────────────────
