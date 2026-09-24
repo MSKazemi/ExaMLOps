@@ -438,6 +438,7 @@ TIERS: dict[str, str] = {
     "project storage": R,
     "project use": A,
     "prompt backend": R,
+    "prompt canary": A,  # weighted split across versions — a label move, gated the same way
     "prompt create": A,
     "prompt diff": R,
     "prompt label": A,

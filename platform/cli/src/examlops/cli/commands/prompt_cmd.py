@@ -13,13 +13,16 @@ import typer
 from examlops.cli import _output
 from examlops.data.audit import write_audit_event
 from examlops.data.prompts import (
+    clear_prompt_split,
     create_prompt_version,
     get_prompt_by_label,
+    get_prompt_split,
     get_prompt_version,
     list_prompt_labels,
     list_prompt_names,
     list_prompt_versions,
     set_prompt_label,
+    set_prompt_split,
 )
 
 app = typer.Typer(
@@ -89,11 +92,18 @@ def list_prompts(
         return
     versions = list_prompt_versions(name)
     labels = {r["label"]: r["version"] for r in list_prompt_labels(name)}
+    splits = {lab: rows for lab in labels if (rows := get_prompt_split(name, lab))}
     label_of: dict[Any, list[str]] = {v: [] for v in {x["version"] for x in versions}}
     for lab, ver in labels.items():
-        label_of.setdefault(ver, []).append(lab)
+        if lab in splits:
+            for row in splits[lab]:
+                label_of.setdefault(int(row["version"]), []).append(
+                    f"{lab}(canary {row['weight']:g})"
+                )
+        else:
+            label_of.setdefault(ver, []).append(lab)
     if _output.json_mode:
-        _output.print_json({"versions": versions, "labels": labels})
+        _output.print_json({"versions": versions, "labels": labels, "splits": splits})
         return
     _output.print_table(
         f"Prompt {name}",
@@ -287,6 +297,96 @@ def rollback(
         {"label": label_name, "to_version": to_version},
     )
     _output.ok(f"Rolled back {name}@{label_name} → v{to_version} (history intact)")
+
+
+_EX_CANARY = (
+    "Examples:\n\n"
+    "  exa prompt canary triage prod --split 3:0.9,4:0.1   # 90/10 canary of v4 into v3\n\n"
+    "  exa prompt canary triage prod --clear               # revert to the single-version label"
+)
+
+
+def _parse_split(raw: str) -> dict[int, float]:
+    """Parse ``--split`` syntax ``version:weight,version:weight,…`` into ``{version: weight}``."""
+    weights: dict[int, float] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            _output.error(f"Malformed --split entry {part!r} — expected version:weight")
+        ver_s, weight_s = part.split(":", 1)
+        try:
+            weights[int(ver_s.strip())] = float(weight_s.strip())
+        except ValueError:
+            _output.error(f"Malformed --split entry {part!r} — expected version:weight")
+    return weights
+
+
+@app.command("canary", epilog=_EX_CANARY)
+def canary(
+    name: str = typer.Argument(..., help="Prompt name"),
+    label_name: str = typer.Argument(
+        ..., metavar="LABEL", help="Label to split (dev/staging/prod/…)"
+    ),
+    split: str | None = typer.Option(
+        None, "--split", help="version:weight,version:weight,… (e.g. 3:0.9,4:0.1)"
+    ),
+    clear: bool = typer.Option(
+        False, "--clear", help="Remove the split; the label reverts to its single-version pointer"
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Split even if a candidate version fails the C3 eval gate (audited)"
+    ),
+) -> None:
+    """Weighted/canary rollout of a prompt version across a single label (BL-109, ADR 0009).
+
+    Unlike ``exa prompt label`` (which points a label at exactly one version), a split serves
+    multiple versions under the same ``name@label`` in proportion to the given weights — staged
+    rollout of a *prompt* change, the same idea ADR 0117/0024 already apply to model versions.
+    Every call to ``examlops.prompts.get_prompt`` draws a version fresh per request, so traffic
+    genuinely divides per the weights rather than flipping between versions on a cache timer.
+
+    ``platform_db`` backend only — the MLflow Prompt Registry backend has no weighted-alias
+    concept, so this refuses clearly rather than silently doing nothing there.
+    """
+    if clear:
+        existed = clear_prompt_split(name, label_name)
+        write_audit_event(
+            "exa-prompt", _actor(), "prompt_canary_cleared", name, {"label": label_name}
+        )
+        if _output.json_mode:
+            _output.print_json({"name": name, "label": label_name, "cleared": existed})
+            return
+        if existed:
+            _output.ok(f"Cleared canary split for {name}@{label_name}.")
+        else:
+            _output.info(f"{name}@{label_name} had no canary split.")
+        return
+    if not split:
+        _output.error("Provide --split version:weight,… or --clear.")
+    weights = _parse_split(split)
+    for version in weights:
+        if get_prompt_version(name, version) is None:
+            _output.error(f"{name} v{version} does not exist.")
+    for version in weights:
+        _gate_label_move(name, label_name, version, force=force)
+    try:
+        set_prompt_split(name, label_name, weights, actor=_actor())
+    except ValueError as exc:
+        _output.error(str(exc))
+    write_audit_event(
+        "exa-prompt",
+        _actor(),
+        "prompt_canary_set",
+        name,
+        {"label": label_name, "weights": weights},
+    )
+    if _output.json_mode:
+        _output.print_json({"name": name, "label": label_name, "split": weights})
+        return
+    parts = ", ".join(f"v{v}={w:g}" for v, w in weights.items())
+    _output.ok(f"{name}@{label_name} split: {parts}")
 
 
 _EX_MIGRATE = (

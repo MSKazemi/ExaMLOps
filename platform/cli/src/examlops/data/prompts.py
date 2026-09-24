@@ -18,13 +18,16 @@ from typing import Any  # noqa: F401
 from examlops.platform_db import get_db, init_db, install_write_retry  # noqa: F401
 
 __all__ = [
+    "clear_prompt_split",
     "create_prompt_version",
     "get_prompt_by_label",
+    "get_prompt_split",
     "get_prompt_version",
     "list_prompt_labels",
     "list_prompt_names",
     "list_prompt_versions",
     "set_prompt_label",
+    "set_prompt_split",
 ]
 # `prompt_backend` / `use_backend` choose *where* the helpers above store prompts; they are not
 # platform_db helpers, so they stay out of `__all__` (the facade contract: every name in it is the
@@ -166,7 +169,11 @@ def list_prompt_versions(name: str) -> list[dict[str, Any]]:
 
 
 def set_prompt_label(name: str, label: str, version: int) -> None:
-    """Point a label at a version (spec R8). Caller writes the audit event (R9)."""
+    """Point a label at a version (spec R8). Caller writes the audit event (R9).
+
+    Clears any BL-109 canary split on this label: pointing a label at exactly one version is an
+    override of a weighted rollout, not a participant in it.
+    """
     if (mlf := _mlflow()) is not None:
         mlf.set_prompt_label(name, label, version)
         return
@@ -179,6 +186,63 @@ def set_prompt_label(name: str, label: str, version: int) -> None:
                    version=excluded.version, updated_at=CURRENT_TIMESTAMP""",
             (name, label, version),
         )
+        conn.execute("DELETE FROM prompt_label_splits WHERE name=? AND label=?", (name, label))
+
+
+def set_prompt_split(
+    name: str, label: str, weights: dict[int, float], *, actor: str | None = None
+) -> None:
+    """Split a label across multiple versions by weight (BL-109) -- a staged prompt canary.
+
+    ``platform_db`` only: MLflow aliases point at exactly one version, so this raises rather
+    than silently doing nothing when ``EXAMLOPS_PROMPT_BACKEND=mlflow``. Replaces any existing
+    split for ``name@label`` atomically.
+    """
+    if prompt_backend() != "platform_db":
+        raise ValueError(
+            f"prompt canary splits need EXAMLOPS_PROMPT_BACKEND=platform_db "
+            f"(currently {prompt_backend()!r}); MLflow aliases point at exactly one version"
+        )
+    if not weights:
+        raise ValueError("a split needs at least one (version, weight) pair")
+    if any(w <= 0 for w in weights.values()):
+        raise ValueError("every split weight must be positive")
+    init_db()
+    with get_db() as conn:
+        conn.execute("DELETE FROM prompt_label_splits WHERE name=? AND label=?", (name, label))
+        conn.executemany(
+            """INSERT INTO prompt_label_splits (name, label, version, weight, updated_by)
+               VALUES (?,?,?,?,?)""",
+            [(name, label, version, weight, actor) for version, weight in weights.items()],
+        )
+
+
+def clear_prompt_split(name: str, label: str) -> bool:
+    """Remove a canary split; the label reverts to its single ``prompt_labels`` pointer.
+
+    Returns whether a split existed to remove.
+    """
+    if prompt_backend() != "platform_db":
+        return False
+    init_db()
+    with get_db() as conn:
+        cur = conn.execute(
+            "DELETE FROM prompt_label_splits WHERE name=? AND label=?", (name, label)
+        )
+    return bool(cur.rowcount)
+
+
+def get_prompt_split(name: str, label: str) -> list[dict[str, Any]]:
+    """The current canary split for ``name@label``, or ``[]`` when none is configured."""
+    if prompt_backend() != "platform_db":
+        return []
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM prompt_label_splits WHERE name=? AND label=? ORDER BY version",
+            (name, label),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 install_write_retry(__name__)

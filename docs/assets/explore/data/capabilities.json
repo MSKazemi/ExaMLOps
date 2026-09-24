@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 514,
+ "total_commands": 515,
  "total_groups": 73,
  "panels": [
   {
@@ -1555,6 +1555,13 @@
      "cmd": "exa prompt backend",
      "group": "prompt",
      "help": "Show which registry holds prompts: platform_db (default) or the MLflow Prompt Registry.",
+     "anchor": "exa-prompt-prompt-registry-versioned-templates-labels",
+     "guide": "guides/prompt-management.md"
+    },
+    {
+     "cmd": "exa prompt canary",
+     "group": "prompt",
+     "help": "Weighted/canary rollout of a prompt version across a single label (BL-109, ADR 0009). Unlike exa prompt label (which points a label at exactly one version), a split serves multiple versions under the same name@label in proportion to the given weights — staged rollout of a *prompt* change, the same idea ADR 0117/0024 already apply to model versions. Every call to examlops.prompts.get_prompt draws a version fresh per request, so traffic genuinely divides per the weights rather than flipping between versions on a cache timer. platform_db backend only — the MLflow Prompt Registry backend has no weighted-alias concept, so this refuses clearly rather than silently doing nothing there.",
      "anchor": "exa-prompt-prompt-registry-versioned-templates-labels",
      "guide": "guides/prompt-management.md"
     },

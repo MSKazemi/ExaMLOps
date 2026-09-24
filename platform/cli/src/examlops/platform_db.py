@@ -1214,6 +1214,18 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (name, label)
             );
+            -- BL-109 -- weighted/canary rollout of a *prompt* version. A label with no row here
+            -- resolves through prompt_labels exactly as before (single-version pointer);
+            -- platform_db backend only (MLflow aliases have no weighted-split concept).
+            CREATE TABLE IF NOT EXISTS prompt_label_splits (
+                name        TEXT NOT NULL,
+                label       TEXT NOT NULL,
+                version     INTEGER NOT NULL,
+                weight      REAL NOT NULL,
+                updated_by  TEXT,
+                updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (name, label, version)
+            );
             -- Next-Gen 40 · A1 — immutable, run-pinned dataset revisions (ADR 0003).
             -- Idempotent on (backend, dataset, revision_id): re-recording a revision is a no-op.
             CREATE TABLE IF NOT EXISTS dataset_revisions (
@@ -3007,7 +3019,7 @@ from examlops.data.gateway import (cache_stats, create_virtual_key, get_gateway_
 from examlops.data.governance import (ANNEX_IV, DECLARATION, get_compliance_system, get_fairness_config, get_fairness_samples, get_policy_bundle, get_relations_for, get_slo_spec, grant_relation, list_compliance_systems, list_objects_for, list_policy_bundles, list_relations, list_slo_specs, list_technical_files, record_fairness_sample, record_slo_sample, revoke_relation, revoke_virtual_key, save_technical_file, set_compliance_system, set_fairness_config, slo_sli_ratio, store_policy_bundle, upsert_slo_spec)  # noqa: E402, E501, F401, I001
 from examlops.data.hpc import (aggregate_node_capacity, get_cluster, get_clusters, get_hpc_jobs, get_node_snapshot, list_placement_decisions, record_hpc_job, record_node_snapshot, record_placement_decision, set_cluster_state, update_hpc_job, upsert_cluster)  # noqa: E402, E501, F401, I001
 from examlops.data.projects import (add_project_member, archive_project, assign_model_to_project, assign_resource_to_project, bind_project_connection, create_project, delete_project, ensure_project_storage, get_project, get_project_budget, get_project_consumption, get_project_for_model, get_project_full, get_project_pipelines, get_project_storage, list_project_budgets, list_project_members, list_project_models, list_project_resources, list_projects, project_experiment, projects_bucket, refresh_project_usage, remove_project_member, remove_project_resource, set_project_budget, set_project_usage, update_project_quota, upsert_project_pipeline)  # noqa: E402, E501, F401, I001
-from examlops.data.prompts import (create_prompt_version, get_prompt_by_label, get_prompt_version, list_prompt_labels, list_prompt_names, list_prompt_versions, set_prompt_label)  # noqa: E402, E501, F401, I001
+from examlops.data.prompts import (clear_prompt_split, create_prompt_version, get_prompt_by_label, get_prompt_split, get_prompt_version, list_prompt_labels, list_prompt_names, list_prompt_versions, set_prompt_label, set_prompt_split)  # noqa: E402, E501, F401, I001
 from examlops.data.registry import (get_dataset_card, get_model_bom, get_model_card, get_model_signature, register_device_pool, save_dataset_card, save_model_card, store_model_bom, store_model_signature)  # noqa: E402, E501, F401, I001
 from examlops.data.secrets import (all_secret_records, get_secret_ciphertext, get_secret_record, list_secret_paths, put_secret_ciphertext)  # noqa: E402, E501, F401, I001
 

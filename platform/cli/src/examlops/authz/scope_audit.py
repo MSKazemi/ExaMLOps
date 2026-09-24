@@ -101,6 +101,7 @@ EXEMPT: dict[str, tuple[str, str]] = {
             "judge_calibrations",
             "lora_adapters",
             "online_features",
+            "prompt_label_splits",
             "prompt_labels",
             "prompt_versions",
             "synthetic_datasets",

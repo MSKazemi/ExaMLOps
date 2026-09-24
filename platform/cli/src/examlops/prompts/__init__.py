@@ -12,6 +12,7 @@ model call (spec R2/R3); variables are substituted strictly as data (spec R12).
 from __future__ import annotations
 
 import json
+import random
 import string
 import time
 from dataclasses import dataclass, field
@@ -72,20 +73,43 @@ def render(pv: PromptVersion, **variables: Any) -> str:
         raise ValueError(f"prompt '{pv.name}' template references undeclared {exc}") from exc
 
 
-def get_prompt(name: str, label: str = "prod") -> PromptVersion:
+def _weighted_choice(split: list[dict[str, Any]], rng: random.Random | None = None) -> int:
+    versions = [int(r["version"]) for r in split]
+    weights = [float(r["weight"]) for r in split]
+    chooser = rng or random
+    return int(chooser.choices(versions, weights=weights, k=1)[0])
+
+
+def get_prompt(
+    name: str, label: str = "prod", *, rng: random.Random | None = None
+) -> PromptVersion:
     """Resolve ``name@label`` with a short-TTL cache + last-known-good fail-safe (R5/R6).
+
+    **BL-109 canary split.** When ``name@label`` has a weighted split configured
+    (``exa prompt canary``), a version is drawn fresh on *every call* in proportion to the
+    configured weights — never cached — so concurrent callers genuinely see traffic divided
+    per the split rather than one version "winning" a whole cache window. The one extra
+    indexed lookup this costs on every resolution (split or not) is the price of that
+    correctness; it is a single-row SQLite read keyed on the same ``(name, label)`` pair the
+    label lookup already uses. The resolved split choice still seeds the last-known-good
+    fallback below, so a registry outage mid-split degrades to whichever version was drawn
+    most recently rather than failing the call.
 
     Raises ``LookupError`` only when the prompt is unknown *and* nothing is cached.
     """
     key = (name, label)
     now = time.monotonic()
     cached = _cache.get(key)
-    if cached and (now - cached[1]) < _CACHE_TTL_S:
-        return cached[0]
     try:
-        from examlops.data.prompts import get_prompt_by_label
+        from examlops.data.prompts import get_prompt_by_label, get_prompt_split, get_prompt_version
 
-        row = get_prompt_by_label(name, label)
+        split = get_prompt_split(name, label)
+        if split:
+            row = get_prompt_version(name, _weighted_choice(split, rng))
+        elif cached and (now - cached[1]) < _CACHE_TTL_S:
+            return cached[0]
+        else:
+            row = get_prompt_by_label(name, label)
         if row is None:
             raise LookupError(f"no prompt '{name}@{label}'")
         pv = PromptVersion.from_row(row)

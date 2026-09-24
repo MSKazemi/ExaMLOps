@@ -5,6 +5,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - weighted/canary rollout of a prompt version
+
+- `exa prompt canary <name> <label> --split v:w,v:w,... | --clear` (ADR 0009, BL-109): a label
+  can now serve multiple prompt versions in proportion to configured weights instead of pointing
+  at exactly one -- staged rollout of a *prompt* change, the way ADR 0117/0024 already stage a
+  *model* version. `examlops.prompts.get_prompt()` draws a version fresh on every call when a
+  split is configured (never cached, so concurrent callers genuinely split traffic), falling
+  back byte-identically to the existing single-version path when no split exists. Each candidate
+  version is C3-gated exactly like `exa prompt label`; `exa prompt label` clears any existing
+  split on that label. `platform_db` backend only -- refuses clearly on
+  `EXAMLOPS_PROMPT_BACKEND=mlflow`, which has no weighted-alias concept.
+
 ### Added - LLM gateway Grafana dashboard
 
 - `examlops_llm_gateway.json` (`/d/examlops-llm-gateway`): request/error rate, B3 cache hit rate,

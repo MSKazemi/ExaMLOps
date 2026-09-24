@@ -3104,6 +3104,23 @@ Prompt registry — versioned templates + labels (dev/prod)
 
 Show which registry holds prompts: platform_db (default) or the MLflow Prompt Registry.
 
+### `exa prompt canary`
+
+Weighted/canary rollout of a prompt version across a single label (BL-109, ADR 0009).
+
+Unlike ``exa prompt label`` (which points a label at exactly one version), a split serves
+multiple versions under the same ``name@label`` in proportion to the given weights — staged
+rollout of a *prompt* change, the same idea ADR 0117/0024 already apply to model versions.
+Every call to ``examlops.prompts.get_prompt`` draws a version fresh per request, so traffic
+genuinely divides per the weights rather than flipping between versions on a cache timer.
+
+``platform_db`` backend only — the MLflow Prompt Registry backend has no weighted-alias
+concept, so this refuses clearly rather than silently doing nothing there.
+
+- `--split` — version:weight,version:weight,… (e.g. 3:0.9,4:0.1)
+- `--clear` — Remove the split; the label reverts to its single-version pointer
+- `--force` — Split even if a candidate version fails the C3 eval gate (audited)
+
 ### `exa prompt create`
 
 Create a new immutable prompt version (spec R1).
