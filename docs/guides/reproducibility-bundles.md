@@ -80,7 +80,7 @@ first failure stops the run (exit 1) and later steps show `not_run`:
 |---|---|---|---|
 | 1 | `code` | detached `git worktree` at the bundle's commit (`--repo`, default `.`) | no commit recorded, commit not in the repo (never falls back to `HEAD`) |
 | 2 | `dataset` | pinned revision must be recorded; with `--data-path` the local data is hashed against it | revision unrecorded, or data hash differs. Without `--data-path` (or with `--dummy`) content is **not** verified and the step says `skipped` |
-| 3 | `env` | recorded `uv.lock`/`requirements.txt` sha256 vs the file in the checkout, plus the recorded package set vs this interpreter | hash or a package differs, or no lock hash was captured; `--allow-env-drift` continues and reports `drift_allowed`. A container image digest is shown but cannot be verified here |
+| 3 | `env` | recorded `uv.lock`/`requirements.txt` sha256 vs the file in the checkout; the recorded package set vs this interpreter, **or — with `--rebuild-env` — installed into a fresh venv that step 4 then runs on**; the recorded container image digest against the local Docker runtime | hash or a package differs, a recorded package cannot be resolved, the rebuilt Python's `major.minor` differs, or the recorded image is absent/mismatched. `--allow-env-drift` continues and reports `drift_allowed` |
 | 4 | `train` | the pipeline training flow runs in a subprocess **inside the worktree**, pinned to the dataset revision and recorded seed (`EXAMLOPS_SEED`), mock scheduler unless set | non-zero exit, timeout, or no `EXAMLOPS_REPRO_METRICS=<json>` line |
 | 5 | `compare` | produced vs recorded metrics, relative tolerance `--rtol` (default: the bundle's, else 0.05) | any recorded metric missing, non-finite or out of tolerance; a bundle with no recorded metrics |
 
@@ -89,6 +89,8 @@ exa reproduce run JPCP 17 --execute --dummy --rtol 0.05
 exa reproduce run JPCP 17 --execute --data-path ./data/PM100 --json
 # custom trainer (must print EXAMLOPS_REPRO_METRICS={"rmse": 4.9}); runs in the checkout:
 exa reproduce run JPCP 17 --execute --train-cmd "python train.py"
+# put the recorded environment back, and train on it — not on the caller's interpreter:
+exa reproduce run JPCP 17 --execute --rebuild-env --dummy
 ```
 
 ### Dataset and environment checks (what "verified" means)
@@ -105,6 +107,52 @@ exa reproduce run JPCP 17 --execute --train-cmd "python train.py"
   before this feature has no package set and only gets the lockfile check.
 - **Dirty code**: a bundle built from a dirty tree (`code_dirty: true`) cannot be rebuilt from its
   commit; `--execute` fails the `code` step unless `--allow-dirty-code`, and `verify` warns.
+
+### `--rebuild-env`: putting the environment back, not just diffing it
+
+Comparing the recorded package set with the caller's interpreter answers *"is this machine still
+the machine?"*. `--rebuild-env` answers the question the ADR actually asks: it creates a **fresh,
+isolated virtualenv** (`uv venv`) and installs exactly the recorded distributions at the recorded
+versions (`uv pip install --no-deps` — a recorded set is a `pip freeze`, an already-closed
+dependency set), then step 4 trains **on that interpreter**. The interpreter is named in the
+`train` step detail and in `--json` (`environment.python`, `environment.venv`,
+`environment.rebuilt`).
+
+What it will not do:
+
+- **It never mutates the caller's environment**, and never touches the repository's shared
+  `.venv`. The venv is thrown away with the worktree.
+- **It never substitutes a different environment and calls it reproduced.** If a recorded package
+  cannot be resolved the `env` step fails and names the offending packages
+  (`environment.unsatisfied`); training does not run. If the rebuilt interpreter's `major.minor`
+  differs from the recorded one, that is a failure too; a patch-level difference is stated in the
+  step detail.
+- Workspace-local distributions (`examlops`, `examlops-pipelines`, `examlops-serving`, the
+  upstream model library) are on no index. They are skipped and named in the step detail — the
+  checkout on `PYTHONPATH` supplies them, which is also why a rebuild still uses whatever model
+  library is on disk.
+- It needs `uv` on `PATH`. Without it the step fails rather than falling back to the caller's
+  environment.
+
+### Container image digest
+
+When a bundle recorded an `image_digest` (today only when an operator passed `--image-digest` to
+`exa reproduce build`), `--execute` asks the local Docker runtime about it — read-only
+(`docker version`, `docker image inspect`); nothing is pulled, built, run or removed. The answer
+uses the platform's resolution vocabulary and is reported in `--json` as
+`environment.image_digest_status`:
+
+| Status | Meaning | Effect on the `env` step |
+|---|---|---|
+| `unchecked` | the bundle recorded no digest | none — nothing was claimed |
+| `verified` | the recorded image is present locally and its digest matches | passes |
+| `mismatch` | a local image answers to the recorded reference but carries a different digest — what would run today is not what was recorded | **fails** (`--allow-env-drift` → `drift_allowed`) |
+| `absent` | the runtime answered and the recorded image is not present | **fails** (`--allow-env-drift` → `drift_allowed`) |
+| `unverifiable` | no reachable Docker daemon (no binary, daemon down, permission denied, timeout) | does not fail — the check could not run — but it is printed as a warning and carried in `--json`, never reported as a success |
+
+A recorded value of the form `repo[:tag]@sha256:…` is the one that can genuinely mismatch: the
+*name* is inspected and the digest it resolves to today is compared with the recorded one. A bare
+`sha256:…` can only be present or absent, because inspecting by digest is self-answering.
 
 ### Automatic bundles
 
@@ -125,7 +173,7 @@ opt-in test `test_live_default_path_end_to_end` (`make reproduce-live`, `EXAMLOP
 `--execute --dummy` end to end on this repo; it is not in the default suite because it trains a model.
 
 Limits, stated plainly: lakeFS refs are not restored or verified (only the recorded revision is
-checked); the container image digest is recorded, never verified; the upstream modelzoo version is
+checked); the upstream modelzoo version is
 not captured (a rebuild uses the modelzoo on disk); scheduler resources are not re-requested; a
 rebuild trains on the mock scheduler unless `EXAMLOPS_SLURM_MODE` is set; seeds only take effect
 where the code reads `EXAMLOPS_SEED` (the pipeline flow and custom trainers); results are compared

@@ -221,6 +221,27 @@ def test_yaml_fairness_block_survives_the_loader(yaml_path):
 
 
 @pytest.mark.parametrize("yaml_path", sorted(_MODELS_DIR.glob("*.yaml")))
+def test_yaml_resources_block_is_valid(yaml_path):
+    """A malformed ``resources:`` block must fail CI (ADR 0157 Phase 3, serving).
+
+    A typo'd key (``hardware-profile:`` for ``hardware_profile:``) would otherwise mean the
+    profile is never applied and nothing says so — the deployment silently keeps its default
+    share of the node. Structural only: no profile registry is consulted, so this runs on a
+    machine with no ``platform.db``.
+    """
+    import yaml as _yaml
+
+    from examlops.hardware_profiles_yaml import validate_resources_block
+
+    doc = _yaml.safe_load(yaml_path.read_text()) or {}
+    block = doc.get("resources")
+    if block is None:
+        return  # no resources block ⇒ the deployment's own defaults apply
+    errors = validate_resources_block(block)
+    assert errors == [], f"{yaml_path.name}: invalid resources block: {errors}"
+
+
+@pytest.mark.parametrize("yaml_path", sorted(_MODELS_DIR.glob("*.yaml")))
 def test_yaml_lifecycle_stages_have_valid_directions(yaml_path):
     from pipelines.model_loader import load_model_yaml
 

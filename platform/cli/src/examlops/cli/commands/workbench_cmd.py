@@ -41,20 +41,55 @@ def create(
     image: str | None = typer.Option(None, "--image", help="Container image"),
     cpu: float | None = typer.Option(None, "--cpu", help="CPU cores"),
     memory_gb: float | None = typer.Option(None, "--memory-gb", help="RAM in GB"),
+    hardware_profile: str | None = typer.Option(
+        None,
+        "--hardware-profile",
+        help=(
+            "Named hardware profile supplying cpu/memory-gb defaults (exa hardware profile list). "
+            "Its applicability must include 'workbench' or 'any'. Explicit --cpu/--memory-gb win."
+        ),
+    ),
 ) -> None:
     """Define a workbench in a project (status STOPPED until started)."""
     if get_workbench(name, project):
         _output.error(f"Workbench '{name}' already exists in project '{project}'")
         raise typer.Exit(1)
     try:
-        create_workbench(
-            name, project, image=image, cpu=cpu, memory_gb=memory_gb, created_by=_actor()
+        row = create_workbench(
+            name,
+            project,
+            image=image,
+            cpu=cpu,
+            memory_gb=memory_gb,
+            hardware_profile=hardware_profile,
+            created_by=_actor(),
         )
     except WorkbenchError as exc:
         _output.error(str(exc))
         raise typer.Exit(1) from exc
-    write_audit_event("cli", _actor(), "workbench_created", name, {"project": project})
+    details: dict[str, object] = {"project": project}
+    if row.get("hardware_profile"):
+        details["hardware_profile"] = row["hardware_profile"]
+        details["hardware_profile_version"] = row.get("hardware_profile_version")
+    write_audit_event("cli", _actor(), "workbench_created", name, details)
     _output.ok(f"Workbench '{name}' created in project '{project}'")
+    if row.get("hardware_profile"):
+        _output.info(
+            f"Hardware profile '{row['hardware_profile']}' v{row.get('hardware_profile_version')}"
+            f" → cpu={row.get('cpu')} memory_gb={row.get('memory_gb')}"
+        )
+        # A profile is a default, not an override — say which field the flags took back, so a
+        # partial application is never silent.
+        overridden = [
+            flag
+            for flag, given in (("--cpu", cpu), ("--memory-gb", memory_gb))
+            if given is not None
+        ]
+        if overridden:
+            _output.warning(
+                f"{' and '.join(overridden)} given explicitly — those win over the profile; "
+                "every other field came from it."
+            )
 
 
 @app.command("list")
@@ -71,9 +106,32 @@ def workbench_list(
         return
     _output.print_table(
         "Workbenches",
-        ["Name", "Project", "Image", "Status", "Volume"],
-        [[r["name"], r["project"], r["image"], r["status"], r["storage_volume"]] for r in rows],
+        ["Name", "Project", "Image", "Status", "Volume", "Profile"],
+        [
+            [
+                r["name"],
+                r["project"],
+                r["image"],
+                r["status"],
+                r["storage_volume"],
+                _profile_cell(r),
+            ]
+            for r in rows
+        ],
     )
+
+
+def _profile_cell(row: dict) -> str:
+    """The hardware profile a workbench was created from, for the list table (ADR 0157 Phase 2).
+
+    ``-`` for a workbench created without one — which is every row written before profiles
+    existed, and every row still created without the flag.
+    """
+    name = row.get("hardware_profile")
+    if not name:
+        return "-"
+    version = row.get("hardware_profile_version")
+    return f"{name} v{version}" if version is not None else str(name)
 
 
 @app.command()
@@ -123,3 +181,40 @@ def delete(
         raise typer.Exit(1)
     write_audit_event("cli", _actor(), "workbench_deleted", name, {"project": project})
     _output.ok(f"Workbench '{name}' deleted")
+
+
+_EXAMPLES_EXPORT_PIPELINE = (
+    "Examples:\n\n"
+    "  # Export the tagged cells of a notebook to a pipeline file, then compile it\n"
+    "  exa workbench export-pipeline toy_notebook.ipynb\n\n"
+    "  # Choose where the generated pipeline lands\n"
+    "  exa workbench export-pipeline toy_notebook.ipynb --out flows/toy.py\n\n"
+    "  # Also lower the compiled IR to the per-model registry YAML\n"
+    "  exa workbench export-pipeline toy_notebook.ipynb --out flows/toy.py --yaml toy.yaml\n\n"
+    "  # Machine-readable report (name, hash, steps, dropped cells)\n"
+    "  exa workbench export-pipeline toy_notebook.ipynb --json"
+)
+
+
+@app.command("export-pipeline", epilog=_EXAMPLES_EXPORT_PIPELINE)
+def export_pipeline(
+    notebook: str = typer.Argument(..., help="Tagged .ipynb notebook to read (never executed)"),
+    out: str | None = typer.Option(
+        None, "--out", "-o", help="Write the generated pipeline here (default: <stem>_pipeline.py)"
+    ),
+    yaml_path: str | None = typer.Option(
+        None, "--yaml", help="Also lower the compiled IR to the per-model registry YAML here"
+    ),
+    name: str | None = typer.Option(
+        None, "--name", help="Pipeline name (default: the notebook's stem)"
+    ),
+) -> None:
+    """Turn tagged notebook cells into a @pipeline file, then compile it (ADR 0160).
+
+    Cells are read as data — the notebook is parsed, never executed. Tag a code cell with one of [bold]param[/bold], [bold]dataset[/bold], [bold]train[/bold], [bold]evaluate[/bold], [bold]promote[/bold] or [bold]skip-export[/bold] (standard Jupyter cell tags); every other code cell is dropped and reported by index, so nothing vanishes unnoticed.
+
+    [bold]One-directional by design:[/bold] editing the generated file does NOT flow back into the notebook, and re-running this command overwrites the file rather than merging. The output is a starting point for the ordinary pipeline-as-code workflow (`exa pipeline compile`), exactly like a hand-written pipeline file.
+    """
+    from examlops.cli.commands import workbench_export
+
+    workbench_export.export_pipeline(notebook, out, yaml_path, name)

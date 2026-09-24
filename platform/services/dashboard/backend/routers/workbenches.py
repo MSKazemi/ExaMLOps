@@ -47,6 +47,10 @@ def _ensure_table(conn: sqlite3.Connection) -> None:
             cpu REAL, memory_gb REAL, storage_volume TEXT,
             status TEXT NOT NULL DEFAULT 'STOPPED',
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, created_by TEXT,
+            -- ADR 0157 Phase 2. Kept in step with examlops.workbenches._ensure_table: this copy
+            -- can be the one that creates the table, and a shape missing these columns makes the
+            -- very next create (here or in the CLI) fail with `no such column`.
+            hardware_profile TEXT, hardware_profile_version INTEGER,
             PRIMARY KEY (project, name)
         );
         CREATE TABLE IF NOT EXISTS audit_events (
@@ -142,6 +146,11 @@ def _hub_stop(project: str, name: str) -> None:
     _hub_request("DELETE", f"/users/{c['user']}/servers/{_server_name(project, name)}")
 
 
+def _field(r: sqlite3.Row, name: str):
+    """A column that may be absent on a table an older build created (ADR 0157 Phase 2)."""
+    return r[name] if name in r.keys() else None
+
+
 def _row_to_view(r: sqlite3.Row) -> dict:
     running = (r["status"] or "").upper() == "RUNNING"
     return {
@@ -150,6 +159,9 @@ def _row_to_view(r: sqlite3.Row) -> dict:
         "image": r["image"],
         "cpu": r["cpu"],
         "memoryGb": r["memory_gb"],
+        # Read-only: which named hardware profile + version this workbench was created from.
+        "hardwareProfile": _field(r, "hardware_profile"),
+        "hardwareProfileVersion": _field(r, "hardware_profile_version"),
         "volume": r["storage_volume"],
         "status": r["status"],
         "createdAt": r["created_at"],

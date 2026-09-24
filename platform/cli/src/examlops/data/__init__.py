@@ -29,6 +29,7 @@ __all__ = [
     "agent_versions",
     "audit",
     "autopilot",
+    "catalog",
     "coordination",
     "data_assets",
     "dataplane",

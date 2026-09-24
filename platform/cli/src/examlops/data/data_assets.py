@@ -772,25 +772,54 @@ def register_adapter(
     target_modules: str | None = None,
     dataset_revision: str | None = None,
     eval_score: float | None = None,
+    eval_source: str | None = None,
+    eval_metric: str | None = None,
+    eval_n: int | None = None,
+    asserted_eval_score: float | None = None,
+    asserted_eval_by: str | None = None,
     eval_floor: float | None = None,
     signature: str | None = None,
     signed_by: str | None = None,
     cost_gpu_hours: float | None = None,
+    train_run_id: str | None = None,
+    adapter_sha256: str | None = None,
+    adapter_uri: str | None = None,
 ) -> None:
-    """Register/patch a LoRA adapter as a first-class artifact (R3)."""
+    """Register/patch a LoRA adapter as a first-class artifact (R3).
+
+    ``eval_score`` is a **measured** held-out score and this is the only place it can be written,
+    so the rule is enforced here once: passing one without ``eval_source="measured"`` raises. A
+    number an operator supplies belongs in ``asserted_eval_score`` — a different column, read by
+    nothing that treats it as evidence (ADR 0044).
+    """
+    if eval_score is not None and eval_source != "measured":
+        raise ValueError(
+            "lora_adapters.eval_score is measured-only: pass eval_source='measured' from a "
+            "training run's own held-out evaluation, or record an operator's number as "
+            "asserted_eval_score (it is stored as unverified and cannot clear the C3 gate)."
+        )
+    if eval_source is not None and eval_source != "measured":
+        raise ValueError(f"eval_source must be 'measured' or None, got {eval_source!r}")
     init_db()
     with get_db() as conn:
         conn.execute(
             """INSERT INTO lora_adapters
                    (adapter_id, base_ref, method, rank, target_modules, dataset_revision,
-                    eval_score, eval_floor, signature, signed_by, cost_gpu_hours, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
+                    eval_score, eval_source, eval_metric, eval_n, asserted_eval_score,
+                    asserted_eval_by, eval_floor, signature, signed_by, cost_gpu_hours,
+                    train_run_id, adapter_sha256, adapter_uri, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
                ON CONFLICT(adapter_id) DO UPDATE SET
                    base_ref=excluded.base_ref, method=excluded.method, rank=excluded.rank,
                    target_modules=excluded.target_modules,
                    dataset_revision=excluded.dataset_revision, eval_score=excluded.eval_score,
+                   eval_source=excluded.eval_source, eval_metric=excluded.eval_metric,
+                   eval_n=excluded.eval_n, asserted_eval_score=excluded.asserted_eval_score,
+                   asserted_eval_by=excluded.asserted_eval_by,
                    eval_floor=excluded.eval_floor, signature=excluded.signature,
                    signed_by=excluded.signed_by, cost_gpu_hours=excluded.cost_gpu_hours,
+                   train_run_id=excluded.train_run_id,
+                   adapter_sha256=excluded.adapter_sha256, adapter_uri=excluded.adapter_uri,
                    updated_at=CURRENT_TIMESTAMP""",
             (
                 adapter_id,
@@ -800,10 +829,18 @@ def register_adapter(
                 target_modules,
                 dataset_revision,
                 eval_score,
+                eval_source,
+                eval_metric,
+                eval_n,
+                asserted_eval_score,
+                asserted_eval_by,
                 eval_floor,
                 signature,
                 signed_by,
                 cost_gpu_hours,
+                train_run_id,
+                adapter_sha256,
+                adapter_uri,
             ),
         )
 

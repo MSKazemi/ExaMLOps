@@ -1,0 +1,45 @@
+# Catalog recipe template (ADR 0158 decision 2).
+#
+# Plain YAML with ${placeholder} substitutions — deliberately Jinja-free, so what a curator
+# reviews is the file the pull will write. `exa catalog pull` renders this into the active
+# use-case pack's models/<name>.yaml, then re-asserts name/project/serving.model_id so a
+# template can never mis-name the model it was pulled as.
+#
+# Available placeholders: model_name, model_id, project, catalog_entry, catalog_version,
+# entry_hash, license, source_ref, trust_tier, resource_hint, model_class, config_class,
+# task_type, framework.
+name: ${model_name}
+model_class: ${model_class}
+config_class: ${config_class}
+task_type: regression
+framework: sklearn
+# Nothing has been trained from this definition yet, so it is not picked up by a scheduled
+# pipeline until an operator has filled in the datasets and enabled it.
+enabled: false
+project: ${project}
+
+model:
+  embedding_type: INT
+  hyperparameters:
+    n_jobs: -1
+
+datasets:
+  - name: PM100Dataset
+    backend: zenodo
+    cache_dir: .data_cache/${model_id}
+    batch_size: 1
+    input_features: [num_nodes_req_cat, user_id_cat]
+    output_features: [node_power_consumption, num_nodes_alloc]
+
+lifecycle:
+  - {name: Staging, metric: rmse, threshold: 200.0, direction: lower_is_better}
+
+serving:
+  model_id: ${model_id}
+  aliases: [Staging]
+
+inference:
+  input_schema:
+    embedding: list[float]
+  output_schema:
+    power_per_node_watts: float

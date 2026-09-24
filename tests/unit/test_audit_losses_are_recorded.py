@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -239,10 +240,16 @@ def test_a_telemetry_anchor_that_could_not_be_audited_is_counted(monkeypatch):
     from examlops.data.audit import dropped_audit_events
     from examlops.telemetry_anchor import anchor_telemetry
 
+    # Clock-derived, never a literal: `anchor_telemetry()` selects by rowid range today, so a
+    # hardcoded stamp is harmless *only* for as long as that stays true. If it ever gains a
+    # `since`/`window_days` bound, a stale literal falls outside it, the anchor finds nothing,
+    # and this test fails blaming the audit layer for a seed that simply aged out — the exact
+    # misdiagnosis that kept `test_audit_trail.py` red for days. Pin the shape, not the instant.
+    seeded_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     with __import__("examlops").platform_db.get_db() as conn:
         conn.execute(
-            "INSERT INTO drift_snapshots (model, alias, prediction, ts) "
-            "VALUES ('JPCP', 'Production', 1.0, '2026-09-15 12:00:00')"
+            "INSERT INTO drift_snapshots (model, alias, prediction, ts) VALUES (?, ?, ?, ?)",
+            ("JPCP", "Production", 1.0, seeded_at),
         )
     _break_the_audit_log(monkeypatch)
     anchor_telemetry()
@@ -394,6 +401,15 @@ COVERED_AUDIT_SITES = {
     ("examlops/cli/commands/autopilot_cmd.py", "run_cycle"): (
         "tests/unit/test_autopilot.py::test_the_loss_is_counted_rather_than_hidden"
     ),
+    # ADR 0116: the admission seam's release-on-completion and its dispatch refusal. Both break
+    # the audit log and assert the counter, rather than only asserting the operation survived.
+    ("examlops/admission_seam/completion.py", "release_on_completion"): (
+        "tests/unit/test_admission_release.py"
+        "::test_an_unauditable_release_still_returns_the_quota_and_counts_the_loss"
+    ),
+    ("examlops/admission_seam/dispatch.py", "_audit"): (
+        "tests/unit/test_admission_release.py::test_a_refusal_that_could_not_be_audited_is_counted"
+    ),
     ("examlops/reproducibility/__init__.py", "_audit"): (
         "tests/unit/test_reproduce_auto.py::test_a_lost_bundle_built_audit_is_counted"
     ),
@@ -402,6 +418,26 @@ COVERED_AUDIT_SITES = {
     ),
     ("examlops/reproducibility/execute.py", "_audit"): (
         "tests/unit/test_reproduce_execute.py::test_a_lost_repro_audit_is_counted"
+    ),
+    # ADR 0044: `run_finetune` holds FOUR audit calls (started / attempt / failed / complete) in
+    # one function, so the scan counts it once and one test would not reach the failure branch —
+    # which is the branch that registers nothing, leaving the audit event as the run's only trace.
+    # Two tests, both running the real script end to end against a refusing audit log.
+    ("examlops/finetuning/runner.py", "run_finetune"): (
+        "tests/unit/test_finetune_lora.py"
+        "::test_a_lost_finetune_audit_is_counted_and_the_run_still_registers"
+    ),
+    # ADR 0159. The same three-site shape as the agent-version registry above, and covered the
+    # same way — the alias test also breaks the *refusal* audit, because a block that was not
+    # recorded reads afterwards exactly like a block that never happened.
+    ("examlops/genai_apps/service.py", "register"): (
+        "tests/unit/test_genai_app.py::test_a_lost_register_audit_is_counted"
+    ),
+    ("examlops/genai_apps/service.py", "set_alias"): (
+        "tests/unit/test_genai_app.py::test_a_lost_alias_move_audit_is_counted"
+    ),
+    ("examlops/genai_apps/service.py", "rollback"): (
+        "tests/unit/test_genai_app.py::test_a_lost_rollback_audit_is_counted"
     ),
     # In the agent suite (`platform/services/agent/tests/`), which has the deps these need.
     (

@@ -1,0 +1,26 @@
+# A curated Model Catalog entry (ADR 0158) — "what could I start from?".
+#
+# Publish it with:   exa catalog publish usecases/reference/catalog/entries/power-regression-recipe.yaml
+# Then pull it with: exa catalog pull power-regression-recipe --project <p> --as MyPowerModel
+#
+# `catalog_version` is NOT set here: the store allocates it, and a correction publishes the next
+# version rather than rewriting this one. `entry_hash` is likewise derived, never authored.
+name: power-regression-recipe
+kind: recipe
+description: >-
+  A node-power regression starting point on the reference pack's PM100 dataset: a scikit-learn
+  regressor with a Staging RMSE gate already wired. Pull it, point it at your own dataset splits,
+  then train it through the ordinary pipeline path.
+source:
+  kind: dataplane
+  ref: zenodo-pm100/pm100
+license: Apache-2.0
+resource_hint: cpu-small
+recipe:
+  # Pack-relative: resolved inside the active use-case pack (this directory's parent), so the
+  # same entry works from a checkout, from $EXAMLOPS_DATA_DIR/usecase, or from an installed pack.
+  model_yaml_template: catalog/templates/power-regression.yaml
+  defaults:
+    model_class: JPCP
+    task_type: regression
+    framework: sklearn

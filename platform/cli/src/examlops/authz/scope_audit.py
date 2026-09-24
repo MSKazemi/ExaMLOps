@@ -41,6 +41,10 @@ EXEMPT: dict[str, tuple[str, str]] = {
             "autopilot_lease",
             "autopilot_runs",
             "burst_events",
+            # ADR 0158: the model catalog is a curated, platform-wide list of what one COULD
+            # start from — deliberately not partitioned by project. A project only appears once
+            # an entry is pulled, and `catalog_pulls` carries that `project` column itself.
+            "catalog_entries",
             "coord_idempotency",
             "coord_locks",
             "coord_rate",
@@ -97,6 +101,9 @@ EXEMPT: dict[str, tuple[str, str]] = {
             "feature_records",
             "feature_views",
             "federated_runs",
+            "genai_app_alias_history",
+            "genai_app_aliases",
+            "genai_applications",
             "ground_truth",
             "hardware_profile_labels",
             "hardware_profile_versions",

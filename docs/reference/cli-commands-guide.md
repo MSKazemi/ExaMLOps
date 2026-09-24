@@ -129,6 +129,7 @@ Auto-discovers models and datasets, runs and deploys their Prefect training flow
 | `exa pipeline add-model` | Wires an existing modelzoo model class into the pipeline by generating its YAML + config shim (**mutation** — writes files); does not create a new class. | Register a hand-written or imported model class for training/inference. | `exa pipeline add-model DemoAD --task anomaly_detection --type classification` |
 | `exa pipeline export-registry` | Exports auto-discovered model state to `usecases/reference/models` (**mutation** — writes the registry file). | Snapshot discovered models into a versionable registry. | `exa pipeline export-registry` |
 | `exa pipeline compile` | Executes an operator-written Python file, traces its `@pipeline` into a validated, content-hashed IR and prints it; `--out` writes the IR, `--yaml` also lowers it to the per-model registry YAML (**writes files**; runs trusted-tier Python unless `--untrusted`). Exit 1 on a validation error or an unlowerable pipeline. | Author a pipeline in typed Python and review the IR / YAML it produces before anything runs. | `exa pipeline compile flows/jpcp.py --out jpcp.ir.json --yaml jpcp.yaml` |
+| `exa pipeline decompile` | The reverse of `compile --yaml`: reads a per-model registry YAML and emits the equivalent `@pipeline` source (stdout, or `--out FILE`, `--force` to overwrite). Executes nothing. Refuses (exit 1, naming the construct) rather than writing a file whenever the YAML holds something the DSL cannot express, so the emitted file is always an exact twin — compiling it reproduces the same YAML. | Adopt a YAML-authored model into pipeline-as-code without retyping it, or check that a YAML is expressible as a flow. | `exa pipeline decompile usecases/reference/models/jpcp.yaml --out flows/jpcp.py` |
 | `exa pipeline explain` | Prints the topological plan of a compiled IR (steps, dependencies, resources) and whether it can run (read-only; runs nothing). | See what a compiled pipeline will do, and which steps have no lowering yet. | `exa pipeline explain jpcp.ir.json` |
 
 #### `exa pipeline distributed` — distributed training + checkpoint/resume (E6)
@@ -193,11 +194,14 @@ Generates a complete new model skeleton — model class, config shim, unit test,
 
 ### `exa finetune` — fine-tune and register an adapter
 
-Runs an LLM fine-tune (LoRA/QLoRA/full) and registers a signed, lineage-linked adapter with an optional eval-floor promotion gate.
+With `--train` it really trains: the shipped reference script (`examlops.finetuning.train_lora`) fits real LoRA factors over a frozen base on CPU, evaluates them on a held-out split, and registers the adapter with **the score it measured** — signed, lineage-linked, resumable, with honest exit codes. Without `--train` nothing is trained and the row is a paper record for an adapter produced elsewhere.
+
+A score you supply with `--asserted-eval` is stored in a different column from a measured one (`asserted_eval_score`, with who claimed it) and is labelled unverified everywhere it is shown. It can block a promotion — a claim may condemn an adapter — but it can never clear one; only a measured score satisfies the C3 eval floor. What is **not** built: a PEFT/QLoRA backend over a real checkpoint, scheduler submission, full fine-tuning (ADR 0044).
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa finetune` | Fine-tunes a base model and registers a signed, lineage-linked adapter (**mutation** — trains + registers). | Produce a task-specific LoRA adapter with recorded eval and cost. | `exa finetune llama3.1-8b --method lora --dataset <rev> --rank 8 --eval 0.82 --eval-floor 0.75` |
+| `exa finetune BASE --train` | Runs the reference LoRA fine-tune and registers the adapter with its **measured** held-out score (**mutation** — trains + registers). | Produce a LoRA adapter whose recorded quality is evidence, not an assertion. | `exa finetune demo-base --train --dataset <rev> --rank 4 --steps 80 --eval-floor 0.7` |
+| `exa finetune BASE` | Registers a signed, lineage-linked adapter **without training it**; `--asserted-eval` is recorded as unverified (**mutation** — registers only). | Record an adapter someone trained elsewhere, without its number masquerading as a measurement. | `exa finetune llama3.1-8b --method lora --dataset <rev> --rank 8 --asserted-eval 0.82 --eval-floor 0.75` |
 
 ### `exa reproduce` — reproducibility bundles (A8)
 
@@ -339,6 +343,30 @@ Inspect registered models and their versions, compare and trace them, roll alias
 | `exa models rollback run <model>` | **Mutation.** Rolls a model alias (default `Production`) back to a version: `-v/--version`, `-a/--alias`, `-r/--reason`, `-n/--dry-run` to preview. Prompts for confirmation unless `--yes`. | Emergency revert to a known-good version. | `exa models rollback run JPCP --version 5 --dry-run` (preview) · `exa --yes models rollback run JPCP --version 5` |
 | `exa models rollback history <model>` | Shows rollback history for a model (last 20 events). | Audit past alias reassignments. | `exa models rollback history JPCP` |
 
+### `exa catalog` — Model Catalog: what you could start from (ADR 0158)
+
+The catalog is **not** the registry, and the difference is the whole point. The registry answers
+*"what did we produce, and what's live?"* — it is populated by a training run and owns versions,
+aliases, metrics and lineage. The catalog answers *"what could I start from?"* — a curated,
+provenance-tracked list of deployable model **definitions**, published behind a trust gate, each
+immutable and content-addressed as `name@catalog_version`. A catalog entry has no alias, no
+metrics and no training run; `exa catalog pull` writes a per-model YAML into a project and
+**trains nothing, registers nothing and serves nothing**. A pulled model becomes an ordinary
+registry model only once it is trained through the usual `exa pipeline run` path.
+
+Trust is always visible, never flattened into a generic "OK": every entry carries
+`trust_tier` — `T1_signed` (signed through `examlops.supplychain`, the platform's only signer) or
+`T1_unsigned` (a registered source with no signature, flagged in the CLI output *and* in the YAML
+it writes). A source that cannot be confirmed immutable is refused at **publish** time, so the
+catalog only ever offers pinned references.
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa catalog list [--kind base_model\|recipe] [--license <spdx>] [--trust-tier T1_signed\|T1_unsigned] [--evaluated-only] [--all-versions]` | Browses curated model definitions with their source, license, trust tier and eval pointer. `--evaluated-only` keeps the ones that point at an eval suite result. | See what you could start a new project from, before any training has happened. | `exa catalog list --kind recipe --evaluated-only` |
+| `exa catalog show <entry>[@<version>]` | Shows one entry in full — content hash, source, license, trust tier, signature, eval summary, resource hint and recipe template. Defaults to the newest `catalog_version`. | Inspect an entry's provenance before pulling it. | `exa catalog show power-regression-recipe@1` |
+| `exa catalog publish <path>` | **Mutation (admin).** Publishes an entry YAML. Refuses an absent/unknown license and an unpinned source with a named reason; `--sign` signs it through `examlops.supplychain`. Republishing identical content is idempotent — a correction publishes the next version, never a rewrite. | Curate the catalog your operators browse. | `exa catalog publish ./entries/power-regression-recipe.yaml --sign` |
+| `exa catalog pull <entry>[@<version>] --project <p>` | **Mutation (admin).** Materializes the entry as a per-model YAML in the project's use-case pack, records `project_resources(kind=model)` membership and one `catalog_entry → model` lineage edge. `--as` renames the model; `--dry-run` previews the rendered YAML and writes nothing at all. Never trains, promotes or serves. | Start a project from a curated definition instead of a blank file. | `exa catalog pull power-regression-recipe --project research --as MyPower --dry-run` |
+
 ### `exa modelzoo` — ModelZoo repository freshness and events
 
 Tracks whether registered models are up to date with the upstream ModelZoo library, and manages the Control Plane poller integration.
@@ -471,9 +499,9 @@ Register, list, promote, and route through LoRA/QLoRA adapters over a base model
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa serve adapter add BASE` | Registers an adapter (alias of `exa finetune`); `--dataset`, `--method` (lora/qlora/full), `--rank`, `--eval`, `--eval-floor`. | Fine-tune and register a task-specific adapter. **mutation** | `exa serve adapter add jpcp --dataset rev123 --method lora --rank 8 --eval 0.91` |
-| `exa serve adapter list` | Lists registered adapters (`--base` filter). | See which adapters exist for a base model. | `exa serve adapter list --base jpcp` |
-| `exa serve adapter promote ADAPTER_ID` | Promotes an adapter — blocked by the C3 eval-gate if below the quality floor. | Ship an adapter only if it clears the eval floor. **mutation** | `exa serve adapter promote adp-42` |
+| `exa serve adapter add BASE` | Registers an adapter **without training it** (alias of `exa finetune` with no `--train`); `--dataset`, `--method`, `--rank`, `--asserted-eval` (stored as unverified), `--eval-floor`. | Record a task-specific adapter trained elsewhere. **mutation** | `exa serve adapter add jpcp --dataset rev123 --method lora --rank 8 --asserted-eval 0.91` |
+| `exa serve adapter list` | Lists registered adapters (`--base` filter), with the measured score and any operator assertion in separate columns. | See which adapters exist for a base model, and which of their scores are evidence. | `exa serve adapter list --base jpcp` |
+| `exa serve adapter promote ADAPTER_ID` | Promotes an adapter — the C3 eval-gate blocks a measured score below the floor, an assertion below the floor, and a floor with no measured score at all (`--accept-unverified` overrides that last case, audited). | Ship an adapter only when a measurement clears the eval floor. **mutation** | `exa serve adapter promote adp-42` |
 | `exa serve adapter route BASE ADAPTER_ID` | Routes a request through base + adapter; refuses a base mismatch (`--prompt`, `--hot-set`). | Serve a prompt with a specific adapter over its base. | `exa serve adapter route jpcp adp-42 --prompt "summarize" --hot-set 4` |
 
 #### Cache-aware routing (`exa serve routing`)
@@ -608,6 +636,17 @@ Inspects the GenAI telemetry surface (OpenTelemetry GenAI semantic conventions) 
 |---|---|---|---|
 | `exa genai check` | Shows GenAI telemetry status: tracing on/off, content capture, and semconv version. | Confirm GenAI spans/content-capture are wired before debugging an LLM call. | `exa genai check` |
 | `exa genai cost` | Estimates the USD cost of a GenAI call from its input/output token counts (spec R7). Requires `--model/-m`, `--in`, `--out`. | Price a prompt+completion before rolling it to prod or compare model economics. | `exa genai cost --model gpt-4o --in 1000 --out 500` |
+
+### `exa genai-app` — GenAI applications (composed, versioned manifests)
+
+One typed, content-addressed manifest composing a gateway route, an optional RAG binding, a prompt reference and a guardrail policy (ADR 0159) — so the *combination* is versioned and promotable, not just its four ingredients. Registering identical content returns the existing version; a `Production` promotion runs the platform's one evaluation gate (calibrated judges, ADR 0111) plus two refusals specific to a published application surface: it may not carry `guardrail.mode: off`, and every component it declares must currently resolve.
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa genai-app register` | Validate a manifest (route · RAG · prompt · guardrail) and register it as an immutable, content-addressed version; identical content returns the existing one. | Make "the grounded, guarded Q&A endpoint over the HPC docs" one versioned object instead of four pieces an operator must keep in sync. | `exa genai-app register ./hpc-docs-assistant.yaml`<br>`exa --json genai-app register ./app.json` |
+| `exa genai-app show` | Show one version's composed references — route, virtual-key reference, KB + retrieval mode, prompt pin, guardrail mode/policy and declared eval suites; accepts `<name>@<alias>`. | See exactly which prompt and knowledge base Production is answering from. | `exa genai-app show hpc-docs-assistant@Production` |
+| `exa genai-app list` | List registered versions, newest first, with the aliases pointing at each. | Find the version id to promote, and see which one Canary is serving. | `exa genai-app list --name hpc-docs-assistant` |
+| `exa genai-app promote` | Point Staging / Canary / Production at a version. Production needs recorded evaluation evidence, a guardrail mode other than `off`, and every declared component to resolve; a refusal names each reason and is audited. | Ship a change to the composition through a gate instead of editing four registries and hoping. | `exa genai-app promote hpc-docs-assistant Production hpc-docs-assistant@Staging --reason 'evals green'` |
 
 ### `exa prompt` — Prompt registry (versioned templates + labels)
 
@@ -962,6 +1001,11 @@ Coordinates multi-site FedAvg/FedProx/robust aggregation with optional different
 | `exa federated status` | Shows run config, registered sites, and completed rounds. | Monitor progress and site participation. | `exa federated status` |
 
 ### `exa finops` — FinOps + Green-AI budgets and carbon accounting
+| `exa hardware profile set <name>` | **(mutation)** Creates a new immutable profile version (accelerator family, GPU/CPU/memory/nodes shape, driver/runtime tags, applicability) and moves a label (default `active`) to it. | Name a reusable resource+runtime ask once instead of retyping `--gpus`/`--cpu` flags at every call site. | `exa hardware profile set gpu-small --accelerator-family nvidia --gpu 1 --cpu 4 --memory-gb 16 --applicability training,workbench` |
+| `exa hardware profile list` | Lists hardware profiles by their `active`-labeled version, optionally filtered by applicability. | See what named resource shapes are available. | `exa hardware profile list --applicability training` |
+| `exa hardware profile show <name>` | Shows one profile version (default: the `active` label's target); with `--cluster` also runs `resolve()` and prints the report. | Inspect a profile's full field set, or check it against a cluster while looking at it. | `exa hardware profile show gpu-small --cluster lxp` |
+| `exa hardware profile resolve <name>` | Resolves a profile against a target cluster's live capacity — `unchecked`/`verified`/`degraded`/`unresolvable`, never fabricating a capability it cannot confirm. | Check before use whether a profile's ask actually fits a real cluster. | `exa hardware profile resolve gpu-small --cluster lxp --for training` |
+| `exa hardware profile delete <name>` | **(mutation)** Deletes one version (`--version`) or the whole name (every version + label); a deleted version that was the `active` label's target is left dangling with a warning, never silently re-pointed. | Remove an obsolete or mistaken profile version. | `exa hardware profile delete gpu-small --version 1` |
 
 Per-project GPU-hour/cost budgets, pluggable carbon and cost providers (built-ins, entry-point plugins, or declarative YAML formulas), and energy/CO2e accounting for training runs. Carbon/cost estimation defaults reproduce the platform's original methodology byte-identically.
 
@@ -975,11 +1019,6 @@ Per-project GPU-hour/cost budgets, pluggable carbon and cost providers (built-in
 | `exa finops carbon record <model>` | Estimates (via the active provider) and persists a carbon record for a training run; counts CPU-core-hours as well as GPU-hours. | Attribute a run's carbon footprint to a model/MLflow run. | `exa finops carbon record JPCP --gpu-hours 40 --cpu-hours 128 --run-id <mlflow_run_id>` |
 | `exa finops carbon report` | Aggregates recorded energy and **operational** carbon, optionally filtered to one model; embodied carbon is shown as unavailable, never as zero, and no CO2e total is reported (ADR 0112 R-ee). | Report energy and operational CO2e across runs. | `exa finops carbon report --model JPCP` |
 | `exa finops carbon policy evaluate <policy>` | Simulates a carbon policy (a placement provider or `forecast-greedy`) against carbon-agnostic placement, both simple baselines and a perfect-foresight oracle on one trace (`--trace` JSON), then decides what ships: the candidate only if it beats the best simple baseline by `--margin` pp (default 5), and retirement if the shipped policy saves under `--retire-below` % (default 2). `--record` chains the result into the audit log, which the placement gate reads. Synthetic traces never gate. | Prove a carbon-aware placement policy is worth its complexity before it may place jobs on carbon (ADR 0112 R-ec). | `exa finops carbon policy evaluate carbon-aware --trace grid.json --record` |
-| `exa hardware profile set <name>` | **(mutation)** Creates a new immutable profile version (accelerator family, GPU/CPU/memory/nodes shape, driver/runtime tags, applicability) and moves a label (default `active`) to it. | Name a reusable resource+runtime ask once instead of retyping `--gpus`/`--cpu` flags at every call site. | `exa hardware profile set gpu-small --accelerator-family nvidia --gpu 1 --cpu 4 --memory-gb 16 --applicability training,workbench` |
-| `exa hardware profile list` | Lists hardware profiles by their `active`-labeled version, optionally filtered by applicability. | See what named resource shapes are available. | `exa hardware profile list --applicability training` |
-| `exa hardware profile show <name>` | Shows one profile version (default: the `active` label's target); with `--cluster` also runs `resolve()` and prints the report. | Inspect a profile's full field set, or check it against a cluster while looking at it. | `exa hardware profile show gpu-small --cluster lxp` |
-| `exa hardware profile resolve <name>` | Resolves a profile against a target cluster's live capacity — `unchecked`/`verified`/`degraded`/`unresolvable`, never fabricating a capability it cannot confirm. | Check before use whether a profile's ask actually fits a real cluster. | `exa hardware profile resolve gpu-small --cluster lxp --for training` |
-| `exa hardware profile delete <name>` | **(mutation)** Deletes one version (`--version`) or the whole name (every version + label); a deleted version that was the `active` label's target is left dangling with a warning, never silently re-pointed. | Remove an obsolete or mistaken profile version. | `exa hardware profile delete gpu-small --version 1` |
 | `exa finops carbon policy status <policy>` | Says what placement will do with a policy right now: `allow`, `substitute` (runs `carbon-simple`), `withhold` (carbon neutralised) or `agnostic` (retired), with the reason and the evaluation relied on. | Explain why `exa hpc place` did not use the carbon policy you asked for. | `exa finops carbon policy status carbon-aware` |
 | `exa finops carbon policy list [policy]` | Lists recorded carbon-policy evaluations, newest first (from the audit chain), with advantage, what shipped, benefit, retirement and whether each is synthetic. | Audit the evidence behind carbon-aware placement, and see when a re-test is due (R-ed). | `exa finops carbon policy list carbon-aware` |
 | `exa finops carbon policy sample` | Writes a deterministic synthetic trace (3 regions with a daily solar dip, mixed rigid and flexible jobs) to `--out`. Evaluations over it are marked synthetic. | Try the evaluation method without real grid data. **writes a file** | `exa finops carbon policy sample --out trace.json --days 14 --jobs 60` |
@@ -1195,6 +1234,7 @@ Per-project dev environments (JupyterLab-style). Definitions are metadata (`STOP
 | `exa workbench start` | Marks the workbench RUNNING and prints its launch spec (image, volume, injected env). **Mutation.** | Bring up a dev environment | `exa workbench start nb --project research` |
 | `exa workbench stop` | Marks the workbench STOPPED. **Mutation.** | Tear a dev environment down | `exa workbench stop nb --project research` |
 | `exa workbench delete` | Deletes the workbench definition; `--yes` skips confirmation. **Mutation.** | Remove an unused environment | `exa workbench delete nb --project research --yes` |
+| `exa workbench export-pipeline` | Turns a tagged `.ipynb`'s cells (`param`/`dataset`/`train`/`evaluate`/`promote`/`skip-export`) into a `@pipeline` file and compiles it through the ordinary `exa pipeline compile` path; the notebook is parsed, **never executed**, every untagged code cell is reported, and the export is **one-directional** (editing the generated file does not flow back). `--out`, `--yaml`, `--name`, `--json`. **Mutation** (writes a file). | Promote a notebook experiment into a reviewable, CI-runnable pipeline | `exa workbench export-pipeline toy_notebook.ipynb --out flows/toy.py` |
 
 ## Platform & Integrations
 

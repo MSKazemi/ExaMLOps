@@ -133,7 +133,7 @@ RESOURCES: tuple[Resource, ...] = (
         create="workbench create",
         delete="workbench delete",
         actions=("workbench start", "workbench stop"),
-        columns=("name", "project", "status", "image", "cpu", "memory_gb"),
+        columns=("name", "project", "status", "image", "cpu", "memory_gb", "hardware_profile"),
     ),
     R(
         "namespace",
@@ -177,6 +177,18 @@ RESOURCES: tuple[Resource, ...] = (
             "compliance status",
             "slo burn",
         ),
+    ),
+    R(
+        "catalog-entry",
+        "Model catalog",
+        "Curated, provenance-tracked model definitions you can start from — not registry "
+        "versions: an entry has no alias, no metrics and no training run (ADR 0158).",
+        list="catalog list",
+        key="name",
+        create="catalog publish",
+        show="catalog show",
+        actions=("catalog pull",),
+        columns=("name", "catalog_version", "kind", "license", "trust_tier", "resource_hint"),
     ),
     R(
         "approval",
@@ -666,6 +678,10 @@ NOT_RESOURCES: dict[str, str] = {
     "ops list": "Operations are the control plane's command records, created by the calls that "
     "start long-running work (`exa retrain`), never by a create form; `exa ops status/wait/cancel` "
     "follow one handle - the Commands view is the read surface.",
+    "genai-app list": "A GenAI application version is an immutable, content-addressed manifest "
+    "composing four references, registered from a file (`exa genai-app register`); there is no "
+    "create/edit form, and an alias move (`exa genai-app promote`) is gated by evaluation "
+    "evidence, guardrail mode and component resolution - the CLI console is the surface.",
     "agent version list": "Agent versions are immutable, content-addressed manifests registered "
     "from a file (`exa agent version register`); there is no create/edit form, and an alias move "
     "(`exa agent alias set`) is gated by evaluation evidence - the CLI console is the surface.",

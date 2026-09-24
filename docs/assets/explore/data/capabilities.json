@@ -1,7 +1,7 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 520,
- "total_groups": 73,
+ "total_commands": 530,
+ "total_groups": 75,
  "panels": [
   {
    "title": "Getting Started",
@@ -142,6 +142,13 @@
      "cmd": "exa pipeline compile",
      "group": "pipeline",
      "help": "Compile a Python pipeline definition (@pipeline) to a validated, hashed IR.",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline decompile",
+     "group": "pipeline",
+     "help": "Turn a per-model registry YAML into equivalent @pipeline source (the reverse of compile). Refuses rather than writing a file when the YAML holds anything the DSL cannot express.",
      "anchor": "exa-pipeline-prefect-training-pipeline",
      "guide": "components/prefect.md"
     },
@@ -330,7 +337,7 @@
     {
      "cmd": "exa finetune",
      "group": "finetune",
-     "help": "Run a fine-tune and register a signed, lineage-linked adapter (R1/R3/GWT-1).",
+     "help": "Fine-tune (--train) or register an adapter, signed and lineage-linked (R1/R3/GWT-1). Without --train nothing is trained: the adapter is registered as a paper record, and any --asserted-eval is stored as an operator claim, clearly separated from a measured score.",
      "anchor": "exa-finetune-fine-tune-and-register-an-adapter",
      "guide": "guides/fine-tuning.md"
     },
@@ -707,6 +714,7 @@
    "blurb": "Browse, compare, sign and trace every registered model version.",
    "groups": [
     "models",
+    "catalog",
     "modelzoo",
     "embedding"
    ],
@@ -829,6 +837,34 @@
      "help": "Verify a model's signature against current artifact bytes (verify-before-load gate).",
      "anchor": "exa-models-mlflow-model-registry",
      "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa catalog list",
+     "group": "catalog",
+     "help": "Browse the catalog — curated model definitions you could start from.",
+     "anchor": "exa-catalog-model-catalog-what-you-could-start-from-adr-0158",
+     "guide": null
+    },
+    {
+     "cmd": "exa catalog publish",
+     "group": "catalog",
+     "help": "Publish a catalog entry. An unpinned source is refused here, never flagged later.",
+     "anchor": "exa-catalog-model-catalog-what-you-could-start-from-adr-0158",
+     "guide": null
+    },
+    {
+     "cmd": "exa catalog pull",
+     "group": "catalog",
+     "help": "Materialize a catalog entry into a project. Trains nothing, serves nothing.",
+     "anchor": "exa-catalog-model-catalog-what-you-could-start-from-adr-0158",
+     "guide": null
+    },
+    {
+     "cmd": "exa catalog show",
+     "group": "catalog",
+     "help": "Show one catalog entry (default: its newest catalog_version).",
+     "anchor": "exa-catalog-model-catalog-what-you-could-start-from-adr-0158",
+     "guide": null
     },
     {
      "cmd": "exa modelzoo adopt",
@@ -968,7 +1004,7 @@
     {
      "cmd": "exa serve adapter add",
      "group": "serve",
-     "help": "Register an adapter (alias of `exa finetune`) (R6).",
+     "help": "Register an adapter trained elsewhere (alias of `exa finetune` without `--train`) (R6).",
      "anchor": "exa-serve-ray-serve-operations",
      "guide": "components/ray-serve.md"
     },
@@ -982,7 +1018,7 @@
     {
      "cmd": "exa serve adapter promote",
      "group": "serve",
-     "help": "Promote an adapter — blocked by the C3 eval-gate if below floor (R2/GWT-2).",
+     "help": "Promote an adapter — blocked by the C3 eval-gate unless a measured score clears the floor.",
      "anchor": "exa-serve-ray-serve-operations",
      "guide": "components/ray-serve.md"
     },
@@ -1533,6 +1569,7 @@
    "blurb": "Manage prompts, trace GenAI calls and enforce guardrails.",
    "groups": [
     "genai",
+    "genai-app",
     "prompt",
     "guardrails"
    ],
@@ -1550,6 +1587,34 @@
      "help": "Estimate the USD cost of a GenAI call from its token usage (spec R7).",
      "anchor": "exa-genai-genai-observability-opentelemetry-semconv-token-cost",
      "guide": "guides/genai-observability.md"
+    },
+    {
+     "cmd": "exa genai-app list",
+     "group": "genai-app",
+     "help": "List registered versions, newest first, with the aliases pointing at each.",
+     "anchor": "exa-genai-app-genai-applications-composed-versioned-manifests",
+     "guide": null
+    },
+    {
+     "cmd": "exa genai-app promote",
+     "group": "genai-app",
+     "help": "Point an alias at a version. Production is gated on evidence, guardrails and resolution.",
+     "anchor": "exa-genai-app-genai-applications-composed-versioned-manifests",
+     "guide": null
+    },
+    {
+     "cmd": "exa genai-app register",
+     "group": "genai-app",
+     "help": "Validate a manifest and register it; identical content returns the existing version.",
+     "anchor": "exa-genai-app-genai-applications-composed-versioned-manifests",
+     "guide": null
+    },
+    {
+     "cmd": "exa genai-app show",
+     "group": "genai-app",
+     "help": "Show one version: the composed route, RAG, prompt and guardrail references.",
+     "anchor": "exa-genai-app-genai-applications-composed-versioned-manifests",
+     "guide": null
     },
     {
      "cmd": "exa prompt backend",
@@ -3444,6 +3509,13 @@
      "cmd": "exa workbench delete",
      "group": "workbench",
      "help": "Delete a workbench definition.",
+     "anchor": "exa-workbench-project-workbenches-on-demand-dev-environments-p5",
+     "guide": "guides/projects-workspaces.md"
+    },
+    {
+     "cmd": "exa workbench export-pipeline",
+     "group": "workbench",
+     "help": "Turn tagged notebook cells into a @pipeline file, then compile it (ADR 0160). Cells are read as data — the notebook is parsed, never executed. Tag a code cell with one of param, dataset, train, evaluate, promote or skip-export (standard Jupyter cell tags); every other code cell is dropped and reported by index, so nothing vanishes unnoticed. One-directional by design: editing the generated file does NOT flow back into the notebook, and re-running this command overwrites the file rather than merging. The output is a starting point for the ordinary pipeline-as-code workflow (`exa pipeline compile`), exactly like a hand-written pipeline file.",
      "anchor": "exa-workbench-project-workbenches-on-demand-dev-environments-p5",
      "guide": "guides/projects-workspaces.md"
     },

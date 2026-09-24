@@ -27,6 +27,7 @@ from examlops.cli.commands import (
     broker_cmd,
     cards_a6_cmd,
     cards_cmd,
+    catalog_cmd,
     challenger_cmd,
     commands_cmd,
     compliance_cmd,
@@ -56,6 +57,7 @@ from examlops.cli.commands import (
     finops_cmd,
     fleet_cmd,
     gateway_cmd,
+    genai_app_cmd,
     genai_cmd,
     governance_cmd,
     gpu_share_cmd,
@@ -146,12 +148,12 @@ _ROOT_PANELS: list[tuple[str, list[str]]] = [
         ["pipeline", "retrain", "retrain-status", "commands", "scaffold", "finetune", "reproduce"],
     ),
     ("Data & Features", ["data", "dataplane", "feature", "features", "assets", "cards"]),
-    ("Models & Registry", ["models", "modelzoo", "embedding"]),
+    ("Models & Registry", ["models", "catalog", "modelzoo", "embedding"]),
     (
         "Serving & Inference",
         ["serve", "predict", "offline", "production", "gateway", "vector", "rag"],
     ),
-    ("GenAI & LLMOps", ["genai", "prompt", "guardrails"]),
+    ("GenAI & LLMOps", ["genai", "genai-app", "prompt", "guardrails"]),
     # The agentic surface was the platform's differentiator and the one thing a reader could not
     # find in `exa --help`: its 15 commands were correct and complete but scattered across four
     # panels — `ask` under Getting Started, `agentops` under GenAI, `autopilot` under Monitoring,
@@ -377,6 +379,14 @@ serve.app.add_typer(
     name="adapter",
     help="Multi-LoRA adapters (add/list/promote/route) (B7)",
 )
+# ADR 0158 — the catalog ("what could I start from?") sits next to the registry ("what did we
+# produce?"), deliberately: operators look for one where the other lives, and the adjacency plus
+# the groups' own wording is the first defense against conflating them.
+app.add_typer(
+    catalog_cmd.app,
+    name="catalog",
+    help="Model Catalog — curated model definitions you can start from (ADR 0158)",
+)
 models.app.add_typer(cards_cmd.app, name="card", help="Generate model cards")
 # D3 — merge sign/verify/bom directly into the `exa models` group (not a sub-group).
 models.app.registered_commands.extend(supplychain_cmd.app.registered_commands)
@@ -441,6 +451,11 @@ app.add_typer(
 )
 app.add_typer(
     genai_cmd.app, name="genai", help="GenAI observability (OpenTelemetry semconv) + token cost"
+)
+app.add_typer(
+    genai_app_cmd.app,
+    name="genai-app",
+    help="GenAI applications — composed route+RAG+prompt+guardrail manifests (ADR 0159)",
 )
 app.add_typer(
     vector_cmd.app, name="vector", help="Vector store — collections, upsert, search, reindex"

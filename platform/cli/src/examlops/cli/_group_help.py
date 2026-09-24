@@ -91,6 +91,14 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("Compare two versions", "exa models diff jpcp 1 2"),
         ("GPU-hour cost history", "exa models cost jpcp"),
     ],
+    # The catalog answers "what could I start from?"; `exa models` answers "what did we
+    # produce?". Saying so in the examples is cheaper than correcting the confusion later.
+    "catalog": [
+        ("Browse what you could start from", "exa catalog list"),
+        ("Inspect one entry's provenance", "exa catalog show <entry>"),
+        ("Preview a pull without writing", "exa catalog pull <entry> --project <p> --dry-run"),
+        ("Start a project from an entry", "exa catalog pull <entry> --project <p>"),
+    ],
     "modelzoo": [
         ("ModelZoo freshness per model", "exa modelzoo status"),
         ("Recent ModelZoo push events", "exa modelzoo events"),
@@ -292,6 +300,7 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
     ],
     "workbench": [
         ("On-demand dev environments", "exa workbench list"),
+        ("Tagged notebook → pipeline file", "exa workbench export-pipeline nb.ipynb"),
     ],
     # Platform & Integrations
     "stack": [

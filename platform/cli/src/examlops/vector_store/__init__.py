@@ -40,6 +40,7 @@ __all__ = [
     "IndexConfig",
     "IndexConfigError",
     "PgVectorStore",
+    "QdrantVectorStore",
     "SchemaConflict",
     "SqliteVectorStore",
     "VecItem",
@@ -628,11 +629,16 @@ class SqliteVectorStore:
             )
 
 
-# ── pgvector store (production default) ───────────────────────────────────────
+# ── pgvector store (production default) + qdrant (scale-out) ──────────────────
 
 from examlops.vector_store.pgvector import PgVectorStore  # noqa: E402  (imports the above)
+from examlops.vector_store.qdrant import QdrantVectorStore  # noqa: E402  (imports the above)
 
-_STORES: dict[str, Any] = {"sqlite": SqliteVectorStore, "pgvector": PgVectorStore}
+_STORES: dict[str, Any] = {
+    "sqlite": SqliteVectorStore,
+    "pgvector": PgVectorStore,
+    "qdrant": QdrantVectorStore,
+}
 
 
 def select_store(name: str | None = None) -> VectorStore:

@@ -9,6 +9,11 @@ and the run is recorded in ``distributed_runs`` / ``training_checkpoints``.
 its final metrics line, cross-checked against a valid manifest for that step on disk. Nothing here
 infers "resumed" from "this was attempt 2".
 
+``EXAMLOPS_SUSPEND_PREEMPTION_GATE`` (default off) makes the supervisor the ADR 0109 decision-3
+consumer: before it spends another submission it asks the suspend seam whether the run's state
+actually survives, and declines — audibly, with reasons — instead of restarting from step 0 while
+calling it a resume. With the switch off, nothing about this module changes.
+
 This module imports no torch: ``examlops.cli`` stays importable without it, and running a job
 without torch installed gives :class:`TorchNotInstalled` (a clear message), not an ImportError at
 CLI start-up. Only the worker processes need torch.
@@ -135,6 +140,9 @@ class SupervisedRun:
     metrics: dict[str, Any] | None = None
     resumed_from_step: int | None = None  # from the run's own manifest; None = never resumed
     checkpoints: list[dict[str, Any]] = field(default_factory=list)
+    # Set only when the preemption gate ran (it is off unless EXAMLOPS_SUSPEND_PREEMPTION_GATE is
+    # on); None therefore means "the gate was not consulted", never "it said yes".
+    preemption: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -143,6 +151,59 @@ class SupervisedRun:
 
 
 Runner = Callable[[list[str], dict[str, str], Path, float], int]
+
+#: Kill-switch for the ADR 0109 decision-3 consumer below. Off ⇒ ``supervise`` behaves exactly as
+#: it did before the gate existed.
+PREEMPTION_GATE_ENV = "EXAMLOPS_SUSPEND_PREEMPTION_GATE"
+
+
+def preemption_gate_enabled() -> bool:
+    return os.getenv(PREEMPTION_GATE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def preemption_check(
+    run_id: str,
+    run_dir: Path,
+    cfg_hash: str | None = None,
+    *,
+    backend: str = "training-checkpoint",
+) -> tuple[bool, tuple[str, ...]]:
+    """Ask the suspend seam whether resubmitting this run preserves its state (ADR 0109 dec. 3).
+
+    This is the consumer decision 3 asks for: *"if the backend cannot support checkpoint-preserving
+    preemption, the broker declines to promise it and states why — it does not silently kill and
+    restart."* The supervisor is the platform's only code path that actually re-runs a workload
+    after a preemption-shaped failure, so a declined promise has something real to change here.
+
+    Two independent questions, both of which must answer yes:
+
+    1. *the mechanism* — ``preemption_promise(capability)``: does the backend keep state in a tier
+       that outlives the compute at all?
+    2. *this run* — does a checkpoint that verifies actually exist on disk? A backend that could
+       preserve state does not help a run that has not written any, and resubmitting such a run is
+       a restart from step 0 wearing the word "resume".
+
+    Returns ``(can_promise, reasons)``; ``reasons`` carries the caveats even when it says yes, so
+    the ceiling stays visible (the same convention as ``PreemptionPromise``).
+    """
+    from examlops.suspend import preemption_promise
+    from examlops.suspend import service as suspend_service
+
+    try:
+        capability = suspend_service.get_backend(backend).capability()
+    except Exception as exc:  # noqa: BLE001 - an unresolvable backend promises nothing
+        return False, (f"suspend backend {backend!r} is unavailable: {exc}",)
+    promise = preemption_promise(capability)
+    reasons = [f"backend {capability.backend!r}", *promise.reasons]
+    latest, _skipped = cf.find_latest_valid(run_dir, cfg_hash)
+    if latest is None:
+        reasons.append(
+            f"run {run_id!r} has no checkpoint that verifies: a resubmission would restart from "
+            "step 0, not resume"
+        )
+        return False, tuple(reasons)
+    reasons.append(f"newest valid checkpoint: step {latest.step}")
+    return promise.can_promise, tuple(reasons)
 
 
 def _subprocess_runner(cmd: list[str], env: dict[str, str], log: Path, timeout: float) -> int:
@@ -296,6 +357,24 @@ def supervise(
         )
         platform_db.update_distributed_run(run_id, status="failed")
         if n < max_attempts:
+            # ADR 0109 decision 3. Off by default: the gate can only ever *stop* a resubmission
+            # that would otherwise have happened, never start one.
+            if preemption_gate_enabled():
+                promised, reasons = preemption_check(run_id, run_dir, cfg_hash)
+                result.preemption = {
+                    "gate": "on",
+                    "promised": promised,
+                    "reasons": list(reasons),
+                }
+                if not promised:
+                    audit_best_effort(
+                        AUDIT_SOURCE,
+                        actor,
+                        "distributed_resubmit_declined",
+                        run_id,
+                        {"attempt": n, "reasons": list(reasons)},
+                    )
+                    break
             sleep(min(backoff_cap_s, backoff_s * (2 ** (n - 1))))
 
     # A resume is claimed only from the run's own metrics, and only if that step's manifest is valid.

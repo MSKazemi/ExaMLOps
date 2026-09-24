@@ -5,6 +5,12 @@ IR onto the per-model YAML the existing generator already runs, ``loader`` reads
 and IR JSON. Stdlib-only and import-light; the heavy machinery is reached only at run time.
 """
 
+from .decompile import (
+    NotRepresentableError,
+    decompile_model_yaml,
+    ir_from_model_yaml,
+    render_pipeline_source,
+)
 from .dsl import (
     PipelineDef,
     Ref,
@@ -36,6 +42,7 @@ __all__ = [
     "IRError",
     "Lowered",
     "NotLowerableError",
+    "NotRepresentableError",
     "PipelineDef",
     "Ref",
     "Resources",
@@ -44,11 +51,14 @@ __all__ = [
     "content_hash",
     "custom_python",
     "dataset",
+    "decompile_model_yaml",
     "evaluate",
     "hpo",
+    "ir_from_model_yaml",
     "lower_training",
     "pipeline",
     "promote",
+    "render_pipeline_source",
     "step",
     "topological_order",
     "train",

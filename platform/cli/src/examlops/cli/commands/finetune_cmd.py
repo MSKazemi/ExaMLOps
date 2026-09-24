@@ -22,7 +22,10 @@ adapter_app = typer.Typer(
 
 _EXAMPLES = (
     "Examples:\n\n"
-    "  exa finetune llama3.1-8b --method lora --dataset <rev> --rank 8 --eval 0.82\n\n"
+    "  # Really fine-tune: trains LoRA factors and records the score it measured\n"
+    "  exa finetune demo-base --train --dataset <rev> --rank 4 --steps 80\n\n"
+    "  # Register an adapter trained elsewhere; --asserted-eval is stored as UNVERIFIED\n"
+    "  exa finetune llama3.1-8b --method lora --dataset <rev> --asserted-eval 0.82\n\n"
     "  exa serve adapter list --base llama3.1-8b\n\n"
     "  exa serve adapter promote llama3.1-8b-lora-<rev>\n\n"
     "  exa serve adapter route llama3.1-8b llama3.1-8b-lora-<rev> --prompt 'hi'"
@@ -35,18 +38,58 @@ def _actor() -> str:
 
 def finetune(
     base: str = typer.Argument(..., help="Base model ref (e.g. llama3.1-8b)"),
+    train: bool = typer.Option(
+        False,
+        "--train",
+        help="Actually fine-tune: run the reference LoRA script and record the score it measures",
+    ),
     method: str = typer.Option("lora", "--method", help="lora | qlora | full"),
     dataset: str = typer.Option(None, "--dataset", help="A1-pinned dataset revision"),
     rank: int = typer.Option(8, "--rank", help="LoRA rank"),
     target_modules: str = typer.Option(None, "--target-modules", help="Comma-separated modules"),
-    eval_score: float = typer.Option(None, "--eval", help="Recorded eval score"),
+    asserted_eval: float = typer.Option(
+        None,
+        "--asserted-eval",
+        "--eval",
+        help="A score YOU measured elsewhere. Stored as UNVERIFIED (operator-asserted); it can "
+        "never clear the C3 promotion gate. Use --train to obtain a measured one.",
+    ),
     eval_floor: float = typer.Option(0.0, "--eval-floor", help="C3 quality floor for promotion"),
     cost_gpu_hours: float = typer.Option(None, "--cost", help="Fine-tune GPU-hours"),
     adapter_id: str = typer.Option(None, "--adapter-id", help="Explicit adapter id"),
+    steps: int = typer.Option(80, "--steps", min=1, help="--train: training steps"),
+    batch: int = typer.Option(64, "--batch", min=1, help="--train: batch size"),
+    lr: float = typer.Option(0.05, "--lr", help="--train: learning rate"),
+    seed: int = typer.Option(None, "--seed", help="--train: seed (default: EXAMLOPS_SEED, else 0)"),
+    backend: str = typer.Option(
+        "torch-lora", "--backend", help="--train: fine-tuning backend (torch-lora | peft)"
+    ),
+    run_id: str = typer.Option(None, "--run-id", help="--train: explicit training run id"),
 ) -> None:
-    """Run a fine-tune and register a signed, lineage-linked adapter (R1/R3/GWT-1)."""
+    """Fine-tune (``--train``) or register an adapter, signed and lineage-linked (R1/R3/GWT-1).
+
+    Without ``--train`` nothing is trained: the adapter is registered as a paper record, and any
+    ``--asserted-eval`` is stored as an operator claim, clearly separated from a measured score.
+    """
     if not dataset:
         _output.error("--dataset (A1 revision) is required for reproducibility.")
+        return
+    if train:
+        _run_training(
+            base,
+            dataset=dataset,
+            adapter_id=adapter_id,
+            method=method,
+            rank=rank,
+            steps=steps,
+            batch=batch,
+            lr=lr,
+            seed=seed,
+            backend=backend,
+            run_id=run_id,
+            eval_floor=eval_floor,
+            asserted_eval=asserted_eval,
+        )
         return
     from examlops.finetuning import finetune as _finetune
 
@@ -57,7 +100,8 @@ def finetune(
         adapter_id=adapter_id,
         rank=rank,
         target_modules=[m.strip() for m in target_modules.split(",")] if target_modules else None,
-        eval_score=eval_score,
+        asserted_eval_score=asserted_eval,
+        asserted_eval_by=_actor(),
         eval_floor=eval_floor,
         cost_gpu_hours=cost_gpu_hours,
         actor=_actor(),
@@ -69,17 +113,111 @@ def finetune(
                 "base_ref": adapter.base_ref,
                 "method": adapter.method,
                 "rank": adapter.rank,
-                "eval_score": adapter.eval_score,
+                "trained": False,
+                "eval_score": None,
+                "eval_source": None,
+                "asserted_eval_score": adapter.asserted_eval_score,
+                "asserted_eval_by": adapter.asserted_eval_by,
                 "signed": adapter.signed,
             }
         )
         return
     _output.ok(
         f"Registered adapter {adapter.adapter_id} "
-        f"({adapter.method}, rank {adapter.rank}) on base {base}"
+        f"({adapter.method}, rank {adapter.rank}) on base {base} — nothing was trained."
     )
+    if adapter.asserted_eval_score is not None:
+        _output.warning(
+            f"  eval {adapter.asserted_eval_score} recorded as UNVERIFIED (operator-asserted by "
+            f"{adapter.asserted_eval_by}); it cannot clear the C3 gate. Re-run with --train for a "
+            "measured score."
+        )
     if not adapter.signed:
         _output.warning("  unsigned — set EXAMLOPS_SIGNING_KEY to sign the adapter.")
+
+
+def _run_training(
+    base: str,
+    *,
+    dataset: str,
+    adapter_id: str | None,
+    method: str,
+    rank: int,
+    steps: int,
+    batch: int,
+    lr: float,
+    seed: int | None,
+    backend: str,
+    run_id: str | None,
+    eval_floor: float,
+    asserted_eval: float | None,
+) -> None:
+    """``--train``: run the shipped reference script, then register what it measured."""
+    from examlops.finetuning.runner import TorchNotInstalled, run_finetune
+
+    if method == "full":
+        _output.error(
+            "Full fine-tuning is not implemented (ADR 0044 clause 4): only LoRA/QLoRA adapters "
+            "are trained here. Re-run with --method lora.",
+            exit_code=2,
+        )
+    if asserted_eval is not None:
+        _output.warning("--asserted-eval is ignored with --train: the run measures its own score.")
+    try:
+        res = run_finetune(
+            base,
+            dataset_rev=dataset,
+            adapter_id=adapter_id,
+            run_id=run_id,
+            method=method,
+            rank=rank,
+            steps=steps,
+            batch=batch,
+            lr=lr,
+            seed=seed,
+            backend=backend,
+            eval_floor=eval_floor,
+            actor=_actor(),
+        )
+    except TorchNotInstalled as exc:
+        _output.error(str(exc), exit_code=2)
+    m = res.metrics or {}
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "run_id": res.run_id,
+                "status": res.status,
+                "trained": res.status == "complete",
+                "adapter_id": res.adapter_id,
+                "eval_source": "measured" if res.status == "complete" else None,
+                "eval_metric": m.get("eval_metric"),
+                "eval_score": m.get("eval_score"),
+                "eval_n": m.get("eval_n"),
+                "baseline_eval_score": m.get("baseline_eval_score"),
+                "first_loss": m.get("first_loss"),
+                "final_loss": m.get("final_loss"),
+                "adapter_sha256": m.get("adapter_sha256"),
+                "trainable_parameters": m.get("trainable_parameters"),
+                "attempts": [a.outcome for a in res.attempts],
+                "run_dir": str(res.run_dir),
+            }
+        )
+        if res.status != "complete":
+            raise typer.Exit(1)
+        return
+    if res.status != "complete":
+        _output.error(
+            f"{res.run_id} {res.status} after {len(res.attempts)} attempt(s); see {res.log}"
+        )
+        raise typer.Exit(1)
+    _output.ok(
+        f"Trained adapter {res.adapter_id}: {m.get('eval_metric')} "
+        f"{m.get('eval_score'):.4f} on {m.get('eval_n')} held-out samples "
+        f"(baseline {m.get('baseline_eval_score'):.4f}, "
+        f"loss {m.get('first_loss'):.4f} → {m.get('final_loss'):.4f}, "
+        f"{m.get('trainable_parameters')} adapter parameters, base unchanged)."
+    )
+    _output.info(f"  run {res.run_id} in {res.run_dir}; adapter {m.get('adapter_sha256', '')[:12]}")
 
 
 @adapter_app.command("list")
@@ -100,14 +238,15 @@ def adapter_list(
         return
     _output.print_table(
         "LoRA Adapters",
-        ["Adapter", "Base", "Method", "Rank", "Eval", "Promoted", "Signed"],
+        ["Adapter", "Base", "Method", "Rank", "Measured eval", "Asserted", "Promoted", "Signed"],
         [
             [
                 a["adapter_id"],
                 a["base_ref"],
                 a["method"],
                 str(a["rank"]) if a["rank"] is not None else "—",
-                f"{a['eval_score']:.3f}" if a["eval_score"] is not None else "—",
+                _measured_cell(a),
+                _asserted_cell(a),
                 "yes" if a["promoted"] else "no",
                 "yes" if a["signature"] else "no",
             ]
@@ -116,16 +255,38 @@ def adapter_list(
     )
 
 
+def _measured_cell(a: dict) -> str:
+    """Only a row stamped ``measured`` may print a score in the measured column."""
+    if a.get("eval_source") == "measured" and a.get("eval_score") is not None:
+        return f"{a['eval_score']:.3f} ({a.get('eval_metric') or 'unnamed'})"
+    return "—"
+
+
+def _asserted_cell(a: dict) -> str:
+    if a.get("asserted_eval_score") is not None:
+        return f"{a['asserted_eval_score']:.3f} (unverified)"
+    if a.get("eval_source") is None and a.get("eval_score") is not None:
+        # A row from before measured/asserted were separated: provenance unknown, so it is
+        # shown as unverified rather than promoted to "measured" by the display.
+        return f"{a['eval_score']:.3f} (unverified, legacy)"
+    return "—"
+
+
 @adapter_app.command("add", epilog=_EXAMPLES)
 def adapter_add(
     base: str = typer.Argument(..., help="Base model ref"),
     dataset: str = typer.Option(..., "--dataset", help="A1 dataset revision"),
     method: str = typer.Option("lora", "--method", help="lora | qlora | full"),
     rank: int = typer.Option(8, "--rank", help="LoRA rank"),
-    eval_score: float = typer.Option(None, "--eval", help="Eval score"),
+    asserted_eval: float = typer.Option(
+        None,
+        "--asserted-eval",
+        "--eval",
+        help="A score you measured elsewhere — stored as UNVERIFIED (operator-asserted)",
+    ),
     eval_floor: float = typer.Option(0.0, "--eval-floor", help="C3 quality floor"),
 ) -> None:
-    """Register an adapter (alias of `exa finetune`) (R6)."""
+    """Register an adapter trained elsewhere (alias of `exa finetune` without `--train`) (R6)."""
     from examlops.finetuning import finetune as _finetune
 
     a = _finetune(
@@ -133,22 +294,33 @@ def adapter_add(
         method,
         dataset,
         rank=rank,
-        eval_score=eval_score,
+        asserted_eval_score=asserted_eval,
+        asserted_eval_by=_actor(),
         eval_floor=eval_floor,
         actor=_actor(),
     )
-    _output.ok(f"Added adapter {a.adapter_id} on base {base}.")
+    _output.ok(f"Added adapter {a.adapter_id} on base {base} (nothing was trained).")
+    if a.asserted_eval_score is not None:
+        _output.warning(
+            f"  eval {a.asserted_eval_score} is UNVERIFIED (operator-asserted); it cannot clear "
+            "the C3 gate."
+        )
 
 
 @adapter_app.command("promote")
 def adapter_promote(
     adapter_id: str = typer.Argument(..., help="Adapter id"),
+    accept_unverified: bool = typer.Option(
+        False,
+        "--accept-unverified",
+        help="Promote although no measured score exists (audited). The floor is then unproven.",
+    ),
 ) -> None:
-    """Promote an adapter — blocked by the C3 eval-gate if below floor (R2/GWT-2)."""
+    """Promote an adapter — blocked by the C3 eval-gate unless a measured score clears the floor."""
     from examlops.finetuning import EvalGateError, promote_adapter
 
     try:
-        promote_adapter(adapter_id, actor=_actor())
+        promote_adapter(adapter_id, actor=_actor(), accept_unverified=accept_unverified)
     except EvalGateError as exc:
         _output.error(str(exc))
         raise typer.Exit(1) from exc

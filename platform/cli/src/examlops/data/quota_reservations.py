@@ -24,21 +24,44 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from examlops.platform_db import _immediate_write, get_db, init_db, write_retry
+from examlops.platform_db import _db_path, _immediate_write, get_db, init_db, write_retry
 
 __all__ = [
     "admission_running_counts",
     "commit",
     "expire_due",
     "get",
+    "held_by_holder",
     "held_totals",
     "held_gpus_by_tenant",
     "list_reservations",
     "release",
+    "release_by_holder",
     "reserve",
 ]
 
 _HOLDING = "(state = 'committed' OR (state = 'reserved' AND expires_at > ?))"
+#: A holding row is ``reserved`` (whether or not its TTL has lapsed) or ``committed``. Release
+#: deliberately does *not* filter on ``expires_at``: a lapsed-but-unswept row still occupies the
+#: table, and resolving it as ``released`` on completion is more truthful than leaving it for the
+#: sweep to call ``expired``. It holds no quota either way (see :data:`_HOLDING`).
+_RESOLVABLE = "state IN ('reserved', 'committed')"
+
+#: ``holder`` has no index in the base schema (``platform_db`` owns that DDL and is deliberately
+#: kept out of ordinary edits). Released and expired rows accumulate, so a holder lookup would
+#: scan the whole history; this creates the index once per process per datastore instead.
+_HOLDER_INDEX_DONE: set[str] = set()
+
+
+def _ensure_holder_index(conn: Any) -> None:
+    key = _db_path()
+    if key in _HOLDER_INDEX_DONE:
+        return
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_quota_reservations_holder "
+        "ON quota_reservations(holder, state)"
+    )
+    _HOLDER_INDEX_DONE.add(key)
 
 
 def _held(conn: Any, project: str, now: float) -> tuple[int, float]:
@@ -156,6 +179,59 @@ def release(reservation_id: str, *, reason: str | None = None, now: float | None
                 (ts, reason, reservation_id),
             )
             return bool(cur.rowcount == 1)
+
+    return write_retry(_do)
+
+
+def held_by_holder(holder: str, *, now: float | None = None) -> list[dict[str, Any]]:
+    """Rows ``holder`` still holds quota through (read-only), oldest first."""
+    init_db()
+    ts = time.time() if now is None else now
+    with get_db() as conn:
+        _ensure_holder_index(conn)
+        rows = conn.execute(
+            f"SELECT * FROM quota_reservations WHERE holder = ? AND {_HOLDING} "
+            "ORDER BY created_at, id",
+            (holder, ts),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def release_by_holder(
+    holder: str, *, reason: str | None = None, now: float | None = None
+) -> list[dict[str, Any]]:
+    """Release every reservation ``holder`` still owns, in one transaction.
+
+    This is what a *completion* calls: the holder — a job, a run, a command — has reached a
+    terminal state and whatever it was holding must go back, whether it succeeded, failed or was
+    cancelled. Returns the rows that this call resolved, so the caller can audit exactly one event
+    per genuinely-released reservation.
+
+    **Exactly once, by construction.** The SELECT and the UPDATE run under the same scoped write
+    lock as :func:`release` and :func:`expire_due`, and both only touch rows still in
+    ``reserved``/``committed``. So a completion racing the TTL sweep resolves each row once: one of
+    the two wins the lock, the loser sees the row already resolved and reports it as not released.
+    A second call for the same holder therefore returns ``[]`` rather than failing.
+    """
+    ts = time.time() if now is None else now
+
+    def _do() -> list[dict[str, Any]]:
+        init_db()
+        with _immediate_write("quota_reservations") as conn:
+            _ensure_holder_index(conn)
+            rows = conn.execute(
+                f"SELECT * FROM quota_reservations WHERE holder = ? AND {_RESOLVABLE} "
+                "ORDER BY created_at, id",
+                (holder,),
+            ).fetchall()
+            resolved = [dict(r) for r in rows]
+            if resolved:
+                conn.execute(
+                    "UPDATE quota_reservations SET state = 'released', resolved_at = ?, "
+                    f"reason = ? WHERE holder = ? AND {_RESOLVABLE}",
+                    (ts, reason, holder),
+                )
+        return resolved
 
     return write_retry(_do)
 

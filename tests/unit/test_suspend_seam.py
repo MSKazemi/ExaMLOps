@@ -88,7 +88,9 @@ def test_capability_validates_its_vocabulary():
 
 def test_no_hardware_backend_is_registered_and_it_is_refused_not_faked():
     names = {i.name for i in list_providers("suspend_backend")}
-    assert names == {"checkpoint-only", "mock"}
+    # Two real backends (agent sessions, training checkpoints) and a test double — and nothing
+    # that claims a hardware mechanism.
+    assert names == {"checkpoint-only", "training-checkpoint", "mock"}
     for fake in ("cuda-checkpoint", "criu", "vllm-sleep"):
         with pytest.raises(SuspendUnsupported, match="not built in"):
             service.get_backend(fake)

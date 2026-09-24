@@ -359,7 +359,7 @@ This is the cycle for **any** change, big or small.
 |---|---|---|
 | 1. Branch | `git switch -c fix/short-description` | never work directly on `main` |
 | 2. Change | edit code **and its test in the same pass** | a change without a test is not finished |
-| 3. Test fast | `make test-fast` | the whole unit suite (**6411 tests**) in a few minutes, in parallel |
+| 3. Test fast | `make test-fast` | the whole unit suite (**8175 tests**) in a few minutes, in parallel |
 | 4. Gate | `make gate` | ~2 min: lint · format · type-check · unit tests · docs build |
 | 5. Docs | update the guide / CHANGELOG that your change affects | see §10 |
 | 6. Commit | `git commit` with a scoped message | see §11 |

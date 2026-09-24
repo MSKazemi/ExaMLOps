@@ -189,17 +189,27 @@ def test_the_audit_log_is_shown_in_chain_order_not_by_a_one_second_timestamp():
     right. The chain's own order is `id`; that is what makes it a chain, and it is what an auditor
     reconstructing a sequence of events is relying on.
     """
+    from datetime import datetime
+
     from examlops import platform_db
 
     # Seeded with one explicit `ts` rather than by writing 12 events and hoping: through
     # `write_audit_event` they straddle a second boundary about one run in three, and the test
     # then skipped its own precondition. The behaviour under test is the ORDER BY, and a shared
     # timestamp with ascending ids is exactly the state that exercises it.
+    #
+    # The shared second is read from the clock, not written as a literal. Pinning it to
+    # '2026-09-15 12:00:00' fixed the straddling and created a time bomb in its place: the command
+    # selects `ts >= utcnow() - 7d`, so on 2026-09-22 the seeded rows fell out of the window, the
+    # command took its "no events" branch, and the assertion below stopped running. What this test
+    # needs is only that the 12 events share ONE second — never that it be a particular one.
+    # `datetime.utcnow()` (not `now()`) because that is the clock the command compares against.
+    shared_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     with platform_db.get_db() as conn:
         conn.executemany(
             "INSERT INTO audit_events (ts, source, actor, action, target) "
-            "VALUES ('2026-09-15 12:00:00', 'cli', 'alice', ?, 'JPCP')",
-            [(f"step_{i:02d}",) for i in range(12)],
+            "VALUES (?, 'cli', 'alice', ?, 'JPCP')",
+            [(shared_ts, f"step_{i:02d}") for i in range(12)],
         )
         assert len(conn.execute("SELECT DISTINCT ts FROM audit_events").fetchall()) == 1, (
             "the events must share one second for this to test anything"
@@ -215,7 +225,18 @@ def test_the_audit_log_is_shown_in_chain_order_not_by_a_one_second_timestamp():
     result = CliRunner().invoke(app, ["--json", "audit", "--last", "7d", "--limit", "5"])
     assert result.exit_code == 0, result.output
     payload = _json.loads(result.stdout)
-    shown = [e["action"] for e in (payload["events"] if isinstance(payload, dict) else payload)]
+    events = payload["events"] if isinstance(payload, dict) and "events" in payload else payload
+    # Check that the command selected the seeded rows at all, BEFORE ordering is asserted. Without
+    # this the "no events found" ok-document fails on a KeyError several lines further down, which
+    # reads as a broken payload shape rather than as "this test is no longer testing anything".
+    assert isinstance(events, list) and events, (
+        "`exa audit --last 7d` returned no events, so the ORDER BY this test exists to prove was "
+        f"never exercised. The 12 rows were stamped {shared_ts!r} and the command selects "
+        "`ts >= utcnow() - 7d` — if the seed no longer lands inside that window (a hardcoded "
+        f"stamp, a frozen clock, a timezone skew), fix the seed, not this assertion. Got: "
+        f"{result.stdout!r}"
+    )
+    shown = [e["action"] for e in events]
     assert shown == ["step_11", "step_10", "step_09", "step_08", "step_07"], shown
 
 

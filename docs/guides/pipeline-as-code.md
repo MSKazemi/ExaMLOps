@@ -37,11 +37,35 @@ exa pipeline compile flows/jpcp.py --out jpcp.ir.json          # print / write t
 exa pipeline compile flows/jpcp.py --out jpcp.ir.json --yaml jpcp.yaml   # also lower to YAML
 exa pipeline explain jpcp.ir.json                              # read-only topological plan
 exa pipeline run --ir jpcp.ir.json --dummy                     # train through the real generator
+exa pipeline decompile models/jpcp.yaml --out flows/jpcp.py    # the reverse: YAML -> DSL source
 ```
 
 `compile` exits 1 on a validation error, on an unlowerable pipeline when `--yaml` is given, or when
 policy denies it. `--out` and `--yaml` write files; the IR is deterministic, so the same pipeline
 always produces the same `content_hash`, and editing the JSON afterwards is caught on load.
+
+## Adopt an existing YAML: `exa pipeline decompile`
+
+YAML authoring stays first-class, so most models never need this. When you *do* want to move one
+into typed Python, `decompile` writes the twin for you instead of you retyping it:
+
+```bash
+exa pipeline decompile usecases/reference/models/jpcp.yaml --out flows/jpcp.py
+exa pipeline compile flows/jpcp.py --yaml /tmp/jpcp.yaml   # same model, byte-for-byte equivalent
+```
+
+The emitted file is an *exact* twin — compiling it lowers back to a YAML that loads to the same
+`ModelYAMLConfig`. That is not a hope: `decompile` builds the IR, lowers it with the production
+lowering, and compares the result with the YAML it read before emitting anything.
+
+It therefore **refuses rather than writes** whenever the YAML holds something the DSL cannot carry,
+naming the construct: a top-level key that is neither a train-step param nor a registry section, a
+dataset key the `dataset` step has no param for, a model with no `datasets`, a missing
+`config_class`/`task_type`, or a value YAML parsed into a non-JSON type (an *unquoted* date is the
+common one — quote it). A file that silently dropped a section would be worse than no file.
+
+`--force` overwrites an existing `--out`; without it an existing file is left alone. With no
+`--out` the source goes to stdout, and `--json` returns `{name, content_hash, steps, source, …}`.
 
 ## The IR
 
@@ -101,6 +125,21 @@ policies:
 
 ## Not built yet
 
-Inference-pipeline authoring, distributed/HPO lowering, remote-scheduler runs of IR-only models,
-`exa pipeline show --ir` (use `explain`), Prefect deployment from an IR, recording the IR hash on
-the MLflow run, and importing Snakemake/Nextflow. See ADR 0080 for the design intent.
+Inference-pipeline authoring, remote-scheduler runs of IR-only models, `exa pipeline show --ir`
+(use `explain`), Prefect deployment from an IR, recording the IR hash on the MLflow run, and
+importing Snakemake/Nextflow. See ADR 0080 for the design intent.
+
+`hpo` and `custom_python` validate, compile and `explain`, and are **refused** at lowering and at
+run — never skipped. They are refused because there is nothing to lower them *onto*, and the
+refusal now says which thing is missing:
+
+* **`hpo`** — nothing in the platform searches a hyper-parameter space. `exa pipeline hpo
+  start|status|record` records a study row and dispatches **one** baseline training run through
+  the control plane; the trials come from an optimiser outside ExaMLOps and are reported back with
+  `hpo record`. No optimiser is a platform dependency (the pinned extra is `ray[serve]`, not
+  `ray[tune]`; optuna is in no platform manifest) and `training_flow` trains once per run, with no
+  trial loop and no reader of `search_space`. Lowering it would mean building that search driver.
+* **`custom_python`** — there is nowhere to put the entrypoint. The registry YAML has no field for
+  user code, `training_flow` is a fixed task sequence with no seam for an extra task, and the HPC
+  compute node re-loads the use-case pack rather than this pipeline file, so an entrypoint string
+  would have nothing to resolve against there.

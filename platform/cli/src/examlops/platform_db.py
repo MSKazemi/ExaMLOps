@@ -1052,6 +1052,44 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_agent_alias_history
                 ON agent_alias_history(agent, alias, id);
+            -- ADR 0159 — a GenAI application is one composed, versioned manifest over a gateway
+            -- route, an optional RAG binding, a prompt reference and a guardrail policy
+            -- (`examlops.genai_apps`). Same three-table shape as `agent_versions` above and for
+            -- the same reasons: `genai_applications` rows are immutable (`version_id` is the hash
+            -- of the canonical manifest), `genai_app_aliases` holds the movable pointer
+            -- (Staging/Canary/Production), `genai_app_alias_history` keeps every move so a
+            -- rollback is a lookup. Access only via `examlops.data.genai_apps`.
+            CREATE TABLE IF NOT EXISTS genai_applications (
+                version_id     TEXT PRIMARY KEY,
+                name           TEXT NOT NULL,
+                manifest_json  TEXT NOT NULL,
+                actor          TEXT,
+                created_at     REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_genai_applications_name
+                ON genai_applications(name, created_at);
+            CREATE TABLE IF NOT EXISTS genai_app_aliases (
+                name        TEXT NOT NULL,
+                alias       TEXT NOT NULL,
+                version_id  TEXT NOT NULL,
+                actor       TEXT,
+                updated_at  REAL NOT NULL,
+                PRIMARY KEY (name, alias)
+            );
+            CREATE TABLE IF NOT EXISTS genai_app_alias_history (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                name          TEXT NOT NULL,
+                alias         TEXT NOT NULL,
+                version_id    TEXT NOT NULL,
+                prev_version  TEXT,
+                action        TEXT NOT NULL,
+                reason        TEXT,
+                evidence_json TEXT,
+                actor         TEXT,
+                ts            REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_genai_app_alias_history
+                ON genai_app_alias_history(name, alias, id);
             -- ADR 0145 — the agent tool broker (`examlops.tool_broker`). `tool_grants` holds one row
             -- per (subject, tool): `subject` is an agent name, an agent-version id or a workload
             -- identity; `tool` is a registry tool name or `*`. A subject with NO rows is not
@@ -2071,6 +2109,8 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 rank             INTEGER,
                 target_modules   TEXT,
                 dataset_revision TEXT,
+                -- `eval_score` is a MEASURED held-out score and nothing else. A number an
+                -- operator supplies goes to `asserted_eval_score` (see _COLUMN_MIGRATIONS).
                 eval_score       REAL,
                 eval_floor       REAL,
                 promoted         INTEGER NOT NULL DEFAULT 0,
@@ -2148,6 +2188,50 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (name, label)
             );
+
+            -- ADR 0158 (Model Catalog, Phases 1-2) — curated, provenance-tracked model
+            -- DEFINITIONS an operator can start from. Not the MLflow registry: no alias, no
+            -- stage, no training run (decision 4). A row is insert-only and content-addressed
+            -- (`entry_hash`); a correction publishes the next `catalog_version`, mirroring
+            -- `agent_versions`. `manifest_json` is the full normalized record, kept so the
+            -- hash can be replayed exactly from what was stored.
+            CREATE TABLE IF NOT EXISTS catalog_entries (
+                name                TEXT NOT NULL,
+                catalog_version     INTEGER NOT NULL,
+                entry_hash          TEXT NOT NULL,
+                kind                TEXT NOT NULL,       -- base_model | recipe
+                source_kind         TEXT NOT NULL,       -- dataplane | pinned_uri
+                source_ref          TEXT NOT NULL,
+                license             TEXT NOT NULL,
+                resource_hint       TEXT,
+                eval_suite          TEXT,
+                eval_model_version  TEXT,
+                supplychain_ref     TEXT,
+                trust_tier          TEXT NOT NULL,       -- T1_signed | T1_unsigned
+                model_yaml_template TEXT,
+                description         TEXT NOT NULL DEFAULT '',
+                published_by        TEXT,
+                published_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                manifest_json       TEXT NOT NULL,
+                PRIMARY KEY (name, catalog_version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_catalog_entries_name
+                ON catalog_entries(name, catalog_version);
+
+            -- The pull itself, separate from the immutable entry: append-only, and the only
+            -- thread connecting a catalog entry to a project's model. A lineage record, never
+            -- a live binding.
+            CREATE TABLE IF NOT EXISTS catalog_pulls (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry           TEXT NOT NULL,
+                catalog_version INTEGER NOT NULL,
+                entry_hash      TEXT NOT NULL,
+                project         TEXT NOT NULL,
+                model_name      TEXT NOT NULL,
+                actor           TEXT,
+                ts              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_catalog_pulls_project ON catalog_pulls(project, ts);
         """)
         if not path.startswith("pg:"):
             # The column migrations check PRAGMA table_info and then ALTER TABLE: two statements.
@@ -2186,6 +2270,27 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     # re-recorded its whole window and the summed SLI counted the same events again and again.
     "slo_samples": {
         "watermark": "TEXT",
+    },
+    # B7 fine-tuning (ADR 0044 clause 1/2). `eval_score` used to be whatever the operator typed
+    # into `exa finetune --eval`, stored in the same column the C3 promotion gate reads — a typed
+    # number was indistinguishable from a measurement, which is the shape the C7 judge columns
+    # below were split apart to avoid. So the two live in different columns now:
+    #   * `eval_score`   — MEASURED, written only by a training run's own held-out evaluation,
+    #                      with `eval_source='measured'`, the metric it is, and how many samples.
+    #   * `asserted_eval_score` — an operator's claim, recorded with who claimed it. It can
+    #                      condemn an adapter at the gate; it can never clear one.
+    # `eval_source` NULL means *unknown provenance*: a row written before this split, which may
+    # hold a typed number in `eval_score`. Unknown is not the same as measured, and the gate
+    # treats it as unverified rather than quietly promoting history.
+    "lora_adapters": {
+        "eval_source": "TEXT",
+        "eval_metric": "TEXT",
+        "eval_n": "INTEGER",
+        "asserted_eval_score": "REAL",
+        "asserted_eval_by": "TEXT",
+        "train_run_id": "TEXT",
+        "adapter_sha256": "TEXT",
+        "adapter_uri": "TEXT",
     },
     # A6 reindex orchestration (ADR 0043 clause 4): where the job ran and how long it took.
     # `cost_usd` is deliberately absent — a monetary figure needs device-hours this path does not
@@ -2379,12 +2484,28 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "rpm_limit": "INTEGER",
         "tpm_limit": "INTEGER",
     },
+    # ADR 0157 Phase 2 (Hardware Profiles): which named profile + immutable version a workbench
+    # was created from. NULL = created without a profile, which is what every earlier row is —
+    # the flagless path is unchanged. `workbenches` is one of the few tables created by its own
+    # module (examlops.workbenches._ensure_table) rather than by the DDL above, so a database
+    # whose table predates this feature reaches the columns only here.
+    "workbenches": {
+        "hardware_profile": "TEXT",
+        "hardware_profile_version": "INTEGER",
+    },
 }
 
 
 def _migrate_columns(conn: sqlite3.Connection) -> None:
     for table, cols in _COLUMN_MIGRATIONS.items():
         existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if not existing:
+            # The table does not exist yet — a self-contained module (e.g. examlops.workbenches)
+            # creates it lazily, with these columns already in its CREATE TABLE. ALTERing a
+            # missing table raises, and on Postgres a raised statement aborts the whole bootstrap
+            # transaction, so skipping is the only safe answer. A table always has >=1 column, so
+            # an empty PRAGMA means absent, never "present but empty".
+            continue
         for name, decl in cols.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
@@ -3042,6 +3163,7 @@ _PIPELINE_KINDS = ("prefect", "rayserve")
 from examlops.data.agent import (agent_metrics_rollup, get_agent_session_trace, list_agent_sessions, record_agent_session, record_agent_tool_call, tool_success_rate)  # noqa: E402, E501, F401, I001
 from examlops.data.audit import (audit_chain_head, autonomous_actions, correlation_chain, export_audit_events, list_audit_checkpoints, list_training_checkpoints, sign_audit_checkpoint, verify_audit_chain, write_audit_event, write_training_checkpoint, audit_stream_enabled, verify_audit_stream)  # noqa: E402, E501, F401, I001
 from examlops.data.autopilot import (claim_autopilot_lease, create_autopilot_run, get_autopilot_config, list_autopilot_runs, release_autopilot_lease, set_autopilot_config, update_autopilot_run)  # noqa: E402, E501, F401, I001
+from examlops.data.catalog import (count_pulls, get_entry_row, insert_entry, latest_entry_row, list_entry_names, list_entry_rows, list_pull_rows, record_pull)  # noqa: E402, E501, F401, I001
 from examlops.data.data_assets import (latest_vector_metrics, bump_asset_version, create_distributed_run, create_reindex_job, get_adapter, get_asset, get_collection, get_data_quality_checks, get_dataset_revision, get_dataset_revisions, get_distributed_run, get_encoder, get_feature_view, get_offline_features_asof, get_online_feature, get_repro_bundle, get_synthetic_dataset, is_synthetic_only, last_materialization, link_dataset_revision_run, list_adapters, list_assets, list_distributed_runs, list_encoders, list_feature_views, list_reindex_jobs, list_repro_bundles, list_synthetic_datasets, materialize_online, purge_telemetry, record_data_quality_check, record_dataset_revision, record_synthetic_dataset, register_adapter, register_asset, register_encoder_row, set_adapter_promoted, store_repro_bundle, synthetic_proportion, update_distributed_run, update_reindex_job, upsert_collection, upsert_feature_view, write_feature_record)  # noqa: E402, E501, F401, I001
 from examlops.data.drift import (claim_drift_trigger, get_corruption_baseline, get_drift_auto_retrain, get_drift_baseline, get_input_baseline, latest_drift_event, list_drift_auto_retrain, list_drift_events, record_drift_event, record_drift_trigger, set_corruption_baseline, set_drift_auto_retrain, set_drift_baseline, set_input_baseline, write_drift_snapshot, write_input_snapshot, drift_models, recent_drift_predictions, record_drift_statuses, prediction_models, recent_prediction_features)  # noqa: E402, E501, F401, I001
 from examlops.data.evaluation import (get_calibration_by_id, get_eval_gate, get_eval_results, get_gate_reports, get_judge_calibration, list_judge_calibrations, list_perf_estimates, record_eval_result, record_gate_report, record_judge_calibration, record_perf_estimate, set_eval_gate)  # noqa: E402, E501, F401, I001

@@ -5,6 +5,277 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - `exa reproduce` really rebuilds the environment, and really checks the image digest (ADR 0038 clause 2)
+
+- **`exa reproduce run --execute --rebuild-env`** materialises the bundle's recorded package set
+  into a *fresh, isolated* virtualenv (`uv venv` + `uv pip install --no-deps`, new
+  `examlops.reproducibility.rebuild`) and runs the training subprocess **on that interpreter** —
+  reported in the `train` step detail, in `ExecuteResult.env.python` and in `--json`. The
+  caller's interpreter is never mutated and the repository's shared `.venv` is never touched.
+  A recorded package that cannot be resolved fails the `env` step **naming the offending
+  packages** instead of quietly reproducing in a different environment; a `major.minor` Python
+  difference fails, a patch-level one is stated; workspace-local distributions (`examlops`, the
+  model library) are reported as coming from the checkout rather than an index. Until now the
+  step only *compared* a lockfile hash and diffed a package set against whatever interpreter
+  happened to be running.
+- **The recorded container image digest is verified** (new `examlops.reproducibility.image`):
+  read-only `docker version` + `docker image inspect` answer `unchecked` / `verified` /
+  `mismatch` / `absent` / `unverifiable`, matching the platform's existing resolution vocabulary.
+  A mismatched or absent image **fails** the `env` step (`--allow-env-drift` downgrades both to a
+  reported drift); an unreachable Docker daemon reports `unverifiable`, carried in the step
+  detail, in `ExecuteResult.env.image_status` and in `--json` — never passed off as a success.
+  `exa reproduce run --execute --json` gained an `environment` block carrying all of it.
+- `tests/unit/test_reproduce_rebuild.py` — 19 tests. The venv is built **for real** and
+  **offline**, from a hand-made wheelhouse, and the training subprocess writes down the
+  interpreter it actually ran on; the four digest statuses are asserted distinct; and the
+  no-`--rebuild-env` path is pinned byte-for-byte, step status *and* detail string.
+
+### Added - One source of truth generates the agent surface (ADR 0147 decision 1)
+
+- New **`examlops/mcp/generated.py`**: MCP tool definitions for platform operations are now
+  *generated* from the live Click tree joined to the per-command tier table in
+  `examlops.cli.surface` — the same catalog `exa docs` and the ADR 0119 dashboard CLI Console
+  already read — instead of being hand-written a second time. Input schema comes from each
+  command's declared parameters (types, required-ness, `enum` from the CLI's own choices, `array`
+  for `multiple`/`nargs`; blocked and implied flags omitted), `outputSchema` from the CLI's
+  one-JSON-document contract, and the MCP annotations from the tier: `read` → `readOnlyHint`,
+  `destructive` → `destructiveHint`, the new per-command `surface.IDEMPOTENT` table →
+  `idempotentHint`, `openWorldHint` asserted true throughout. Hand-written `ToolSpec`s stay the
+  home of workflow-level tools.
+- **Opt-in and off by default** — `EXAMLOPS_MCP_GENERATED_TOOLS`; with the flag unset the agent
+  surface is byte-identical to the hand-written registry. Generated names are prefixed `exa_`, so
+  they can never collide with a workflow tool; they execute the real CLI through
+  `surface.build_argv` (blocked flags, forced args, workspace path containment under
+  `EXAMLOPS_MCP_GENERATED_WORKSPACE`) and never raise — a bad argument returns the CLI's own error
+  envelope. Mutating generated tools pass through the same plan/apply gate as hand-written ones.
+- **The guard is code, not just a test**: `build_spec()` raises `GenerationError` for a command
+  with no tier or no declared JSON contract, and `refusals()` names every command the generator
+  declines (every `cli_only` command, with its reason). `tests/unit/test_mcp_generated.py` — 36
+  tests covering determinism, the tier→annotation mapping in both directions, both refusals,
+  three real commands' exact input schemas, signature↔schema agreement, collision-freedom, the
+  flag-off regression against `REGISTRY`, and a generated read tool actually running the CLI.
+
+### Added - Qdrant vector store: ADR 0020's scale-out option, built (ADR 0020 clause 1)
+
+- New backend **`EXAMLOPS_VECTOR_BACKEND=qdrant`** (`examlops/vector_store/qdrant.py`,
+  `QdrantVectorStore`) — the last unbuilt clause of ADR 0020. pgvector stays the production
+  default; Qdrant is for the collection that has outgrown the index a shared Postgres can hold.
+  It implements the whole `VectorStore` protocol (create · upsert · dense/sparse/hybrid search ·
+  metadata filters · tenant isolation · encoder stamps · reindex · `trim`/`scan` · drop · stats),
+  so nothing above the seam changes. Selection goes through the existing `select_store()` switch —
+  no parallel mechanism — and an unknown backend name is still an error, never a silent fallback.
+  `qdrant-client` is an **optional** extra (`examlops[qdrant]`), lazily imported, and its absence
+  is an actionable message naming the install, not an ImportError traceback.
+- Three Qdrant realities the adapter handles rather than hides: a point id must be a UUID or an
+  unsigned integer, so items are stored under `uuid5(item_id)` with the caller's string kept in
+  the payload and returned in every hit; a cosine collection stores **unit** vectors, so `scan`
+  returns directions and not magnitudes; and a declared HNSW is not a built one — Qdrant leaves a
+  segment unindexed below its `indexing_threshold`, so `exa vector stats` reports `exact` with
+  the reason and how many vectors the graph actually covers, with
+  `EXAMLOPS_QDRANT_INDEXING_THRESHOLD_KB` to force it. `--index ivfflat` is **refused** (Qdrant
+  has no IVF) instead of quietly served by an HNSW. `trim` is a server-side delete by `ts` range,
+  so a ring buffer costs `keep`, not the collection size.
+- New env vars `EXAMLOPS_QDRANT_URL` / `_API_KEY` / `_TIMEOUT` / `_NAMESPACE` /
+  `_INDEXING_THRESHOLD_KB` (+ `_TEST_URL` for the live suite). `tests/unit/test_qdrant_store.py`:
+  26 contract tests against an in-process `qdrant-client` double, plus 9 `-m live` tests
+  (`make qdrant-live`) proving **ranking parity with the SQLite fallback** for every metric,
+  filtered and unfiltered, dense and hybrid — verified against Qdrant 1.19.1 on 2026-09-24.
+  Guide: `docs/guides/vector-store.md`.
+
+### Added - Model Catalog: "what could I start from?", distinct from the registry (ADR 0158, Phases 1-2)
+
+- New root group **`exa catalog`** (Models & Registry panel, `core` module): `list` / `show`
+  (read) and `publish` / `pull` (admin). An operator starting a new project could previously ask
+  the platform only "what have we already trained?"; the catalog answers the other question with
+  a curated, provenance-tracked list of deployable model **definitions**.
+- **The catalog is not the registry, and nothing blurs the two.** An entry has no alias, no
+  metrics and no training run; `exa catalog pull` writes a per-model YAML, records project
+  membership and one lineage edge, and **trains nothing, registers nothing and serves nothing**.
+  The `--json` payload says so in its own fields (`trained`/`served`/`registry_version_created`),
+  and `test_a_pull_is_not_a_registration` replaces the whole `mlflow` package with an object that
+  raises on any attribute access, so a future edit that reached for the registry fails loudly.
+- **Immutable and content-addressed.** `examlops/catalog/manifest.py` (pure: validation +
+  `entry_hash_of`, every problem reported at once) mirrors `agent_versions/manifest.py`. The hash
+  covers the *definition*, not the identity coordinates or the publishing act, so republishing
+  identical content is idempotent and a correction publishes the next `catalog_version` instead
+  of rewriting one.
+- **Trust is named, never flattened.** ADR 0158 decision 3: a source that cannot be confirmed
+  immutable (a branch, a `latest` tag, no commit SHA or content digest) is refused at **publish**
+  time and never reaches storage, so the pull-time question is only signed-versus-unsigned. An
+  unsigned entry publishes as `T1_unsigned` and is flagged in `list`/`show`, in the pull output
+  and inside the YAML it writes. Signing is `examlops.supplychain` and nothing else — a curator
+  cannot self-declare a tier the platform did not produce.
+- **Four references, zero new mechanisms:** signing → `examlops.supplychain`, lineage →
+  `examlops.lineage.emit_lineage()` (a `catalog_entry` node upstream of the model), eval evidence
+  → `eval_suite_results`, membership → `project_resources(kind='model')` (ADR 0086).
+- New `examlops/catalog/` (`manifest`/`store`/`pull`) + `examlops/data/catalog.py`; two additive
+  `platform_db` tables (`catalog_entries` insert-only, `catalog_pulls` append-only) with
+  `catalog_entries` classified `global` in the ADR-0014 scope audit. Seed entry + recipe template
+  under `usecases/reference/catalog/`. `tests/unit/test_model_catalog.py` (41 tests).
+
+### Added - Notebook-to-Pipeline authoring: `exa workbench export-pipeline` (ADR 0160, Phase 1)
+
+- Closes the workbench→pipeline gap (ADR 0090 → ADR 0080) with the smallest tool that can:
+  **cell tagging plus static extraction**. `exa workbench export-pipeline <notebook.ipynb>
+  [--out] [--yaml] [--name] [--json]` reads a notebook's standard Jupyter cell tags
+  (`cell.metadata.tags`), parses the tagged cells with `ast` as restricted literals, and emits
+  an ordinary `@pipeline` file built from the real `examlops.sdk` helpers.
+- **The notebook is never executed.** Tagged cells are read as data — no import, no call, no
+  `exec` — so export carries the same risk as reading a YAML file, and an exploratory cell that
+  would hit the network, train for an hour or claim a GPU is inert to the extractor.
+- **One vocabulary, not two.** The four step tags (`dataset`/`train`/`evaluate`/`promote`) are
+  *derived* from the lowerable keys of `pipeline_dsl.ir.STEP_KINDS` rather than retyped, so the
+  tag set cannot drift from the IR. `param` declares literal values later cells reference by bare
+  name (inlined into the generated file, which therefore never depends on the notebook);
+  `skip-export` is the explicit opt-out. `hpo`/`custom_python` are deliberately not extractable —
+  they have no lowering yet (ADR 0080).
+- **Validation is not reimplemented.** The generated file is loaded straight back through
+  `loader.load_pipeline_file` + `PipelineDef.compile()`, the exact in-process call
+  `exa pipeline compile` makes, so a pipeline the IR would reject is a failed *export* reported
+  with the compiler's own message (the file is still written, so the author can see and fix it).
+- **Dropping is never silent.** Every untagged code cell is reported by index with a source
+  preview (a `dropped` array under `--json`), and a run that dropped nothing says so rather than
+  staying quiet. A near-miss tag (`datasets` for `dataset`) is named as a likely typo.
+- **One-directional by design**, said so in the command's own help: editing the generated file
+  does not flow back into the notebook, and re-running export overwrites rather than merging.
+- New `examlops/pipeline_dsl/notebook.py` (pure, CLI-free) +
+  `examlops/cli/commands/workbench_export.py` (output and exit codes only); `cli/surface.py`
+  gains `"workbench export-pipeline": A` (admin — it executes the generated trusted-tier Python
+  to validate it, and always writes a file) with `notebook`/`--out`/`--yaml` contained in the CLI
+  Console workspace via `contain_path()`. `tests/unit/test_notebook_to_pipeline.py` (40 tests:
+  the spec's worked example end to end, IR-hash equality against a hand-written twin, every §4.2
+  hard failure, and a sentinel file a notebook cell *would* write proving nothing ran).
+
+### Added - the admission seam releases what it reserves, and something dispatches through it (ADR 0116)
+
+- **Quota is released on completion — including on failure.** ADR 0116 decision 3 shipped its
+  *reserve* half and nothing that gave quota back, which is worse than no reservation: a project's
+  headroom shrank by every job it had ever run and the only sign was a row in
+  `quota_reservations`. `examlops.admission_seam.completion.release_on_completion` returns
+  everything a holder holds on any terminal outcome (completed / failed / cancelled), exactly once,
+  idempotently, one audited `quota_released` event per reservation actually resolved.
+- **One chokepoint, not sprinkled calls.** It is wired into `examlops.data.hpc.update_hpc_job` —
+  the single function every `hpc_jobs` state write passes through (`scheduler_jobs.finish_job` and
+  the pipeline generator's `_update_hpc_job_safe` are its only callers), below the mock/slurm/flux
+  branch. A non-terminal or unrecognised state releases nothing: guessing would free GPUs a running
+  job still holds, and a leak is at least visible. Bookkeeping never fails a job — a datastore
+  failure here is logged at WARNING and the TTL sweep reclaims what the call could not.
+- **The TTL sweep stays the backstop.** A holder killed outright reaches no completion path; its
+  row lapses (holding nothing from that instant) and `exa admission reservations --expire-preview`
+  / the sweep makes it visible. Completion and expiry take the same scoped write lock and touch
+  only unresolved rows, so a race resolves each row exactly once.
+- **`exa pipeline run` now dispatches through the seam.** `examlops.admission_seam.dispatch` +
+  `examlops.cli._admission_gate.pipeline_run_gate` ask `admission_seam.policy.decide` *before*
+  executing and hold the run's quota for its duration, releasing in the run's `finally` (a failure
+  or Ctrl-C returns the quota just as a success does). A queue/reject verdict — or a reservation the
+  project's quota cannot fit — stops the run with the policy's own reason, exit code 1, and an
+  `admission_refused` audit row.
+- **Off by default, provably.** `EXAMLOPS_ADMISSION_DISPATCH_ENABLED` follows the house kill-switch
+  pattern (`EXAMLOPS_AUTOPILOT_ENABLED`, `EXAMLOPS_AUTOSCALE_ENABLED`): unset or falsy, the gate
+  opens no datastore, takes no decision, writes no audit row and prints nothing, and a test pins the
+  CLI's argv and the empty `quota_reservations`/`audit_events` tables to prove it.
+- New: `examlops/data/quota_reservations.py` gains `release_by_holder` / `held_by_holder` (atomic,
+  with a lazily-created `holder` index). 33 tests in `tests/unit/test_admission_release.py`. ADR
+  0116's status line names exactly what is now closed and what is still not (reclamation,
+  preemption, time-based fairness, the `AdmissionCheck` controller, the typed resource graph).
+
+### Added - fine-tuning that fine-tunes, and an eval score nobody typed in (ADR 0044)
+
+- **A real LoRA training path.** `examlops/finetuning/train_lora.py` is a shipped reference script
+  that actually trains: a frozen base (embedding + MLP), trainable rank-decomposed `A`/`B` factors
+  with `B` initialised to zero, Adam over the adapter parameters only, and a **held-out**
+  evaluation the training loop cannot have seen (the split keys the batch generator, so disjointness
+  is by construction). The LoRA math is written directly in torch —
+  `peft`/`trl`/`transformers` are deliberately in no manifest — and `examlops.finetuning.lora`
+  carries the backend seam (`torch-lora` built in; `peft` raises `BackendNotAvailable` rather than
+  quietly training something else). Deterministic under `EXAMLOPS_SEED`: same seed ⇒ same adapter
+  digest and same score. Resumable through the ADR 0032 checkpoint layer (atomic writes, per-shard
+  SHA-256, fall back to the newest checkpoint that verifies) with honest exit codes (0/75/70 + a
+  `FATAL.json` marker), supervised and resubmitted by `examlops.finetuning.runner`.
+- **`exa finetune --train`** runs it and registers the adapter from the run's own metrics; without
+  `--train` the command still only registers a row, and now says so.
+- **Measured and asserted are different columns** (the honesty fix). `lora_adapters.eval_score` is
+  now *measured-only*: `register_adapter` — the single write path — refuses a score that is not
+  stamped `eval_source='measured'`, and the run stamps it with the metric, the held-out sample
+  count, the training run id and the adapter digest. A number an operator supplies goes to
+  `asserted_eval_score` with `asserted_eval_by`, is shown as unverified, and the C3 promotion gate
+  treats it accordingly: an assertion below the floor still blocks (a claim may condemn), but no
+  assertion can clear a floor (`--accept-unverified` is the deliberate, audited override). A row
+  written before the split has `eval_source` NULL — unknown provenance, treated as a claim, never
+  silently promoted to "measured".
+- New env vars `EXAMLOPS_FINETUNE_FAULT` / `EXAMLOPS_FINETUNE_FAULT_STEP` (test/demo fault
+  injection, documented in `docs/reference/env-vars.md`). Guarded by
+  `tests/unit/test_finetune_lora.py` (21 tests, real training, ~11s).
+
+### Added - suspend/resume: a training-checkpoint backend and a consumer for `preemption_promise` (ADR 0109)
+
+- **`training-checkpoint` suspend backend** (`examlops.suspend.training`) closes ADR 0109
+  decision 4's gap: the default framework-level backend covered agent-session checkpoints only,
+  while the platform's own distributed training (ADR 0032) writes sharded checkpoints with a
+  manifest carrying each shard's SHA-256. The backend pins the newest step that verifies —
+  eligibility is `checkpoint_files.find_latest_valid`'s, so a corrupt shard makes that step
+  ineligible and the previous good one is pinned, and nothing re-implements hash checking. A pin
+  is a marker file beside the manifest (`training.pinned_steps` for a retention pass), not a
+  second copy of tens of GB of shards; `discard` removes the marker and never a checkpoint.
+  `restore` re-verifies and reads every shard byte (so `state_transfer_s` is measured, not
+  declared), refuses a step corrupted or rewritten under the pin, and points a relaunch at the
+  pinned step — saying so when a newer valid checkpoint has overtaken it.
+- **Capability stays honest.** The backend reports `application` granularity, `persistent_storage`
+  only, no GPU state and no peer replication; `communicator_rebuild_applicable` is `True` (a
+  relaunched run does rebuild its process group) with `communicator_rebuild_s` left `None`, so
+  `estimate_resume_cost` returns `total_s=None` rather than an optimistic number.
+- **`preemption_promise` has a consumer** (ADR 0109 decision 3, previously called out as having
+  none): `examlops.distributed.launch.supervise` now asks, before each resubmission of a
+  recoverable failure, whether the run's state actually survives — the backend's promise *and* a
+  checkpoint that verifies on disk. When it cannot be promised the resubmission is declined with
+  its reasons (`SupervisedRun.preemption`, audit `distributed_resubmit_declined`) instead of
+  restarting from step 0 under the name "resume". Behind `EXAMLOPS_SUSPEND_PREEMPTION_GATE`,
+  **off by default** — the supervisor is byte-identical unless it is set, and the gate can only
+  ever stop a resubmission, never start one.
+- Guarded by `tests/unit/test_suspend_training.py` (19 tests) against **real** checkpoints written
+  by the shipped ADR 0032 job under real `torchrun`; corruption is a flipped byte in a real shard.
+  Guide: `docs/guides/suspend-resume.md`.
+
+### Added - GenAI Application: one composed, versioned manifest (ADR 0159, Phases 1-2)
+
+- `exa genai-app register|show|list|promote` (ADR 0159, spec
+  `design/vision/specs/spec-genai-application.md`): a `GenAIApplication` is one typed,
+  content-addressed manifest composing a **gateway route** (a logical-model name + a
+  `gateway/<key>` reference — never a provider address or a credential), an **optional RAG
+  binding**, a **prompt reference** (`label` XOR `version`) and a **guardrail policy**. Nothing
+  composed those four before: each caller re-wired them and could silently skip a step — the exact
+  failure ADR 0026 already recorded once at the gateway boundary.
+  `version_id = "gaa-" + sha256(canonical_json(manifest))`, reusing
+  `examlops.agent_versions.manifest.canonical_json` rather than a second byte-stable JSON, so
+  re-registering identical content returns the existing version and changing *any* reference is a
+  new one. Storage mirrors `agent_versions` exactly — insert-only `genai_applications`, movable
+  `genai_app_aliases` (Staging/Canary/Production), append-only `genai_app_alias_history`, all
+  through the new `examlops.data.genai_apps` facade (no raw SQL at a call site).
+- **Promotion reuses the platform's one gate, it does not fork a second.** The evidence check that
+  `examlops.agent_versions.service` performed inline is now
+  `examlops.evaluation.evidence.evaluation_evidence`, called by *both* registries — keyed
+  `genai-app-<name>` here and `agent-<name>` there — so ADR 0111's "no uncalibrated judge may
+  gate" applies because it is the same code, not a copy of it. Agent-version behaviour is
+  unchanged.
+- **Two refusals are specific to a published application surface** (ADR 0159 decision 3): a
+  `Production` version may not carry `guardrail.mode: off`, and every *declared* component must
+  currently resolve — the gateway route, the RAG knowledge base **and its stamped encoder**, the
+  prompt `name@label` (read straight from the registry, never through
+  `examlops.prompts.get_prompt`, whose last-known-good cache would let a deleted prompt pass), and
+  the guardrail policy. Resolution fails **closed** in both directions
+  (`examlops.genai_apps.components`): a component that resolves to nothing is
+  `component_not_found`; a component that could not be *asked about* — an unreadable store, an
+  invalid `gateway.yaml`, a guardrail subsystem that will not import — is `component_unreachable`,
+  which is a refusal too and never a silent skip. Since `examlops.guardrails` has no named-policy
+  registry today (ADR 0026 implements per-tenant policy as a constructor argument), exactly one
+  policy resolves; a manifest naming any other is refused rather than quietly running as the
+  default.
+- Partial composition stays legal: a manifest with no `rag` block is a valid application and is not
+  reported as missing anything. `invoke` (spec Phase 3) is **not** in this pass — it would mean
+  editing the LLM-gateway package, which is owned by another workstream.
+  `tests/unit/test_genai_app.py` (41 tests). ADR 0159 stays **Proposed**: `invoke` and the
+  dashboard console (spec Phases 3-4) are not built.
+
 ### Added - Hardware Profiles: named, versioned resource+runtime bundles (ADR 0157, Phase 1)
 
 - `exa hardware profile set|list|show|resolve|delete` (ADR 0157, spec

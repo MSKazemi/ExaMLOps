@@ -23,7 +23,7 @@ def _isolated_db(tmp_path, monkeypatch):
 def test_gwt1_finetune_registers_signed_adapter():
     from examlops.finetuning import finetune
 
-    a = finetune("llama3.1-8b", "lora", "rev-1", rank=8, eval_score=0.82)
+    a = finetune("llama3.1-8b", "lora", "rev-1", rank=8, asserted_eval_score=0.82)
     assert a.signed is True
     assert a.base_ref == "llama3.1-8b"
     assert a.rank == 8
@@ -45,18 +45,28 @@ def test_full_ft_has_no_rank():
 
 
 def test_gwt2_eval_gate_blocks_low_adapter():
+    """A claim below the floor still blocks: an assertion can condemn, it just cannot clear."""
     from examlops.finetuning import EvalGateError, finetune, promote_adapter
 
-    finetune("base", "lora", "rev-1", adapter_id="weak", eval_score=0.4, eval_floor=0.7)
+    finetune("base", "lora", "rev-1", adapter_id="weak", asserted_eval_score=0.4, eval_floor=0.7)
     with pytest.raises(EvalGateError):
         promote_adapter("weak")
 
 
 def test_eval_gate_allows_good_adapter():
-    from examlops.finetuning import finetune, promote_adapter
+    """Only a *measured* score clears the floor (ADR 0044 — see test_finetune_lora.py)."""
+    from examlops.finetuning import promote_adapter, register_measured_adapter
     from examlops.platform_db import get_adapter
 
-    finetune("base", "lora", "rev-1", adapter_id="good", eval_score=0.9, eval_floor=0.7)
+    register_measured_adapter(
+        "good",
+        "base",
+        dataset_revision="rev-1",
+        eval_score=0.9,
+        eval_metric="held_out_accuracy",
+        eval_n=512,
+        eval_floor=0.7,
+    )
     promote_adapter("good")
     assert get_adapter("good")["promoted"] == 1
 
@@ -128,7 +138,8 @@ def test_cli_smoke():
 
     runner = CliRunner()
     r = runner.invoke(
-        app, ["finetune", "base", "--method", "lora", "--dataset", "rev-1", "--eval", "0.8"]
+        app,
+        ["finetune", "base", "--method", "lora", "--dataset", "rev-1", "--asserted-eval", "0.8"],
     )
     assert r.exit_code == 0, r.output
     r = runner.invoke(app, ["serve", "adapter", "list"])

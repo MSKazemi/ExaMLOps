@@ -57,6 +57,7 @@ install rather than failing with a traceback:
 | `examlops[mcp]` | Serve the platform to LLM agents — `exa mcp serve` |
 | `examlops[oidc]` | Validate OIDC access tokens (RS256 against a JWKS) |
 | `examlops[postgres]` | Talk to a Postgres datastore instead of SQLite |
+| `examlops[qdrant]` | Qdrant vector store (`EXAMLOPS_VECTOR_BACKEND=qdrant`) — the scale-out alternative to pgvector |
 | `examlops[serving-sglang]` | In-process SGLang engine (GPU host) |
 | `examlops[serving-vllm]` | In-process vLLM engine for offline batch scoring (GPU host) |
 | `examlops[synth]` | Synthetic data generation and its release gate — `exa data synth` |

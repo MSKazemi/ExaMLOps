@@ -92,6 +92,57 @@ def compile_pipeline(file: str, out: str | None, yaml_path: str | None, untruste
             _output.warning(f"not carried by the YAML: {item}")
 
 
+def decompile_model(model_yaml: str, out: str | None, force: bool) -> None:
+    """The reverse of ``compile --yaml``: a registry YAML back into ``@pipeline`` DSL source.
+
+    Refuses (exit 1) rather than writing a file whenever the YAML holds anything the DSL cannot
+    express — the point of the command is a twin, and a twin that quietly drops a section is worse
+    than no file at all.
+    """
+    import yaml
+
+    from examlops.pipeline_dsl.decompile import ir_from_model_yaml, render_pipeline_source
+
+    path = Path(model_yaml)
+    if not path.is_file():
+        _output.error(f"Model YAML not found: {path}")
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        _output.error(f"{path.name}: could not be read as YAML: {exc}")
+    try:
+        doc = ir_from_model_yaml(raw)
+        source = render_pipeline_source(doc, source=str(path))
+    except IRError as exc:
+        _output.error(
+            f"Not representable as a pipeline: {exc}",
+            hint="Keep authoring this model in YAML; the DSL is additive, not a replacement.",
+        )
+    if out:
+        target = Path(out)
+        if target.exists() and not force:
+            _output.error(f"{target} already exists.", hint="Re-run with --force to overwrite it.")
+        target.write_text(source, encoding="utf-8")
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "name": doc["name"],
+                "content_hash": doc["content_hash"],
+                "model_yaml": str(path),
+                "flow_file": out,
+                "steps": [{"id": n["id"], "kind": n["kind"]} for n in doc["nodes"]],
+                "source": source,
+            }
+        )
+        return
+    if not out:
+        print(source, end="")
+    _output.ok(f"Decompiled {doc['name']}: {len(doc['nodes'])} steps, {doc['content_hash']}")
+    if out:
+        _output.info(f"Pipeline source written to {out}")
+        _output.hint(f"Round-trip it: exa pipeline compile {out} --yaml {path}")
+
+
 def _lowerability(doc: dict[str, Any]) -> tuple[bool, str]:
     try:
         lower_training(doc)

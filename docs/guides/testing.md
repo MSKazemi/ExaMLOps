@@ -1,14 +1,17 @@
 # Testing strategy
 
-The unit suite is **6411 tests**. In one process that is **20 minutes**; across this machine's
-cores it is **3 minutes 37 seconds** — a 5.5× difference, and the reason every gate below runs in
-parallel. Twenty minutes is long enough that the gate gets skipped, and a gate that gets skipped
-is not a gate.
+The unit suite is **8175 tests** (measured 2026-09-24; it grows steadily — re-measure with
+`pytest tests/unit/ --collect-only -q` rather than trusting this number for long). Across this
+machine's cores it is **3 minutes**, freshly measured the same day. The one-process
+figure below is not re-measured every time the count moves — it is roughly **20-25 minutes**,
+scaled from the last full serial run — but the *shape* of the finding hasn't changed: parallel is
+a 5x+ difference, long enough in one process that the gate gets skipped, and a gate that gets
+skipped is not a gate.
 
 |  | wall clock |
 |---|---|
-| one process (`make test-serial`, `JOBS=0`) | 1205 s — 20 min 4 s |
-| across this host's cores (`make test-fast`) | 217 s — 3 min 37 s |
+| one process (`make test-serial`, `JOBS=0`) | ~20-25 min (scaled estimate, not re-measured every count change) |
+| across this host's cores (`make test-fast`) | 207 s — 3 min 27 s (measured 2026-09-24) |
 
 Both are measurements taken on 2026-09-13 on a busy dev host, not estimates, and both move with
 the suite. This page previously said "2781 tests in 66 seconds" — the suite had grown 2.3×
@@ -332,6 +335,7 @@ nothing had been checking.
 | Target | Gate | What it proves against the real thing |
 |---|---|---|
 | `make pgvector-live` | `EXAMLOPS_PGVECTOR_TEST_DSN` | pgvector returns the **same ranking** as the SQLite fallback for every metric, filtered and unfiltered, dense/sparse/hybrid — a backend that answered differently would make the fallback a lie about production. Starts its own Postgres |
+| `make qdrant-live` | `EXAMLOPS_QDRANT_TEST_URL` | The same ranking claim for the Qdrant scale-out store, plus the three things an in-process double cannot prove: the full-text payload index the lexical channel needs, the UUID point-id mapping (Qdrant refuses an arbitrary string id), and that Euclid comes back as a distance. Starts its own Qdrant |
 | `make nats-live` | `EXAMLOPS_NATS_TEST_URL` | The event backbone against a real JetStream. Starts its own broker |
 | `make redis-live` | `EXAMLOPS_REDIS_TEST_URL` | Cross-replica coordination against a real Redis. Starts its own server |
 | `make prometheus-live` | `EXAMLOPS_PROMETHEUS_LIVE` | An opt-in service is scraped once it runs, raises no alert when it was never deployed, and — the part the alerts depend on — **stays a target with `up == 0` after its container stops**, through several DNS refreshes |

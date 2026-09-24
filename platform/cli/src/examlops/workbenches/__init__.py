@@ -9,20 +9,47 @@ table). A workbench is registered as a project resource (``kind='storage'``).
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
-from examlops.data import get_db
+from examlops.data import get_db, init_db
 from examlops.data.projects import get_project
 
 _DEFAULT_IMAGE = "jupyter/scipy-notebook:latest"
 
+logger = logging.getLogger(__name__)
+
 
 class WorkbenchError(Exception):
-    """Raised for unknown workbench / unknown project."""
+    """Raised for unknown workbench / unknown project / an unusable hardware profile."""
+
+
+def _migrate_this_table(conn: Any) -> None:
+    """Apply ``platform_db._COLUMN_MIGRATIONS['workbenches']`` to the table just ensured.
+
+    The schema bootstrap runs those migrations too, but ``workbenches`` is *lazily* created — by
+    this module, and by the dashboard router's own ``CREATE TABLE IF NOT EXISTS`` copy — so the
+    bootstrap can legitimately run before the table exists and find nothing to migrate. A table
+    created after that point (or by an older build) then keeps its old shape for the life of the
+    process, and the first INSERT fails with ``no such column: hardware_profile``. Same mechanism,
+    same single declaration, applied at the only other moment the table can appear.
+    """
+    from examlops.platform_db import _COLUMN_MIGRATIONS
+
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(workbenches)").fetchall()}
+    for column, decl in _COLUMN_MIGRATIONS.get("workbenches", {}).items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE workbenches ADD COLUMN {column} {decl}")
 
 
 def _ensure_table() -> None:
+    # init_db() first: the two hardware-profile columns below are additive (ADR 0157 Phase 2), and
+    # a database whose `workbenches` table predates them gets them from
+    # platform_db._COLUMN_MIGRATIONS, which runs inside the schema bootstrap. CREATE TABLE IF NOT
+    # EXISTS alone would leave such a table at its old shape forever. Cached per process/DB path,
+    # so this costs nothing after the first call.
+    init_db()
     with get_db() as conn:
         conn.execute(
             """CREATE TABLE IF NOT EXISTS workbenches (
@@ -35,9 +62,12 @@ def _ensure_table() -> None:
                    status         TEXT NOT NULL DEFAULT 'STOPPED',  -- STOPPED | RUNNING
                    created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                    created_by     TEXT,
+                   hardware_profile         TEXT,     -- ADR 0157: profile this was created from
+                   hardware_profile_version INTEGER,  -- the immutable version resolved at create
                    PRIMARY KEY (project, name)
                )"""
         )
+        _migrate_this_table(conn)
 
 
 def _env_key(*parts: str) -> str:
@@ -73,6 +103,63 @@ def connection_env(
     return env
 
 
+def _apply_hardware_profile(
+    profile_name: str, *, cpu: float | None, memory_gb: float | None
+) -> tuple[float | None, float | None, str, int, tuple[str, ...]]:
+    """Resolve a hardware profile into workbench defaults (ADR 0157 Phase 2, spec §4).
+
+    Returns ``(cpu, memory_gb, name, version, overridden)``. A profile is a **default, not an
+    override**: a field the caller passed explicitly is kept and named in ``overridden`` so the
+    partial override is reported rather than applied silently.
+
+    Refuses a profile whose ``applicability`` covers neither ``workbench`` nor ``any`` — naming
+    what it actually declares, because silently ignoring the flag would hand the caller a
+    workbench sized by nothing they asked for (the ADR 0041 portability-gate tone, not a shrug).
+    """
+    from examlops.hardware_profiles import HardwareProfileError, get_profile, resolve_profile
+
+    try:
+        # A workbench runs on the Docker/JupyterHub substrate, not an HPC cluster, so there is no
+        # target cluster to check against: this resolution is `unchecked` by construction and the
+        # call is what pins the exact version (the `active` label may move afterwards).
+        resolution = resolve_profile(profile_name, target_cluster=None)
+    except HardwareProfileError as exc:
+        raise WorkbenchError(str(exc)) from exc
+    # Re-read that exact version for the raw floats: ProfileResolution.resources.cpus is an int
+    # (the admission seam's shape), which would silently truncate a fractional-core profile.
+    profile = get_profile(profile_name, version=resolution.version)
+    if profile is None:  # pragma: no cover — deleted between the two reads
+        raise WorkbenchError(
+            f"hardware profile {profile_name!r} version {resolution.version} no longer exists"
+        )
+    if not {"workbench", "any"} & set(profile.applicability):
+        raise WorkbenchError(
+            f"hardware profile {profile_name!r} (version {resolution.version}) declares "
+            f"applicability '{','.join(profile.applicability)}' — a workbench needs 'workbench' "
+            "or 'any'. Create a profile with --applicability workbench, or pass --cpu/--memory-gb "
+            "directly."
+        )
+
+    overridden: list[str] = []
+    if cpu is None:
+        cpu = profile.cpu
+    else:
+        overridden.append("cpu")
+    if memory_gb is None:
+        memory_gb = profile.memory_gb
+    else:
+        overridden.append("memory_gb")
+    if overridden:
+        logger.info(
+            "hardware profile %s v%s applied partially: %s kept from the explicit argument(s); "
+            "the remaining field(s) came from the profile",
+            profile.name,
+            resolution.version,
+            ", ".join(overridden),
+        )
+    return cpu, memory_gb, profile.name, resolution.version, tuple(overridden)
+
+
 def create_workbench(
     name: str,
     project: str,
@@ -80,18 +167,42 @@ def create_workbench(
     image: str | None = None,
     cpu: float | None = None,
     memory_gb: float | None = None,
+    hardware_profile: str | None = None,
     created_by: str | None = None,
 ) -> dict[str, Any]:
-    """Define a workbench in a project (status STOPPED). Raises if the project is unknown."""
+    """Define a workbench in a project (status STOPPED). Raises if the project is unknown.
+
+    ``hardware_profile`` (ADR 0157 Phase 2) names a profile whose ``cpu``/``memory_gb`` become the
+    workbench's defaults and whose name + resolved version are recorded on the row. Explicit
+    ``cpu``/``memory_gb`` win over the profile (see :func:`_apply_hardware_profile`). Omitted, the
+    path is exactly what it was before profiles existed.
+    """
     if not get_project(project):
         raise WorkbenchError(f"project {project!r} not found")
+    profile_name: str | None = None
+    profile_version: int | None = None
+    if hardware_profile is not None:
+        cpu, memory_gb, profile_name, profile_version, _ = _apply_hardware_profile(
+            hardware_profile, cpu=cpu, memory_gb=memory_gb
+        )
     _ensure_table()
     volume = f"{project}-{name}-data"
     with get_db() as conn:
         conn.execute(
-            """INSERT INTO workbenches (name, project, image, cpu, memory_gb, storage_volume, created_by)
-               VALUES (?,?,?,?,?,?,?)""",
-            (name, project, image or _DEFAULT_IMAGE, cpu, memory_gb, volume, created_by),
+            """INSERT INTO workbenches (name, project, image, cpu, memory_gb, storage_volume,
+                                        created_by, hardware_profile, hardware_profile_version)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                name,
+                project,
+                image or _DEFAULT_IMAGE,
+                cpu,
+                memory_gb,
+                volume,
+                created_by,
+                profile_name,
+                profile_version,
+            ),
         )
     from examlops.data.projects import assign_resource_to_project
 

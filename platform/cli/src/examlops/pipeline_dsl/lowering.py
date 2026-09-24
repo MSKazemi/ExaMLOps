@@ -21,6 +21,32 @@ class NotLowerableError(IRError):
     """A valid IR that the current lowering cannot run. The message names the step and why."""
 
 
+#: Why each *known* step kind with ``lowerable=False`` is still refused — stated as the concrete
+#: thing that is missing, not as "not supported yet". A reader has to be able to tell from the
+#: message whether the gap is a lowering bug (fixable here) or an executor nobody has built
+#: (fixable only by building it), and these two are firmly the second. Re-checked 2026-09-24.
+_NO_EXECUTOR: dict[str, str] = {
+    "hpo": (
+        "nothing in the platform searches a hyper-parameter space. The only HPO surface is "
+        "`exa pipeline hpo start|status|record`, which records a study row and dispatches ONE "
+        "baseline training run through the control plane's /retrain; the trials are produced by "
+        "an optimiser outside ExaMLOps and reported back with `exa pipeline hpo record`. No "
+        "optimiser is a platform dependency (the pinned extra is ray[serve], not ray[tune]; "
+        "optuna is in no platform manifest) and `pipelines.pipeline_generator.training_flow` "
+        "trains exactly once per run, with no trial loop and no reader of `search_space`. "
+        "Lowering this step would mean *building* that search driver, not binding to one"
+    ),
+    "custom_python": (
+        "there is nowhere to put the entrypoint. The per-model registry YAML has no field for "
+        "user code (`pipelines.model_loader.ModelYAMLConfig` has no such slot), and "
+        "`training_flow` is a fixed task sequence (data_extraction -> data_contract_gate -> "
+        "slurm_submit -> slurm_wait -> result_fetch -> evaluate -> log_mlflow -> promote) with "
+        "no seam for an extra task. The HPC compute node re-loads the use-case pack, not this "
+        "pipeline file, so an entrypoint string would have nothing to resolve against there"
+    ),
+}
+
+
 @dataclass
 class Lowered:
     """``model_yaml`` is the per-model YAML mapping; ``hints`` are run-time asks the YAML has no
@@ -53,9 +79,13 @@ def lower_training(doc: dict[str, Any]) -> Lowered:
     nodes = list(doc["nodes"])
     for node in nodes:
         if not STEP_KINDS[node["kind"]].lowerable:
+            why = _NO_EXECUTOR.get(
+                node["kind"], "no execution path exists for it in the current stack"
+            )
             raise NotLowerableError(
-                f"step {node['id']!r} ({node['kind']}) is not lowerable yet: no execution path "
-                "exists for it in the current stack (compile/explain still work; run refuses)"
+                f"step {node['id']!r} ({node['kind']}) is not lowerable yet: {why} "
+                "(compile and explain still work; lowering and run refuse it rather than "
+                "silently skipping it)"
             )
     train = _one(nodes, "train", required=True)
     assert train is not None

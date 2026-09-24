@@ -71,7 +71,7 @@ endif
 .DEFAULT_GOAL := help
 
 .PHONY: images helm-package \
-	prometheus-live pgvector-live nats-live redis-live ray-live postgres-roles-live spire-live iam-live lineage-live helm-kind-live kserve-live reproduce-live
+	prometheus-live pgvector-live qdrant-live nats-live redis-live ray-live postgres-roles-live spire-live iam-live lineage-live helm-kind-live kserve-live reproduce-live
 
 .PHONY: help \
         full-up stop-all rebuild rebuild-all lxp-rebuild \
@@ -813,6 +813,29 @@ pgvector-live: install-dev ## pgvector ranks identically to the SQLite fallback 
 	 EXAMLOPS_PGVECTOR_TEST_DSN=postgresql://vt:vt@127.0.0.1:$$port/vt \
 	   $(VENV)/bin/pytest -q tests/unit/test_pgvector_store.py -m live || status=$$?; \
 	 docker rm -f examlops-pgvectortest >/dev/null 2>&1 || true; \
+	 exit $$status
+
+qdrant-live: install-dev ## Qdrant ranks identically to the SQLite fallback (starts its own Qdrant)
+	@# ADR 0020 clause 1's scale-out store. The unit run drives it against an in-process double;
+	@# only a real server proves the ranking, the full-text index and the UUID point-id mapping.
+	@docker rm -f examlops-qdranttest >/dev/null 2>&1 || true
+	@# An EPHEMERAL host port, read back with `docker port` — a fixed one collides with whatever
+	@# else on this machine already has a Qdrant up.
+	@docker run -d --name examlops-qdranttest -p 127.0.0.1::6333 qdrant/qdrant:v1.19.1 >/dev/null
+	@printf "$(BOLD)Waiting for Qdrant...$(RESET)\n"
+	@port=$$(docker port examlops-qdranttest 6333/tcp | head -n1 | sed 's/.*://'); \
+	 for i in $$(seq 1 60); do \
+	   curl -sf http://127.0.0.1:$$port/readyz >/dev/null 2>&1 && break; sleep 1; \
+	 done
+	@# qdrant-client is an optional extra, so it is not in uv.lock and `install-dev` cannot bring
+	@# it. The runner installs it into the dev venv, exactly as an operator choosing this backend
+	@# would: `pip install 'examlops[qdrant]'`.
+	@status=0; \
+	 port=$$(docker port examlops-qdranttest 6333/tcp | head -n1 | sed 's/.*://'); \
+	 $(UV) pip install -q --python $(VENV_BIN)/python 'qdrant-client>=1.19.1' || status=$$?; \
+	 EXAMLOPS_QDRANT_TEST_URL=http://127.0.0.1:$$port \
+	   $(VENV)/bin/pytest -q tests/unit/test_qdrant_store.py -m live || status=$$?; \
+	 docker rm -f examlops-qdranttest >/dev/null 2>&1 || true; \
 	 exit $$status
 
 nats-live: install-dev ## The event backbone against a real NATS JetStream (starts its own broker)

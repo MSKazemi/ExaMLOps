@@ -705,6 +705,39 @@ Build a structured model card from live data — gaps as 'not provided' (R3/R4).
 - `--out` — Write the card Markdown to this file
 - `--save` — Persist a versioned card
 
+## `exa catalog`
+
+Model Catalog — curated model definitions you can start from (ADR 0158)
+
+### `exa catalog list`
+
+Browse the catalog — curated model definitions you could start from.
+
+- `--kind` — base_model or recipe
+- `--license` — SPDX identifier, e.g. mit
+- `--trust-tier` — T1_signed or T1_unsigned — never hidden behind a generic OK
+- `--evaluated-only` — only entries that point at an eval summary
+- `--all-versions` — every catalog_version, not just the newest of each entry
+
+### `exa catalog publish`
+
+Publish a catalog entry. An unpinned source is refused here, never flagged later.
+
+- `--sign` — sign the entry with examlops.supplychain (the only signer)
+
+### `exa catalog pull`
+
+Materialize a catalog entry into a project. Trains nothing, serves nothing.
+
+- `--project` — Project to pull the entry into
+- `--as` — Model name to materialize as (default: the entry name)
+- `--dry-run` — preview the rendered YAML and the lineage edge; write nothing
+- `--yes, -y` — Skip confirmation
+
+### `exa catalog show`
+
+Show one catalog entry (default: its newest catalog_version).
+
 ## `exa chat`
 
 Interactive conversation with the Skipper agent
@@ -1761,16 +1794,26 @@ Show run config, sites, and completed rounds.
 
 ## `exa finetune`
 
-Run a fine-tune and register a signed, lineage-linked adapter (R1/R3/GWT-1).
+Fine-tune (``--train``) or register an adapter, signed and lineage-linked (R1/R3/GWT-1).
 
+Without ``--train`` nothing is trained: the adapter is registered as a paper record, and any
+``--asserted-eval`` is stored as an operator claim, clearly separated from a measured score.
+
+- `--train` — Actually fine-tune: run the reference LoRA script and record the score it measures
 - `--method` — lora | qlora | full
 - `--dataset` — A1-pinned dataset revision
 - `--rank` — LoRA rank
 - `--target-modules` — Comma-separated modules
-- `--eval` — Recorded eval score
+- `--asserted-eval, --eval` — A score YOU measured elsewhere. Stored as UNVERIFIED (operator-asserted); it can never clear the C3 promotion gate. Use --train to obtain a measured one.
 - `--eval-floor` — C3 quality floor for promotion
 - `--cost` — Fine-tune GPU-hours
 - `--adapter-id` — Explicit adapter id
+- `--steps` — --train: training steps
+- `--batch` — --train: batch size
+- `--lr` — --train: learning rate
+- `--seed` — --train: seed (default: EXAMLOPS_SEED, else 0)
+- `--backend` — --train: fine-tuning backend (torch-lora | peft)
+- `--run-id` — --train: explicit training run id
 
 ## `exa finops`
 
@@ -2050,6 +2093,31 @@ Estimate the USD cost of a GenAI call from its token usage (spec R7).
 - `--model, -m` — Model name (e.g. gpt-4o)
 - `--in` — Input (prompt) token count
 - `--out` — Output (completion) token count
+
+## `exa genai-app`
+
+GenAI applications — composed route+RAG+prompt+guardrail manifests (ADR 0159)
+
+### `exa genai-app list`
+
+List registered versions, newest first, with the aliases pointing at each.
+
+- `--name, -a` — Only this application
+- `--limit, -n` — Max versions
+
+### `exa genai-app promote`
+
+Point an alias at a version. Production is gated on evidence, guardrails and resolution.
+
+- `--reason` — Why (recorded in the history)
+
+### `exa genai-app register`
+
+Validate a manifest and register it; identical content returns the existing version.
+
+### `exa genai-app show`
+
+Show one version: the composed route, RAG, prompt and guardrail references.
 
 ## `exa governance`
 
@@ -2728,6 +2796,15 @@ Compile a Python pipeline definition (@pipeline) to a validated, hashed IR.
 - `--yaml` — Also lower the IR to the per-model registry YAML at this path
 - `--untrusted` — Load through the provider AST allow-list (no imports/open/eval); default is trusted-tier Python
 
+### `exa pipeline decompile`
+
+Turn a per-model registry YAML into equivalent @pipeline source (the reverse of compile).
+
+Refuses rather than writing a file when the YAML holds anything the DSL cannot express.
+
+- `--out, -o` — Write the @pipeline source to this file (default: stdout)
+- `--force` — Overwrite --out if it already exists
+
 ### `exa pipeline deploy`
 
 Register Prefect deployments for all models (or one model).
@@ -2754,12 +2831,13 @@ Write an integrity-hashed sharded checkpoint (R3/R5).
 
 Launch a distributed training run (R1/R2/R8).
 
-- `--nodes` — Number of nodes
-- `--gpus-per-node` — GPUs per node
+- `--nodes` — Number of nodes  [default: 1]
+- `--gpus-per-node` — GPUs per node  [default: 1]
 - `--strategy` — fsdp | zero | megatron
 - `--dataset-revision` — A1 revision pin
 - `--checkpoint-every` — Checkpoint interval
 - `--run-id` — Explicit run id
+- `--hardware-profile` — Named hardware profile (ADR 0157) supplying --nodes/--gpus-per-node; must be applicable to 'training'. Explicit flags win; --strategy is unaffected.
 
 #### `exa pipeline distributed list`
 
@@ -2872,6 +2950,7 @@ Run training pipeline(s) locally via Prefect.
 - `--registry` — Path to model_registry.yaml
 - `--cluster, -C` — Target an ACTIVE HPC cluster by name, or 'auto' to let placement choose
 - `--gpus, -g` — GPUs to request (for --cluster auto placement)
+- `--hardware-profile` — Named hardware profile (ADR 0157) to request instead of restating --gpus; must be applicable to 'training'. With --gpus, --gpus overrides only its gpu_count.
 - `--project, -p` — Scope the run to a Project (ADR 0088): tags the run and attributes its cost
 - `--ir` — Train a pipeline-as-code IR (from `exa pipeline compile`); inline scheduler only
 
@@ -3332,7 +3411,8 @@ Rebuild plan + metric-match within tolerance; --execute performs the rebuild (AD
 - `--repo` — [--execute] Git repo holding the bundle's commit
 - `--data-path` — [--execute] Local data to verify against the pinned revision
 - `--dummy` — [--execute] Train on dummy data
-- `--allow-env-drift` — [--execute] Continue when the lockfile hash drifted
+- `--rebuild-env` — [--execute] Really rebuild the recorded environment: install the bundle's package set into a fresh isolated venv (uv) and train on it, instead of comparing it with the caller's interpreter
+- `--allow-env-drift` — [--execute] Continue when the lockfile hash drifted, or the recorded container image is absent or mismatched
 - `--allow-dirty-code` — [--execute] Rebuild even though the bundle was built from a dirty git tree
 - `--rtol` — [--execute] Relative metric tolerance (default: bundle's, else 0.05)
 - `--train-cmd` — [--execute] Custom training command run in the checkout; must print 'EXAMLOPS_REPRO_METRICS=<json>' (default: the pipeline training flow)
@@ -3464,12 +3544,12 @@ Multi-LoRA adapters (add/list/promote/route) (B7)
 
 #### `exa serve adapter add`
 
-Register an adapter (alias of `exa finetune`) (R6).
+Register an adapter trained elsewhere (alias of `exa finetune` without `--train`) (R6).
 
 - `--dataset` — A1 dataset revision
 - `--method` — lora | qlora | full
 - `--rank` — LoRA rank
-- `--eval` — Eval score
+- `--asserted-eval, --eval` — A score you measured elsewhere — stored as UNVERIFIED (operator-asserted)
 - `--eval-floor` — C3 quality floor
 
 #### `exa serve adapter list`
@@ -3480,7 +3560,9 @@ List registered adapters (R6).
 
 #### `exa serve adapter promote`
 
-Promote an adapter — blocked by the C3 eval-gate if below floor (R2/GWT-2).
+Promote an adapter — blocked by the C3 eval-gate unless a measured score clears the floor.
+
+- `--accept-unverified` — Promote although no measured score exists (audited). The floor is then unproven.
 
 #### `exa serve adapter route`
 
@@ -4181,6 +4263,7 @@ Define a workbench in a project (status STOPPED until started).
 - `--image` — Container image
 - `--cpu` — CPU cores
 - `--memory-gb` — RAM in GB
+- `--hardware-profile` — Named hardware profile supplying cpu/memory-gb defaults (exa hardware profile list). Its applicability must include 'workbench' or 'any'. Explicit --cpu/--memory-gb win.
 
 ### `exa workbench delete`
 
@@ -4188,6 +4271,18 @@ Delete a workbench definition.
 
 - `--project, -p` — Owning project
 - `--yes, -y` — Skip confirmation
+
+### `exa workbench export-pipeline`
+
+Turn tagged notebook cells into a @pipeline file, then compile it (ADR 0160).
+
+Cells are read as data — the notebook is parsed, never executed. Tag a code cell with one of param, dataset, train, evaluate, promote or skip-export (standard Jupyter cell tags); every other code cell is dropped and reported by index, so nothing vanishes unnoticed.
+
+One-directional by design: editing the generated file does NOT flow back into the notebook, and re-running this command overwrites the file rather than merging. The output is a starting point for the ordinary pipeline-as-code workflow (`exa pipeline compile`), exactly like a hand-written pipeline file.
+
+- `--out, -o` — Write the generated pipeline here (default: <stem>_pipeline.py)
+- `--yaml` — Also lower the compiled IR to the per-model registry YAML here
+- `--name` — Pipeline name (default: the notebook's stem)
 
 ### `exa workbench list`
 

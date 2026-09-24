@@ -88,6 +88,7 @@ CATALOG: tuple[Module, ...] = (
             "config",
             "plugins",
             "models",
+            "catalog",
             "approvals",
             "auth",
             "audit",
@@ -178,6 +179,7 @@ CATALOG: tuple[Module, ...] = (
         "embeddings and fine-tuning.",
         cli=(
             "genai",
+            "genai-app",
             "prompt",
             "guardrails",
             "gateway",

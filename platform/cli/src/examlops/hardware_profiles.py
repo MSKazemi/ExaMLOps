@@ -43,7 +43,10 @@ __all__ = [
     "get_profile",
     "list_names",
     "list_versions",
+    "require_applicability",
+    "resolve_for",
     "resolve_profile",
+    "to_ray_actor_options",
     "to_resource_ask",
     "to_workload",
 ]
@@ -340,3 +343,74 @@ def to_workload(resolution: ProfileResolution, workload_name: str) -> Workload:
         accelerator=profile.accelerator_family,
         fraction=profile.gpu_fraction,
     )
+
+
+def to_ray_actor_options(resolution: ProfileResolution) -> dict[str, float]:
+    """Adapt a resolution into Ray Serve ``ray_actor_options`` (spec §4 Phase 3, serving).
+
+    Mirrors :func:`examlops.autoscale.to_ray_deployment_kwargs`, which already maps a policy's
+    ``gpu_fraction`` onto ``ray_actor_options={"num_gpus": ...}`` — a profile is sugar over that
+    same seam, never a second way to describe a replica's share of a node.
+
+    ``num_gpus`` is ``gpu_count × gpu_fraction`` (so one whole GPU at ``fraction=0.5`` asks for
+    ``0.5``, exactly as the autoscale policy does); a key is emitted only when the profile
+    actually asks for that dimension, so a CPU-only profile never pins ``num_gpus=0`` over Ray's
+    own default. Like :func:`to_workload`, it re-reads the exact version it resolved rather than
+    whichever version the ``active`` label points at now.
+    """
+    profile = get_profile(resolution.name, version=resolution.version)
+    if profile is None:
+        raise HardwareProfileError(
+            f"hardware profile {resolution.name!r} version {resolution.version} no longer exists"
+        )
+    options: dict[str, float] = {}
+    num_gpus = profile.gpu_count * profile.gpu_fraction
+    if num_gpus > 0:
+        options["num_gpus"] = round(num_gpus, 6)
+    if profile.cpu > 0:
+        options["num_cpus"] = profile.cpu
+    return options
+
+
+def require_applicability(profile: HardwareProfile, need: str) -> None:
+    """Refuse a profile whose ``applicability`` does not cover *need* (spec §4, Phase 2/3).
+
+    A silent ignore is the failure mode this exists to prevent: a serving profile quietly
+    accepted for a training run would place a job against a shape nobody declared it for.
+    The error names the profile's **actual** applicability so the operator can see why.
+    """
+    if need not in APPLICABILITIES:
+        raise HardwareProfileError(
+            f"unknown applicability {need!r}, expected one of {list(APPLICABILITIES)}"
+        )
+    if need in profile.applicability or "any" in profile.applicability:
+        return
+    raise HardwareProfileError(
+        f"hardware profile {profile.name!r} (version {profile.version}) is not applicable to "
+        f"{need!r}: its applicability is {list(profile.applicability)}. Create a version that "
+        f"includes {need!r} or 'any' — "
+        f"exa hardware profile set {profile.name} --applicability {need}"
+    )
+
+
+def resolve_for(
+    name: str,
+    need: str,
+    *,
+    label: str = "active",
+    version: int | None = None,
+    target_cluster: str | None = None,
+) -> tuple[HardwareProfile, ProfileResolution]:
+    """:func:`resolve_profile` with the Phase 2/3 applicability gate in front of it.
+
+    Returns the exact version that was gated together with its resolution — the resolution is
+    taken at that pinned version, so a concurrent ``exa hardware profile set`` cannot move the
+    ``active`` label between the check and the resolve.
+    """
+    profile = get_profile(name, label=label, version=version)
+    if profile is None:
+        ref = f"version {version}" if version is not None else f"label {label!r}"
+        raise HardwareProfileError(f"hardware profile {name!r} ({ref}) not found")
+    require_applicability(profile, need)
+    resolution = resolve_profile(name, version=profile.version, target_cluster=target_cluster)
+    return profile, resolution

@@ -92,6 +92,7 @@ the usual cause of "it works from the CLI but not in the dashboard".
 | `EXAMLOPS_CONFIG` | `~/.config/examlops/config.toml` | Overrides the CLI config path so containers and CI can pin a config and tests run hermetically. |
 | `EXAMLOPS_PROJECT` | active CLI context or `default` | Explicit project/tenant context for CLI commands and trusted server-side agent scoping. Request callers cannot override an authenticated agent tenant with payload data. |
 | `EXAMLOPS_USECASE_DIR` | `usecases/reference` | Selects the use-case pack (ADR 0094). The platform core names no concrete model or dataset; this is how it reaches content. |
+| `EXAMLOPS_CATALOG_TEMPLATE_DIR` | unset (the active pack, then `<config dir>/catalog`) | Explicit override of where `exa catalog pull` resolves a recipe entry's relative `model_yaml_template` (ADR 0158). A recipe template is pack content, so by default it is looked up inside the active use-case pack and then in the site's own `<config dir>/catalog`; set this to try a template out before committing it to a pack. Never resolved against a repository checkout. |
 | `EXAMLOPS_AGENT_DIR` | derived from the repo | Where the Skipper package lives for explicit `exa agent memory … --local` recovery. Normal memory administration uses `AGENT_URL`. |
 | `EXAMLOPS_PROJECTS_BUCKET` | `examlops-projects` | MinIO bucket holding per-project `artifacts/`, `datasets/`, `cache/`. |
 
@@ -283,6 +284,8 @@ Variables read by the `exa` CLI's next-gen surface (MCP/A2A, `exa ask`, config c
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_MCP_ALLOW_WRITES` | unset (read-only) | When truthy (`1`/`true`/`yes`/`on`), `exa mcp serve` registers mutating tools (e.g. `trigger_retrain`). Equivalent to `exa mcp serve --allow-writes`. |
+| `EXAMLOPS_MCP_GENERATED_TOOLS` | unset (off) | When truthy (`1`/`true`/`yes`/`on`), `exa mcp serve` additionally registers the **generated** tool surface (ADR 0147 d1) — one MCP tool per `exa` leaf command, built from the live Click tree joined to the per-command tier table in `examlops.cli.surface`. Input schema comes from the declared parameters, `outputSchema` from the CLI's one-JSON-document contract, and the MCP annotations from the tier (`read` → `readOnlyHint`, `destructive` → `destructiveHint`, `surface.IDEMPOTENT` → `idempotentHint`). Off by default: with the flag unset the agent surface is exactly the hand-written registry. Generated names are prefixed `exa_`, so they can never collide with a hand-written workflow tool. `cli_only` commands are never generated, and mutating generated tools go through the same plan/apply gate as hand-written ones. |
+| `EXAMLOPS_MCP_GENERATED_WORKSPACE` | instance data dir `mcp-workspace/`, else `$XDG_DATA_HOME/examlops/mcp-workspace` | Directory every filesystem parameter of a **generated** tool is contained inside (the same containment `examlops.cli.surface.contain_path` gives the dashboard CLI Console): absolute paths, `~` and any `..` that climbs out are refused. Created on demand. |
 | `AGENT_URL` | `http://localhost:18004` | Skipper agent OpenAI-compatible bridge that `exa ask` calls. Also settable via `exa config set agent <url>`. |
 | `AGENT_API_KEY` | unset | Bearer token sent by `exa ask` when the agent bridge is token-gated. |
 | `AGENT_ALLOW_UNAUTHENTICATED` | unset | Development opt-out only. An agent bound beyond loopback (`AGENT_SERVER_HOST` other than `127.0.0.1`/`localhost`/`::1`, as in compose) with no `AGENT_API_KEY`/`AGENT_API_KEYS_JSON` refuses every request with 503; set this truthy to serve it as the anonymous `local` principal anyway. |
@@ -384,13 +387,19 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_SIGNING_PUBLIC_KEYS_FILE` | unset | The same trust bundle as a file of one or more PEM public keys (`openssl pkey -in signing.pem -pubout`). Both sources are read. |
 | `EXAMLOPS_SIGN_AT_REGISTRATION` | `auto` | Whether the training pipeline signs each version it registers: `auto` signs when a signing key is configured, `required` fails the run when it cannot sign (so an unsigned version never reaches a serving plane that enforces), `off` never signs. |
 | `EXAMLOPS_SERVING_BACKEND` | `ray-compose` | **E1** serving backend — `ray-compose` (default) or `kserve-k8s`. |
-| `EXAMLOPS_VECTOR_BACKEND` | `sqlite` | **B5** vector store — `sqlite` (persistent fallback) or `pgvector`. |
+| `EXAMLOPS_VECTOR_BACKEND` | `sqlite` | **B5** vector store — `sqlite` (persistent fallback), `pgvector` (production default) or `qdrant` (scale-out). An unknown value is an error, never a silent fallback. |
 | `EXAMLOPS_PGVECTOR_DSN` | unset | **B5** Postgres+pgvector DSN (required for the `pgvector` backend). |
 | `EXAMLOPS_PGVECTOR_SCHEMA` | unset (`public`) | **B5** schema for the pgvector registry and collection tables; a plain identifier. Lets two instances share one server. |
 | `EXAMLOPS_PGVECTOR_STATEMENT_TIMEOUT_MS` | `10000` | **B5** per-search statement timeout on pgvector, so a runaway scan cannot hold a pooled connection. |
 | `EXAMLOPS_PGVECTOR_CONNECT_TIMEOUT` | `5` | **B5** seconds to wait for the pgvector server before failing. |
 | `EXAMLOPS_PGVECTOR_POOL_MAX` | `10` | **B5** pgvector connection-pool size per process (needs `psycopg-pool`; unpooled without it). |
 | `EXAMLOPS_PGVECTOR_TEST_DSN` | unset | Opt-in DSN for the live pgvector test suite (`tests/unit/test_pgvector_store.py -m live`). |
+| `EXAMLOPS_QDRANT_URL` | unset | **B5** Qdrant endpoint (required for the `qdrant` backend, e.g. `http://localhost:6333`); needs `pip install 'examlops[qdrant]'`. |
+| `EXAMLOPS_QDRANT_API_KEY` | unset | **B5** Qdrant API key, when the server requires one. |
+| `EXAMLOPS_QDRANT_TIMEOUT` | `30` | **B5** seconds the Qdrant client waits for a request. |
+| `EXAMLOPS_QDRANT_NAMESPACE` | `exv` | **B5** prefix of the Qdrant collection names this instance owns; a plain identifier. Lets two instances share one Qdrant. |
+| `EXAMLOPS_QDRANT_INDEXING_THRESHOLD_KB` | unset (Qdrant's default) | **B5** lowers Qdrant's `indexing_threshold` so a collection smaller than ~20 MB of vectors still gets an HNSW graph. Unset means Qdrant decides — below the threshold it serves an exact scan, which is genuinely faster there. |
+| `EXAMLOPS_QDRANT_TEST_URL` | unset | Opt-in endpoint for the live Qdrant test suite (`make qdrant-live`, or `tests/unit/test_qdrant_store.py -m live`). |
 | `EXAMLOPS_CARBON_POLICY_MARGIN_PP` | `5.0` | **ADR 0112 R-ec** — percentage points of carbon-agnostic emissions a carbon-weighing placement policy must beat the best simple baseline by before it may place on carbon. |
 | `EXAMLOPS_CARBON_POLICY_RETEST_DAYS` | `90` | **R-ed** — an evaluation older than this no longer licenses a carbon policy (re-test overdue). |
 | `EXAMLOPS_CARBON_POLICY_RETIRE_BELOW_PCT` | `2.0` | **R-ed** — a shipped carbon policy saving less than this share of emissions is retired: carbon leaves placement. |
@@ -1134,18 +1143,21 @@ environment:
 |---|---|---|
 | `EXAMLOPS_REPRO_AUTO_BUNDLE` | unset (off) | When truthy (`1`/`true`/`yes`/`on`), a reproducibility bundle is built automatically at the end of a successful `training_flow` (once the version is registered) and on `exa pipeline promote` for a version that has none. Off leaves behaviour byte-identical. A bundle failure never fails the run: it is counted, logged and audited as `repro_auto_bundle_failed`. `EXAMLOPS_SEED`, when set, is applied to the process RNGs at the start of `training_flow` and recorded in the bundle. |
 | `EXAMLOPS_REPRO_MLFLOW_URI` | throw-away SQLite store | MLflow tracking URI used by the training subprocess of `exa reproduce run --execute` when no `--train-cmd` is given. Unset, the rebuild uses a temporary SQLite MLflow store and platform DB so it never registers a version in the live registry. |
+| `EXAMLOPS_REPRO_PYTHON` | this process's interpreter (`sys.executable`) | Interpreter `exa reproduce run --execute` re-runs training on, and the value of the `environment.python` field it reports. Resolution order: the `--rebuild-env` venv's interpreter, else this variable, else `sys.executable` — never a bare `python` looked up on `PATH`, which is absent on hosts that ship only `python3`. The chosen interpreter is exported under this name to the training subprocess, its bin directory leads that subprocess's `PATH`, and a `--train-cmd` whose first word is a bare `python`/`python3` is run with it, so the reported interpreter is always the one that ran. |
 
 ## Suspend/resume seam (ADR 0109)
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `EXAMLOPS_SUSPEND_BACKEND_PROVIDER` | `checkpoint-only` | Suspend backend for `examlops.suspend` (`checkpoint-only`, `mock`, or an `exa.providers.suspend_backend` plugin). An unregistered name is refused, never substituted. The checkpoint-only backend reads the agent checkpoint SQLite file named by `AGENT_DB` (read-only) and refuses when it is unset or missing. |
+| `EXAMLOPS_SUSPEND_BACKEND_PROVIDER` | `checkpoint-only` | Suspend backend for `examlops.suspend` (`checkpoint-only`, `training-checkpoint`, `mock`, or an `exa.providers.suspend_backend` plugin). An unregistered name is refused, never substituted. The checkpoint-only backend reads the agent checkpoint SQLite file named by `AGENT_DB` (read-only) and refuses when it is unset or missing; the training-checkpoint backend reads a distributed run's own sharded checkpoints (ADR 0032) and refuses when none verifies. |
+| `EXAMLOPS_SUSPEND_PREEMPTION_GATE` | unset (off) | When truthy (`1`/`true`/`yes`/`on`), `examlops.distributed.launch.supervise` asks the suspend seam, before each resubmission of a failed distributed run, whether that run's state actually survives (ADR 0109 decision 3: the `training-checkpoint` backend's `preemption_promise` **and** a checkpoint that verifies on disk). When it cannot be promised, the resubmission is declined with its reasons and audited as `distributed_resubmit_declined` instead of restarting from step 0 under the name "resume"; the reasons are also returned in `SupervisedRun.preemption`. Off leaves the supervisor byte-identical, and the gate can only ever stop a resubmission, never start one. |
 
 ## Admission seam and quota reservations (ADR 0116)
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `EXAMLOPS_ADMISSION_POLICY` | `fair-share` | Admission policy behind `examlops.admission_seam`: `fair-share` (the pre-seam behaviour) or `baseline-over-quota`. An unknown name is refused. Only the seam and `exa admission simulate` read it; the existing queue worker does not. |
+| `EXAMLOPS_ADMISSION_DISPATCH_ENABLED` | unset (disabled) | Kill-switch for dispatching real work *through* the seam. Truthy (`1`/`true`/`yes`/`on`) makes `exa pipeline run` ask `admission_seam.policy.decide` before it executes and hold a quota reservation for the run's duration (released when the run ends, however it ends). Unset or falsy, the gate opens nothing, decides nothing and writes nothing — the run is exactly what it was before the seam existed. |
+| `EXAMLOPS_ADMISSION_POLICY` | `fair-share` | Admission policy behind `examlops.admission_seam`: `fair-share` (the pre-seam behaviour) or `baseline-over-quota`. An unknown name is refused. Read by the seam, by `exa admission simulate` and — when `EXAMLOPS_ADMISSION_DISPATCH_ENABLED` is set — by the dispatch gate; the existing queue worker does not read it. |
 | `EXAMLOPS_ADMISSION_QUOTAS` | unset | Path to a JSON file of per-tenant GPU quotas (`baseline_gpus`, `limit_gpus`, `over_quota_weight`) used by `baseline-over-quota`. A malformed file is an error. |
 | `EXAMLOPS_RESERVATION_TTL_S` | `900` | Seconds a `reserved` quota reservation holds quota before it lapses and is swept to `expired`. |
 
@@ -1192,3 +1204,14 @@ or `gates: {slo: enforce}` in `policy.yaml`. Off (the default) it is never consu
 | `EXAMLOPS_DIST_FAULT_RANK` | `1` | Which rank the fault above kills. |
 | `EXAMLOPS_DIST_ATTEMPT` | set by the supervisor | The 1-based submission attempt, exported to the worker processes (informational; nothing branches on it). |
 | `RANK` / `WORLD_SIZE` / `LOCAL_RANK` | set by `torchrun` | Read (never set) by the reference DDP script: the worker's global rank, the process count and its rank on this node. Default `0` / `1` / `0` if run without `torchrun`. |
+
+## Fine-tuning test hooks (ADR 0044)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_FINETUNE_FAULT` | unset | Fault injection for the reference LoRA script (`exa finetune --train`): `recoverable` makes it exit 75 (the supervisor resubmits and it resumes), `fatal` makes it exit 70 with a `FATAL.json` marker (the supervisor does not). A marker file in the run directory stops it firing again on the rerun. Unset = no fault. Test/demo only. |
+| `EXAMLOPS_FINETUNE_FAULT_STEP` | `1` | Which training step the fault above fires at. |
+
+`EXAMLOPS_SEED` (above) is the fine-tune's seed when `--seed` is not given: it fixes the base
+initialisation, the adapter initialisation, the synthetic task's teacher coefficients and every
+batch, so two runs of the same seed produce the same adapter digest and the same measured score.

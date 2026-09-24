@@ -91,6 +91,11 @@ class ModelYAMLConfig:
     # and validated by examlops.autoscale.policy_yaml.validate_autoscale_block; the
     # `autoscale_config` table (exa serve autoscale set) overrides it. Empty = no default policy.
     autoscale: dict[str, Any] = field(default_factory=dict)
+    # Hardware-profile binding (ADR 0157 Phase 3): `resources: {hardware_profile: <name>}`. Kept
+    # raw and validated by examlops.hardware_profiles_yaml.validate_resources_block (the same
+    # split `autoscale:` uses); at deploy time it resolves to gpu_fraction/cpu and flows into
+    # ray_actor_options. Empty = no binding, and the deployment behaves exactly as before.
+    resources: dict[str, Any] = field(default_factory=dict)
 
     def dataset(self, name: str) -> DatasetEntry:
         for ds in self.datasets:
@@ -155,6 +160,7 @@ def load_model_yaml(path: Path) -> ModelYAMLConfig:
         engine=raw.get("engine") or {},
         fairness=raw.get("fairness") or {},
         autoscale=raw.get("autoscale") or {},
+        resources=raw.get("resources") or {},
     )
 
 

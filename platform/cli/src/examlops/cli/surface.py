@@ -144,6 +144,14 @@ TIERS: dict[str, str] = {
     "cards export": R,
     "cards lint": R,
     "cards model": R,
+    # ADR 0158 Model Catalog. Browsing is a viewer read; `publish` curates the catalog and
+    # `pull` writes a model definition into a project (and, having a --dry-run, is a mutation
+    # by construction) — both admin. Neither is destructive: a pull never overwrites a file,
+    # and an entry is immutable, so nothing here can erase an existing definition.
+    "catalog list": R,
+    "catalog publish": A,
+    "catalog pull": A,
+    "catalog show": R,
     "chat": X,
     "compliance art12": A,
     "compliance classify": A,
@@ -295,11 +303,16 @@ TIERS: dict[str, str] = {
     "gateway reasoning set-budget": A,
     "gateway reasoning stats": R,
     "gateway schema test": A,
-    "gateway status": R,
-    "gateway providers": A,
-    "gateway validate": R,
     "genai check": R,
     "genai cost": R,
+    # ADR 0159. A manifest names references only — no credential, no provider address — so reading
+    # one is a viewer read. `register` writes an immutable registry row; `promote` moves the alias
+    # that decides what Production traffic runs, and is gated on evidence: both admin, matching
+    # `agent version register` / `agent alias set`.
+    "genai-app list": R,
+    "genai-app promote": A,
+    "genai-app register": A,
+    "genai-app show": R,
     "governance catalogue": R,
     "governance crosswalk": R,
     "governance report": A,
@@ -380,6 +393,10 @@ TIERS: dict[str, str] = {
     "namespace list": R,
     "pipeline add-model": A,
     "pipeline compile": A,  # executes an operator-written Python file (trusted tier, ADR 0080)
+    # The reverse of compile: parses a registry YAML and prints DSL source. It executes nothing,
+    # so it is a read — and since both of its params are filesystem paths, any real invocation is
+    # escalated to admin by the path rule anyway (like `admission simulate`).
+    "pipeline decompile": R,
     "pipeline deploy": D,
     "pipeline distributed checkpoint": A,
     "pipeline distributed launch": A,
@@ -573,6 +590,11 @@ TIERS: dict[str, str] = {
     "vector upsert": A,
     "workbench create": A,
     "workbench delete": D,
+    # ADR 0160: reads a notebook statically (never runs it) but writes a pipeline file and then
+    # *executes* that generated, trusted-tier Python to validate it — the same reason
+    # `pipeline compile` is admin, plus `surface.py`'s own "a persisting flag or a filesystem
+    # path escalates a read" rule.
+    "workbench export-pipeline": A,
     "workbench list": R,
     "workbench start": A,
     "workbench stop": A,
@@ -640,6 +662,42 @@ FORCED_ARGS: dict[str, tuple[str, ...]] = {
     "serve autoscale run": ("--once",),
     "drift run-advanced": ("--once",),
 }
+
+# ── Idempotency (ADR 0147 d1) ─────────────────────────────────────────────────────────────
+# Commands for which repeating the *identical* call leaves the *identical* end state — the MCP
+# `idempotentHint`, and what makes an agent's retry after a timeout safe. Asserted per command,
+# never defaulted: everything absent here is treated as non-idempotent. The shape that qualifies
+# is "set X to this value" (`config set`, `serve traffic`, `slo set`) and "put X in this state"
+# (`autopilot enable`, `serve shadow disable`). The shape that does not is anything that appends,
+# or that snapshots *now*: `drift baseline` records current statistics, so a second call records
+# different ones; `audit checkpoint`, `backup create` and `pipeline run` each add a new record.
+IDEMPOTENT: frozenset[str] = frozenset(
+    {
+        "agent alias set",
+        "autopilot disable",
+        "autopilot enable",
+        "broker grant set",
+        "config set",
+        "drift auto-retrain disable",
+        "drift auto-retrain enable",
+        "eval gate set",
+        "finops budget set",
+        "modules disable",
+        "modules enable",
+        "project set-quota",
+        "prompt label",
+        "secrets set",
+        "serve autoscale set",
+        "serve challenger disable",
+        "serve challenger enable",
+        "serve routing set",
+        "serve shadow disable",
+        "serve shadow enable",
+        "serve traffic",
+        "slo set",
+        "slo spec set",
+    }
+)
 
 # Values the command would otherwise *prompt* for. stdin is /dev/null in the console, so a prompt
 # aborts the run; requiring the value in the form is the honest equivalent of answering it.
@@ -717,6 +775,7 @@ _EXTRA_FS: frozenset[tuple[str, str]] = frozenset(
         ("upgrade apply", "backup_dir"),
         ("finops carbon policy evaluate", "trace"),
         ("serve loadtest", "body"),
+        ("workbench export-pipeline", "notebook"),
     }
 )
 # A path-or-URL parameter: an http(s) value passes through (and is a network target), anything

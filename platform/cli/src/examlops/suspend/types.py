@@ -22,6 +22,9 @@ TIERS = ("local_memory", "peer_memory", "persistent_storage")
 BASES = ("measured", "declared", "unknown")
 
 STATE_AGENT_SESSION = "agent_session_checkpoint"
+# A distributed training run's own sharded checkpoints (ADR 0032), pinned by the
+# ``training-checkpoint`` backend.
+STATE_TRAINING_RUN = "training_run_checkpoint"
 
 
 class SuspendError(Exception):

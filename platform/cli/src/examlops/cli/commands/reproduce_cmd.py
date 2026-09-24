@@ -27,6 +27,7 @@ _EXAMPLES = (
     "  exa reproduce run JPCP 17\n\n"
     "  exa reproduce run JPCP 17 --observed '{\"rmse\": 4.9}'\n\n"
     "  exa reproduce run JPCP 17 --execute --dummy --rtol 0.05\n\n"
+    "  exa reproduce run JPCP 17 --execute --rebuild-env --dummy\n\n"
     "  exa reproduce verify JPCP 17\n\n"
     "  exa reproduce show JPCP 17\n\n"
     "  exa reproduce list"
@@ -102,8 +103,18 @@ def run(
         None, "--data-path", help="[--execute] Local data to verify against the pinned revision"
     ),
     dummy: bool = typer.Option(False, "--dummy", help="[--execute] Train on dummy data"),
+    rebuild_env: bool = typer.Option(
+        False,
+        "--rebuild-env",
+        help="[--execute] Really rebuild the recorded environment: install the bundle's package "
+        "set into a fresh isolated venv (uv) and train on it, instead of comparing it with "
+        "the caller's interpreter",
+    ),
     allow_env_drift: bool = typer.Option(
-        False, "--allow-env-drift", help="[--execute] Continue when the lockfile hash drifted"
+        False,
+        "--allow-env-drift",
+        help="[--execute] Continue when the lockfile hash drifted, or the recorded container "
+        "image is absent or mismatched",
     ),
     allow_dirty_code: bool = typer.Option(
         False,
@@ -132,6 +143,7 @@ def run(
             repo=repo,
             data_path=data_path,
             dummy=dummy,
+            rebuild_env=rebuild_env,
             allow_env_drift=allow_env_drift,
             allow_dirty_code=allow_dirty_code,
             rtol=rtol,
@@ -173,6 +185,8 @@ def _run_execute(model: str, version: str, **opts: Any) -> None:
     import shlex
 
     from examlops.reproducibility.execute import StepResult, execute_reproduction
+    from examlops.reproducibility.image import STATUS_UNCHECKED as IMG_UNCHECKED
+    from examlops.reproducibility.image import STATUS_UNVERIFIABLE as IMG_UNVERIFIABLE
 
     def show(step: StepResult) -> None:
         if not _output.json_mode:
@@ -196,6 +210,14 @@ def _run_execute(model: str, version: str, **opts: Any) -> None:
                 "rtol": res.rtol,
                 "worktree": res.worktree,
                 "produced_metrics": res.produced_metrics,
+                "environment": {
+                    "rebuilt": res.env.rebuilt,
+                    "python": res.env.python,
+                    "venv": res.env.venv,
+                    "unsatisfied": res.env.unsatisfied,
+                    "image_digest_status": res.env.image_status,
+                    "image_digest_detail": res.env.image_detail,
+                },
                 "steps": [
                     {"step": s.step, "status": s.status, "detail": s.detail} for s in res.steps
                 ],
@@ -205,6 +227,14 @@ def _run_execute(model: str, version: str, **opts: Any) -> None:
     for s in res.steps:
         if s.status == "not_run":
             _output.info(f"[{s.step}] not_run: {s.detail}")
+    _output.info(
+        f"  · interpreter: {res.env.python}"
+        + (" (rebuilt from the bundle's package set)" if res.env.rebuilt else " (caller's)")
+    )
+    if res.env.image_status == IMG_UNVERIFIABLE:
+        _output.warning(f"  · container image digest UNVERIFIABLE: {res.env.image_detail}")
+    elif res.env.image_status != IMG_UNCHECKED:
+        _output.info(f"  · container image digest {res.env.image_status}: {res.env.image_detail}")
     if not res.ok:
         _output.error("Reproduction FAILED.", exit_code=1)
     _output.ok("Reproduced within tolerance (not bit-exact).")

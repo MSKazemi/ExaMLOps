@@ -15,13 +15,14 @@ from examlops.cli.commands import hpo_cmd
 from examlops.data import get_db, init_db
 from examlops.data.audit import write_audit_event
 from examlops.data.serving import set_promotion_rule
+from examlops.hpc_placement import ResourceAsk
 from examlops.promotion_gates import synthetic_only_gate_enabled, synthetic_only_training
 from examlops.promotion_providers import resolve_promotion_eval_fn
 
 # Help panels for `exa pipeline` (quality/distributed/hpo sub-groups attached in main.py).
 _PANELS: list[tuple[str, list[str]]] = [
     ("Run & Deploy", ["run", "deploy", "list", "add-model", "export-registry"]),
-    ("Pipeline as code", ["compile", "explain"]),
+    ("Pipeline as code", ["compile", "decompile", "explain"]),
     ("Validate & Promote", ["validate", "validate-model", "promote", "promote-delete"]),
     ("Advanced", ["hpo", "quality", "distributed"]),
 ]
@@ -49,7 +50,9 @@ _EXAMPLES_RUN = (
     "  # Use YAML registry overlays for production settings\n"
     "  exa pipeline run --registry pipelines/model_registry.yaml --env prod\n\n"
     "  # Train from a compiled pipeline-as-code IR (inline scheduler only)\n"
-    "  exa pipeline run --ir jpcp.ir.json --dummy"
+    "  exa pipeline run --ir jpcp.ir.json --dummy\n\n"
+    "  # Ask for a named hardware profile instead of restating --gpus (ADR 0157)\n"
+    "  exa pipeline run --model JPCP --cluster auto --hardware-profile gpu-small"
 )
 _EXAMPLES_COMPILE = (
     "Examples:\n\n"
@@ -61,6 +64,15 @@ _EXAMPLES_COMPILE = (
     "  exa pipeline compile flows/jpcp.py --out jpcp.ir.json --yaml jpcp.yaml\n\n"
     "  # Compile a file you do not fully trust (static AST gate, not a jail)\n"
     "  exa pipeline compile flows/jpcp.py --untrusted"
+)
+_EXAMPLES_DECOMPILE = (
+    "Examples:\n\n"
+    "  # Print the @pipeline twin of an existing registry YAML\n"
+    "  exa pipeline decompile usecases/reference/models/jpcp.yaml\n\n"
+    "  # Adopt a YAML-authored model into pipeline-as-code\n"
+    "  exa pipeline decompile usecases/reference/models/jpcp.yaml --out flows/jpcp.py\n\n"
+    "  # Prove the round trip: the compiled YAML is the one you started from\n"
+    "  exa pipeline compile flows/jpcp.py --yaml /tmp/jpcp.yaml"
 )
 _EXAMPLES_EXPLAIN = (
     "Examples:\n\n"
@@ -118,8 +130,13 @@ def _run_pytest(args: list[str]) -> None:
     )
 
 
-def _resolve_cluster_env(cluster: str, gpus: int) -> bool:
+def _resolve_cluster_env(cluster: str, gpus: int, ask: ResourceAsk | None = None) -> bool:
     """Resolve --cluster (name or 'auto') into EXAMLOPS_HPC_* env for the run subprocess.
+
+    ``ask`` is an optional :class:`examlops.hpc_placement.ResourceAsk` — what
+    ``--hardware-profile`` resolved to (ADR 0157 Phase 3). It replaces the ``ResourceAsk(gpus=…)``
+    built from ``--gpus`` so a profile's cpu/node ask reaches placement too; the *path* is the
+    same one ``--gpus`` has always fed, not a second placement route.
 
     Returns True on success (env applied), False if the cluster is unknown/not approved or
     placement found no fit — in which case an error is printed and the run is aborted.
@@ -136,7 +153,9 @@ def _resolve_cluster_env(cluster: str, gpus: int) -> bool:
         from examlops.hpc_placement_providers import resolve_placement_score_fn
 
         result = choose_cluster(
-            ResourceAsk(gpus=gpus), active_clusters_with_inventory(), resolve_placement_score_fn()
+            ask if ask is not None else ResourceAsk(gpus=gpus),
+            active_clusters_with_inventory(),
+            resolve_placement_score_fn(),
         )
         if result.cluster is None:
             _output.error(f"Auto-placement found no cluster: {result.reason}")
@@ -152,6 +171,51 @@ def _resolve_cluster_env(cluster: str, gpus: int) -> bool:
     os.environ.update(env)
     _output.detail(f"  targeting cluster '{target}' → {env.get('EXAMLOPS_HPC_SCHEDULER')}")
     return True
+
+
+def _hardware_profile_ask(name: str, cluster: str | None, gpus: int) -> ResourceAsk:
+    """Resolve ``--hardware-profile`` into the placement ask for this run (ADR 0157 Phase 3).
+
+    The profile must be applicable to ``training`` (or ``any``) — otherwise this refuses with an
+    error naming the profile's actual applicability, rather than silently running an unshaped job.
+
+    ``--gpus`` still works and, given alongside a profile, overrides **only** the profile's
+    ``gpu_count``: cpu and nodes still come from the profile. That partial override is reported,
+    never silent — a half-applied resource shape an operator cannot see is the failure this
+    message exists to prevent.
+    """
+    from examlops.hardware_profiles import (
+        STATUS_UNRESOLVABLE,
+        HardwareProfileError,
+        resolve_for,
+        to_resource_ask,
+    )
+
+    # Resolve against the named cluster; 'auto' has no target yet (placement is what picks it),
+    # so the profile resolves 'unchecked' and the ask is what placement then scores.
+    target = cluster if cluster and cluster != "auto" else None
+    try:
+        profile, resolution = resolve_for(name, "training", target_cluster=target)
+    except HardwareProfileError as exc:
+        _output.error(str(exc))
+    ask = to_resource_ask(resolution)
+    if gpus:
+        _output.warning(
+            f"--gpus {gpus} overrides only the gpu_count of hardware profile "
+            f"'{profile.name}' v{profile.version} (was {ask.gpus}); cpus={ask.cpus} and "
+            f"nodes={ask.nodes} still come from the profile."
+        )
+        ask.gpus = gpus
+    _output.info(
+        f"Hardware profile '{profile.name}' v{profile.version} [{resolution.status}]: "
+        f"gpus={ask.gpus} cpus={ask.cpus} nodes={ask.nodes} — {resolution.reason}"
+    )
+    if resolution.status == STATUS_UNRESOLVABLE:
+        _output.error(
+            f"hardware profile '{profile.name}' cannot be satisfied on cluster '{target}': "
+            f"{resolution.reason}"
+        )
+    return ask
 
 
 @app.command("list", epilog=_EXAMPLES_LIST)
@@ -207,6 +271,12 @@ def run(
     gpus: int = typer.Option(
         0, "--gpus", "-g", help="GPUs to request (for --cluster auto placement)"
     ),
+    hardware_profile: str | None = typer.Option(
+        None,
+        "--hardware-profile",
+        help="Named hardware profile (ADR 0157) to request instead of restating --gpus; "
+        "must be applicable to 'training'. With --gpus, --gpus overrides only its gpu_count.",
+    ),
     project: str | None = typer.Option(
         None,
         "--project",
@@ -241,6 +311,7 @@ def run(
             gpus,
             project,
             ir_run,
+            hardware_profile,
         )
     finally:
         if ir_run is not None:
@@ -248,12 +319,25 @@ def run(
 
 
 def _run_body(
-    model, dataset, dummy, backend, dataset_revision, env, registry, cluster, gpus, project, ir_run
+    model,
+    dataset,
+    dummy,
+    backend,
+    dataset_revision,
+    env,
+    registry,
+    cluster,
+    gpus,
+    project,
+    ir_run,
+    hardware_profile=None,
 ):
     # Budget gate (ADR 0029 decision 3): off unless armed (policy.yaml `gates:` /
     # EXAMLOPS_POLICY_GATES). The project is the one given, else the model's own.
     _enforce_budget_gate(project, model)
-    if cluster and not _resolve_cluster_env(cluster, gpus):
+    # ADR 0157 Phase 3: a profile resolves into the very ResourceAsk --gpus already feeds.
+    ask = _hardware_profile_ask(hardware_profile, cluster, gpus) if hardware_profile else None
+    if cluster and not _resolve_cluster_env(cluster, gpus, ask):
         return  # resolution failed / not approved — message already printed
     if ir_run is not None:
         from examlops.cli.commands import pipeline_ir
@@ -298,7 +382,16 @@ def _run_body(
         args += ["--env", env]
     if ir_run is not None:
         args += ["--model-yaml", ir_run.yaml_path]
-    _run_generator(args)
+    # Admission seam (ADR 0116): decide *before* executing, and hold the run's quota for the
+    # run's duration. Unless EXAMLOPS_ADMISSION_DISPATCH_ENABLED is set the gate opens nothing,
+    # decides nothing and writes nothing, so the default path is what it always was. The GPU ask
+    # is the resolved hardware profile's when there is one, else --gpus (ADR 0157 Phase 3).
+    from examlops.cli._admission_gate import pipeline_run_gate
+
+    with pipeline_run_gate(
+        project=project, model=model, gpus=(ask.gpus if ask is not None else gpus)
+    ):
+        _run_generator(args)
 
 
 @app.command("compile", epilog=_EXAMPLES_COMPILE)
@@ -319,6 +412,23 @@ def compile_cmd(
     from examlops.cli.commands import pipeline_ir
 
     pipeline_ir.compile_pipeline(file, out, yaml_path, untrusted)
+
+
+@app.command("decompile", epilog=_EXAMPLES_DECOMPILE)
+def decompile_cmd(
+    file: str = typer.Argument(..., help="Per-model registry YAML file to read"),
+    out: str | None = typer.Option(
+        None, "--out", "-o", help="Write the @pipeline source to this file (default: stdout)"
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite --out if it already exists"),
+):
+    """Turn a per-model registry YAML into equivalent @pipeline source (the reverse of compile).
+
+    Refuses rather than writing a file when the YAML holds anything the DSL cannot express.
+    """
+    from examlops.cli.commands import pipeline_ir
+
+    pipeline_ir.decompile_model(file, out, force)
 
 
 @app.command("explain", epilog=_EXAMPLES_EXPLAIN)

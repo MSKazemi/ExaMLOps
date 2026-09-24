@@ -141,6 +141,14 @@ vector = [
     "psycopg[binary]>=3.3.5",
     "psycopg-pool>=3.3",
 ]
+# Qdrant vector store (EXAMLOPS_VECTOR_BACKEND=qdrant, ADR 0020 clause 1 — the scale-out option
+# past what a shared Postgres can index). Lazily imported by examlops.vector_store.qdrant, which
+# is only constructed when that backend is selected; the default sqlite/pgvector paths never
+# touch it. Kept out of `vector` on purpose: pgvector and Qdrant are alternatives, and a login
+# node running the CLI against pgvector should not pull a grpc stack it will never call.
+qdrant = [
+    "qdrant-client>=1.19.1",
+]
 # Cross-host locks, idempotency, and rate limiting. Imported only when
 # EXAMLOPS_COORDINATOR=redis selects this backend.
 coordination = [

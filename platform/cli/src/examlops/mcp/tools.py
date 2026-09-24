@@ -1601,6 +1601,33 @@ def iter_tools(include_writes: bool | None = None) -> Iterator[ToolSpec]:
         if off and set(_modules_for_tags(spec.tags)) & off:
             continue
         yield spec
+    yield from _generated_tools(include_writes=include_writes, off=off)
+
+
+def _generated_tools(*, include_writes: bool, off: set[str]) -> tuple[ToolSpec, ...]:
+    """CLI-generated tools (ADR 0147 d1) — empty unless ``EXAMLOPS_MCP_GENERATED_TOOLS`` is on.
+
+    Opt-in on purpose: with the flag off the agent surface is byte-identical to the hand-written
+    :data:`REGISTRY`. The env check is inline so the generator (which imports the whole Click
+    tree) is not even loaded on the default path.
+    """
+    if os.getenv("EXAMLOPS_MCP_GENERATED_TOOLS", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return ()
+    try:
+        from examlops.mcp import generated
+
+        # Mutating generated tools go through the same plan/apply gate as hand-written ones: an
+        # agent principal is refused a direct call (ADR 0147 d2).
+        return _with_plan_gate(
+            generated.generate(include_writes=include_writes, disabled_modules=off)
+        )
+    except Exception:  # noqa: BLE001 - a broken generator must not take the agent surface down
+        return ()
 
 
 def _modules_for_tags(tags: tuple[str, ...]) -> list[str]:

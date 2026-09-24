@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -237,6 +238,36 @@ def test_plan_output_unchanged_without_execute(env):
     r = CliRunner().invoke(app, ["--json", "reproduce", "run", "M", "1"])
     assert r.exit_code == 0
     assert "metric_match" in json.loads(r.stdout)
+
+
+def test_the_default_interpreter_is_a_real_executable_never_a_bare_name(monkeypatch):
+    """The regression this guards: the default resolved to the string ``python``, which is on no
+    PATH on hosts that ship only ``python3`` — every reproduction died at the ``train`` step."""
+    from examlops.reproducibility.execute import EnvOutcome, resolve_interpreter
+
+    monkeypatch.delenv("EXAMLOPS_REPRO_PYTHON", raising=False)
+    got = resolve_interpreter()
+    assert os.path.isabs(got), f"default interpreter is not a path: {got!r}"
+    assert os.access(got, os.X_OK), f"default interpreter is not executable: {got!r}"
+    assert got == sys.executable
+    assert EnvOutcome().python == got
+    # …and the explicit override still decides.
+    monkeypatch.setenv("EXAMLOPS_REPRO_PYTHON", sys.executable)
+    assert resolve_interpreter() == sys.executable and EnvOutcome().python == sys.executable
+
+
+def test_a_bare_python_train_cmd_runs_on_the_interpreter_the_report_names(env, tmp_path):
+    """A custom --train-cmd saying ``python`` must run the reported interpreter, not PATH's."""
+    witness = tmp_path / "witness.txt"
+    _build()
+    script = (
+        "import json, sys\n"
+        f"open({str(witness)!r}, 'w').write(sys.executable)\n"
+        "print('EXAMLOPS_REPRO_METRICS=' + json.dumps({'rmse': 5.0}))\n"
+    )
+    res = _run(env, train_cmd=["python", "-c", script])
+    assert res.ok, [(s.step, s.status, s.detail) for s in res.steps]
+    assert witness.read_text().strip() == res.env.python == sys.executable
 
 
 def test_a_lost_repro_audit_is_counted(env, monkeypatch):

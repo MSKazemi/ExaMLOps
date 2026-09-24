@@ -36,8 +36,16 @@ REGISTRY_KEYS = frozenset(
         "engine",
         "fairness",
         "autoscale",
+        # ADR 0157's `resources: {hardware_profile: <name>}` — a *named profile binding* carried
+        # through to the YAML, which is a different thing from a step's `Resources(gpus=…)` ask
+        # (that one is a run-time placement hint the YAML has no field for; see `lowering.py`).
+        "resources",
     }
 )
+#: Every field of ``pipelines.model_loader.ModelYAMLConfig`` must be reachable from the DSL: as
+#: the pipeline name, a step param, or one of these sections. A new field added there and not
+#: here makes `exa pipeline decompile` refuse every model that uses it, which is why
+#: ``tests/unit/test_pipeline_decompile.py`` asserts the two sets against each other.
 
 _RESOURCE_KEYS = ("gpus", "cpus", "nodes")
 

@@ -275,7 +275,15 @@ def update_hpc_job(
     run_seconds: float | None = None,
     mlflow_run_id: str | None = None,
 ) -> None:
-    """Update mutable fields of an existing hpc_jobs row (no-op if none provided)."""
+    """Update mutable fields of an existing hpc_jobs row (no-op if none provided).
+
+    **This is the admission seam's release chokepoint (ADR 0116 decision 3).** Every terminal
+    state an HPC job reaches is written here — ``scheduler_jobs.finish_job`` and the pipeline
+    generator's ``_update_hpc_job_safe`` are its only callers, and it sits below the
+    mock/slurm/flux branch — so a quota reservation held for the job is released here, exactly
+    once, whether the job completed, failed or was cancelled. A non-terminal state releases
+    nothing. Bookkeeping never fails a job: see ``completion.on_job_terminal_state``.
+    """
     fields = {
         "state": state,
         "start_time": start_time,
@@ -295,6 +303,10 @@ def update_hpc_job(
             "WHERE scheduler=? AND job_id=?",
             (*sets.values(), scheduler, job_id),
         )
+    if state is not None:
+        from examlops.admission_seam.completion import on_job_terminal_state
+
+        on_job_terminal_state(job_id, scheduler, state)
 
 
 def upsert_cluster(

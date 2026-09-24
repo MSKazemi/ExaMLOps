@@ -15,6 +15,15 @@ from .capability import (
     probe,
     register_capabilities,
 )
+from .completion import (
+    OUTCOMES,
+    holder_for_job,
+    holder_for_run,
+    normalize_outcome,
+    on_job_terminal_state,
+    release_on_completion,
+)
+from .dispatch import AdmissionRefused, admitted, request_for_pipeline_run
 from .kueue import KueueUnsupported, render_kueue
 from .policy import (
     AdmissionPolicy,
@@ -33,9 +42,11 @@ from .policy import (
 from .request import JobRequest, JobRequestError, Resources
 
 __all__ = [
+    "OUTCOMES",
     "AdapterCapabilities",
-    "Admit",
     "AdmissionPolicy",
+    "AdmissionRefused",
+    "Admit",
     "BaselineOverQuota",
     "ClusterState",
     "JobRequest",
@@ -50,10 +61,17 @@ __all__ = [
     "Reject",
     "Resources",
     "TenantQuota",
+    "admitted",
+    "holder_for_job",
+    "holder_for_run",
     "legacy_pick",
+    "normalize_outcome",
+    "on_job_terminal_state",
     "preempt",
     "probe",
     "register_capabilities",
+    "release_on_completion",
     "render_kueue",
+    "request_for_pipeline_run",
     "select_policy",
 ]

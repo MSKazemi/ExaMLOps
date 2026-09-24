@@ -1,6 +1,6 @@
 ---
 title: Every capability
-description: All 520 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
+description: All 530 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
 hide:
   - navigation
 ---
@@ -11,8 +11,8 @@ hide:
 
 # Every capability
 
-Everything ExaMLOps can do is reachable from the `exa` CLI: **520 commands**
-in 73 command groups. They are grouped here the same way `exa --help` groups
+Everything ExaMLOps can do is reachable from the `exa` CLI: **530 commands**
+in 75 command groups. They are grouped here the same way `exa --help` groups
 them, into twelve areas of the model lifecycle. The bar is sized by the number of commands in
 each area; select an area to filter, or search by what you want to do.
 
@@ -25,16 +25,16 @@ The same capabilities are available from the [dashboard](../dashboard/usage-guid
 | Area | What you can do | Command groups | Commands |
 |---|---|---|---|
 | Getting Started | Check what is running, diagnose your setup and learn the CLI. | `status`, `doctor`, `explain`, `env`, `docs`, `config`, `plugins` | 14 |
-| Training & Pipelines | Run, schedule, promote and reproduce training pipelines. | `pipeline`, `retrain`, `retrain-status`, `commands`, `scaffold`, `finetune`, `reproduce` | 34 |
+| Training & Pipelines | Run, schedule, promote and reproduce training pipelines. | `pipeline`, `retrain`, `retrain-status`, `commands`, `scaffold`, `finetune`, `reproduce` | 35 |
 | Data & Features | Version datasets, validate them and serve features without skew. | `data`, `dataplane`, `feature`, `features`, `assets`, `cards` | 45 |
-| Models & Registry | Browse, compare, sign and trace every registered model version. | `models`, `modelzoo`, `embedding` | 29 |
+| Models & Registry | Browse, compare, sign and trace every registered model version. | `models`, `catalog`, `modelzoo`, `embedding` | 33 |
 | Serving & Inference | Serve models, split traffic, call gateways and query RAG. | `serve`, `predict`, `offline`, `production`, `gateway`, `vector`, `rag` | 85 |
-| GenAI & LLMOps | Manage prompts, trace GenAI calls and enforce guardrails. | `genai`, `prompt`, `guardrails` | 14 |
+| GenAI & LLMOps | Manage prompts, trace GenAI calls and enforce guardrails. | `genai`, `genai-app`, `prompt`, `guardrails` | 18 |
 | Agents & Automation | Ask Skipper, run the autopilot loop and expose tools over MCP. | `ask`, `chat`, `agent`, `agentops`, `autopilot`, `broker`, `mcp`, `ops` | 48 |
 | Monitoring & Quality | Watch drift, evaluate models, track SLOs and fairness. | `drift`, `eval`, `slo`, `fairness` | 58 |
 | HPC, Fleet & FinOps | Discover clusters, place jobs and account for cost and carbon. | `hpc`, `fleet`, `hardware`, `federated`, `finops`, `report` | 47 |
 | Governance & Security | Approve changes, audit actions, manage secrets and policy. | `auth`, `approvals`, `audit`, `plan`, `secrets`, `compliance`, `governance`, `policy`, `providers` | 61 |
-| Projects & Workspaces | Group models, people, storage and connections into projects. | `project`, `namespace`, `connection`, `workbench` | 37 |
+| Projects & Workspaces | Group models, people, storage and connections into projects. | `project`, `namespace`, `connection`, `workbench` | 38 |
 | Platform & Integrations | Operate the stack, back it up and connect external systems. | `stack`, `backup`, `instance`, `upgrade`, `modules`, `events`, `admission`, `exchange`, `dataplane-bus` | 48 |
 
 </div>

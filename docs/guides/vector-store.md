@@ -22,15 +22,50 @@ Selected by `EXAMLOPS_VECTOR_BACKEND`. An unknown value is an error, never a sil
   GIN index carries the lexical channel. It creates the extension on first use if the role may
   do so; otherwise run `CREATE EXTENSION vector` as a superuser, or use the `pgvector/pgvector`
   image.
+- **`qdrant`** (scale-out) is a dedicated vector service, for collections past what the shared
+  Postgres can index. It needs `EXAMLOPS_QDRANT_URL` and `pip install 'examlops[qdrant]'`. Each
+  collection is its own Qdrant collection, named `<namespace>_<hash(tenant, name)>`, and the
+  schema registry lives in Qdrant too — a vector query never needs `platform.db`.
 
 | variable | default | purpose |
 |---|---|---|
-| `EXAMLOPS_VECTOR_BACKEND` | `sqlite` | `sqlite` or `pgvector` |
+| `EXAMLOPS_VECTOR_BACKEND` | `sqlite` | `sqlite`, `pgvector` or `qdrant` |
 | `EXAMLOPS_PGVECTOR_DSN` | unset | Postgres DSN for the pgvector backend |
 | `EXAMLOPS_PGVECTOR_SCHEMA` | unset (`public`) | schema for the registry and collection tables — lets two instances share one server |
 | `EXAMLOPS_PGVECTOR_STATEMENT_TIMEOUT_MS` | `10000` | per-search statement timeout, so a runaway scan cannot hold a connection |
 | `EXAMLOPS_PGVECTOR_CONNECT_TIMEOUT` | `5` | seconds to wait for the server |
 | `EXAMLOPS_PGVECTOR_POOL_MAX` | `10` | connection-pool size per process (needs `psycopg-pool`) |
+| `EXAMLOPS_QDRANT_URL` | unset | Qdrant endpoint for the qdrant backend |
+| `EXAMLOPS_QDRANT_API_KEY` | unset | API key, when the server requires one |
+| `EXAMLOPS_QDRANT_TIMEOUT` | `30` | seconds the client waits for a request |
+| `EXAMLOPS_QDRANT_NAMESPACE` | `exv` | prefix of the Qdrant collections this instance owns — lets two instances share one Qdrant |
+| `EXAMLOPS_QDRANT_INDEXING_THRESHOLD_KB` | unset | lower Qdrant's `indexing_threshold` so a small collection still gets an HNSW graph |
+
+### What differs on Qdrant
+
+Everything in [Guarantees](#guarantees) holds on all three backends. Four things are specific to
+Qdrant and worth knowing before you move a collection there:
+
+- **No IVFFlat.** Qdrant serves either an HNSW graph or an exact scan, so `--index ivfflat` is
+  **refused** rather than quietly served by an HNSW. Use `--index hnsw`, or keep the collection
+  on pgvector.
+- **A declared HNSW is not a built one.** Qdrant leaves a segment unindexed until it passes
+  `indexing_threshold` (~20 MB of vectors) and scans it meanwhile — deliberately, because below
+  that size a scan is faster. `exa vector stats` says so, and reports how many vectors the graph
+  actually covers. `EXAMLOPS_QDRANT_INDEXING_THRESHOLD_KB` forces the graph on a smaller
+  collection.
+- **Cosine collections store unit vectors.** Qdrant normalises on write, so `scan` returns
+  directions, not magnitudes. Every cosine question is unaffected; use `l2`/`dot` if magnitude
+  matters to you.
+- **The lexical channel is a prefilter plus BM25.** Qdrant has no BM25 scorer, so the full-text
+  payload index selects the documents containing a query term and BM25 ranks that candidate set.
+  Corpus statistics are therefore computed over the candidates, so absolute sparse scores differ
+  from the SQLite store's — as pgvector's `ts_rank_cd` scores do. Fusion uses ranks (RRF) or
+  normalised scores, so no scorer's scale reaches the fused result.
+
+Point ids: Qdrant accepts only a UUID or an unsigned integer, so each item is stored under
+`uuid5(item_id)` with the original string kept in the payload and returned in every hit. An
+upsert of the same id still replaces rather than duplicates.
 
 ## Indexes
 
@@ -116,9 +151,10 @@ All commands accept `--tenant <name>` for D6 isolation.
 - **Reindex (R5):** `reindex` rebuilds blue-green. On pgvector the new index is built
   `CONCURRENTLY` while the old one keeps serving. A second concurrent reindex of the same
   collection is refused. B6 (embedding lifecycle) triggers a reindex on encoder change.
-- **Backend parity:** for the same data and query, pgvector returns the same ranking as the
-  SQLite store, for every metric, with and without a filter. A live test suite checks this
-  (`tests/unit/test_pgvector_store.py`, `-m live`).
+- **Backend parity:** for the same data and query, pgvector and Qdrant return the same ranking as
+  the SQLite store, for every metric, with and without a filter. A live test suite checks each
+  (`tests/unit/test_pgvector_store.py` / `test_qdrant_store.py`, `-m live`; `make pgvector-live`,
+  `make qdrant-live`).
 - **Determinism:** ties break by item id, so a ranking never reshuffles between runs.
 - **Metrics (R7):** index build cost and search latency (dense, sparse, hybrid) are recorded to
   `platform_db.vector_metrics` for both backends and exported by `exa slo export-metrics`.

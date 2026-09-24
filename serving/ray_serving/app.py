@@ -460,6 +460,45 @@ def _server_scaling() -> dict[str, Any]:
     return {"autoscaling_config": to_ray_autoscaling_config(policy)}
 
 
+def _server_actor_options() -> dict[str, Any]:
+    """``ray_actor_options`` of the model-server deployment (ADR 0157 Phase 3, serving).
+
+    ``{"num_cpus": 1}`` — unchanged — unless a model YAML under ``RAY_MODELS_DIR`` binds a
+    hardware profile (``resources: {hardware_profile: <name>}``). Every replica of this
+    deployment holds the whole hot set, so it must be sized for the most demanding profile among
+    the models it serves: the per-model options (``num_gpus`` = ``gpu_count × gpu_fraction``,
+    ``num_cpus`` = the profile's cpu) are max-merged onto the default.
+
+    Every failure keeps the default and logs it: a serving node with no platform package, no
+    ``platform.db``, or a profile that is not applicable to serving must still start.
+    """
+    default: dict[str, Any] = {"num_cpus": 1}
+    models_dir_str = os.getenv("RAY_MODELS_DIR", "").strip()
+    if not models_dir_str:
+        return default
+    options = dict(default)
+    try:
+        from examlops.hardware_profiles_yaml import (  # noqa: PLC0415
+            model_ray_actor_options,
+            yaml_blocks,
+        )
+
+        directory = _Path(models_dir_str)
+        if not directory.is_absolute():
+            directory = _REPO_ROOT_RS / directory
+        for model_name in yaml_blocks(directory):
+            for key, value in (
+                model_ray_actor_options(model_name, models_dir=directory) or {}
+            ).items():
+                options[key] = max(float(options.get(key, 0.0)), float(value))
+    except Exception as exc:  # noqa: BLE001 - a profile must never stop the server starting
+        logger.warning("hardware profile: keeping the default actor options (%s)", exc)
+        return default
+    if options != default:
+        logger.info("hardware profiles sized the model-server replica: %s", options)
+    return options
+
+
 # ─── Ray Serve deployment ─────────────────────────────────────────────────────
 
 _app = FastAPI(
@@ -505,7 +544,7 @@ def _is_mlflow_unreachable(exc: BaseException) -> bool:
 
 @serve.deployment(
     **_server_scaling(),
-    ray_actor_options={"num_cpus": 1},
+    ray_actor_options=_server_actor_options(),
     max_ongoing_requests=int(os.getenv("RAY_MAX_ONGOING_REQUESTS", "100")),
     # Load shedding (P4.6): once this many requests wait at a caller, the next gets 503 rather
     # than a place in an ever-longer queue. -1 = unbounded (Ray's default); see "Overload" in

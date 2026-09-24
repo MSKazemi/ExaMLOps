@@ -24,6 +24,7 @@ _EXAMPLES = (
     "Examples:\n\n"
     "  exa pipeline distributed run --local --nproc 2 --steps 12\n\n"
     "  exa pipeline distributed launch JPCP --nodes 2 --strategy fsdp\n\n"
+    "  exa pipeline distributed launch JPCP --hardware-profile gpu-small\n\n"
     "  exa pipeline distributed checkpoint <run-id> --step 100 --epoch 1\n\n"
     "  exa pipeline distributed resume <run-id>\n\n"
     "  exa pipeline distributed status <run-id>\n\n"
@@ -35,19 +36,66 @@ def _actor() -> str:
     return os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
 
 
+def _topology(
+    hardware_profile: str | None, nodes: int | None, gpus_per_node: int | None
+) -> tuple[int, int]:
+    """``(nodes, gpus_per_node)`` for this launch — from ``--hardware-profile`` when given.
+
+    ADR 0157 Phase 3 / spec GWT-6: the profile is *sugar over the existing seam*. It fills the
+    two topology flags before ``launch_distributed()`` is called, so a profile of 1 node × 1 GPU
+    produces byte-identical arguments — and therefore an identical ``torchrun`` invocation — to
+    ``--nodes 1 --gpus-per-node 1``. ``--strategy`` is not part of the resource shape and is
+    never touched. An explicitly given flag still wins over the profile (a profile is a default,
+    not an override — the same rule Phase 2 applies to ``--cpu``/``--memory-gb``).
+    """
+    if not hardware_profile:
+        return (
+            nodes if nodes is not None else 1,
+            gpus_per_node if gpus_per_node is not None else 1,
+        )
+
+    from examlops.hardware_profiles import HardwareProfileError, resolve_for
+
+    try:
+        profile, _resolution = resolve_for(hardware_profile, "training")
+    except HardwareProfileError as exc:
+        _output.error(str(exc), exit_code=2)
+    if nodes is not None and nodes != profile.nodes:
+        _output.warning(
+            f"--nodes {nodes} overrides hardware profile '{profile.name}' "
+            f"v{profile.version} (nodes={profile.nodes})."
+        )
+    if gpus_per_node is not None and gpus_per_node != profile.gpu_count:
+        _output.warning(
+            f"--gpus-per-node {gpus_per_node} overrides hardware profile '{profile.name}' "
+            f"v{profile.version} (gpu_count={profile.gpu_count})."
+        )
+    return (
+        nodes if nodes is not None else profile.nodes,
+        gpus_per_node if gpus_per_node is not None else profile.gpu_count,
+    )
+
+
 @app.command("launch", epilog=_EXAMPLES)
 def launch(
     model: str = typer.Argument(..., help="Model name"),
-    nodes: int = typer.Option(1, "--nodes", help="Number of nodes"),
-    gpus_per_node: int = typer.Option(1, "--gpus-per-node", help="GPUs per node"),
+    nodes: int = typer.Option(None, "--nodes", help="Number of nodes  [default: 1]"),
+    gpus_per_node: int = typer.Option(None, "--gpus-per-node", help="GPUs per node  [default: 1]"),
     strategy: str = typer.Option("fsdp", "--strategy", help="fsdp | zero | megatron"),
     dataset_revision: str = typer.Option(None, "--dataset-revision", help="A1 revision pin"),
     checkpoint_every: str = typer.Option("10min", "--checkpoint-every", help="Checkpoint interval"),
     run_id: str = typer.Option(None, "--run-id", help="Explicit run id"),
+    hardware_profile: str = typer.Option(
+        None,
+        "--hardware-profile",
+        help="Named hardware profile (ADR 0157) supplying --nodes/--gpus-per-node; must be "
+        "applicable to 'training'. Explicit flags win; --strategy is unaffected.",
+    ),
 ) -> None:
     """Launch a distributed training run (R1/R2/R8)."""
     from examlops.distributed import launch_distributed
 
+    nodes, gpus_per_node = _topology(hardware_profile, nodes, gpus_per_node)
     try:
         handle = launch_distributed(
             model,

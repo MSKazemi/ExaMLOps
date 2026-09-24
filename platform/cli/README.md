@@ -32,6 +32,7 @@ enough for an HPC login node:
 | `examlops[coordination]` | Redis cross-host locks and rate limits |
 | `examlops[events]` | NATS JetStream event backbone (the default `log` publisher needs nothing) |
 | `examlops[vector]` | pgvector vector store, independent of where platform state lives |
+| `examlops[qdrant]` | Qdrant vector store — the scale-out alternative to pgvector, same `VectorStore` seam |
 | `examlops[fairness]` | Fairlearn's `MetricFrame` for fairness slice metrics (a pure-Python fallback computes the same numbers without it) |
 | `examlops[guardrails-presidio]` | Presidio NER (person/place PII detection) as a supplement to the built-in regex PII detectors — needs a separate one-time spaCy model install, see `docs/guides/guardrails.md` |
 | `examlops[synth]` | synthetic dataset generation |

@@ -50,6 +50,12 @@ RETAINED: dict[str, str] = {
     "gpu_allocations": "cost attribution reads it",
     "inference_energy": "the measurement carbon accounting is computed from",
     "explanations": "a stored explanation is referenced by the decision it explains",
+    "catalog_pulls": (
+        "the only thread between a catalog entry and the model definition it became (ADR 0158) — "
+        "pruning it would leave a pulled model with no answer to 'what did this start from, at "
+        "which entry_hash?', the same provenance question data_versions and lineage_events are "
+        "kept for. It is an operator action, not traffic: one row per `exa catalog pull`"
+    ),
 }
 
 #: Pruned today by `_PRUNABLE_TELEMETRY`.
