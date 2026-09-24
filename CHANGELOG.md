@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Fixed - SGLang engine selection now fails clearly instead of constructing a broken object
+
+- `SGLangEngine` used to construct successfully whenever the `sglang` package happened to be
+  importable, then always raise `NotImplementedError` on the first `generate()`/`stream()` call
+  -- deferring a real failure to first use instead of surfacing it immediately. Deleted the
+  class; `engine: sglang` now refuses clearly and unconditionally at construction (degrades to
+  `EchoEngine` under the default `allow_fallback=True`, raises `NotImplementedError` otherwise),
+  regardless of whether the package is installed, since the real blocker was always "no
+  integration exists," not "dependency missing." `engine: sglang` stays valid in a model YAML.
+
 ### Added - per-key RPM/TPM rate limiting on the LLM gateway service
 
 - `exa gateway key issue --rpm/--tpm` caps requests/tokens per minute, enforced by the gateway

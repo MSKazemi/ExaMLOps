@@ -7,9 +7,11 @@ gateway (B2) are decoupled from *which* runtime executes generation.
 client of a running ``vllm serve`` process (ADR 0107). The older in-process engine, which
 drives vLLM's offline-batch ``LLM`` API, is retained as ``vllm-inproc`` for corpus scoring;
 it cannot batch across concurrent clients and exposes no ``/metrics``, so it is not the
-serving path. **SGLang** (RadixAttention, structured output) remains a stub pending a GPU
-host. The **fallback** is a pure-python :class:`EchoEngine` so the contract is exercisable
-on CPU with no deps (GWT-1/GWT-A8).
+serving path. **SGLang** (RadixAttention, structured output) has no real integration yet — a
+roadmap item (ADR 0016/0143), not a runnable engine — so selecting it is refused clearly at
+construction time (BL-108) rather than constructing an object that only fails once something
+tries to generate with it. The **fallback** is a pure-python :class:`EchoEngine` so the
+contract is exercisable on CPU with no deps (GWT-1/GWT-A8).
 
 Also here: the per-model ``engine`` block schema + validation (GWT-2, in :mod:`.config`), a
 ``quantize`` transformation that registers a new signed + BOM'd version (GWT-3, via D3), and
@@ -86,7 +88,6 @@ __all__ = [
     "MediaRejected",
     "MediaStats",
     "MultimodalConfig",
-    "SGLangEngine",
     "VLLMEngine",
     "VLLMServerEngine",
     "build_engine",
@@ -220,50 +221,19 @@ class VLLMEngine:
         return self._llm is not None
 
 
-class SGLangEngine:
-    """SGLang-backed engine (RadixAttention, structured output). Lazily imports sglang."""
-
-    name = "sglang"
-
-    def __init__(self, model_path: str, config: EngineConfig | None = None) -> None:
-        self.model_path = model_path
-        self.config = config or EngineConfig(engine="sglang")
-        self._rt: Any = None
-
-    def _ensure(self) -> None:  # pragma: no cover - GPU dep not installed in CI
-        if self._rt is not None:
-            return
-        try:
-            import sglang  # type: ignore  # noqa: F401
-        except Exception as exc:
-            raise RuntimeError(
-                "SGLang not available; install examlops[serving-sglang] on a GPU host"
-            ) from exc
-        self._rt = object()  # placeholder; real runtime init on the GPU host
-
-    def generate(self, prompt: str, **kw: Any) -> Completion:  # pragma: no cover - GPU
-        self._ensure()
-        raise NotImplementedError("SGLang runtime is initialised on the GPU serving host")
-
-    def stream(self, prompt: str, **kw: Any):  # pragma: no cover - GPU
-        self._ensure()
-        raise NotImplementedError
-
-    def health(self) -> bool:  # pragma: no cover - GPU
-        return self._rt is not None
-
-
 _ENGINES: dict[str, Any] = {
     "echo": EchoEngine,
     "vllm": VLLMServerEngine,  # `vllm` resolves to the server path by default (ADR 0107)
     "vllm-server": VLLMServerEngine,
     "vllm-inproc": VLLMEngine,
-    "sglang": SGLangEngine,
 }
 
 # Optional heavy dependency backing each **in-process** engine. The server engine needs
 # none — it speaks HTTP to a process that owns the GPU — so it is deliberately absent here.
-_ENGINE_DEP: dict[str, str] = {"vllm-inproc": "vllm", "sglang": "sglang"}
+# `sglang` is intercepted in `_construct_engine` before this is ever consulted (BL-108): there
+# is no real integration to gate on dependency availability, so it is refused unconditionally
+# rather than through the "dependency missing" path every other engine here uses.
+_ENGINE_DEP: dict[str, str] = {"vllm-inproc": "vllm"}
 
 
 def _dep_available(engine: str) -> bool:
@@ -342,11 +312,26 @@ def _construct_engine(
     if engine in ("vllm", "vllm-server", "vllm-inproc"):
         return _build_vllm(engine, config, model_path, allow_fallback)
 
+    if engine == "sglang":
+        # BL-108: no real SGLang integration exists (roadmap item, ADR 0016/0143) — refused here,
+        # at construction, rather than constructing an object that only fails on the first
+        # generate()/stream() call. `allow_fallback` still governs whether that refusal degrades
+        # to EchoEngine (the common path, e.g. through the gateway) or raises (an explicit ask
+        # for the real engine has nothing real to give).
+        message = (
+            "engine 'sglang' has no real integration yet — it is a named roadmap item "
+            "(ADR 0016/0143), not a runnable engine. Use 'vllm' (the built, tested engine), "
+            "or pass allow_fallback=True to run against EchoEngine instead."
+        )
+        if allow_fallback:
+            warnings.warn(message, RuntimeWarning, stacklevel=3)
+            return _echo_fallback(config)
+        raise NotImplementedError(message)
+
     if allow_fallback and not _dep_available(engine):
         warnings.warn(
             f"engine '{engine}' unavailable (runtime dependency not installed); "
-            "falling back to EchoEngine (CPU/CI). Install examlops[serving-sglang] "
-            "on a GPU host to use it.",
+            "falling back to EchoEngine (CPU/CI).",
             RuntimeWarning,
             stacklevel=3,
         )

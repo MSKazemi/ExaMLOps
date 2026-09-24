@@ -50,6 +50,29 @@ def test_build_engine_falls_back_to_echo():
     assert eng.name == "echo"
 
 
+# ── BL-108: sglang has no real integration, refused clearly rather than built broken ─────────
+
+
+def test_sglang_degrades_to_echo_by_default():
+    cfg = engines.EngineConfig(engine="sglang")
+    with pytest.warns(RuntimeWarning, match="sglang.*no real integration"):
+        eng = engines.build_engine(cfg, allow_fallback=True)
+    assert eng.name == "echo"  # never a broken SGLangEngine construction
+
+
+def test_sglang_raises_immediately_when_the_real_engine_is_required():
+    cfg = engines.EngineConfig(engine="sglang")
+    with pytest.raises(NotImplementedError, match="sglang.*no real integration"):
+        engines.build_engine(cfg, allow_fallback=False)
+
+
+def test_sglang_is_still_a_syntactically_valid_engine_name():
+    """The roadmap intent (ADR 0016/0143) stays representable in config; only *construction*
+    refuses it — a model YAML naming `engine: sglang` is not a config-validation error."""
+    assert engines.validate_engine_block({"engine": "sglang"}) == []
+    assert "sglang" in engines._VALID_ENGINES
+
+
 # ── GWT-2: engine-block validation ────────────────────────────────────────────
 
 

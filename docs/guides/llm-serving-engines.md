@@ -15,7 +15,7 @@ llm-d, the Slurm+Ray pattern on MeluXina) drives the server.
 |---|---|
 | `vllm` / `vllm-server` (default) | Serving. Talks OpenAI-compatible HTTP to a `vllm serve` process — text **and** vision models. |
 | `vllm-inproc` | Offline batch scoring of a fixed corpus on a GPU host (`engine.mode: inproc`). |
-| `sglang` | RadixAttention / structured output. Stub pending a GPU host. |
+| `sglang` | RadixAttention / structured output. **No real integration exists** (roadmap item, ADR 0016/0143) — selecting it degrades to `EchoEngine` with a warning (or raises immediately under `allow_fallback=False`), regardless of whether a GPU or the `sglang` package is present. |
 | `echo` | CPU dev and CI. Deterministic, zero deps. |
 
 For vision-language models see **[VLM serving](vlm-serving.md)**; for the endpoint
@@ -28,9 +28,11 @@ Design: ADR 0016 + **ADR 0107** · spec `design/vision/specs/spec-enterprise-llm
 The server engine needs **no** local GPU dependency — the GPU lives in the `vllm serve`
 process. With no endpoint configured (`engine.base_url` / `EXAMLOPS_VLLM_BASE_URL`) the
 path degrades to `EchoEngine` with a `RuntimeWarning` naming the fix, so the full
-gateway→engine path stays exercisable on a CPU box. `vllm-inproc`/`sglang` lazily import
-their GPU-bound deps and degrade the same way
-(`install examlops[serving-vllm]` on a GPU host).
+gateway→engine path stays exercisable on a CPU box. `vllm-inproc` lazily imports its
+GPU-bound dep and degrades the same way (`install examlops[serving-vllm]` on a GPU host).
+`sglang` degrades unconditionally — there is no dependency check to pass, because there is
+no real integration behind it yet (BL-108, 2026-09-24): selecting it always warns and falls
+back to `EchoEngine`, or raises `NotImplementedError` immediately under `allow_fallback=False`.
 
 ## Per-model `engine:` block
 
