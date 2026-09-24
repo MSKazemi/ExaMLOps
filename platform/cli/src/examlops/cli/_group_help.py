@@ -445,6 +445,14 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("Fractional GPU accounting", "exa hpc gpu-share accounting"),
         ("Plan a GPU-sharing mechanism", "exa hpc gpu-share plan --help"),
     ],
+    "hardware profile": [
+        ("List named resource+runtime bundles", "exa hardware profile list"),
+        (
+            "Save a reusable ask",
+            "exa hardware profile set gpu-small --accelerator-family nvidia --gpu 1",
+        ),
+        ("Check it against a real cluster", "exa hardware profile resolve gpu-small --cluster lxp"),
+    ],
     "policy bundle": [
         ("List signed policy bundles", "exa policy bundle list"),
         ("Verify a stored bundle", "exa policy bundle verify --help"),

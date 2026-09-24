@@ -38,6 +38,7 @@ __all__ = [
     "finops",
     "gateway",
     "governance",
+    "hardware_profiles",
     "hpc",
     "offline",
     "projects",

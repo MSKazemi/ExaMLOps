@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 515,
+ "total_commands": 520,
  "total_groups": 73,
  "panels": [
   {
@@ -2587,6 +2587,41 @@
      "cmd": "exa hardware portable",
      "group": "hardware",
      "help": "Check whether an engine can run on a given accelerator (portability gate).",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
+     "cmd": "exa hardware profile delete",
+     "group": "hardware",
+     "help": "Delete a hardware profile version, or the whole name (every version + every label).",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
+     "cmd": "exa hardware profile list",
+     "group": "hardware",
+     "help": "List hardware profiles by their active-labeled version.",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
+     "cmd": "exa hardware profile resolve",
+     "group": "hardware",
+     "help": "Resolve a profile against a target cluster's live capacity (never fabricates a claim).",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
+     "cmd": "exa hardware profile set",
+     "group": "hardware",
+     "help": "Create a new immutable profile version and move label (default active) to it.",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
+     "cmd": "exa hardware profile show",
+     "group": "hardware",
+     "help": "Show one hardware profile version (default: the active label's target).",
      "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
      "guide": "guides/heterogeneous-hardware.md"
     },

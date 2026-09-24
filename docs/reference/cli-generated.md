@@ -2157,6 +2157,58 @@ Check whether an engine can run on a given accelerator (portability gate).
 - `--engine` — Engine name
 - `--accelerator` — Target accelerator
 
+### `exa hardware profile`
+
+Named, versioned resource+runtime bundles (ADR 0157)
+
+#### `exa hardware profile delete`
+
+Delete a hardware profile version, or the whole name (every version + every label).
+
+- `--version` — Delete only this version (omit: the whole name — every version)
+- `--yes, -y` — Skip confirmation
+
+#### `exa hardware profile list`
+
+List hardware profiles by their ``active``-labeled version.
+
+- `--applicability` — filter to one of workbench, training, serving, any
+
+#### `exa hardware profile resolve`
+
+Resolve a profile against a target cluster's live capacity (never fabricates a claim).
+
+- `--version` — A specific version
+- `--label` — Label to resolve when --version is omitted
+- `--cluster` — Target cluster to resolve against
+- `--for` — workbench|training|serving — cross-checked against applicability
+
+#### `exa hardware profile set`
+
+Create a new immutable profile version and move ``label`` (default active) to it.
+
+- `--accelerator-family` — one of nvidia, amd, intel-gaudi, tpu, cpu
+- `--gpu` — GPU count
+- `--gpu-fraction` — GPU fraction (0<f<=1)
+- `--mig-profile` — MIG profile, e.g. 1g.5gb (see examlops.gpu_sharing)
+- `--cpu` — CPU cores
+- `--memory-gb` — RAM in GB
+- `--nodes` — Node count
+- `--accelerator-model-hint` — advisory, e.g. "A100-80GB"
+- `--driver-tag` — e.g. "cuda-12.4"
+- `--runtime-tag` — e.g. "pytorch-2.4-cu124"
+- `--applicability` — comma-separated subset of workbench, training, serving, any
+- `--description` — Free text
+- `--label` — Label to move to the new version
+
+#### `exa hardware profile show`
+
+Show one hardware profile version (default: the ``active`` label's target).
+
+- `--version` — A specific version
+- `--label` — Label to resolve when --version is omitted
+- `--cluster` — Also resolve() against this cluster's live capacity
+
 ## `exa hpc`
 
 HPC fleet — discover schedulers, nodes, and GPUs

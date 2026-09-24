@@ -503,6 +503,18 @@ RESOURCES: tuple[Resource, ...] = (
         list="hardware decisions",
         key="id",
     ),
+    R(
+        "hardware-profile",
+        "Hardware profiles",
+        "Named, versioned resource+runtime bundles (accelerator, GPU/CPU/memory/nodes shape).",
+        list="hardware profile list",
+        key="name",
+        create="hardware profile set",
+        show="hardware profile show",
+        delete="hardware profile delete",
+        actions=("hardware profile resolve",),
+        columns=("name", "version", "accelerator_family", "gpu_count", "cpu", "memory_gb", "nodes"),
+    ),
     # ── Governance & Security ──────────────────────────────────────────────────────────────
     R(
         "ai-system",

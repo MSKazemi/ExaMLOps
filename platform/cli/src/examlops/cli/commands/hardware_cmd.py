@@ -24,7 +24,10 @@ _EXAMPLES = (
     "  exa hardware place train-llm --accelerator amd --engine vllm --target hpc\n\n"
     "  exa hardware portable --engine sglang --accelerator amd\n\n"
     "  exa hardware burst train-llm --accelerator nvidia --residency eu-only --allow-burst\n\n"
-    "  exa hardware decisions"
+    "  exa hardware decisions\n\n"
+    "  exa hardware profile set gpu-small --accelerator-family nvidia --gpu 1 --cpu 4 "
+    "--memory-gb 16\n\n"
+    "  exa hardware profile list"
 )
 
 

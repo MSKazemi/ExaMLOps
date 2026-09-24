@@ -5,6 +5,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - Hardware Profiles: named, versioned resource+runtime bundles (ADR 0157, Phase 1)
+
+- `exa hardware profile set|list|show|resolve|delete` (ADR 0157, spec
+  `design/vision/specs/spec-hardware-profiles.md`): a reusable, named, **versioned** bundle —
+  accelerator family (reuses `examlops.hardware.ACCELERATORS`, no second enum), GPU/CPU/
+  memory/node shape, MIG profile/fraction, driver/runtime tags, and which surfaces it applies to
+  (`workbench`/`training`/`serving`/`any`) — so an operator can name a resource ask once instead
+  of retyping `--gpus`/`--cpu`/`--memory-gb` at every call site. `set` always writes a new
+  **immutable** version and moves a label (default `active`) to it, the same
+  `<name, version>` + `<name, label→version>` shape already proven for the prompt registry.
+  `resolve_profile(name, target_cluster=...)` reuses `hpc_placement.can_satisfy` + live node
+  snapshots and never fabricates a capability it cannot confirm: `unchecked` (no target) /
+  `verified` (snapshot confirms every named field) / `degraded` (coarse ask satisfiable, a finer
+  claim like the GPU model hint or MIG profile is unconfirmed) / `unresolvable` (exceeds total
+  capacity). `delete --version` on a version the `active` label points at leaves the label
+  **dangling with a warning**, never silently re-pointed. New modules
+  `examlops/data/hardware_profiles.py` (persistence) + `examlops/hardware_profiles.py` (pure
+  resolution + adapters into `Resources`/`ResourceAsk`/`Workload` — a profile is sugar over the
+  existing resource-ask seams, not a fourth vocabulary). Folded into the existing `exa hardware`
+  group rather than a new top-level command, mirroring `exa hpc gpu-share`. **Phase 1 only**
+  (registry + CLI) — no consumer wiring yet: `exa workbench create`, `exa pipeline run`, and
+  serving do not read `--hardware-profile` until Phases 2–4. `tests/unit/test_hardware_profiles.py`
+  (28 tests, GWT-1..4).
+
 ### Added - streaming D8 output guard + B3 cache for the LLM gateway service
 
 - The `llm-gateway` service's D8 outbound guardrail scan and B3 semantic cache now cover the

@@ -61,6 +61,7 @@ from examlops.cli.commands import (
     gpu_share_cmd,
     guardrails_cmd,
     hardware_cmd,
+    hardware_profile_cmd,
     hpc_cmd,
     hpo_cmd,
     instance_cmd,
@@ -413,6 +414,11 @@ app.add_typer(
     hardware_cmd.app,
     name="hardware",
     help="Heterogeneous hardware & hybrid HPC↔cloud placement (E8)",
+)
+hardware_cmd.app.add_typer(
+    hardware_profile_cmd.app,
+    name="profile",
+    help="Named, versioned resource+runtime bundles (ADR 0157)",
 )
 app.add_typer(features_cmd.app, name="features", help="Feature store — versioned training features")
 

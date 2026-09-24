@@ -112,6 +112,77 @@ exa hardware burst train --accelerator nvidia --residency eu-only --allow-burst
 exa hardware decisions                      # recent placement decisions
 ```
 
+## Hardware Profiles — named, versioned resource+runtime bundles (ADR 0157)
+
+> Phase 1 (registry + CLI) shipped 2026-09-24. Phases 2–4 (workbench/training/serving/dashboard
+> consumer wiring) are not built yet — see `design/adr/0157-hardware-profiles.md`.
+
+Every surface that requests compute (`exa workbench create`, `exa pipeline run`, `exa pipeline
+distributed launch`) historically invented its own flags for the same underlying shape —
+`--gpus N`, `--cpu`/`--memory-gb`, `--nodes` — with no way to name "the shape I use for JPCP
+training" once and reuse it. **Hardware Profiles** fix that: a reusable, named, **versioned**
+bundle — accelerator family, GPU/CPU/memory/node shape, MIG/fraction, driver/runtime tags, and
+which surfaces it applies to (`workbench`/`training`/`serving`/`any`) — folded into the existing
+`exa hardware` group as a `profile` subcommand, since a profile is simply a named, saved preset
+of the same neutral device vocabulary `exa hardware place` already uses.
+
+A profile is **sugar over the existing seams, not a fourth resource vocabulary**: it resolves
+into `examlops.admission_seam.request.Resources` (with thin adapters to `hpc_placement.ResourceAsk`
+and `examlops.hardware.Workload`) — the exact shapes `--gpus 2`/`exa hardware place` already
+reach.
+
+```bash
+# Create version 1 and point the 'active' label at it (versions are immutable — never edited):
+exa hardware profile set gpu-small --accelerator-family nvidia --gpu 1 --cpu 4 \
+    --memory-gb 16 --applicability training,workbench
+
+# A second `set` on the same name creates version 2; version 1 stays retrievable:
+exa hardware profile set gpu-small --accelerator-family nvidia --gpu 2 --cpu 8 --memory-gb 32
+exa hardware profile show gpu-small --version 1     # still there
+
+exa hardware profile list --applicability training  # filter by applicability
+```
+
+### Resolution never fabricates a capability (ADR 0157 decision 5)
+
+`exa hardware profile resolve <name> --cluster <cluster>` checks a profile against a target's
+*live* capacity (the same `hpc_placement.can_satisfy` + node snapshot every placement decision
+already uses) and reports one of four honest outcomes:
+
+| Status | Meaning |
+|---|---|
+| `unchecked` | No `--cluster` given — the raw ask is returned with no capability claim. |
+| `verified` | A live node snapshot confirms the coarse ask *and* every named field (GPU model hint, MIG profile). |
+| `degraded` | The coarse ask (GPU count/CPU/nodes) is satisfiable, but a finer claim (model hint, MIG profile) isn't confirmed by what discovery reported — resolution proceeds, the unconfirmed field is named, never silently assumed true. |
+| `unresolvable` | The ask exceeds the target's *total* capacity — refused, never scheduled on a smaller ask nobody asked for. |
+
+```bash
+$ exa hardware profile resolve gpu-small --cluster lxp --for training
+✓ gpu-small@2: verified — 'lxp' snapshot satisfies the ask and confirms every named field
+```
+
+### Deletion (ADR 0157 GWT-4)
+
+`exa hardware profile delete <name> [--version N] [--yes]` prompts for confirmation like
+`workbench delete`. Deleting a single version that the `active` label currently points at
+leaves the label **dangling with a warning** — it is never silently re-pointed to some other
+version, so a stale name can't quietly start meaning something different:
+
+```bash
+$ exa hardware profile delete gpu-small --version 1 --yes
+✓ Deleted hardware profile 'gpu-small' version 1 (1 row(s))
+⚠ label 'active' pointed at version 1, which no longer exists — it is now dangling ...
+```
+
+Omitting `--version` deletes the whole name — every version and every label.
+
+### What's not built yet
+
+Nothing yet *consumes* a profile — no `exa workbench create --hardware-profile`, no
+`exa pipeline run --hardware-profile`, no `resources.hardware_profile` in a model YAML, and no
+dashboard surface. This is a registry + CLI slice (spec Phase 1); the consumer wiring is
+Phase 2 (workbench), Phase 3 (training/serving), and Phase 4 (dashboard).
+
 ## Graceful degradation
 
 The whole layer runs on the standard library — device pools, placement, portability, fraction
@@ -126,3 +197,4 @@ mocked device pools; real ROCm/Gaudi/TPU paths are capability-gated where the ha
 - **E1** K8s serving — the cloud burst target.
 - **D6** residency / **D4** audit — govern and record cloud bursting.
 - **FinOps / Green-AI** — per-device cost + carbon accounting.
+- **ADR 0157** Hardware Profiles — named, versioned presets of this same neutral vocabulary.

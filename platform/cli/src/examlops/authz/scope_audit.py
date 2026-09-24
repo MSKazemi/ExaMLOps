@@ -98,6 +98,8 @@ EXEMPT: dict[str, tuple[str, str]] = {
             "feature_views",
             "federated_runs",
             "ground_truth",
+            "hardware_profile_labels",
+            "hardware_profile_versions",
             "judge_calibrations",
             "lora_adapters",
             "online_features",

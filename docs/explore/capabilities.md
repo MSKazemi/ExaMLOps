@@ -1,6 +1,6 @@
 ---
 title: Every capability
-description: All 515 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
+description: All 520 exa commands, grouped into the twelve lifecycle areas of exa --help, searchable.
 hide:
   - navigation
 ---
@@ -11,7 +11,7 @@ hide:
 
 # Every capability
 
-Everything ExaMLOps can do is reachable from the `exa` CLI: **515 commands**
+Everything ExaMLOps can do is reachable from the `exa` CLI: **520 commands**
 in 73 command groups. They are grouped here the same way `exa --help` groups
 them, into twelve areas of the model lifecycle. The bar is sized by the number of commands in
 each area; select an area to filter, or search by what you want to do.
@@ -32,7 +32,7 @@ The same capabilities are available from the [dashboard](../dashboard/usage-guid
 | GenAI & LLMOps | Manage prompts, trace GenAI calls and enforce guardrails. | `genai`, `prompt`, `guardrails` | 14 |
 | Agents & Automation | Ask Skipper, run the autopilot loop and expose tools over MCP. | `ask`, `chat`, `agent`, `agentops`, `autopilot`, `broker`, `mcp`, `ops` | 48 |
 | Monitoring & Quality | Watch drift, evaluate models, track SLOs and fairness. | `drift`, `eval`, `slo`, `fairness` | 58 |
-| HPC, Fleet & FinOps | Discover clusters, place jobs and account for cost and carbon. | `hpc`, `fleet`, `hardware`, `federated`, `finops`, `report` | 42 |
+| HPC, Fleet & FinOps | Discover clusters, place jobs and account for cost and carbon. | `hpc`, `fleet`, `hardware`, `federated`, `finops`, `report` | 47 |
 | Governance & Security | Approve changes, audit actions, manage secrets and policy. | `auth`, `approvals`, `audit`, `plan`, `secrets`, `compliance`, `governance`, `policy`, `providers` | 61 |
 | Projects & Workspaces | Group models, people, storage and connections into projects. | `project`, `namespace`, `connection`, `workbench` | 37 |
 | Platform & Integrations | Operate the stack, back it up and connect external systems. | `stack`, `backup`, `instance`, `upgrade`, `modules`, `events`, `admission`, `exchange`, `dataplane-bus` | 48 |

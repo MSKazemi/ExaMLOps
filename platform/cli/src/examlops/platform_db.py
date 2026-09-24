@@ -2117,6 +2117,37 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 updated_by TEXT,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            -- ADR 0157 (Hardware Profiles, Phase 1) — reusable, named, versioned resource+runtime
+            -- bundles. `set` writes a new immutable version row (never edits one in place); a
+            -- separate mutable `name, label -> version` pointer (default `active`) mirrors the
+            -- prompt registry's `prompt_versions`/`prompt_labels` shape exactly (spec §2/§2.1).
+            CREATE TABLE IF NOT EXISTS hardware_profile_versions (
+                name                    TEXT NOT NULL,
+                version                 INTEGER NOT NULL,
+                accelerator_family      TEXT NOT NULL,
+                accelerator_model_hint  TEXT,
+                gpu_count               INTEGER NOT NULL DEFAULT 0,
+                gpu_fraction            REAL NOT NULL DEFAULT 1.0,
+                mig_profile             TEXT,
+                cpu                     REAL NOT NULL DEFAULT 0,
+                memory_gb               REAL NOT NULL DEFAULT 0,
+                nodes                   INTEGER NOT NULL DEFAULT 1,
+                driver_tag              TEXT,
+                runtime_tag             TEXT,
+                applicability           TEXT NOT NULL,   -- comma-joined, e.g. "training,workbench"
+                description             TEXT NOT NULL DEFAULT '',
+                created_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_by              TEXT,
+                PRIMARY KEY (name, version)
+            );
+            CREATE TABLE IF NOT EXISTS hardware_profile_labels (
+                name        TEXT NOT NULL,
+                label       TEXT NOT NULL,
+                version     INTEGER NOT NULL,
+                updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (name, label)
+            );
         """)
         if not path.startswith("pg:"):
             # The column migrations check PRAGMA table_info and then ALTER TABLE: two statements.
@@ -3017,6 +3048,7 @@ from examlops.data.evaluation import (get_calibration_by_id, get_eval_gate, get_
 from examlops.data.finops import (add_key_spend, aggregate_model_costs, get_carbon_records, get_fairness_gates, get_live_metrics, get_model_costs, join_predictions_with_truth, record_model_cost, set_fairness_gate, total_gateway_cost, write_carbon_record, write_ground_truth, write_live_metric, write_prediction)  # noqa: E402, E501, F401, I001
 from examlops.data.gateway import (cache_stats, create_virtual_key, get_gateway_config, get_virtual_key, list_virtual_keys, record_gateway_call, set_gateway_config)  # noqa: E402, E501, F401, I001
 from examlops.data.governance import (ANNEX_IV, DECLARATION, get_compliance_system, get_fairness_config, get_fairness_samples, get_policy_bundle, get_relations_for, get_slo_spec, grant_relation, list_compliance_systems, list_objects_for, list_policy_bundles, list_relations, list_slo_specs, list_technical_files, record_fairness_sample, record_slo_sample, revoke_relation, revoke_virtual_key, save_technical_file, set_compliance_system, set_fairness_config, slo_sli_ratio, store_policy_bundle, upsert_slo_spec)  # noqa: E402, E501, F401, I001
+from examlops.data.hardware_profiles import (create_profile_version, delete_profile, get_profile_version, list_profile_names, list_profile_versions, resolve_label, set_profile_label)  # noqa: E402, E501, F401, I001
 from examlops.data.hpc import (aggregate_node_capacity, get_cluster, get_clusters, get_hpc_jobs, get_node_snapshot, list_placement_decisions, record_hpc_job, record_node_snapshot, record_placement_decision, set_cluster_state, update_hpc_job, upsert_cluster)  # noqa: E402, E501, F401, I001
 from examlops.data.projects import (add_project_member, archive_project, assign_model_to_project, assign_resource_to_project, bind_project_connection, create_project, delete_project, ensure_project_storage, get_project, get_project_budget, get_project_consumption, get_project_for_model, get_project_full, get_project_pipelines, get_project_storage, list_project_budgets, list_project_members, list_project_models, list_project_resources, list_projects, project_experiment, projects_bucket, refresh_project_usage, remove_project_member, remove_project_resource, set_project_budget, set_project_usage, update_project_quota, upsert_project_pipeline)  # noqa: E402, E501, F401, I001
 from examlops.data.prompts import (clear_prompt_split, create_prompt_version, get_prompt_by_label, get_prompt_split, get_prompt_version, list_prompt_labels, list_prompt_names, list_prompt_versions, set_prompt_label, set_prompt_split)  # noqa: E402, E501, F401, I001
