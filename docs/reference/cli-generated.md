@@ -1953,6 +1953,8 @@ Issue a virtual key (printed once — only its hash is stored).
 - `--project` — Project the key belongs to
 - `--model` — Allow-list model (repeatable; omit = all models)
 - `--budget` — Budget in USD (omit = unlimited)
+- `--rpm` — Requests-per-minute cap (BL-107; omit = unlimited)
+- `--tpm` — Tokens-per-minute cap (BL-107; omit = unlimited)
 
 #### `exa gateway key list`
 
