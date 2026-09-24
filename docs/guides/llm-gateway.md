@@ -199,7 +199,8 @@ response adds `x-examlops-cold: 1` (ADR 0153 d8); a cache-enabled **non-streamin
 | `llm_gateway_retries_total{reason}` | counter | Attempts beyond the first, by the prior attempt's failure kind. |
 | `llm_gateway_fallbacks_total{from_provider,to_provider}` | counter | Deployment switches within one request. |
 
-No Grafana dashboard panels for these ship yet (tracked; see `docs/guides/genai-observability.md`).
+`examlops_llm_gateway.json` (Grafana `/d/examlops-llm-gateway`) charts most of these — see
+`docs/guides/genai-observability.md` for what it shows and what it deliberately doesn't.
 C1 GenAI spans (`gen_ai.*`, `examlops.cost.usd`) are emitted separately, into Tempo, by the
 in-process client path (`GatewayClient`) — the standalone service does not currently emit its own
 spans, only the metrics above.

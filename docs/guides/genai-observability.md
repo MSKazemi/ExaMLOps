@@ -144,14 +144,16 @@ runs unchanged in dev, tests, and the non-monitoring stack.
 
 ## Dashboards
 
-**No GenAI Grafana panel ships yet.** `platform/infra/docker-compose/grafana/provisioning/dashboards/`
-holds 7 dashboards (`examlops_overview`, `_control_plane`, `_drift`, `_online_metrics`,
-`_approvals`, `_dataplane_bus`, `_logs`) and none of them chart tokens/s, $/request, TTFT or
-tool success-rate. The underlying data is real and queryable today — the `llm-gateway`
-service's own `/metrics` exposes `llm_gateway_ttft_seconds`, `llm_gateway_tpot_seconds`,
-`llm_gateway_tokens_total` and `llm_gateway_cache_total{result}` (genuine Prometheus
-histograms/counters, not placeholders — added 2026-09-24, see `docs/reference/env-vars.md`),
-C1 GenAI spans carry `gen_ai.*`/`examlops.cost.usd` in Tempo, and `vllm serve`'s own `/metrics` exposes
-`vllm:*` engine metrics — but reaching them means a raw Prometheus/Tempo query or
-`exa serve llm bench`/`status` until a dedicated GenAI dashboard is built (queued, see
-`.claude/plans/BACKLOG.md` BL-114).
+`platform/infra/docker-compose/grafana/provisioning/dashboards/examlops_llm_gateway.json`
+(`/d/examlops-llm-gateway`, added 2026-09-24, BL-114) charts the `llm-gateway` service's real
+Prometheus metrics: request rate/error rate, `llm_gateway_ttft_seconds`/`llm_gateway_tpot_seconds`
+p50/p95, token throughput by kind, B3 cache hit rate, circuit-breaker state and inflight/queue
+depth per deployment, retries/fallbacks, and policy denials by reason — all genuine
+histograms/counters/gauges (verified in the tree by
+`tests/unit/test_grafana_panels_can_show_data.py`, which fails the build if a panel ever queries a
+metric nothing emits). Not shown there: **tool success-rate** (no metric emits it — agentic tool
+calls are outside this service's scope) and **$/request** (cost is tracked per call in
+`platform_db.gateway_calls`, not yet exported as a Prometheus metric). C1 GenAI spans carry
+`gen_ai.*`/`examlops.cost.usd` in Tempo separately, and `vllm serve`'s own `/metrics` exposes
+`vllm:*` engine metrics (spec-decode acceptance, prefix-cache hit rate) that this dashboard does
+not chart — reach those via a raw Prometheus query or `exa serve llm bench`/`status`.

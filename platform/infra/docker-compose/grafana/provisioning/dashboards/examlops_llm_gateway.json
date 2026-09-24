@@ -1,0 +1,168 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0"},
+    {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"}
+  ],
+  "annotations": {"list": []},
+  "description": "ExaMLOps — LLM gateway service (ADR 0151-0156): request rate, TTFT/TPOT, cache hit rate, retries/fallbacks, breaker/queue state, policy denials",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {"title": "Overview",          "url": "/d/examlops-overview",        "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
+    {"title": "Inference Metrics", "url": "/d/examlops-online-metrics",  "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""}
+  ],
+  "panels": [
+    {"id": 100, "type": "row", "title": "Overview", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "collapsed": false, "panels": []},
+    {
+      "id": 1, "type": "stat", "title": "Request Rate (req/s)",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum(rate(llm_gateway_requests_total[1m]))", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "reqps", "decimals": 2}}
+    },
+    {
+      "id": 2, "type": "stat", "title": "Error Rate",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum(rate(llm_gateway_requests_total{status!=\"200\"}[5m])) / sum(rate(llm_gateway_requests_total[5m]))", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"}, "unit": "percentunit", "decimals": 3,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.01}, {"color": "red", "value": 0.05}]}
+        }
+      }
+    },
+    {
+      "id": 3, "type": "stat", "title": "B3 Cache Hit Rate",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "0 while the semantic cache is disabled (LLM_GATEWAY_SEMANTIC_CACHE unset) — no data is not the same as a 0% hit rate.",
+      "targets": [{"expr": "sum(rate(llm_gateway_cache_total{result=\"hit\"}[15m])) / sum(rate(llm_gateway_cache_total[15m]))", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area", "textMode": "auto"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "percentunit", "decimals": 2}}
+    },
+    {
+      "id": 4, "type": "stat", "title": "TTFT p95",
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by(le) (rate(llm_gateway_ttft_seconds_bucket[5m])))", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s", "decimals": 2, "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 5}, {"color": "red", "value": 30}]}
+        }
+      }
+    },
+    {
+      "id": 5, "type": "stat", "title": "TPOT p50",
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Time per output token after the first — not per-token: (total − TTFT) / (completion_tokens − 1). Absent below 2 completion tokens.",
+      "targets": [{"expr": "histogram_quantile(0.50, sum by(le) (rate(llm_gateway_tpot_seconds_bucket[5m])))", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 3, "color": {"mode": "palette-classic"}}}
+    },
+    {
+      "id": 6, "type": "stat", "title": "Providers Up",
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum(llm_gateway_provider_up)", "legendFormat": "", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "auto"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 1}, {"color": "green", "value": 2}]}
+        }
+      }
+    },
+
+    {"id": 101, "type": "row", "title": "Tokens & Latency", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5}, "collapsed": false, "panels": []},
+    {
+      "id": 10, "type": "timeseries", "title": "Token Throughput by Kind",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by(kind) (rate(llm_gateway_tokens_total[1m]))", "legendFormat": "{{kind}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "TTFT / TPOT p95 by Provider",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by(le, provider) (rate(llm_gateway_ttft_seconds_bucket[5m])))", "legendFormat": "ttft {{provider}}", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by(le, provider) (rate(llm_gateway_tpot_seconds_bucket[5m])))", "legendFormat": "tpot {{provider}}", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 5}}},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+
+    {"id": 102, "type": "row", "title": "Reliability", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14}, "collapsed": false, "panels": []},
+    {
+      "id": 20, "type": "timeseries", "title": "Circuit Breaker State by Deployment",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 15},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "0 closed, 1 half-open, 2 open (ADR 0153).",
+      "targets": [{"expr": "llm_gateway_breaker_state", "legendFormat": "{{provider}}/{{model}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"min": 0, "max": 2, "custom": {"drawStyle": "line", "fillOpacity": 15, "stepMode": "before"}}},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "id": 21, "type": "timeseries", "title": "Inflight / Queue Depth by Deployment",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 15},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "llm_gateway_inflight", "legendFormat": "inflight {{provider}}/{{model}}", "refId": "A"},
+        {"expr": "llm_gateway_queue_depth", "legendFormat": "queued {{provider}}/{{model}}", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "id": 22, "type": "timeseries", "title": "Retries & Fallbacks",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 15},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Every attempt beyond the first is both a retry and a fallback here (the candidate loop never retries the same deployment twice).",
+      "targets": [
+        {"expr": "sum by(reason) (rate(llm_gateway_retries_total[5m]))", "legendFormat": "retry: {{reason}}", "refId": "A"},
+        {"expr": "sum by(from_provider, to_provider) (rate(llm_gateway_fallbacks_total[5m]))", "legendFormat": "fallback: {{from_provider}}→{{to_provider}}", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+
+    {"id": 103, "type": "row", "title": "Policy & Traffic", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23}, "collapsed": false, "panels": []},
+    {
+      "id": 30, "type": "timeseries", "title": "Policy Denials by Reason",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "key / model / budget / locality / rate_limit / guardrail (ADR 0156 d2).",
+      "targets": [{"expr": "sum by(reason) (rate(llm_gateway_policy_denials_total[5m]))", "legendFormat": "{{reason}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    },
+    {
+      "id": 31, "type": "timeseries", "title": "Requests by Route & Provider",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "sum by(route, provider) (rate(llm_gateway_requests_total[1m]))", "legendFormat": "{{route}} → {{provider}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "tags": ["examlops", "llmops", "gateway", "genai"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "ExaMLOps — LLM Gateway",
+  "uid": "examlops-llm-gateway",
+  "version": 1
+}

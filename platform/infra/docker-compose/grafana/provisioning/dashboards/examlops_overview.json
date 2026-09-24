@@ -47,7 +47,8 @@
     {"title": "Drift Monitor",     "url": "/d/examlops-drift",           "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
     {"title": "Logs",              "url": "/d/examlops-logs",            "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
     {"title": "Approvals",         "url": "/d/examlops-approvals",       "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
-    {"title": "Dataplane bus",         "url": "/d/examlops-dataplane-bus",       "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""}
+    {"title": "Dataplane bus",         "url": "/d/examlops-dataplane-bus",       "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""},
+    {"title": "LLM Gateway",       "url": "/d/examlops-llm-gateway",     "type": "link", "targetBlank": false, "icon": "external link", "tags": [], "tooltip": ""}
   ],
   "panels": [
     {

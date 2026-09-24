@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - LLM gateway Grafana dashboard
+
+- `examlops_llm_gateway.json` (`/d/examlops-llm-gateway`): request/error rate, B3 cache hit rate,
+  TTFT/TPOT p50/p95, token throughput, circuit-breaker state, inflight/queue depth,
+  retries/fallbacks, and policy denials -- every panel verified against a real metric declaration
+  by `test_grafana_panels_can_show_data.py`, extended to cover the `llm_gateway_*` namespace and
+  the client library's automatic Counter `_total` suffix. Closes a false claim two guides
+  previously made that this dashboard already existed.
+
 ### Added - dedicated LLM gateway service guide
 
 - `docs/guides/llm-gateway.md` documents the real, standalone `llm-gateway` HTTP service

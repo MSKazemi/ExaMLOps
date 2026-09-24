@@ -33,8 +33,14 @@ _DASHBOARDS = (
 _RAY_PREFIX = "ray_"
 # Prometheus derives these series from a histogram; the code declares only the base name.
 _HISTOGRAM_SUFFIXES = ("_bucket", "_sum", "_count")
+# The client library appends `_total` to an exposed Counter whose declared name does not already
+# end in it. The older ray/examlops metrics instead bake `_total` into the declared name itself
+# (`Counter("examlops_x_total", ...)`), so this derivation is additive to that convention, not a
+# replacement for it — the LLM gateway's metrics (`Counter("llm_gateway_requests", ...)`) are the
+# first to rely on the client's own auto-suffix instead.
+_COUNTER_SUFFIX = ("_total",)
 
-_OURS = re.compile(r"\b((?:examlops|ray_examlops|dataplane-bus)_[a-z0-9_]+)")
+_OURS = re.compile(r"\b((?:examlops|ray_examlops|dataplane-bus|llm_gateway)_[a-z0-9_]+)")
 _DECLARED = re.compile(r'(?:Counter|Gauge|Histogram)\(\s*\n?\s*"([a-z][a-z0-9_]*)"')
 
 
@@ -55,7 +61,7 @@ def _emitted(root: Path = _ROOT) -> set[str]:
             names.add(name)
     derived = {_RAY_PREFIX + n for n in names}
     for n in list(names) + list(derived):
-        derived.update(n + s for s in _HISTOGRAM_SUFFIXES)
+        derived.update(n + s for s in _HISTOGRAM_SUFFIXES + _COUNTER_SUFFIX)
     return names | derived
 
 
