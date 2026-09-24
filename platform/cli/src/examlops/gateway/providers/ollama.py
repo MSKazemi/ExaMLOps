@@ -7,6 +7,7 @@ cold model load from a broken server. Shapes here were checked against a live Ol
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import time
@@ -16,7 +17,11 @@ from typing import Any
 
 import httpx
 
-from examlops.gateway.egress import validate_base_url
+from examlops.gateway.egress import (
+    check_resolved_addresses,
+    guarded_async_client,
+    validate_base_url,
+)
 from examlops.gateway.providers.base import (
     Capabilities,
     ChatChunk,
@@ -30,6 +35,10 @@ from examlops.gateway.providers.base import (
 )
 
 _NS_PER_MS = 1_000_000.0
+#: Bound on the per-connection DNS-rebinding re-check (BL-111) — a resolver that takes longer than
+#: this is treated as unreachable, not as a reason to block the request; well above a normal
+#: resolution (milliseconds, cached) and well under the 3s connect timeout below.
+_RESOLVE_TIMEOUT_S = 2.0
 
 
 def _finish(done_reason: str | None, tool_calls: list[dict[str, Any]]) -> str:
@@ -135,6 +144,7 @@ class OllamaProvider:
     ) -> None:
         self.name = name
         self.locality = locality
+        self._allowed_hosts = allowed_hosts
         self.base_url = validate_base_url(base_url, locality=locality, allowed_hosts=allowed_hosts)
         self.keep_alive = keep_alive
         self.options = dict(options or {})
@@ -147,15 +157,57 @@ class OllamaProvider:
 
     # ── plumbing ──────────────────────────────────────────────────────────────
 
+    async def _precheck_resolution(self) -> None:
+        """DNS-rebinding pre-flight (ADR 0154 d2, BL-111) for a client this class does not build
+        itself — a caller-supplied shared client or transport. Real clients built by ``_http`` use
+        :func:`~examlops.gateway.egress.guarded_async_client` instead, which pins the actual TCP
+        connection; this is the fallback for a client whose connections this class does not control.
+
+        Bounded: a slow or unreachable resolver must not hold up a chat request indefinitely —
+        resolution *failure* is already treated as a reachability problem (the connect timeout
+        reports it properly); resolution that simply takes too long is treated the same way, not
+        as a security refusal.
+        """
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    check_resolved_addresses,
+                    self.base_url,
+                    locality=self.locality,
+                    allowed_hosts=self._allowed_hosts,
+                ),
+                timeout=_RESOLVE_TIMEOUT_S,
+            )
+        except TimeoutError:
+            pass
+
     @contextlib.asynccontextmanager
     async def _http(self) -> AsyncIterator[httpx.AsyncClient]:
         """A client bound to *this* event loop. A caller-supplied shared client is used as-is."""
         if self._shared is not None:
+            await self._precheck_resolution()
             yield self._shared
             return
-        # trust_env=False: proxy variables in the environment must not silently reroute prompts.
-        async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=self.timeout, transport=self._transport, trust_env=False
+        if self._transport is not None:
+            # A caller-supplied transport (tests, or a caller managing its own connection pool) —
+            # nothing here to wrap with the guarded backend, so fall back to the pre-flight probe.
+            await self._precheck_resolution()
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                transport=self._transport,
+                trust_env=False,
+                follow_redirects=False,
+            ) as client:
+                yield client
+            return
+        # The real path: every TCP connection this client opens is pinned to an address this
+        # provider's locality rule approved, checked fresh at the moment of connecting.
+        async with guarded_async_client(
+            self.base_url,
+            locality=self.locality,
+            allowed_hosts=self._allowed_hosts,
+            timeout=self.timeout,
         ) as client:
             yield client
 

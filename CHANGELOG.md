@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - DNS-rebinding-safe egress for the LLM gateway's real network connections
+
+- A provider's `base_url` used to be validated exactly once, at construction -- a hostname whose
+  DNS answer changed afterward was never re-checked. Two layers close it: `check_resolved_addresses()`
+  re-resolves and re-validates on every connection for a caller-supplied transport, and a new
+  `AsyncGuardedBackend`/`guarded_async_client` -- a custom `httpcore` async network backend
+  mirroring the already-proven `examlops.dataplane.safety._GuardedBackend` mechanism -- pins the
+  real TCP connection to the checked address for `OllamaProvider`'s production client. TLS/SNI
+  unaffected (the original hostname is still used for `server_hostname`). `follow_redirects=False`
+  set explicitly rather than relied on as an httpx default.
+
 ### Fixed - SGLang engine selection now fails clearly instead of constructing a broken object
 
 - `SGLangEngine` used to construct successfully whenever the `sglang` package happened to be

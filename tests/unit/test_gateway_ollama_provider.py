@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from examlops.gateway import Completion, GatewayClient, Router
-from examlops.gateway.egress import EgressDenied, validate_base_url
+from examlops.gateway.egress import EgressDenied, check_resolved_addresses, validate_base_url
 from examlops.gateway.providers import (
     ChatRequest,
     OllamaProvider,
@@ -390,6 +390,277 @@ def test_egress_refuses_private_addresses_for_external_providers_unless_allowed(
 def test_provider_construction_applies_the_egress_check():
     with pytest.raises(EgressDenied):
         OllamaProvider("bad", "https://acme.openai.azure.com")
+
+
+# ── DNS-rebinding-safe egress: the resolved-address check (BL-111, 2026-09-24) ────────────────
+
+
+def _resolver(*addrs: str):
+    """A fake `socket.getaddrinfo`: returns one (family, type, proto, canon, sockaddr) per addr.
+
+    Accepts both call conventions used in this file — ``check_resolved_addresses``'s
+    ``(host, None, family=, type=)`` and ``_resolve_approved_address``'s ``(host, port, proto=)`` —
+    so one fake serves both the pre-flight-check tests and the guarded-connection tests below.
+    """
+
+    def _resolve(host, port=None, **_kw):
+        return [(0, 0, 0, "", (a, port or 0)) for a in addrs]
+
+    return _resolve
+
+
+def test_resolved_address_check_refuses_a_rebound_private_address():
+    """A hostname the operator declared external, but which now resolves to an internal address —
+    the exact DNS-rebinding shape: the string check at construction time cannot see this."""
+    with pytest.raises(EgressDenied, match="platform-internal or private"):
+        check_resolved_addresses(
+            "https://router.example.org/v1",
+            locality="external",
+            resolver=_resolver("10.0.0.5"),
+        )
+
+
+def test_resolved_address_check_refuses_a_metadata_endpoint():
+    with pytest.raises(EgressDenied, match="metadata"):
+        check_resolved_addresses(
+            "http://sneaky.example.com", locality="local", resolver=_resolver("169.254.169.254")
+        )
+
+
+def test_resolved_address_check_allows_a_legitimate_external_address():
+    result = check_resolved_addresses(
+        "https://router.example.org/v1", locality="external", resolver=_resolver("8.8.8.8")
+    )
+    assert result is None  # completes and returns — its only contract is "raise, or don't"
+
+
+def test_resolved_address_check_allows_an_explicitly_permitted_host_even_if_private():
+    result = check_resolved_addresses(  # the operator named this host on purpose
+        "https://router.example.org/v1",
+        locality="external",
+        allowed_hosts=("router.example.org",),
+        resolver=_resolver("10.0.0.5"),
+    )
+    assert result is None
+
+
+def test_resolved_address_check_is_a_noop_for_a_literal_ip():
+    calls = []
+    result = check_resolved_addresses(
+        "http://10.0.0.5:8000", locality="external", resolver=lambda *a, **kw: calls.append(1)
+    )
+    assert result is None
+    assert calls == []  # the resolver is never invoked for a literal IP
+
+
+def test_resolved_address_check_is_a_noop_on_resolution_failure():
+    def _fails(*a, **kw):
+        raise OSError("name resolution failed")
+
+    check_resolved_addresses("http://unreachable.test", locality="local", resolver=_fails)
+
+
+def test_resolved_address_check_examines_every_returned_address():
+    """One good answer must not shadow a bad one — every resolved address is checked."""
+    with pytest.raises(EgressDenied):
+        check_resolved_addresses(
+            "https://router.example.org/v1",
+            locality="external",
+            resolver=_resolver("8.8.8.8", "10.0.0.5"),
+        )
+
+
+async def test_the_ollama_provider_actually_calls_the_resolved_address_check(monkeypatch, fake):
+    """Proves the wiring, not just the standalone function — patches the binding `ollama.py`
+    itself holds (`from ... import check_resolved_addresses`), not the one in `egress` (a name
+    imported with `from X import Y` is a separate reference from `X.Y` after that point)."""
+    import examlops.gateway.providers.ollama as ollama_mod
+
+    calls = []
+
+    def _spy(url, **kw):
+        calls.append((url, kw))
+
+    monkeypatch.setattr(ollama_mod, "check_resolved_addresses", _spy)
+    provider = make(fake, locality="local")
+    await provider.chat(req())
+    assert calls and calls[0][0] == BASE
+
+
+async def test_a_rebound_address_blocks_the_request_before_it_reaches_the_upstream(
+    monkeypatch, fake
+):
+    import examlops.gateway.providers.ollama as ollama_mod
+
+    def _deny(*a, **kw):
+        raise EgressDenied("rebound")
+
+    monkeypatch.setattr(ollama_mod, "check_resolved_addresses", _deny)
+    provider = make(fake, locality="local")
+    with pytest.raises(EgressDenied):
+        await provider.chat(req())
+    assert fake.calls == []  # never reached the upstream
+
+
+# ── the guarded backend: real TCP connections pinned, not just pre-flight checked ─────────────
+
+
+class _StubStream:
+    async def aclose(self):
+        pass
+
+
+class _StubInner:
+    """A minimal `httpcore.AsyncNetworkBackend` recording exactly the address it was asked to
+    connect to — proves the guarded backend hands it the *resolved* address, not the hostname."""
+
+    def __init__(self):
+        self.connected_to: list[tuple[str, int]] = []
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        self.connected_to.append((host, port))
+        return _StubStream()
+
+
+async def test_guarded_backend_connects_to_the_checked_address_not_the_hostname():
+    from examlops.gateway.egress import AsyncGuardedBackend
+
+    inner = _StubInner()
+    backend = AsyncGuardedBackend(
+        inner, locality="local", allowed_hosts=(), resolver=_resolver("10.9.8.7")
+    )
+    await backend.connect_tcp("ollama-n1", 11434)
+    assert inner.connected_to == [("10.9.8.7", 11434)]  # the resolved IP, not "ollama-n1"
+
+
+async def test_guarded_backend_refuses_a_rebound_address_before_ever_connecting():
+    from examlops.gateway.egress import AsyncGuardedBackend
+
+    inner = _StubInner()
+    backend = AsyncGuardedBackend(
+        inner, locality="external", allowed_hosts=(), resolver=_resolver("10.0.0.5")
+    )
+    with pytest.raises(EgressDenied):
+        await backend.connect_tcp("router.example.org", 443)
+    assert inner.connected_to == []
+
+
+async def test_guarded_backend_refuses_a_unix_socket():
+    from examlops.gateway.egress import AsyncGuardedBackend
+
+    backend = AsyncGuardedBackend(_StubInner(), locality="local", allowed_hosts=())
+    with pytest.raises(EgressDenied):
+        await backend.connect_unix_socket("/tmp/whatever")
+
+
+async def test_guarded_async_client_is_actually_wired():
+    """If an httpx upgrade moves the private attributes, fail loudly instead of running unguarded —
+    same discipline as `examlops.dataplane.safety.test_guarded_client_is_actually_wired`."""
+    from examlops.gateway.egress import AsyncGuardedBackend, guarded_async_client
+
+    client = guarded_async_client("http://ollama.test:11434", locality="local")
+    try:
+        assert isinstance(
+            client._transport._pool._network_backend,  # type: ignore[attr-defined]
+            AsyncGuardedBackend,
+        )
+        assert client._trust_env is False
+        assert client.follow_redirects is False
+    finally:
+        await client.aclose()
+
+
+async def test_guarded_async_client_denies_a_rebound_private_address_over_a_real_socket():
+    """End-to-end: a real local server exists and is reachable, but the provider is declared
+    external and the (faked) resolution points at a private address — the guard must refuse the
+    connection before the real server ever sees a request."""
+    import asyncio
+    import http.server
+    import threading
+
+    from examlops.gateway.egress import guarded_async_client
+
+    received: list[str] = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            received.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *a):
+            pass
+
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = httpd.server_address[1]
+        # A rebound resolver: the hostname "looks" external, but resolves to loopback — exactly
+        # the real server's own address, proving the refusal is about the *address*, not
+        # reachability (a real, live, reachable server is what gets refused here).
+        client = guarded_async_client(
+            "https://router.example.org",
+            locality="external",
+            timeout=2.0,
+            resolver=_resolver("127.0.0.1"),
+        )
+        try:
+            with pytest.raises(Exception):  # EgressDenied, surfaced through httpx's connect path
+                await client.get(f"http://router.example.org:{port}/")
+        finally:
+            await client.aclose()
+    finally:
+        httpd.shutdown()
+        await asyncio.to_thread(thread.join, 2)
+        httpd.server_close()
+    assert received == []  # the real server never saw the request
+
+
+async def test_guarded_async_client_allows_an_explicitly_permitted_loopback_target():
+    import asyncio
+    import http.server
+    import threading
+
+    from examlops.gateway.egress import guarded_async_client
+
+    received: list[str] = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            received.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *a):
+            pass
+
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = httpd.server_address[1]
+        client = guarded_async_client(
+            f"http://onsite.example.org:{port}",
+            locality="external",
+            allowed_hosts=("onsite.example.org",),
+            timeout=2.0,
+            resolver=_resolver("127.0.0.1"),
+        )
+        try:
+            resp = await client.get(f"http://onsite.example.org:{port}/probe")
+        finally:
+            await client.aclose()
+    finally:
+        httpd.shutdown()
+        await asyncio.to_thread(thread.join, 2)
+        httpd.server_close()
+    assert resp.status_code == 200
+    assert received == ["/probe"]
 
 
 # ── the bridge into the existing sync gateway ─────────────────────────────────
