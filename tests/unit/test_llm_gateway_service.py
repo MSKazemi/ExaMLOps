@@ -472,6 +472,31 @@ async def test_metrics_count_requests_with_bounded_labels(upstream):
     assert "llm_gateway_ttft_seconds" in text and "llm_gateway_breaker_state" in text
 
 
+async def test_tpot_metric_is_observed_when_more_than_one_token_completes(upstream):
+    async with client(make_app(upstream)) as c:
+        await c.post("/v1/chat/completions", json=BODY)  # fake upstream reports eval_count=2
+        text = (await c.get("/metrics", headers=ADMIN_H)).text
+    assert 'llm_gateway_tpot_seconds_count{provider="n1",route="chat"} 1.0' in text
+
+
+async def test_cache_metric_counts_hits_and_misses(upstream, monkeypatch):
+    monkeypatch.setenv("LLM_GATEWAY_SEMANTIC_CACHE", "1")
+    async with client(make_app(upstream)) as c:
+        await c.post("/v1/chat/completions", json=BODY)  # miss
+        await c.post("/v1/chat/completions", json=BODY)  # hit
+        text = (await c.get("/metrics", headers=ADMIN_H)).text
+    assert 'llm_gateway_cache_total{result="miss"} 1.0' in text
+    assert 'llm_gateway_cache_total{result="hit"} 1.0' in text
+
+
+async def test_cache_metric_absent_when_caching_is_disabled(upstream):
+    async with client(make_app(upstream)) as c:
+        await c.post("/v1/chat/completions", json=BODY)
+        text = (await c.get("/metrics", headers=ADMIN_H)).text
+    # The metric is declared (HELP/TYPE always print) but never incremented ⇒ no sample line.
+    assert "llm_gateway_cache_total{result=" not in text
+
+
 # ── D8 guardrails wired into the real edge (ADR 0026 clause 3, BL-103 2026-09-23) ─────────────
 #
 # Before this, only the in-process GatewayClient enforced guardrails/cache/prompts; the deployed

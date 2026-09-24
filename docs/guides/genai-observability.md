@@ -148,9 +148,10 @@ runs unchanged in dev, tests, and the non-monitoring stack.
 holds 7 dashboards (`examlops_overview`, `_control_plane`, `_drift`, `_online_metrics`,
 `_approvals`, `_dataplane_bus`, `_logs`) and none of them chart tokens/s, $/request, TTFT or
 tool success-rate. The underlying data is real and queryable today — the `llm-gateway`
-service's own `/metrics` exposes `llm_gateway_ttft_seconds` and `llm_gateway_tokens_total`
-(genuine Prometheus histograms/counters, not placeholders), C1 GenAI spans carry
-`gen_ai.*`/`examlops.cost.usd` in Tempo, and `vllm serve`'s own `/metrics` exposes
+service's own `/metrics` exposes `llm_gateway_ttft_seconds`, `llm_gateway_tpot_seconds`,
+`llm_gateway_tokens_total` and `llm_gateway_cache_total{result}` (genuine Prometheus
+histograms/counters, not placeholders — added 2026-09-24, see `docs/reference/env-vars.md`),
+C1 GenAI spans carry `gen_ai.*`/`examlops.cost.usd` in Tempo, and `vllm serve`'s own `/metrics` exposes
 `vllm:*` engine metrics — but reaching them means a raw Prometheus/Tempo query or
 `exa serve llm bench`/`status` until a dedicated GenAI dashboard is built (queued, see
 `.claude/plans/BACKLOG.md` BL-114).

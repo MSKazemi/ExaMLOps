@@ -249,7 +249,19 @@ class _Metrics:
             buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
             registry=reg,
         )
+        self.tpot = Histogram(
+            "llm_gateway_tpot_seconds",
+            "Time per output token after the first (ADR 0156 d2, ADR 0148 TTFT/TPOT pair) — "
+            "(total request time - TTFT) / (completion tokens - 1). Not per-token: providers "
+            "report a first-token timestamp and a final token count, not one timestamp per token.",
+            ["route", "provider"],
+            buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5),
+            registry=reg,
+        )
         self.tokens = Counter("llm_gateway_tokens", "Tokens by kind.", ["kind"], registry=reg)
+        self.cache = Counter(
+            "llm_gateway_cache", "B3 semantic-cache lookups by result.", ["result"], registry=reg
+        )
         self.denials = Counter(
             "llm_gateway_policy_denials", "Requests refused by policy.", ["reason"], registry=reg
         )
@@ -289,6 +301,19 @@ def _request_id(request: Request) -> str:
 
 def _sse(obj: Any) -> str:
     return f"data: {obj if isinstance(obj, str) else json.dumps(obj, separators=(',', ':'))}\n\n"
+
+
+def _tpot_ms(total_ms: float, ttft_ms: float | None, completion_tokens: int) -> float | None:
+    """Time per output token after the first, or ``None`` when it cannot be computed.
+
+    Needs a real TTFT and at least 2 completion tokens (1 token has no "after the first" to time).
+    A degenerate negative result (a provider's own timing was inconsistent) is also refused rather
+    than recorded, since a negative duration would silently corrupt the histogram's buckets.
+    """
+    if ttft_ms is None or completion_tokens <= 1:
+        return None
+    tpot = (total_ms - ttft_ms) / (completion_tokens - 1)
+    return tpot if tpot > 0 else None
 
 
 def create_app(
@@ -627,6 +652,9 @@ def create_app(
                 metrics.seconds.labels(route_label).observe(ms / 1000.0)
                 if result.ttft_ms is not None:
                     metrics.ttft.labels(route_label, provider).observe(result.ttft_ms / 1000.0)
+                tpot = _tpot_ms(ms, result.ttft_ms, result.usage.completion_tokens)
+                if tpot is not None:
+                    metrics.tpot.labels(route_label, provider).observe(tpot / 1000.0)
                 metrics.tokens.labels("prompt").inc(result.usage.prompt_tokens)
                 metrics.tokens.labels("completion").inc(result.usage.completion_tokens)
 
@@ -660,7 +688,9 @@ def create_app(
                     "x-examlops-model": upstream,
                 }
                 if use_cache:
-                    headers["x-examlops-cache"] = "hit" if cache_hit else "miss"
+                    result_label = "hit" if cache_hit else "miss"
+                    headers["x-examlops-cache"] = result_label
+                    metrics.cache.labels(result_label).inc()
                 if result.load_ms and result.load_ms >= 500:
                     headers["x-examlops-cold"] = (
                         "1"  # the model was loaded for this request (ADR 0153 d8)
@@ -701,10 +731,12 @@ def create_app(
             usage = None
             sent_role = False
             failed = False
+            ttft_seen: float | None = None
             try:
                 stream: AsyncIterator[ChatChunk] = _prepend(first, gen)
                 async for chunk in stream:
                     if chunk.ttft_ms is not None:
+                        ttft_seen = chunk.ttft_ms
                         metrics.ttft.labels(route_label, provider).observe(chunk.ttft_ms / 1000.0)
                     if chunk.usage is not None:
                         usage = chunk.usage
@@ -738,6 +770,9 @@ def create_app(
                 if usage is not None:
                     metrics.tokens.labels("prompt").inc(usage.prompt_tokens)
                     metrics.tokens.labels("completion").inc(usage.completion_tokens)
+                    tpot = _tpot_ms(ms, ttft_seen, usage.completion_tokens)
+                    if tpot is not None:
+                        metrics.tpot.labels(route_label, provider).observe(tpot / 1000.0)
                 assert rt is not None
                 state.spawn(
                     asyncio.to_thread(

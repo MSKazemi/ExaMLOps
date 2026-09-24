@@ -5,6 +5,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - cache hit/miss and TPOT metrics on the LLM gateway service (ADR 0156)
+
+- New `llm_gateway_cache_total{result}` counter (hit/miss, only emitted while the opt-in semantic
+  cache is enabled) and `llm_gateway_tpot_seconds` histogram (time per output token after the
+  first, on both the streaming and non-streaming paths; refused rather than recorded when it
+  cannot be measured honestly — no TTFT, or only 1 completion token).
+
 ### Added - `cost_aware` gateway routing strategy + 3 unused LLMOps providers wired in (ADR 0083)
 
 - `llm_cache`, `llm_routing` and `rag_quality` (ADR 0083) computed real formulas that nothing
