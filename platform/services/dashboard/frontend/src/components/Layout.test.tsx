@@ -69,6 +69,30 @@ describe('Layout — grouped shell (BL-013a)', () => {
     expect(screen.getByRole('button', { name: /Build/i })).toBeInTheDocument()
   })
 
+  it('shows the running examlops version in the sidebar footer', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    qc.setQueryData(['health'], { status: 'ok', checked_at: '2026-01-01T00:00:00Z', services: {}, version: '0.62.0' })
+    render(
+      <I18nProvider>
+        <ThemeProvider>
+          <QueryClientProvider client={qc}>
+            <MemoryRouter initialEntries={['/']}>
+              <Layout>
+                <div>content</div>
+              </Layout>
+            </MemoryRouter>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </I18nProvider>,
+    )
+    expect(screen.getByText('examlops v0.62.0')).toBeInTheDocument()
+  })
+
+  it('shows nothing in the version slot before the first health response lands', () => {
+    renderLayout('/')
+    expect(screen.queryByText(/^examlops v/)).not.toBeInTheDocument()
+  })
+
   it('opens and closes the compact navigation drawer', () => {
     renderLayout('/')
     const primaryNav = screen.getByRole('navigation', { name: 'Primary' })

@@ -8,6 +8,8 @@ import httpx
 from fastapi import APIRouter, Request
 from settings import settings
 
+import examlops
+
 router = APIRouter()
 
 _CACHE_TTL = 30.0  # seconds — lower probe frequency on NFS-backed shared cluster
@@ -114,6 +116,9 @@ async def _do_health_check() -> dict:
         "checked_at": now,
         "services": services,
         "unmeasured": sorted(_UNMEASURED),
+        # The running examlops distribution version, so the dashboard can show which build is
+        # live — the same value `importlib.metadata` reports for the installed package.
+        "version": examlops.__version__,
     }
 
 

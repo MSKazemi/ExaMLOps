@@ -5,7 +5,7 @@ import { ChevronDown, Zap, LogOut, Sun, Moon, MoonStar, Menu, X } from 'lucide-r
 import { getRole, signOut } from '@/lib/auth'
 import { useCapabilities } from '@/lib/capabilities'
 import { useTheme, type Theme } from '@/lib/theme'
-import { useApprovalsCount } from '@/lib/api'
+import { useApprovalsCount, useHealth } from '@/lib/api'
 import { flagFallback, useFlagDecisions } from '@/lib/serverflags'
 import { pageAllowed, useModules } from '@/lib/modules'
 import {
@@ -58,6 +58,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const disabledPages = useModules().data?.disabled_pages
   const { theme, setTheme } = useTheme()
   const { data: pendingApprovals } = useApprovalsCount()
+  const { data: health } = useHealth()
   const pendingCount = pendingApprovals?.length ?? 0
   const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsed)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
@@ -296,6 +297,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 <LogOut className="w-3 h-3" /> sign out
               </button>
             </div>
+          )}
+
+          {/* Running examlops version — always visible so it's clear which build is live. */}
+          {health?.version && (
+            <p
+              className="text-center text-[10px] text-muted-foreground/70 select-text"
+              title={health.checked_at ? `Checked ${new Date(health.checked_at).toLocaleString()}` : undefined}
+            >
+              examlops v{health.version}
+            </p>
           )}
         </div>
       </aside>

@@ -26,6 +26,8 @@ export interface HealthResponse {
   services: Record<string, ServiceInfo>
   /** The keys of `services` that are reported but never probed; they do not move `status`. */
   unmeasured?: string[]
+  /** The running examlops distribution version. Absent only on the very first "starting" tick. */
+  version?: string
 }
 
 export interface ModelInfo {

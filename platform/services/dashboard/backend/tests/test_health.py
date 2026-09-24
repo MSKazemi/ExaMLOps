@@ -38,6 +38,24 @@ async def test_health_returns_ok_when_all_up(client):
     assert "checked_at" in body
 
 
+async def test_health_reports_the_running_examlops_version(client):
+    import examlops
+
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+
+    with patch("routers.health.httpx.AsyncClient") as mock_client_cls:
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_ctx.get = AsyncMock(return_value=mock_response)
+        mock_client_cls.return_value = mock_ctx
+
+        response = await client.get("/api/health")
+
+    assert response.json()["version"] == examlops.__version__
+
+
 async def test_health_degraded_when_service_down(client):
     import httpx as httpx_lib
 
@@ -102,6 +120,7 @@ async def test_health_contains_all_services(client):
         "dashboard",
         "slurm",
         "dataplane",
+        "llm_gateway",
     }
 
 
@@ -162,3 +181,47 @@ async def test_an_unmeasured_service_cannot_mask_a_real_outage(client):
         body = (await client.get("/api/health")).json()
 
     assert body["status"] == "degraded"
+
+
+async def test_health_includes_the_llm_gateway(client):
+    """ADR 0151 — the deployed llm-gateway service is part of the platform's health surface,
+    probed the same way as every other internal service (its own liveness, never its admin API)."""
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+
+    with patch("routers.health.httpx.AsyncClient") as mock_client_cls:
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_ctx.get = AsyncMock(return_value=mock_response)
+        mock_client_cls.return_value = mock_ctx
+
+        response = await client.get("/api/health")
+
+    body = response.json()
+    assert body["services"]["llm_gateway"]["status"] == "ok"
+    from settings import settings
+
+    called_urls = [c.args[0] for c in mock_ctx.get.await_args_list]
+    assert f"{settings.llm_gateway_url}/health" in called_urls
+
+
+async def test_the_llm_gateways_admin_api_is_never_reached_from_the_health_probe(client):
+    """This surface is liveness only — it must never carry the admin bearer or hit /admin/*,
+    which is exactly the credential the settings-field docstring promises never leaves this
+    process for a page that only needs up/down."""
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+
+    with patch("routers.health.httpx.AsyncClient") as mock_client_cls:
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_ctx.get = AsyncMock(return_value=mock_response)
+        mock_client_cls.return_value = mock_ctx
+
+        await client.get("/api/health")
+
+    for call in mock_ctx.get.await_args_list:
+        assert "/admin" not in call.args[0]
+        assert "authorization" not in {k.lower() for k in (call.kwargs.get("headers") or {})}
