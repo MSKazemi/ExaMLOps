@@ -16,10 +16,13 @@ Importing this module registers all four domains as a side effect.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 from .providers import Provider, ProviderMeta, register_provider
+
+logger = logging.getLogger(__name__)
 
 # ── llm_cost ──────────────────────────────────────────────────────────────────
 
@@ -274,7 +277,11 @@ def cache_savings_via_provider(
             "cost_saved_usd": float(out.get("cost_saved_usd", cost_saved_usd)),
         }
     except Exception:
-        # A bad plugin/config must never break stats reporting — degrade to the caller's own math.
+        # A bad plugin/config must never break stats reporting — degrade to the caller's own math,
+        # but visibly: a silent fallback here is indistinguishable from "no provider configured".
+        logger.warning(
+            "llm_cache provider %r failed; cache_stats() falls back to its own math", name
+        )
         return None
 
 
@@ -302,6 +309,7 @@ def route_score_via_provider(
     try:
         block = load_domain_config(_DOMAIN_ROUTING)
     except Exception:
+        logger.warning("llm_routing config block failed to load; using registry defaults only")
         block = {}
     name = provider or _os.getenv("EXAMLOPS_LLM_ROUTING_PROVIDER") or block.get("provider")
     try:
@@ -318,6 +326,9 @@ def route_score_via_provider(
         score = out.get("score")
         return float(score) if score is not None else _NEG_INF
     except Exception:
+        # A silent 0.0 here is indistinguishable from a real tie between deployments — log it so
+        # a routing decision that looks wrong is traceable to a broken provider, not a mystery.
+        logger.warning("llm_routing provider %r failed; scoring this deployment as 0.0", name)
         return 0.0
 
 
@@ -363,6 +374,9 @@ def rag_quality_via_provider(
             "relevance": float(out.get("relevance", 0.0)),
         }
     except Exception:
+        logger.warning(
+            "rag_quality provider %r failed; falling back to set-membership precision/recall", name
+        )
         return None
 
 
