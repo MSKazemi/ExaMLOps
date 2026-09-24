@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - dedicated LLM gateway service guide
+
+- `docs/guides/llm-gateway.md` documents the real, standalone `llm-gateway` HTTP service
+  end-to-end (auth/RPM-TPM, the full per-request pipeline, `gateway.yaml`, every endpoint, the
+  typed error contract, the full metric list, and known gaps) -- previously scattered across
+  `agent.md`/`env-vars.md`. Cross-referenced against `model-gateway.md` (the different, in-process
+  client library) and `serving-gateway.md` (the different, predictive-traffic Envoy front door).
+
 ### Added - queue depth, retry and fallback metrics complete the LLM gateway's metric contract
 
 - `llm_gateway_queue_depth{provider,model}` (from the existing `Bulkhead.waiting`),

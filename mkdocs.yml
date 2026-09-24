@@ -229,6 +229,7 @@ nav:
       - LLMOps:
           - Prompt management: guides/prompt-management.md
           - Model gateway: guides/model-gateway.md
+          - LLM gateway service: guides/llm-gateway.md
           - RAG: guides/rag.md
           - Vector store: guides/vector-store.md
           - Embedding lifecycle: guides/embedding-lifecycle.md
