@@ -176,6 +176,7 @@ class GatewayCore:
                     "breaker": st.breaker.state,
                     "open_remaining_s": round(st.breaker.open_remaining(), 3),
                     "inflight": st.inflight,
+                    "queue_depth": st.bulkhead.waiting if st.bulkhead else 0,
                     "ewma_ttft_ms": st.ewma_ttft_ms,
                     "ok": st.ok,
                     "errors": st.errors,

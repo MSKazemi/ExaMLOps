@@ -529,6 +529,45 @@ async def test_metrics_count_requests_with_bounded_labels(upstream):
     assert "attacker-chosen" not in text  # client-controlled names never become label values
     assert 'model="unknown"' in text
     assert "llm_gateway_ttft_seconds" in text and "llm_gateway_breaker_state" in text
+    assert "llm_gateway_queue_depth" in text
+
+
+async def test_retry_and_fallback_metrics_count_a_failover(upstream):
+    upstream.down_hosts = {"ollama.test"}
+    cfg = {**MIXED, "defaults": {"allowed_localities": ["local", "site", "external"]}}
+    async with client(make_app(upstream, config=cfg)) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "mixed", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        text = (await c.get("/metrics", headers=ADMIN_H)).text
+    assert r.status_code == 200 and r.headers["x-examlops-provider"] == "omni"
+    assert 'llm_gateway_retries_total{reason="upstream_unavailable"} 1.0' in text
+    assert 'llm_gateway_fallbacks_total{from_provider="n1",to_provider="omni"} 1.0' in text
+
+
+async def test_no_retry_or_fallback_metric_on_a_single_successful_attempt(upstream):
+    async with client(make_app(upstream)) as c:
+        await c.post("/v1/chat/completions", json=BODY)
+        text = (await c.get("/metrics", headers=ADMIN_H)).text
+    # Declared (HELP/TYPE always print) but never incremented ⇒ no sample line — see the cache
+    # metric's identical absence test above for why a bare substring check would be wrong here.
+    assert "llm_gateway_retries_total{" not in text
+    assert "llm_gateway_fallbacks_total{" not in text
+
+
+async def test_retry_metric_counts_even_a_total_failure(upstream):
+    """Every candidate fails: still worth knowing how many attempts a failed request burned."""
+    cfg = {**MIXED, "defaults": {"allowed_localities": ["local", "site", "external"]}}
+    upstream.mode = "down"
+    async with client(make_app(upstream, config=cfg)) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "mixed", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        text = (await c.get("/metrics", headers=ADMIN_H)).text
+    assert r.status_code == 503
+    assert 'llm_gateway_retries_total{reason="upstream_unavailable"} 1.0' in text
 
 
 async def test_tpot_metric_is_observed_when_more_than_one_token_completes(upstream):

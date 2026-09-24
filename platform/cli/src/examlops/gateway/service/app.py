@@ -287,10 +287,28 @@ class _Metrics:
         self.inflight = Gauge(
             "llm_gateway_inflight", "Requests in flight.", ["provider", "model"], registry=reg
         )
+        self.queue_depth = Gauge(
+            "llm_gateway_queue_depth",
+            "Requests waiting for a bulkhead slot (ADR 0153 d6).",
+            ["provider", "model"],
+            registry=reg,
+        )
         self.provider_up = Gauge(
             "llm_gateway_provider_up",
             "1 when the provider's last probe succeeded.",
             ["provider"],
+            registry=reg,
+        )
+        self.retries = Counter(
+            "llm_gateway_retries",
+            "Attempts beyond the first, by the prior attempt's outcome (ADR 0156 d2).",
+            ["reason"],
+            registry=reg,
+        )
+        self.fallbacks = Counter(
+            "llm_gateway_fallbacks",
+            "Switches from one deployment to another within a single request.",
+            ["from_provider", "to_provider"],
             registry=reg,
         )
 
@@ -551,6 +569,14 @@ def create_app(
         if key_hash and cost:
             _account("key spend", add_key_spend, key_hash, cost)
 
+    def record_retries_and_fallbacks(attempts: list[dict[str, Any]]) -> None:
+        """Every attempt after the first in one request is both a retry (of the request) and a
+        fallback (to the next deployment `GatewayCore`'s candidate loop moved to) — the loop never
+        retries the same deployment twice, so the two events always coincide here."""
+        for prev, cur in zip(attempts, attempts[1:], strict=False):
+            metrics.retries.labels(prev["outcome"]).inc()
+            metrics.fallbacks.labels(prev["provider"], cur["provider"]).inc()
+
     # ── /v1/chat/completions ─────────────────────────────────────────────────
 
     async def read_body(request: Request) -> _ChatBody:
@@ -667,6 +693,7 @@ def create_app(
             budget = request.headers.get("x-examlops-budget-ms")
             budget_ms = float(budget) if budget and budget.replace(".", "", 1).isdigit() else None
             attempts: list[dict[str, Any]] = []
+            attempts_recorded = False  # guards against double-counting on a later exception
 
             cache_kw = {
                 "temperature": body.temperature,
@@ -714,6 +741,8 @@ def create_app(
                     await record_token_usage(
                         auth, result.usage.prompt_tokens + result.usage.completion_tokens
                     )
+                record_retries_and_fallbacks(attempts)
+                attempts_recorded = True
                 metrics.requests.labels(route_label, provider, upstream, "200", "ok").inc()
                 metrics.seconds.labels(route_label).observe(ms / 1000.0)
                 if result.ttft_ms is not None:
@@ -775,7 +804,11 @@ def create_app(
             )  # a failure before the first token is still a proper HTTP error
             served = attempts[-1] if attempts else {}
             provider, upstream = served.get("provider", "none"), served.get("model", "unknown")
+            record_retries_and_fallbacks(attempts)  # pre-first-token failovers only (ADR 0153 d9)
+            attempts_recorded = True
         except Exception as exc:  # noqa: BLE001 - every failure leaves as the typed envelope
+            if "attempts" in locals() and not attempts_recorded:
+                record_retries_and_fallbacks(attempts)
             if (
                 rt is not None
                 and route_label != "unknown"
@@ -1032,6 +1065,7 @@ def create_app(
                         _BREAKER_VALUE[s["breaker"]]
                     )
                     metrics.inflight.labels(d.provider.name, d.model).set(s["inflight"])
+                    metrics.queue_depth.labels(d.provider.name, d.model).set(s["queue_depth"])
             return Response(
                 generate_latest(metrics.registry), media_type="text/plain; version=0.0.4"
             )

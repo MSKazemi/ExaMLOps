@@ -5,6 +5,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - queue depth, retry and fallback metrics complete the LLM gateway's metric contract
+
+- `llm_gateway_queue_depth{provider,model}` (from the existing `Bulkhead.waiting`),
+  `llm_gateway_retries_total{reason}` and `llm_gateway_fallbacks_total{from_provider,to_provider}`
+  (derived from the per-request `attempts` list every response already builds, no new state) close
+  the last gap in ADR 0156's metric contract.
+
 ### Added - DNS-rebinding-safe egress for the LLM gateway's real network connections
 
 - A provider's `base_url` used to be validated exactly once, at construction -- a hostname whose
