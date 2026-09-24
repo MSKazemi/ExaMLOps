@@ -78,11 +78,16 @@ def coord_check_and_set_idempotent(key: str, ttl_s: float) -> bool:
     return write_retry(_cas)
 
 
-def coord_rate_allow(bucket: str, limit: int, window_s: float) -> bool:
+def coord_rate_allow(bucket: str, limit: int, window_s: float, *, amount: int = 1) -> bool:
     """Fixed-window rate limit (item 1.2). True if under ``limit`` for the current window.
 
-    Atomically increments the window counter and returns whether the operation is allowed. When a
-    new window starts the counter resets. Cross-process via the shared DB.
+    Atomically adds ``amount`` to the window counter and returns whether the *pre-addition* total
+    was already at or over ``limit`` — i.e. whether this addition is allowed. When a new window
+    starts the counter resets to ``amount``. Cross-process via the shared DB.
+
+    ``amount=0`` (BL-107) is a pure **check**: it reads the current total against ``limit`` without
+    changing it — the way to ask "would the next call be over budget" (e.g. a token-per-minute cap,
+    whose actual cost is only known after a call completes) without also charging for the answer.
     """
     win = max(1, int(window_s))
 
@@ -99,14 +104,17 @@ def coord_rate_allow(bucket: str, limit: int, window_s: float) -> bool:
             if fresh:
                 conn.execute(
                     "INSERT INTO coord_rate (bucket, window_start, count) "
-                    "VALUES (?, CURRENT_TIMESTAMP, 1) "
-                    "ON CONFLICT(bucket) DO UPDATE SET window_start=CURRENT_TIMESTAMP, count=1",
-                    (bucket,),
+                    "VALUES (?, CURRENT_TIMESTAMP, ?) "
+                    "ON CONFLICT(bucket) DO UPDATE SET window_start=CURRENT_TIMESTAMP, count=?",
+                    (bucket, amount, amount),
                 )
-                return True
+                return amount <= limit
             if row["count"] >= limit:
                 return False
-            conn.execute("UPDATE coord_rate SET count = count + 1 WHERE bucket=?", (bucket,))
+            if amount:
+                conn.execute(
+                    "UPDATE coord_rate SET count = count + ? WHERE bucket=?", (amount, bucket)
+                )
             return True
 
     return write_retry(_allow)

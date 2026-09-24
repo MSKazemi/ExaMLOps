@@ -17,6 +17,7 @@ app = typer.Typer(
 _EXAMPLES = (
     "Examples:\n\n"
     "  exa gateway key issue --tenant acme --project chat --budget 50 --model gpt-judge\n\n"
+    "  exa gateway key issue --tenant acme --project chat --rpm 60 --tpm 100000\n\n"
     "  exa gateway key list\n\n"
     "  exa gateway key revoke <key-hash>\n\n"
     "  exa gateway chat default --message 'hello there'\n\n"
@@ -45,13 +46,35 @@ def key_issue(
         None, "--model", help="Allow-list model (repeatable; omit = all models)"
     ),
     budget: float | None = typer.Option(None, "--budget", help="Budget in USD (omit = unlimited)"),
+    rpm: int | None = typer.Option(
+        None, "--rpm", help="Requests-per-minute cap (BL-107; omit = unlimited)"
+    ),
+    tpm: int | None = typer.Option(
+        None, "--tpm", help="Tokens-per-minute cap (BL-107; omit = unlimited)"
+    ),
 ) -> None:
     """Issue a virtual key (printed once — only its hash is stored)."""
     from examlops.gateway import issue_virtual_key
 
-    raw = issue_virtual_key(tenant, project, list(model) if model else None, budget, _actor())
+    raw = issue_virtual_key(
+        tenant,
+        project,
+        list(model) if model else None,
+        budget,
+        _actor(),
+        rpm_limit=rpm,
+        tpm_limit=tpm,
+    )
     if _output.json_mode:
-        _output.print_json({"virtual_key": raw, "tenant": tenant, "project": project})
+        _output.print_json(
+            {
+                "virtual_key": raw,
+                "tenant": tenant,
+                "project": project,
+                "rpm_limit": rpm,
+                "tpm_limit": tpm,
+            }
+        )
     else:
         _output.ok(f"Issued virtual key for {tenant}/{project} (save it now — shown once):")
         typer.echo(raw)

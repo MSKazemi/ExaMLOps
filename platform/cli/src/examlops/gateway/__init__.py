@@ -180,9 +180,14 @@ def issue_virtual_key(
     budget_usd: float | None,
     actor: str,
     *,
+    rpm_limit: int | None = None,
+    tpm_limit: int | None = None,
     source: str = "exa-gateway",
 ) -> str:
     """Issue a virtual key scoped to a tenant/project (+ allow-list + budget). Audited (R5).
+
+    ``rpm_limit``/``tpm_limit`` (BL-107) cap requests/tokens per minute; ``None`` = unlimited, same
+    convention as ``budget_usd``.
 
     ``source`` attributes the audit event to the calling surface (``"exa-gateway"`` by default; the
     dashboard passes ``"dashboard"``) so this shared issuance path serves every face of the platform.
@@ -197,6 +202,8 @@ def issue_virtual_key(
         project=project,
         models=models,
         budget_usd=budget_usd,
+        rpm_limit=rpm_limit,
+        tpm_limit=tpm_limit,
         created_by=actor,
     )
     write_audit_event(
@@ -204,7 +211,12 @@ def issue_virtual_key(
         actor,
         "virtual_key_issued",
         f"{tenant}/{project}",
-        {"models": models or "all", "budget_usd": budget_usd},
+        {
+            "models": models or "all",
+            "budget_usd": budget_usd,
+            "rpm_limit": rpm_limit,
+            "tpm_limit": tpm_limit,
+        },
     )
     return raw
 

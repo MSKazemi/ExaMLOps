@@ -548,7 +548,7 @@ An OpenAI-compatible gateway in front of models: virtual keys with budgets, a se
 
 | Command | What it does | Use case | Example |
 |---|---|---|---|
-| `exa gateway key issue` | Issues a virtual key (printed once — only its hash is stored); `--tenant`, `--project`, `--model` (repeatable allow-list), `--budget` USD. | Grant scoped, budgeted API access to a tenant/project. **mutation** | `exa gateway key issue --tenant acme --project research --model JPCP --budget 100` |
+| `exa gateway key issue` | Issues a virtual key (printed once — only its hash is stored); `--tenant`, `--project`, `--model` (repeatable allow-list), `--budget` USD, `--rpm`/`--tpm` requests/tokens-per-minute caps (BL-107, enforced by the gateway service via the shared coordinator). | Grant scoped, budgeted, rate-limited API access to a tenant/project. **mutation** | `exa gateway key issue --tenant acme --project research --model JPCP --budget 100 --rpm 60 --tpm 100000` |
 | `exa gateway key list` | Lists virtual keys (hashes only). | Inventory issued keys and their scopes. | `exa gateway key list` |
 | `exa gateway quota set TENANT RPM` | Caps a tenant's requests per minute at the serving gateway (`0` = unlimited for that tenant); reaches the gateway in the next serving snapshot. | Give a noisy or premium tenant its own limit without redeploying the gateway. | `exa gateway quota set acme 120` |
 | `exa gateway quota list` | Lists per-tenant quotas (tenants without one use `EXAMLOPS_GATEWAY_TENANT_RPM`). | See who has a non-default limit. | `exa gateway quota list` |

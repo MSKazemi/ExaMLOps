@@ -360,6 +360,65 @@ async def test_the_key_allow_list_and_budget_are_enforced(upstream):
     assert upstream.chat_bodies == []
 
 
+# ── RPM/TPM rate limiting (BL-107, 2026-09-24) ────────────────────────────────
+
+
+async def test_rpm_limit_blocks_after_the_cap(upstream):
+    raw = issue_virtual_key("acme", "p", None, None, "admin", rpm_limit=2)
+    headers = {"Authorization": f"Bearer {raw}"}
+    async with client(make_app(upstream, auth="keys")) as c:
+        r1 = await c.post("/v1/chat/completions", json=BODY, headers=headers)
+        r2 = await c.post("/v1/chat/completions", json=BODY, headers=headers)
+        r3 = await c.post("/v1/chat/completions", json=BODY, headers=headers)
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert r3.status_code == 429 and r3.json()["error"]["code"] == "rate_limited"
+    assert r3.headers["retry-after"] == "60"
+    assert len(upstream.chat_bodies) == 2  # the 3rd never reached the backend
+
+
+async def test_tpm_limit_blocks_once_the_window_budget_is_spent(upstream):
+    # The fake upstream reports prompt_eval_count=4 + eval_count=2 = 6 tokens per call.
+    raw = issue_virtual_key("acme", "p", None, None, "admin", tpm_limit=5)
+    headers = {"Authorization": f"Bearer {raw}"}
+    async with client(make_app(upstream, auth="keys")) as c:
+        r1 = await c.post("/v1/chat/completions", json=BODY, headers=headers)  # under cap, spends 6
+        r2 = await c.post("/v1/chat/completions", json=BODY, headers=headers)  # 6 >= 5: blocked
+    assert r1.status_code == 200
+    assert r2.status_code == 429 and r2.json()["error"]["code"] == "rate_limited"
+    assert len(upstream.chat_bodies) == 1
+
+
+async def test_no_limit_configured_is_unrestricted(upstream):
+    raw = issue_virtual_key("acme", "p", None, None, "admin")  # rpm/tpm both unset
+    headers = {"Authorization": f"Bearer {raw}"}
+    async with client(make_app(upstream, auth="keys")) as c:
+        results = [
+            (await c.post("/v1/chat/completions", json=BODY, headers=headers)).status_code
+            for _ in range(5)
+        ]
+    assert results == [200] * 5
+
+
+async def test_rate_limiting_is_a_no_op_without_a_key(upstream):
+    """`LLM_GATEWAY_AUTH=off` has no virtual key to attach a limit to — same as budget/allow-list."""
+    async with client(make_app(upstream, auth="off")) as c:
+        results = [(await c.post("/v1/chat/completions", json=BODY)).status_code for _ in range(5)]
+    assert results == [200] * 5
+
+
+async def test_rpm_limit_is_per_key_not_shared_globally(upstream):
+    a = issue_virtual_key("acme", "p", None, None, "admin", rpm_limit=1)
+    b = issue_virtual_key("acme", "p", None, None, "admin", rpm_limit=1)
+    async with client(make_app(upstream, auth="keys")) as c:
+        ra = await c.post(
+            "/v1/chat/completions", json=BODY, headers={"Authorization": f"Bearer {a}"}
+        )
+        rb = await c.post(
+            "/v1/chat/completions", json=BODY, headers={"Authorization": f"Bearer {b}"}
+        )
+    assert ra.status_code == 200 and rb.status_code == 200  # independent 1-per-minute budgets
+
+
 # ── models, health, readiness ─────────────────────────────────────────────────
 
 

@@ -2328,6 +2328,14 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "dataplane_streams": {
         "state_reason": "TEXT",
     },
+    # BL-107 (2026-09-24): per-key RPM/TPM rate limits alongside the existing budget_usd, same
+    # NULL = unlimited convention. Enforced by the LLM gateway service via the shared Coordinator
+    # (EXAMLOPS_COORDINATOR) so the limit holds across every process/replica sharing platform.db
+    # (or every host, on the redis backend) — never an in-memory-per-process counter.
+    "virtual_keys": {
+        "rpm_limit": "INTEGER",
+        "tpm_limit": "INTEGER",
+    },
 }
 
 

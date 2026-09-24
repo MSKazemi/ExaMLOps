@@ -125,12 +125,14 @@ class _FakeRedis:
 
     def eval(self, script, key_count, key, *args):
         assert key_count == 1
-        if "redis.call('incr'" in script:
-            value = int(self.values.get(key, 0)) + 1
-            self.values[key] = value
-            if value == 1:
-                self.expiry_ms[key] = int(args[0])
-            return value
+        if "local pre =" in script:  # the amount-aware rate-limit script (BL-107)
+            window_ms, amount, limit = int(args[0]), int(args[1]), int(args[2])
+            pre = int(self.values.get(key, 0))
+            if pre >= limit:
+                return 0
+            self.values[key] = pre + amount
+            self.expiry_ms.setdefault(key, window_ms)  # set once, like `ttl == -1` in real Redis
+            return 1
         holder = str(args[0])
         if "redis.call('pexpire'" in script:
             if self.values.get(key) == holder:

@@ -141,8 +141,18 @@ _CLIENT_CODES = frozenset(
         "model_not_found",
         "key_invalid",
         "guardrail_blocked",
+        "rate_limited",
     }
 )
+
+
+@dataclass
+class _AuthResult:
+    key_hash: str | None
+    allow: list[str]
+    tenant: str
+    rpm_limit: int | None
+    tpm_limit: int | None
 
 
 @dataclass
@@ -413,6 +423,11 @@ def create_app(
             code, status, message, attempts = "internal_error", 500, "internal gateway error", []
         if code == "locality_denied":
             metrics.denials.labels("locality").inc()
+        elif code == "rate_limited":
+            metrics.denials.labels("rate_limit").inc()
+            # A fixed 60s window: an honest upper bound (the window can reset sooner), not a
+            # promise — coord_rate_allow's boolean result carries no exact remaining-time.
+            headers.setdefault("retry-after", "60")
         metrics.requests.labels(route, provider, model, str(status), code).inc()
         return JSONResponse(
             _envelope(code, message, rid, attempts=attempts), status, headers=headers
@@ -424,12 +439,10 @@ def create_app(
         header = request.headers.get("authorization", "")
         return header[7:].strip() if header[:7].lower() == "bearer " else None
 
-    async def authenticate(
-        request: Request, model: str | None
-    ) -> tuple[str | None, list[str], str]:
-        """→ (key hash, model allow-list, tenant). Off ⇒ (None, [], "default")."""
+    async def authenticate(request: Request, model: str | None) -> _AuthResult:
+        """Off ⇒ an unlimited, keyless result (tenant "default")."""
         if auth_mode == "off":
-            return None, [], "default"
+            return _AuthResult(None, [], "default", None, None)
         raw = bearer(request)
         if not raw:
             raise KeyInvalid("missing bearer token: send `Authorization: Bearer <virtual key>`")
@@ -444,7 +457,55 @@ def create_app(
                 raise KeyInvalid("unknown or revoked virtual key")
         if rec is None:  # unreachable: authorize() raises instead of returning None
             raise KeyInvalid("unknown or revoked virtual key")
-        return _hash_key(raw), list(rec.get("models") or []), str(rec.get("tenant") or "default")
+        return _AuthResult(
+            key_hash=_hash_key(raw),
+            allow=list(rec.get("models") or []),
+            tenant=str(rec.get("tenant") or "default"),
+            rpm_limit=rec.get("rpm_limit"),
+            tpm_limit=rec.get("tpm_limit"),
+        )
+
+    async def enforce_rate_limits(auth: _AuthResult) -> None:
+        """RPM/TPM caps (BL-107), checked before any dispatch. No-op for an unkeyed caller —
+        auth mode "off" has no virtual key to attach a limit to, same as budget/allow-list."""
+        if auth.key_hash is None or (auth.rpm_limit is None and auth.tpm_limit is None):
+            return
+        from examlops.coordination import get_coordinator
+
+        coordinator = get_coordinator()
+        if auth.rpm_limit is not None:
+            allowed = await asyncio.to_thread(
+                coordinator.allow, f"gateway:rpm:{auth.key_hash}", auth.rpm_limit, 60.0
+            )
+            if not allowed:
+                raise _Http(
+                    429, "rate_limited", f"requests-per-minute limit ({auth.rpm_limit}) exceeded"
+                )
+        if auth.tpm_limit is not None:
+            # amount=0: a pure read-only probe — the current window's actual cost isn't known
+            # until the response completes (record_token_usage records it then).
+            allowed = await asyncio.to_thread(
+                coordinator.allow, f"gateway:tpm:{auth.key_hash}", auth.tpm_limit, 60.0, amount=0
+            )
+            if not allowed:
+                raise _Http(
+                    429, "rate_limited", f"tokens-per-minute limit ({auth.tpm_limit}) exceeded"
+                )
+
+    async def record_token_usage(auth: _AuthResult, total_tokens: int) -> None:
+        """Charge a completed call's real token count against the TPM window (BL-107)."""
+        if auth.key_hash is None or auth.tpm_limit is None or total_tokens <= 0:
+            return
+        from examlops.coordination import get_coordinator
+
+        coordinator = get_coordinator()
+        await asyncio.to_thread(
+            coordinator.allow,
+            f"gateway:tpm:{auth.key_hash}",
+            auth.tpm_limit,
+            60.0,
+            amount=total_tokens,
+        )
 
     def require_admin(request: Request) -> None:
         if not token:
@@ -594,7 +655,9 @@ def create_app(
             body = await read_body(request)
             route = rt.catalog.resolve(body.model)
             route_label = route.name if route else "unknown"
-            key_hash, _, tenant = await authenticate(request, body.model)
+            auth = await authenticate(request, body.model)
+            key_hash, tenant = auth.key_hash, auth.tenant
+            await enforce_rate_limits(auth)
             hints = body.examlops or (body.extra_body or {}).get("examlops") or {}
             guard = state.guardrail_for(tenant)
             messages = await asyncio.to_thread(
@@ -647,6 +710,9 @@ def create_app(
                 if not cache_hit:  # a cache hit spent nothing and reused an already-accounted call
                     await asyncio.to_thread(
                         record, rt, route_label, key_hash, provider, result.usage, ms, error=False
+                    )
+                    await record_token_usage(
+                        auth, result.usage.prompt_tokens + result.usage.completion_tokens
                     )
                 metrics.requests.labels(route_label, provider, upstream, "200", "ok").inc()
                 metrics.seconds.labels(route_label).observe(ms / 1000.0)
@@ -779,6 +845,10 @@ def create_app(
                         record, rt, route_label, key_hash, provider, usage, ms, error=failed
                     )
                 )
+                if usage is not None and not failed:
+                    state.spawn(
+                        record_token_usage(auth, usage.prompt_tokens + usage.completion_tokens)
+                    )
             yield _sse("[DONE]")
 
         return StreamingResponse(
@@ -800,7 +870,7 @@ def create_app(
         rid = _request_id(request)
         try:
             rt = await state.ensure_runtime()
-            _, allow, _ = await authenticate(request, None)
+            allow = (await authenticate(request, None)).allow
             snap = rt.core.snapshot()
             data = []
             for name, route in rt.catalog.routes.items():

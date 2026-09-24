@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - per-key RPM/TPM rate limiting on the LLM gateway service
+
+- `exa gateway key issue --rpm/--tpm` caps requests/tokens per minute, enforced by the gateway
+  service before dispatch through the existing cross-process/cross-host `Coordinator` seam
+  (`EXAMLOPS_COORDINATOR`) rather than a new in-process limiter, so a limit genuinely holds
+  across every gateway replica. TPM uses a check-then-record split (a read-only probe before
+  dispatch, since a request's real cost isn't known until it completes). `Coordinator.allow()`
+  gained an additive, backward-compatible `amount=` parameter (default 1, unchanged for every
+  existing caller) to support this. New `virtual_keys.rpm_limit`/`tpm_limit` columns.
+
 ### Added - cache hit/miss and TPOT metrics on the LLM gateway service (ADR 0156)
 
 - New `llm_gateway_cache_total{result}` counter (hit/miss, only emitted while the opt-in semantic

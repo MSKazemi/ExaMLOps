@@ -71,15 +71,23 @@ def create_virtual_key(
     project: str = "default",
     models: list[str] | None = None,
     budget_usd: float | None = None,
+    rpm_limit: int | None = None,
+    tpm_limit: int | None = None,
     created_by: str | None = None,
 ) -> None:
-    """Store a virtual key (only its hash — never the raw key)."""
+    """Store a virtual key (only its hash — never the raw key).
+
+    ``rpm_limit``/``tpm_limit`` (BL-107) are requests-per-minute / tokens-per-minute caps, ``None``
+    = unlimited — same convention as ``budget_usd``. Enforced by the gateway service via the shared
+    ``Coordinator``, not here; this function only persists the configured limit.
+    """
     init_db()
     with get_db() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO virtual_keys
-                   (key_hash, tenant, project, models_json, budget_usd, spent_usd, created_by)
-               VALUES (?,?,?,?,?,
+                   (key_hash, tenant, project, models_json, budget_usd, rpm_limit, tpm_limit,
+                    spent_usd, created_by)
+               VALUES (?,?,?,?,?,?,?,
                    COALESCE((SELECT spent_usd FROM virtual_keys WHERE key_hash=?), 0), ?)""",
             (
                 key_hash,
@@ -87,6 +95,8 @@ def create_virtual_key(
                 project,
                 json.dumps(models or []),
                 budget_usd,
+                rpm_limit,
+                tpm_limit,
                 key_hash,
                 created_by,
             ),

@@ -27,7 +27,7 @@ class Coordinator(Protocol):
     def try_lock(self, key: str, holder: str, ttl_s: float) -> bool: ...
     def unlock(self, key: str, holder: str) -> None: ...
     def first_seen(self, key: str, ttl_s: float) -> bool: ...
-    def allow(self, bucket: str, limit: int, window_s: float) -> bool: ...
+    def allow(self, bucket: str, limit: int, window_s: float, *, amount: int = 1) -> bool: ...
 
 
 class DbCoordinator:
@@ -55,12 +55,12 @@ class DbCoordinator:
         init_db()
         return coord_check_and_set_idempotent(key, ttl_s)
 
-    def allow(self, bucket: str, limit: int, window_s: float) -> bool:
+    def allow(self, bucket: str, limit: int, window_s: float, *, amount: int = 1) -> bool:
         from examlops.data import init_db
         from examlops.data.coordination import coord_rate_allow
 
         init_db()
-        return coord_rate_allow(bucket, limit, window_s)
+        return coord_rate_allow(bucket, limit, window_s, amount=amount)
 
 
 class RedisCoordinator:
@@ -87,12 +87,21 @@ class RedisCoordinator:
     end
     return 0
     """
+    #: Mirrors ``coord_rate_allow``'s semantics exactly: check the *pre-addition* total against
+    #: the limit (so ``amount=0`` is a pure read-only probe, per BL-107), then unconditionally add
+    #: ``amount`` when allowed. TTL is set/refreshed off ``ttl == -1`` rather than "count == amount"
+    #: so a bucket whose very first touch is a 0-amount check still expires (a fixed "was this
+    #: the first call" check would miss it, leaking a permanent key).
     _RATE_SCRIPT = """
-    local count = redis.call('incr', KEYS[1])
-    if count == 1 then
+    local pre = tonumber(redis.call('get', KEYS[1]) or '0')
+    if pre >= tonumber(ARGV[3]) then
+      return 0
+    end
+    local count = redis.call('incrby', KEYS[1], ARGV[2])
+    if redis.call('ttl', KEYS[1]) == -1 then
       redis.call('pexpire', KEYS[1], ARGV[1])
     end
-    return count
+    return 1
     """
 
     def __init__(self, client: Any | None = None) -> None:
@@ -152,16 +161,18 @@ class RedisCoordinator:
             )
         )
 
-    def allow(self, bucket: str, limit: int, window_s: float) -> bool:
+    def allow(self, bucket: str, limit: int, window_s: float, *, amount: int = 1) -> bool:
         if limit <= 0:
             return False
-        count = self._client.eval(
+        result = self._client.eval(
             self._RATE_SCRIPT,
             1,
             self._key("rate", bucket),
             self._ttl_ms(window_s),
+            amount,
+            limit,
         )
-        return int(count) <= limit
+        return bool(result)
 
 
 _BACKENDS: dict[str, type] = {"db": DbCoordinator, "redis": RedisCoordinator}
