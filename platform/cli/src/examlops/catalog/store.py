@@ -26,12 +26,14 @@ from examlops.catalog.manifest import (
 from examlops.data import catalog as _store
 
 __all__ = [
+    "CatalogSignatureError",
     "get_entry",
     "latest_version",
     "list_entries",
     "list_pulls",
     "publish_entry",
     "resolve_ref",
+    "verify_entry_signature",
 ]
 
 
@@ -124,6 +126,91 @@ def get_entry(ref: str) -> CatalogEntry | None:
     name, version = resolve_ref(ref)
     row = _store.get_entry_row(name, version) if version else _store.latest_entry_row(name)
     return CatalogEntry.from_row(row) if row else None
+
+
+class CatalogSignatureError(RuntimeError):
+    """A ``T1_signed`` entry's HMAC does not match its stored content — the row was altered."""
+
+
+def verify_entry_signature(ref: str, *, require_signed: bool = False) -> str:
+    """``verified`` / ``unsigned`` / ``unverifiable`` — or raise when the entry cannot be trusted.
+
+    ADR 0158 decision 1: ``exa catalog pull`` calls "the same verify_before_load()-shaped gate
+    ``exa models`` already calls before a version is served" — this is that gate for a catalog
+    entry. There is no artifact digest to check (a pull materializes a YAML definition, never
+    downloads model weights, decision 4), so what is verified is the entry's own signed content:
+    the HMAC :func:`examlops.catalog.store.publish_entry` computed over the canonical JSON of the
+    entry (minus ``provenance``, which would otherwise sign itself) is recomputed here over the
+    exact same bytes — the **stored** ``manifest_json``, not :meth:`CatalogEntry.manifest`'s
+    display-augmented view (which adds ``catalog_version`` back in for `exa catalog show`), so
+    there is no second, parallel reimplementation of "what was signed" to drift from the original.
+
+    Mirrors :func:`examlops.finetuning.verify_adapter_signature`'s exact fail-closed contract (the
+    other HMAC-over-an-identity, not an artifact-digest, signature in this codebase):
+
+    * ``T1_unsigned``/``unpinned`` — nothing to check; returns ``"unsigned"``.
+    * ``T1_signed`` but no signing key configured on this host — reported, not a pass:
+      ``"unverifiable"`` (or refused, if ``require_signed``).
+    * ``T1_signed`` and the HMAC does not match — the row was edited after publish, or
+      ``trust_tier`` was set without a real signature — raises :class:`CatalogSignatureError`,
+      always, regardless of ``require_signed``: a claimed-but-false signature is never a pass.
+    """
+    import hmac
+    import json
+
+    from examlops.supplychain import SigningKeyMissing, _hmac_sign
+
+    name, version = resolve_ref(ref)
+    row = _store.get_entry_row(name, version) if version else _store.latest_entry_row(name)
+    if row is None:
+        raise CatalogEntryError([f"{ref!r}: unknown catalog entry"])
+    if row["trust_tier"] != "T1_signed":
+        if require_signed and _signing_configured():
+            raise CatalogSignatureError(
+                f"catalog entry {ref} is unsigned but a signing key is configured — an unsigned "
+                "entry cannot be verified; re-publish it with --sign"
+            )
+        return "unsigned"
+    manifest = json.loads(row["manifest_json"])
+    supplychain_ref = str((manifest.get("provenance") or {}).get("supplychain_ref") or "")
+    algo, _, signature = supplychain_ref.partition(":")
+    if not signature:
+        raise CatalogSignatureError(
+            f"catalog entry {ref} is T1_signed but carries no supplychain_ref — the row was "
+            "altered after publish; refusing to trust it"
+        )
+    if algo != "hmac-sha256":
+        raise CatalogSignatureError(f"catalog entry {ref}: unknown signing algorithm {algo!r}")
+    payload = canonical_json({k: v for k, v in manifest.items() if k != "provenance"})
+    try:
+        expected = _hmac_sign(payload)
+    except SigningKeyMissing:
+        return "unverifiable"
+    except Exception as exc:  # noqa: BLE001 - a broken signer must not read as "no key"
+        raise CatalogSignatureError(
+            f"catalog entry {ref}: the signature cannot be checked because signing failed "
+            f"({type(exc).__name__}: {exc}); refusing to trust it"
+        ) from exc
+    if not hmac.compare_digest(signature, expected):
+        raise CatalogSignatureError(
+            f"catalog entry {ref}: the stored signature does not match its content — the row "
+            "was altered after publish; refusing to trust it"
+        )
+    return "verified"
+
+
+def _signing_configured() -> bool:
+    """True when a signing key resolves here (mirrors ``examlops.finetuning``'s own helper —
+    same question, same answer, asked of the same D3 keyring)."""
+    from examlops.supplychain import SigningKeyMissing, _signing_key
+
+    try:
+        _signing_key()
+    except SigningKeyMissing:
+        return False
+    except Exception:  # noqa: BLE001 - a broken key store is not "no key"; verification will say so
+        return True
+    return True
 
 
 def latest_version(name: str) -> int | None:

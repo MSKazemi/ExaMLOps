@@ -46,12 +46,14 @@ from examlops.catalog.manifest import (
 )
 from examlops.catalog.pull import CatalogPullError, PullResult, pull_entry, render_model_yaml
 from examlops.catalog.store import (
+    CatalogSignatureError,
     get_entry,
     latest_version,
     list_entries,
     list_pulls,
     publish_entry,
     resolve_ref,
+    verify_entry_signature,
 )
 
 __all__ = [
@@ -63,6 +65,7 @@ __all__ = [
     "CatalogEntry",
     "CatalogEntryError",
     "CatalogPullError",
+    "CatalogSignatureError",
     "PullResult",
     "canonical_json",
     "entry_hash_of",
@@ -76,4 +79,5 @@ __all__ = [
     "pull_entry",
     "render_model_yaml",
     "resolve_ref",
+    "verify_entry_signature",
 ]

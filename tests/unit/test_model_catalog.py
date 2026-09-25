@@ -264,6 +264,65 @@ def test_a_curator_cannot_self_declare_a_signature():
     assert entry.supplychain_ref is None
 
 
+# ── verify_entry_signature: the verify-before-load-shaped gate (ADR 0158 decision 1) ───────
+
+
+def test_a_genuinely_signed_entry_verifies(monkeypatch):
+    """The real signer, not a mock — proves the recomputed HMAC actually matches what was signed,
+    not merely that the two code paths agree with each other on a fake value."""
+    monkeypatch.setenv("EXAMLOPS_SIGNING_KEY", "a-real-test-signing-key")
+    _, entry = catalog.publish_entry(_entry(), actor="alice", sign=True)
+    assert entry.trust_tier == "T1_signed"
+    assert catalog.verify_entry_signature(entry.ref) == "verified"
+
+
+def test_an_unsigned_entry_has_nothing_to_verify():
+    _, entry = catalog.publish_entry(_entry(), actor="alice")
+    assert entry.trust_tier == "T1_unsigned"
+    assert catalog.verify_entry_signature(entry.ref) == "unsigned"
+
+
+def test_a_signed_entry_is_unverifiable_with_no_key_configured_on_this_host(monkeypatch):
+    """Signed elsewhere, read here with no key — reported, not silently treated as a pass."""
+    monkeypatch.setenv("EXAMLOPS_SIGNING_KEY", "the-signing-key")
+    _, entry = catalog.publish_entry(_entry(), actor="alice", sign=True)
+    monkeypatch.delenv("EXAMLOPS_SIGNING_KEY", raising=False)
+    assert catalog.verify_entry_signature(entry.ref) == "unverifiable"
+
+
+def test_a_tampered_signed_entry_is_refused_not_reported_as_verified(monkeypatch):
+    """The row was edited in the datastore after signing — caught, always, never a quiet pass."""
+    monkeypatch.setenv("EXAMLOPS_SIGNING_KEY", "a-real-test-signing-key")
+    _, entry = catalog.publish_entry(_entry(), actor="alice", sign=True)
+    manifest = json.loads(store.get_entry_row(entry.name, entry.catalog_version)["manifest_json"])
+    manifest["license"] = "mit"
+    from examlops.data import get_db
+
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE catalog_entries SET manifest_json=? WHERE name=? AND catalog_version=?",
+            (json.dumps(manifest), entry.name, entry.catalog_version),
+        )
+        conn.commit()
+    with pytest.raises(catalog.CatalogSignatureError, match="does not match"):
+        catalog.verify_entry_signature(entry.ref)
+
+
+def test_a_stripped_supplychain_ref_on_a_claimed_t1_signed_row_is_refused():
+    """T1_signed with no supplychain_ref at all is not "unsigned" — it is a broken claim."""
+    from examlops.data import get_db
+
+    _, entry = catalog.publish_entry(_entry(), actor="alice")  # T1_unsigned
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE catalog_entries SET trust_tier='T1_signed' WHERE name=? AND catalog_version=?",
+            (entry.name, entry.catalog_version),
+        )
+        conn.commit()
+    with pytest.raises(catalog.CatalogSignatureError, match="no supplychain_ref"):
+        catalog.verify_entry_signature(entry.ref)
+
+
 def test_listing_filters_without_registry_concepts():
     catalog.publish_entry(_entry(), actor="a")
     catalog.publish_entry(
@@ -398,6 +457,66 @@ def test_pull_into_a_missing_project_is_refused(models_dir, repo_root, monkeypat
     _, entry = catalog.publish_entry(_entry(), actor="alice")
     with pytest.raises(CatalogPullError, match="does not exist"):
         catalog.pull_entry(entry, "no-such-project", models_dir=models_dir)
+
+
+def test_pull_of_a_genuinely_signed_entry_succeeds(models_dir, repo_root, monkeypatch):
+    """ADR 0158 decision 1's verify-before-load-shaped gate does not block a real signature."""
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setenv("EXAMLOPS_SIGNING_KEY", "a-real-test-signing-key")
+    create_project("research")
+    _, entry = catalog.publish_entry(_entry(), actor="alice", sign=True)
+    assert entry.trust_tier == "T1_signed"
+    result = catalog.pull_entry(
+        entry, "research", model_name="MyPower", actor="alice", models_dir=models_dir
+    )
+    assert Path(result.path).is_file()
+    assert result.trust_tier == "T1_signed"
+
+
+def test_pull_refuses_a_tampered_signed_entry(models_dir, repo_root, monkeypatch):
+    """The one thing decision 1 exists to catch: a T1_signed row that does not actually verify."""
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setenv("EXAMLOPS_SIGNING_KEY", "a-real-test-signing-key")
+    create_project("research")
+    _, entry = catalog.publish_entry(_entry(), actor="alice", sign=True)
+    manifest = json.loads(store.get_entry_row(entry.name, entry.catalog_version)["manifest_json"])
+    manifest["license"] = "mit"
+    from examlops.data import get_db
+
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE catalog_entries SET manifest_json=? WHERE name=? AND catalog_version=?",
+            (json.dumps(manifest), entry.name, entry.catalog_version),
+        )
+        conn.commit()
+    # Re-read: pull_entry needs the current, live CatalogEntry, not the stale one from publish.
+    fresh = catalog.get_entry(entry.ref)
+    with pytest.raises(CatalogPullError, match="does not match"):
+        catalog.pull_entry(fresh, "research", model_name="MyPower", models_dir=models_dir)
+    assert not (models_dir / "mypower.yaml").exists(), "a refused pull must write nothing"
+
+
+def test_dry_run_also_refuses_a_tampered_signed_entry(models_dir, repo_root, monkeypatch):
+    """A dry-run preview that omits the one check that can refuse the real pull is not accurate."""
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setenv("EXAMLOPS_SIGNING_KEY", "a-real-test-signing-key")
+    create_project("research")
+    _, entry = catalog.publish_entry(_entry(), actor="alice", sign=True)
+    manifest = json.loads(store.get_entry_row(entry.name, entry.catalog_version)["manifest_json"])
+    manifest["license"] = "mit"
+    from examlops.data import get_db
+
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE catalog_entries SET manifest_json=? WHERE name=? AND catalog_version=?",
+            (json.dumps(manifest), entry.name, entry.catalog_version),
+        )
+        conn.commit()
+    fresh = catalog.get_entry(entry.ref)
+    with pytest.raises(CatalogPullError, match="does not match"):
+        catalog.pull_entry(
+            fresh, "research", model_name="MyPower", dry_run=True, models_dir=models_dir
+        )
 
 
 def test_an_unsigned_entry_is_flagged_in_the_file_it_writes(models_dir):

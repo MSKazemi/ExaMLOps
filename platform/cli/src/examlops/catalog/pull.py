@@ -36,6 +36,7 @@ from typing import Any
 import yaml
 
 from examlops.catalog.manifest import CatalogEntry
+from examlops.catalog.store import CatalogSignatureError, verify_entry_signature
 
 __all__ = [
     "CatalogPullError",
@@ -319,6 +320,18 @@ def pull_entry(
             f"project {project!r} does not exist — create it first (`exa project create "
             f"{project}`); a catalog entry is always pulled INTO a project (ADR 0086)"
         )
+    # ADR 0158 decision 1's verify-before-load-shaped gate. Runs even under dry_run — a preview
+    # that omits the one check that can refuse the real pull is not an accurate preview — and only
+    # for T1_signed entries: an unsigned one has nothing to verify (already flagged via
+    # `unsigned_source` above) and an unpinned source never became an entry at all (decision 3).
+    if entry.trust_tier == "T1_signed":
+        try:
+            verify_entry_signature(entry.ref)
+        except CatalogSignatureError as exc:
+            raise CatalogPullError(
+                f"{exc} — a catalog entry claiming to be signed must actually verify, or a pull "
+                "would be trusting a false signal (ADR 0158 decision 3)"
+            ) from exc
     if dry_run:
         return result
     if path.exists():
