@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+from typing import Any
 
 import typer
 
@@ -22,12 +24,336 @@ _EXAMPLES = (
     "  exa gateway key revoke <key-hash>\n\n"
     "  exa gateway chat default --message 'hello there'\n\n"
     "  # A model registered with `exa serve llm start` is a route under its own name\n"
-    "  exa gateway chat qwen-vl --message 'Summarise this alert' --key $EXA_KEY"
+    "  exa gateway chat qwen-vl --message 'Summarise this alert' --key $EXA_KEY\n\n"
+    "  exa gateway models --key $EXA_KEY\n\n"
+    "  exa gateway routes\n\n"
+    "  exa gateway reload"
 )
 
 
 def _actor() -> str:
     return os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+
+
+# ── The live llm-gateway service (ADR 0151/0155): validate/status/providers ────
+#
+# Everything above this point is the in-process `examlops.gateway` library (keys, quotas, cache,
+# a test chat via `GatewayClient`). These three commands are the first CLI surface over the
+# *deployed service itself* — before this an operator had no way to check it short of `curl`ing
+# raw endpoints, and no offline gate for a bad `gateway.yaml` before it reached production
+# (ADR 0155 decision 2 names `exa gateway validate` as that gate; it did not exist until now).
+
+
+def default_config_path():
+    from examlops.gateway.config import default_config_path as _default
+
+    return _default()
+
+
+def _sync_client(*, timeout: float | Any = 10.0):
+    """A synchronous HTTP client for the gateway service. Its own function so tests can replace
+    it with one bound to an in-process fake app, never a real socket."""
+    import httpx
+
+    return httpx.Client(timeout=timeout)
+
+
+def _gateway_url() -> str:
+    """Resolve, then validate (ADR 0154) — an env var is exactly the SSRF-shaped input the egress
+    check exists for, whether it was set by an operator's typo or a compromised script; the
+    in-process `gateway_service_backend` gets the identical check for the identical reason."""
+    from examlops.gateway.egress import validate_base_url
+
+    url = os.getenv("EXAMLOPS_LLM_GATEWAY_URL") or os.getenv("AGENT_LLM_GATEWAY_URL") or ""
+    return validate_base_url(url.rstrip("/") or "http://127.0.0.1:18020", locality="local")
+
+
+def _admin_headers() -> dict[str, str]:
+    token = os.getenv("LLM_GATEWAY_ADMIN_TOKEN", "")
+    if not token:
+        _output.error(
+            "LLM_GATEWAY_ADMIN_TOKEN is not set — the admin API is disabled without it",
+            hint="set it to the same value the gateway service was started with",
+        )
+    return {"Authorization": f"Bearer {token}"}
+
+
+@app.command("validate", epilog=_EXAMPLES)
+def validate_cfg(
+    file: str = typer.Argument(
+        None,
+        help="Path to a gateway.yaml; defaults to EXAMLOPS_GATEWAY_CONFIG / the site config dir",
+    ),
+) -> None:
+    """Validate a gateway.yaml offline (ADR 0155): every problem, with its path, no network call."""
+    from examlops.gateway.config import ConfigError, load_config_file, validate_config
+
+    path = (
+        file
+        or os.getenv("EXAMLOPS_GATEWAY_CONFIG")
+        or (str(p) if (p := default_config_path()) else None)
+    )
+    if path is None:
+        if _output.json_mode:
+            _output.print_json({"valid": True, "errors": [], "source": "generated"})
+        else:
+            _output.ok(
+                "no gateway.yaml configured — the service falls back to a generated config "
+                "from the reachable Ollama (nothing to validate)"
+            )
+        return
+    try:
+        raw = load_config_file(path)
+    except ConfigError as exc:
+        errors = list(exc.errors)
+        if _output.json_mode:
+            _output.print_json({"valid": False, "errors": errors, "source": path})
+            raise typer.Exit(1) from None
+        _output.error("\n".join(errors), hint=f"could not load {path}")
+    errors = validate_config(raw)
+    if _output.json_mode:
+        _output.print_json({"valid": not errors, "errors": errors, "source": path})
+        if errors:
+            raise typer.Exit(1)
+        return
+    if errors:
+        _output.error("\n".join(errors), hint=f"{path} is invalid")
+    _output.ok(f"{path} is valid")
+
+
+@app.command("status", epilog=_EXAMPLES)
+def status() -> None:
+    """Is the llm-gateway service up, and which routes can it currently serve?"""
+    from examlops.gateway.egress import EgressDenied
+
+    try:
+        url = _gateway_url()  # resolved once: the ADR 0154 check runs exactly one time per call
+    except EgressDenied as exc:
+        _output.error(str(exc))
+    try:
+        with _sync_client() as client:
+            resp = client.get(f"{url}/ready")
+    except Exception as exc:  # noqa: BLE001 - a network failure is an operator-facing message
+        _output.error(f"llm-gateway is unreachable: {exc}", hint=f"tried {url}")
+    try:
+        data = resp.json()
+    except ValueError:
+        _output.error(f"llm-gateway answered with a non-JSON body (HTTP {resp.status_code})")
+    if _output.json_mode:
+        _output.print_json(data)
+        if not data.get("ready"):
+            raise typer.Exit(1)
+        return
+    ready = bool(data.get("ready"))
+    routes = data.get("routes") or {}
+    _output.print_table(
+        f"llm-gateway — {url}",
+        ["Route", "Healthy", "Required", "Deployments"],
+        [
+            [
+                name,
+                "yes" if r.get("healthy") else "no",
+                "yes" if r.get("required") else "no",
+                str(r.get("deployments", "?")),
+            ]
+            for name, r in routes.items()
+        ]
+        or [["(no routes)", "", "", ""]],
+    )
+    for w in data.get("warnings") or []:
+        _output.warning(w)
+    (_output.ok if ready else _output.warning)(f"ready: {ready}")
+    if not ready:
+        raise typer.Exit(1)
+
+
+@app.command("providers", epilog=_EXAMPLES)
+def providers() -> None:
+    """Live provider health from the gateway's admin API — why a deployment is down, not just that it is."""
+    from examlops.gateway.egress import EgressDenied
+
+    headers = _admin_headers()  # checked (and may exit) before the URL is even resolved
+    try:
+        url = _gateway_url()
+    except EgressDenied as exc:
+        _output.error(str(exc))
+    try:
+        with _sync_client() as client:
+            resp = client.get(f"{url}/admin/health", headers=headers)
+    except Exception as exc:  # noqa: BLE001
+        _output.error(f"llm-gateway is unreachable: {exc}", hint=f"tried {url}")
+    if resp.status_code == 401:
+        _output.error("the gateway rejected the admin token", hint="check LLM_GATEWAY_ADMIN_TOKEN")
+    if resp.status_code >= 400:
+        _output.error(f"llm-gateway admin API returned HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    if _output.json_mode:
+        _output.print_json(data["providers"])
+        return
+    _output.print_table(
+        "Providers",
+        ["Name", "Type", "Locality", "Up", "Latency (ms)", "Resident models", "Detail"],
+        [
+            [
+                name,
+                p.get("type", ""),
+                p.get("locality", ""),
+                "yes" if p.get("ok") else "no",
+                f"{p.get('latency_ms', 0):.1f}",
+                ", ".join(p.get("resident") or []) or "-",
+                (p.get("detail") or "")[:80],
+            ]
+            for name, p in data["providers"].items()
+        ],
+    )
+
+
+@app.command("models", epilog=_EXAMPLES)
+def models_cmd(
+    key: str | None = typer.Option(
+        None,
+        "--key",
+        help="Virtual key — omit for an unauthenticated call (only if the service allows it)",
+    ),
+) -> None:
+    """Models the deployed llm-gateway can currently serve — live from `GET /v1/models`.
+
+    Filtered by the service itself to what ``key`` may reach and to routes it can currently
+    serve (a route whose every deployment has an open breaker is left out) — this is what the
+    gateway would actually route a chat to right now, not the full configured catalog.
+    """
+    from examlops.gateway.egress import EgressDenied
+
+    try:
+        url = _gateway_url()  # resolved once: the ADR 0154 check runs exactly one time per call
+    except EgressDenied as exc:
+        _output.error(str(exc))
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    try:
+        with _sync_client() as client:
+            resp = client.get(f"{url}/v1/models", headers=headers)
+    except Exception as exc:  # noqa: BLE001 - a network failure is an operator-facing message
+        _output.error(f"llm-gateway is unreachable: {exc}", hint=f"tried {url}")
+    if resp.status_code == 401:
+        _output.error(
+            "the gateway rejected the key",
+            hint="pass --key, or check LLM_GATEWAY_AUTH on the service",
+        )
+    if resp.status_code >= 400:
+        _output.error(f"llm-gateway returned HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    if _output.json_mode:
+        _output.print_json(data)
+        return
+    rows = data.get("data") or []
+    if not rows:
+        _output.ok("No models are currently servable (or none are visible to this key).")
+        return
+    _output.print_table(
+        f"Models — {url}",
+        ["Model", "Provider"],
+        [[m.get("id", ""), m.get("owned_by", "")] for m in rows],
+    )
+
+
+@app.command("routes", epilog=_EXAMPLES)
+def routes_cmd() -> None:
+    """The configured route table — every route, its strategy/deployments/fallbacks, and aliases.
+
+    Distinct from `models` (what's *currently servable*, filtered by breaker state and a key) and
+    `providers` (per-provider *health*): this is the full configured topology from `GET
+    /admin/config`, the same source `exa gateway validate`'s offline check and a live reload both
+    ultimately build from.
+    """
+    from examlops.gateway.egress import EgressDenied
+
+    headers = _admin_headers()  # checked (and may exit) before the URL is even resolved
+    try:
+        url = _gateway_url()
+    except EgressDenied as exc:
+        _output.error(str(exc))
+    try:
+        with _sync_client() as client:
+            resp = client.get(f"{url}/admin/config", headers=headers)
+    except Exception as exc:  # noqa: BLE001
+        _output.error(f"llm-gateway is unreachable: {exc}", hint=f"tried {url}")
+    if resp.status_code == 401:
+        _output.error("the gateway rejected the admin token", hint="check LLM_GATEWAY_ADMIN_TOKEN")
+    if resp.status_code >= 400:
+        _output.error(f"llm-gateway admin API returned HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    if _output.json_mode:
+        _output.print_json(data)
+        return
+    routes = data.get("routes") or {}
+    reverse_aliases: dict[str, list[str]] = {}
+    for alias, target in (data.get("aliases") or {}).items():
+        reverse_aliases.setdefault(target, []).append(alias)
+    _output.print_table(
+        f"Routes — {url} (source: {data.get('source', '?')})",
+        ["Route", "Aliases", "Strategy", "Required", "Deployments", "Fallbacks"],
+        [
+            [
+                name,
+                ", ".join(reverse_aliases.get(name, [])) or "-",
+                r.get("strategy", ""),
+                "yes" if r.get("required") else "no",
+                ", ".join(f"{d['provider']}/{d['model']}" for d in r.get("deployments", [])),
+                ", ".join(r.get("fallbacks") or []) or "-",
+            ]
+            for name, r in routes.items()
+        ]
+        or [["(no routes)", "", "", "", "", ""]],
+    )
+    if err := data.get("last_reload_error"):
+        _output.warning(f"last reload was rejected: {'; '.join(err)}")
+
+
+@app.command("reload", epilog=_EXAMPLES)
+def reload_cmd() -> None:
+    """Reload the deployed llm-gateway's `gateway.yaml` — `POST /admin/reload`.
+
+    ADR 0155 d3: a rejected config never bricks the gateway — the previous one keeps serving and
+    this reports exactly why the new one was refused, same as the MCP `gateway_service_reload`
+    tool this mirrors (an operator on the CLI should never have strictly less visibility than an
+    agent calling the same admin endpoint).
+    """
+    from examlops.data.audit import write_audit_event
+    from examlops.gateway.egress import EgressDenied
+
+    headers = _admin_headers()  # checked (and may exit) before the URL is even resolved
+    try:
+        url = _gateway_url()
+    except EgressDenied as exc:
+        _output.error(str(exc))
+    try:
+        with _sync_client() as client:
+            resp = client.post(f"{url}/admin/reload", headers=headers)
+    except Exception as exc:  # noqa: BLE001
+        _output.error(f"llm-gateway is unreachable: {exc}", hint=f"tried {url}")
+    if resp.status_code == 401:
+        _output.error("the gateway rejected the admin token", hint="check LLM_GATEWAY_ADMIN_TOKEN")
+    if resp.status_code == 422:
+        data = resp.json()
+        errors = (data.get("error") or {}).get("errors") or []
+        if _output.json_mode:
+            _output.print_json({"reloaded": False, "errors": errors})
+            raise typer.Exit(1)
+        _output.error(
+            "config rejected; the previous config keeps serving:\n  " + "\n  ".join(errors)
+        )
+    if resp.status_code >= 400:
+        _output.error(f"llm-gateway admin API returned HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    write_audit_event(
+        "exa-gateway", _actor(), "gateway_reloaded", url, {"routes": data.get("routes")}
+    )
+    if _output.json_mode:
+        _output.print_json(data)
+        return
+    _output.ok(f"reloaded — {len(data.get('routes') or [])} route(s)")
+    for w in data.get("warnings") or []:
+        _output.warning(w)
 
 
 key_app = typer.Typer(
@@ -228,8 +554,17 @@ def chat(
     message: str = typer.Option(..., "--message", help="User message"),
     key: str | None = typer.Option(None, "--key", help="Virtual key to authenticate with"),
     cache: bool = typer.Option(False, "--cache", help="Route through the B3 semantic cache"),
+    stream: bool = typer.Option(
+        False,
+        "--stream",
+        help="Stream tokens live over SSE from the deployed llm-gateway service, "
+        "instead of one completed answer from the in-process client",
+    ),
 ) -> None:
     """Send one chat message through the gateway, to a registered endpoint or the echo route."""
+    if stream:
+        _chat_stream(model, message, key)
+        return
     from examlops.gateway import GatewayClient, GatewayError, build_default_router
 
     cache_lookup = cache_store = None
@@ -263,6 +598,75 @@ def chat(
         return
     tag = " (cached)" if comp.cached else ""
     _output.ok(f"[{comp.backend}] {comp.text}  (cost ${comp.cost_usd:.6f}){tag}")
+
+
+def _chat_stream(model: str, message: str, key: str | None) -> None:
+    """`--stream`: real SSE against the *deployed* service, not the in-process `GatewayClient` —
+    that library has no streaming API at all (`GatewayClient.chat()` always returns one completed
+    `Completion`; the only place a real token stream exists today is `POST /v1/chat/completions`
+    on the running service). Plain text only — there is no sensible `--json` shape for a live
+    stream of deltas, so `-o json`/`--json` is ignored here rather than silently buffering the
+    whole reply just to wrap it in one JSON document, which would defeat the point of `--stream`.
+    """
+    from examlops.gateway.egress import EgressDenied
+
+    try:
+        url = _gateway_url()  # resolved once: the ADR 0154 check runs exactly one time per call
+    except EgressDenied as exc:
+        _output.error(str(exc))
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    body = {"model": model, "messages": [{"role": "user", "content": message}], "stream": True}
+    # Fail fast on an unreachable host, but wait as long as a real cold model load can take (ADR
+    # 0153 d7) — the same connect/read split every provider in this package uses, not the CLI's
+    # usual flat 10s (fine for a quick admin read, wrong for a first token that may need to load
+    # a model first).
+    import httpx
+
+    try:
+        with (
+            _sync_client(timeout=httpx.Timeout(300.0, connect=3.0)) as client,
+            client.stream("POST", f"{url}/v1/chat/completions", json=body, headers=headers) as resp,
+        ):
+            if resp.status_code >= 400:
+                resp.read()
+                try:
+                    err = resp.json().get("error", {})
+                except ValueError:
+                    err = {}
+                _output.error(
+                    err.get("message") or f"llm-gateway returned HTTP {resp.status_code}",
+                    hint=f"code={err.get('code', '?')} request_id={err.get('request_id', '?')}",
+                )
+            printed_any = False
+            for raw_line in resp.iter_lines():
+                line = raw_line.strip()
+                if not line or line.startswith(":") or not line.startswith("data:"):
+                    continue
+                payload = line[len("data:") :].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    data = json.loads(payload)
+                except ValueError:
+                    continue  # a malformed keep-alive/comment line, not a fatal condition mid-stream
+                if "error" in data:
+                    if printed_any:
+                        typer.echo()  # end the partial line before the error message
+                    _output.error(
+                        (data.get("error") or {}).get("message", "the stream ended in error")
+                    )
+                choices = data.get("choices") or []
+                delta = (choices[0].get("delta") or {}) if choices else {}
+                text = delta.get("content") or ""
+                if text:
+                    typer.echo(text, nl=False)
+                    printed_any = True
+            if printed_any:
+                typer.echo()  # a trailing newline after the last streamed token
+            elif not _output.json_mode:
+                _output.warning("the stream produced no content")
+    except Exception as exc:  # noqa: BLE001 - a network failure is an operator-facing message
+        _output.error(f"llm-gateway is unreachable: {exc}", hint=f"tried {url}")
 
 
 # ── B8: structured output + reasoning ops (ADR 0035) ──────────────────────────

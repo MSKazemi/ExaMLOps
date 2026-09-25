@@ -26,6 +26,14 @@ def _secret(env: str, file_env: str) -> str:
 AGENT_LLM_GATEWAY_URL = os.getenv("AGENT_LLM_GATEWAY_URL", "").strip().rstrip("/")
 AGENT_LLM_GATEWAY_KEY = _secret("AGENT_LLM_GATEWAY_KEY", "AGENT_LLM_GATEWAY_KEY_FILE")
 AGENT_LLM_GATEWAY_MODEL = os.getenv("AGENT_LLM_GATEWAY_MODEL", "default")
+# The dashboard copilot's read-only graph is propose-only (ADR 0065 R5) and correctness-tolerant
+# in a way the interactive CLI is not: a wrong tool guess is shown to a human who reads it before
+# acting, never executed. That headroom is worth spending on speed. Measured on n1 (2026-09-24,
+# unique uncacheable prompts, ~7k tokens): llama3.2:3b prefills at roughly 2x qwen3:8b's rate
+# (72s vs 148-162s cold). Empty ⇒ the read-only graph uses the same model as the interactive one
+# (unchanged behaviour) — set only once a faster model is confirmed adequate for this platform's
+# read-only questions.
+AGENT_LLM_GATEWAY_READONLY_MODEL = os.getenv("AGENT_LLM_GATEWAY_READONLY_MODEL", "").strip()
 AGENT_LLM_GATEWAY_TIMEOUT = float(os.getenv("AGENT_LLM_GATEWAY_TIMEOUT", "300"))
 
 # Claude API backend

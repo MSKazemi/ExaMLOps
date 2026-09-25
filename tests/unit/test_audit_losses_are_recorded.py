@@ -297,6 +297,10 @@ def test_an_approval_decision_that_could_not_be_audited_is_counted(monkeypatch, 
 #: was twice wrong. The scan below derives the truth from the tree; this mapping only has to say
 #: which test covers what.
 COVERED_AUDIT_SITES = {
+    ("examlops/genai_apps/service.py", "invoke"): (
+        "tests/unit/test_genai_app.py::"
+        "test_a_lost_invoke_audit_is_counted_and_surfaced_as_a_warning"
+    ),
     ("examlops/finops/task_ledger.py", "apportion_standby"): (
         "tests/unit/test_finops_task_ledger.py::"
         "test_a_lost_apportioning_audit_is_counted_and_the_split_stands"

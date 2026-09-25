@@ -236,7 +236,10 @@ current rules; admins configure them (controls render disabled for viewers).
 
 ## Gateway  <!-- (role: viewer / admin) -->
 
-LLM gateway virtual-key management — issue scoped, budgeted API keys and revoke them.
+LLM gateway virtual-key management — issue scoped, budgeted API keys and revoke them — plus the
+deployed gateway's own live status and a one-message test chat. Deep per-provider/route diagnostics
+(`/admin/health`, `/admin/config`) are deliberately not proxied here — they need the gateway's admin
+bearer, which the dashboard never holds (ADR 0151); use the CLI equivalents for that depth.
 
 | Action | What it does | Use case | How to (UI) | Equivalent CLI |
 |---|---|---|---|---|
@@ -244,6 +247,8 @@ LLM gateway virtual-key management — issue scoped, budgeted API keys and revok
 | Issue a key **(admin)** | Creates a scoped, budgeted virtual key; the raw key is shown once | Grant a team/app LLM access | Gateway → **Issue key** (Project/Models/Budget) | `exa gateway` |
 | Copy the raw key | One-time copy of the freshly issued secret | Hand the key to the consumer | Gateway → **Copy** (after issue) | — |
 | Revoke a key **(admin)** | Disables a key (with confirm) | Cut off a compromised/retired key | Gateway → key row → **Revoke** | `exa gateway cache` (related), `exa gateway` |
+| View live status | Ready/not-ready + routes-healthy count from the deployed gateway's own `/ready` | Is the deployed gateway actually answering right now | Gateway → **Live status** | `exa gateway status` |
+| Send a test chat **(admin)** | Sends one real message through the deployed gateway with a supplied virtual key | Prove the deployed gateway (not just the library) answers, or diagnose why it doesn't | Gateway → **Test chat** (Route/Message/Virtual key) | `exa gateway chat --key` |
 
 ## Scaling  <!-- (role: viewer / admin) -->
 
@@ -330,6 +335,19 @@ switcher, and the waiting-job queue (longest-wait first). Read-only, degrades to
 | Switch cluster | Rescopes all metrics to one scheduler/cluster (or All) | Focus on one cluster | Facility → **Cluster** dropdown | `exa hpc capacity --cluster <n>` |
 | Inspect the queue | Waiting jobs with wait time, model, GPU ask | Find the longest-waiting job | Facility → Queue | `exa hpc queue` / `exa hpc jobs` |
 | Approve/reject cluster **(admin)** | Governance gate on a fleet cluster (Facility Fleet panel) | Authorize a discovered cluster | Facility → Fleet panel → Approve/Reject | `exa hpc approve <n>` / `exa hpc reject <n>` |
+
+## Hardware Profiles Console  <!-- (role: viewer) -->
+
+Named resource+runtime bundles workbenches, training runs and serving deployments reference
+instead of restating raw CPU/memory/GPU flags (ADR 0157), and the honest resolution status
+each binding actually got. Read-only; authoring a profile stays a CLI surface
+(`exa hardware profile set|delete`).
+
+| Action | What it does | Use case | How to (UI) | Equivalent CLI |
+|---|---|---|---|---|
+| View in-use bindings | Every running workbench + recent training/serving bound to a profile, with its resolved status (`unchecked`/`verified`/`degraded`/`unresolvable`/`missing`) | See what needs attention right now — defaults to attention-only | Sidebar → Hardware Profiles → In use | `exa hardware profile in-use --days --project` |
+| Browse the catalog | Every named profile's shape (CPU/memory/GPU/accelerator) and applicability | Pick a profile to reference in a workbench/pipeline/model YAML | Hardware Profiles → Catalog | `exa hardware profile list` |
+| View resolution history | The append-only ledger of every past resolution, filterable by profile name | Answer which version a run actually used | Hardware Profiles → History | `exa hardware profile history --consumer --project --limit` |
 
 ## FinOps & Green-AI  <!-- (role: viewer) -->
 

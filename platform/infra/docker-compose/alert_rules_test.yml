@@ -1210,6 +1210,185 @@ tests:
         alertname: DataplaneSourceStale
         exp_alerts: []
 
+  # ── LLM gateway (ADR 0151-0156, PLAN.md P4) ─────────────────────────────────────────────────────
+  - name: the llm gateway being down is critical
+    interval: 15s
+    input_series:
+      - series: 'up{job="llm_gateway",instance="llm-gateway:8020"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: LLMGatewayDown
+        exp_alerts:
+          - exp_labels: {severity: critical, service: llm-gateway, job: llm_gateway, instance: "llm-gateway:8020"}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm-gateway/#llmgatewaydown"
+              summary: "LLM gateway service is down"
+              description: "No scrape of llm-gateway for 2 minutes; every LLM consumer (Skipper, the dashboard copilot, exa gateway chat, RAG) is unreachable."
+
+  - name: the llm gateway being reachable stays quiet
+    interval: 15s
+    input_series:
+      - series: 'up{job="llm_gateway",instance="llm-gateway:8020"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: LLMGatewayDown
+        exp_alerts: []
+
+  - name: a provider whose active probe keeps failing alerts
+    interval: 30s
+    input_series:
+      - series: 'llm_gateway_provider_up{job="llm_gateway",provider="n1"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LLMGatewayProviderDown
+        exp_alerts:
+          - exp_labels: {severity: warning, service: llm-gateway, job: llm_gateway, provider: n1}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm-gateway/#llmgatewayproviderdown"
+              summary: "LLM gateway provider n1 is unreachable"
+              description: "The active probe has failed for 5 minutes; every route backed by n1 is degraded or unavailable. Check `exa gateway providers`."
+
+  - name: a provider whose active probe is passing stays quiet
+    interval: 30s
+    input_series:
+      - series: 'llm_gateway_provider_up{job="llm_gateway",provider="n1"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LLMGatewayProviderDown
+        exp_alerts: []
+
+  - name: a breaker stuck open across several cooldown cycles alerts
+    interval: 30s
+    input_series:
+      - series: 'llm_gateway_breaker_state{job="llm_gateway",provider="n1",model="qwen3:8b"}'
+        values: '2x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LLMGatewayBreakerOpen
+        exp_alerts:
+          - exp_labels: {severity: warning, service: llm-gateway, job: llm_gateway, provider: n1, model: "qwen3:8b"}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm-gateway/#llmgatewaybreakeropen"
+              summary: "LLM gateway breaker open for n1/qwen3:8b"
+              description: "The circuit breaker for n1/qwen3:8b has stayed open for 5+ minutes across several cooldown cycles — the deployment is not recovering on its own. Check `exa gateway providers` and the upstream's own health."
+
+  # Boundary: half-open (1) is the breaker actively trying recovery, not a stuck-open incident —
+  # `== 2` is strict for a reason, and a boundary input tests the boundary, not the behaviour.
+  - name: a half-open breaker is not the same as a stuck-open one
+    interval: 30s
+    input_series:
+      - series: 'llm_gateway_breaker_state{job="llm_gateway",provider="n1",model="qwen3:8b"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LLMGatewayBreakerOpen
+        exp_alerts: []
+
+  - name: a closed breaker stays quiet
+    interval: 30s
+    input_series:
+      - series: 'llm_gateway_breaker_state{job="llm_gateway",provider="n1",model="qwen3:8b"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LLMGatewayBreakerOpen
+        exp_alerts: []
+
+  # 15% failing: above the 10% warning threshold, comfortably below the 50% critical one — the
+  # counter-increment syntax (`0+Nx120`) matters here, not a flat value, or rate() reads ~0.
+  - name: a fifteen percent error rate is a warning and not yet critical
+    interval: 15s
+    input_series:
+      - series: 'llm_gateway_requests_total{job="llm_gateway",route="chat",provider="n1",model="qwen3:8b",status="200",code="ok"}'
+        values: '0+85x120'
+      - series: 'llm_gateway_requests_total{job="llm_gateway",route="chat",provider="n1",model="qwen3:8b",status="503",code="upstream_unavailable"}'
+        values: '0+15x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LLMGatewayHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning, service: llm-gateway}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm-gateway/#llmgatewayhigherrorrate"
+              summary: "LLM gateway error rate above 10%"
+              description: "15% of requests failed over the last 10m. Check `exa gateway providers` for which deployment is unhealthy."
+      - eval_time: 20m
+        alertname: LLMGatewayVeryHighErrorRate
+        exp_alerts: []
+
+  # The regression this alert's denominator fix exists for: a flood of caller mistakes (bad auth,
+  # a disallowed model, a guardrail hit) must not move the measured rate — those codes mean the
+  # gateway correctly refused the request, not that it failed to serve one it accepted. Same 15%
+  # real failure ratio as the case above, now with 10x as much client-fault traffic mixed in.
+  - name: a flood of client mistakes does not move the measured error rate
+    interval: 15s
+    input_series:
+      - series: 'llm_gateway_requests_total{job="llm_gateway",route="chat",provider="n1",model="qwen3:8b",status="200",code="ok"}'
+        values: '0+85x120'
+      - series: 'llm_gateway_requests_total{job="llm_gateway",route="chat",provider="n1",model="qwen3:8b",status="503",code="upstream_unavailable"}'
+        values: '0+15x120'
+      - series: 'llm_gateway_requests_total{job="llm_gateway",route="chat",provider="n1",model="qwen3:8b",status="401",code="key_invalid"}'
+        values: '0+400x120'
+      - series: 'llm_gateway_requests_total{job="llm_gateway",route="chat",provider="n1",model="qwen3:8b",status="403",code="model_not_allowed"}'
+        values: '0+600x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LLMGatewayHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning, service: llm-gateway}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm-gateway/#llmgatewayhigherrorrate"
+              summary: "LLM gateway error rate above 10%"
+              description: "15% of requests failed over the last 10m. Check `exa gateway providers` for which deployment is unhealthy."
+      - eval_time: 20m
+        alertname: LLMGatewayVeryHighErrorRate
+        exp_alerts: []
+
+  # Same convention this file's ray_serve pair already documents: the warning does not exclude
+  # the critical range, and Alertmanager's inhibit rule (critical mutes warning, same `service`
+  # label) is what stops the double page — the expressions deliberately do not try to.
+  - name: a sixty percent error rate matches both rules, and inhibition is what separates them
+    interval: 15s
+    input_series:
+      - series: 'llm_gateway_requests_total{job="llm_gateway",route="chat",provider="n1",model="qwen3:8b",status="200",code="ok"}'
+        values: '0+40x120'
+      - series: 'llm_gateway_requests_total{job="llm_gateway",route="chat",provider="n1",model="qwen3:8b",status="503",code="upstream_unavailable"}'
+        values: '0+60x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LLMGatewayVeryHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: critical, service: llm-gateway}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm-gateway/#llmgatewayveryhigherrorrate"
+              summary: "LLM gateway error rate above 50%"
+              description: "60% of requests failed over the last 5m — most callers are getting errors right now. Check `exa gateway providers`."
+      - eval_time: 20m
+        alertname: LLMGatewayHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning, service: llm-gateway}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm-gateway/#llmgatewayhigherrorrate"
+              summary: "LLM gateway error rate above 10%"
+              description: "60% of requests failed over the last 10m. Check `exa gateway providers` for which deployment is unhealthy."
+
+  - name: a healthy llm gateway with no errors stays quiet
+    interval: 15s
+    input_series:
+      - series: 'llm_gateway_requests_total{job="llm_gateway",route="chat",provider="n1",model="qwen3:8b",status="200",code="ok"}'
+        values: '0+100x120'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LLMGatewayHighErrorRate
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: LLMGatewayVeryHighErrorRate
+        exp_alerts: []
+
   # ── Ray Serve ────────────────────────────────────────────────────────────────────────────────
   - name: a ten percent error rate is a warning and not yet critical
     interval: 15s

@@ -50,6 +50,31 @@ export interface InUseReport {
   entries: InUseEntry[]
   counts: Partial<Record<ProfileStatus, number>>
   attention: InUseEntry[]
+  // Was missing from this interface entirely (ADR 0157's own named gap: "the frontend ignores
+  // the report's truncation flag") — `examlops.hardware_profiles.in_use_report` always returns
+  // it. `true` means more training/serving consumers matched than one bounded read returned, so
+  // `entries`/`counts`/`attention` are a partial view, not a complete one.
+  truncated: boolean
+}
+
+// The append-only resolution ledger (`hardware_profile_resolutions`, ADR 0157 decision 5's
+// visibility mitigation) — every row `in-use` ever picked "the latest" from, newest first.
+// Raw store-row shape, unlike `HardwareProfileSummary`/`_resolution_view`'s camelCase transform:
+// `list_resolutions` (`examlops.data.hardware_profiles`) returns `SELECT *` over the exact
+// `platform_db.py` schema (columns confirmed there, not guessed from `InUseEntry`'s shape).
+export interface HistoryEntry {
+  id: number
+  ts: string
+  name: string
+  version: number
+  consumer: 'workbench' | 'training' | 'serving'
+  consumer_ref: string
+  project: string | null
+  target_cluster: string | null
+  status: ProfileStatus
+  reason: string
+  unconfirmed: string
+  actor: string | null
 }
 
 // ── pure helpers (unit-tested) ──────────────────────────────────────────────────────────────
@@ -101,4 +126,27 @@ export const useHardwareProfilesInUse = (project?: string) =>
   useQuery<InUseReport>({
     queryKey: ['hardware-profiles', 'in-use', project ?? 'all'],
     queryFn: () => getInUse(project),
+  })
+
+export interface HistoryFilter {
+  name?: string
+  consumer?: 'workbench' | 'training' | 'serving'
+  project?: string
+  limit?: number
+}
+
+export const getHistory = (filter: HistoryFilter = {}): Promise<HistoryEntry[]> => {
+  const params = new URLSearchParams()
+  if (filter.name) params.set('name', filter.name)
+  if (filter.consumer) params.set('consumer', filter.consumer)
+  if (filter.project) params.set('project', filter.project)
+  if (filter.limit) params.set('limit', String(filter.limit))
+  const qs = params.toString()
+  return apiFetch<HistoryEntry[]>('/api/v1/hardware-profiles/history' + (qs ? `?${qs}` : ''))
+}
+
+export const useHardwareProfilesHistory = (filter: HistoryFilter = {}) =>
+  useQuery<HistoryEntry[]>({
+    queryKey: ['hardware-profiles', 'history', filter],
+    queryFn: () => getHistory(filter),
   })

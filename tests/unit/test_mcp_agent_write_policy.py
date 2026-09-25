@@ -100,6 +100,8 @@ WRITE_ARGS: dict[str, dict[str, object]] = {
     "set_promotion_rule": {"model": "JPCP", "metric": "rmse", "operator": "<", "threshold": 5.0},
     "grant_access": {"subject": "guard-user", "relation": "viewer", "obj": "project:guard-proj"},
     "dataplane_pull": {"name": "does-not-exist"},
+    "gateway_service_reload": {},
+    "genai_app_invoke": {"ref": "does-not-exist", "message": "guard probe"},
 }
 
 # plan/apply/approve delegate to each tool's own gate (probe mode / apply) — see test_plan_apply.py.

@@ -2216,6 +2216,7 @@ Send one chat message through the gateway, to a registered endpoint or the echo 
 - `--message` — User message
 - `--key` — Virtual key to authenticate with
 - `--cache` — Route through the B3 semantic cache
+- `--stream` — Stream tokens live over SSE from the deployed llm-gateway service, instead of one completed answer from the in-process client
 
 ### `exa gateway key`
 
@@ -2239,6 +2240,20 @@ List virtual keys (hashes only).
 #### `exa gateway key revoke`
 
 Revoke a virtual key by its stored hash.
+
+### `exa gateway models`
+
+Models the deployed llm-gateway can currently serve — live from `GET /v1/models`.
+
+Filtered by the service itself to what ``key`` may reach and to routes it can currently
+serve (a route whose every deployment has an open breaker is left out) — this is what the
+gateway would actually route a chat to right now, not the full configured catalog.
+
+- `--key` — Virtual key — omit for an unauthenticated call (only if the service allows it)
+
+### `exa gateway providers`
+
+Live provider health from the gateway's admin API — why a deployment is down, not just that it is.
 
 ### `exa gateway quota`
 
@@ -2301,6 +2316,24 @@ Reasoning-vs-output token/cost split + structured-output outcomes.
 - `--model` — Filter by model
 - `--tenant` — Filter by tenant
 
+### `exa gateway reload`
+
+Reload the deployed llm-gateway's `gateway.yaml` — `POST /admin/reload`.
+
+ADR 0155 d3: a rejected config never bricks the gateway — the previous one keeps serving and
+this reports exactly why the new one was refused, same as the MCP `gateway_service_reload`
+tool this mirrors (an operator on the CLI should never have strictly less visibility than an
+agent calling the same admin endpoint).
+
+### `exa gateway routes`
+
+The configured route table — every route, its strategy/deployments/fallbacks, and aliases.
+
+Distinct from `models` (what's *currently servable*, filtered by breaker state and a key) and
+`providers` (per-provider *health*): this is the full configured topology from `GET
+/admin/config`, the same source `exa gateway validate`'s offline check and a live reload both
+ultimately build from.
+
 ### `exa gateway schema`
 
 Structured output — schema-constrained (B8)
@@ -2318,6 +2351,14 @@ Print one registered output schema as JSON.
 Validate (and optionally repair) an object against a JSON Schema (R1/R8).
 
 - `--repair` — Attempt repair on invalid
+
+### `exa gateway status`
+
+Is the llm-gateway service up, and which routes can it currently serve?
+
+### `exa gateway validate`
+
+Validate a gateway.yaml offline (ADR 0155): every problem, with its path, no network call.
 
 ## `exa genai`
 
@@ -2338,6 +2379,12 @@ Estimate the USD cost of a GenAI call from its token usage (spec R7).
 ## `exa genai-app`
 
 GenAI applications — composed route+RAG+prompt+guardrail manifests (ADR 0159)
+
+### `exa genai-app invoke`
+
+Make one real, billed chat call through the resolved route (guardrail + optional RAG).
+
+- `--message` — User message
 
 ### `exa genai-app list`
 

@@ -28,6 +28,7 @@ from examlops.gateway.providers.base import (
     ChatChunk,
     ChatRequest,
     ChatResult,
+    EmbedResult,
     Provider,
     ProviderError,
 )
@@ -45,6 +46,16 @@ _FREE_FAILOVER = frozenset({"queue_full", "model_not_found"})
 #: The `cost_aware` strategy's marker cost for every external deployment (ADR 0153 d2) — a nominal
 #: non-zero value, not a real price; see `GatewayCore._cost_score`'s docstring for why.
 _EXTERNAL_MARKER_COST = 1.0
+#: Design spec §5 "Deadline": never start an attempt with less time remaining than this — an
+#: attempt with a fraction of a second left cannot plausibly return a useful answer, so failing
+#: fast with a clean `upstream_timeout` beats starting a doomed connection.
+_DEFAULT_MIN_USEFUL_S = 1.0
+#: Design spec §5 "Cold start": the residency-aware version of the floor above — a *known-cold*
+#: `ollama` deployment needs its load time too, not just the bare floor. No live load-time
+#: measurement is threaded through here (that lives on `ChatResult.load_ms`, only known *after* an
+#: attempt completes), so this is a documented, deliberately generous fixed budget, not a measured
+#: one — see `GatewayCore.__init__`'s `cold_load_budget_s` for how to override it per deployment.
+_DEFAULT_COLD_LOAD_BUDGET_S = 10.0
 
 
 @dataclass
@@ -65,6 +76,10 @@ class Deployment:
     #: Operator-declared blended price, USD per 1k tokens (ADR 0083/0153 d2). ``None`` = unpriced:
     #: `cost_aware` falls back to locality (local/site free, external a marker cost).
     price_per_1k: float | None = None
+    #: Design spec §5 "Cold start": a 1-token keep-alive preload keeps this deployment resident —
+    #: an operator's declaration that this model must never pay a cold-load penalty, read by
+    #: `GatewayCore.warm_deployments()` (`gateway/health.py`'s `WarmKeeper`).
+    warm: bool = False
 
     @property
     def key(self) -> str:
@@ -146,6 +161,8 @@ class GatewayCore:
         rng: random.Random | None = None,
         retry_budget: RetryBudget | None = None,
         breaker_factory: Callable[[], CircuitBreaker] | None = None,
+        min_useful_s: float = _DEFAULT_MIN_USEFUL_S,
+        cold_load_budget_s: float = _DEFAULT_COLD_LOAD_BUDGET_S,
     ) -> None:
         self.catalog = catalog
         self._clock = clock
@@ -155,6 +172,14 @@ class GatewayCore:
             lambda: CircuitBreaker(clock=clock, rng=self._rng)
         )
         self._states: dict[str, DeploymentState] = {}
+        self.min_useful_s = min_useful_s
+        self.cold_load_budget_s = cold_load_budget_s
+        #: provider name → the model names it last reported resident (ADR 0153's "residency"),
+        #: written by an active probe (`gateway/health.py`) via `record_probe_result`. Absent key =
+        #: this provider has never reported residency at all (an `openai_compat` router, or an
+        #: `ollama` one not yet probed) — permissive, never gates; present key = authoritative for
+        #: every model on it, so a model missing from the list is confirmed cold, not merely unknown.
+        self._resident: dict[str, list[str]] = {}
 
     # ── state ────────────────────────────────────────────────────────────────
 
@@ -186,6 +211,75 @@ class GatewayCore:
                     "last_error": st.last_error,
                 }
         return out
+
+    def deployments_for_provider(self, provider_name: str) -> list[Deployment]:
+        """Every deployment (across every route) backed by ``provider_name`` — a provider is
+        reused across many routes/models, but health is a property of the *provider connection*,
+        not any one route, so an out-of-band signal about it (:meth:`record_probe_result`) must
+        reach every deployment that shares it, not just the one route that happened to ask."""
+        return [
+            dep
+            for route in self.catalog.routes.values()
+            for dep in route.deployments
+            if dep.provider.name == provider_name
+        ]
+
+    def warm_deployments(self) -> list[Deployment]:
+        """Every deployment flagged ``warm: true`` (design spec §5 "Cold start"), deduplicated by
+        :attr:`Deployment.key` — the same (provider, model) pair can appear under more than one
+        route name, and a keep-alive ping only needs to be sent once per real upstream target, not
+        once per route that happens to reference it."""
+        seen: dict[str, Deployment] = {}
+        for route in self.catalog.routes.values():
+            for dep in route.deployments:
+                if dep.warm:
+                    seen.setdefault(dep.key, dep)
+        return list(seen.values())
+
+    def record_probe_result(
+        self, provider_name: str, ok: bool, *, resident: list[str] | None = None
+    ) -> None:
+        """Feed an out-of-band health probe's result into the breaker of every deployment this
+        provider backs — the write side of the active probe loop (``gateway/health.py``,
+        PLAN.md P1's "active probe loop"). A probe failure counts toward the breaker exactly like
+        a real request's classified failure would, so a dead upstream can be caught *before* the
+        next real request reaches it, not only after one fails and pays the cost of finding out.
+
+        Deliberately breaker-only: it does not touch ``DeploymentState.ok``/``errors``/
+        ``last_error``/``ewma_ttft_ms`` — those describe *real request* outcomes (latency,
+        counts) for the admin/metrics surface, and blending a probe's synthetic result into them
+        would make "how many real requests succeeded" a lie. The breaker is the one piece of
+        state this is legitimately shared infrastructure for: it already exists to answer
+        "is this deployment currently healthy", regardless of who's asking.
+
+        ``resident``, when the provider's own probe reports it (``ollama`` does; ``openai_compat``
+        never does), feeds :meth:`_min_useful_s`'s residency-aware deadline gate (design spec §5
+        "Cold start") — ``None`` leaves whatever this provider last reported untouched, so a
+        transient probe that cannot determine residency (e.g. the discovery call itself failed)
+        does not erase a still-valid earlier reading.
+        """
+        for dep in self.deployments_for_provider(provider_name):
+            st = self._state(dep)
+            if ok:
+                st.breaker.record_success()
+            else:
+                st.breaker.record_failure()
+        if resident is not None:
+            self._resident[provider_name] = resident
+
+    def _min_useful_s(self, dep: Deployment) -> float:
+        """The design spec's `min_useful` (§5 "Deadline"): never start an attempt with less time
+        remaining than this. Residency-aware for `ollama` deployments only (§5 "Cold start" is
+        explicitly scoped to `ollama`'s own `/api/ps` residency — no other provider type reports
+        it, and a false "cold" reading here means skipping a candidate that might have answered
+        fine). Absent residency data for the provider (never probed yet, or a non-`ollama` type)
+        is permissive — the bare floor, not the cold-load budget."""
+        if dep.provider.type != "ollama":
+            return self.min_useful_s
+        resident = self._resident.get(dep.provider.name)
+        if resident is None or dep.model in resident:
+            return self.min_useful_s
+        return self.cold_load_budget_s
 
     # ── candidate selection ──────────────────────────────────────────────────
 
@@ -321,12 +415,20 @@ class GatewayCore:
         previous: ProviderError | None,
         deadline: Deadline,
         attempts: list[dict[str, Any]],
+        dep: Deployment,
     ) -> None:
-        """Gate every attempt after the first: time must remain and the retry budget must allow it."""
+        """Gate every attempt, including the first: enough time must remain to plausibly get a
+        useful answer from `dep` specifically (residency-aware, :meth:`_min_useful_s`) — a caller
+        can hand in an already-short `X-ExaMLOps-Budget-Ms`, so this is not only a failover
+        concern. Every attempt *after* the first also needs the retry budget."""
+        if deadline.remaining() < self._min_useful_s(dep):
+            raise _error(
+                "upstream_timeout",
+                f"{dep.key}: not enough of the deadline remains to plausibly get a useful answer",
+                attempts,
+            )
         if previous is None:
             return
-        if deadline.expired:
-            raise _error("upstream_timeout", "request deadline exhausted", attempts)
         if previous.kind not in _FREE_FAILOVER and not self.retry_budget.try_retry():
             raise _error(
                 "upstream_unavailable",
@@ -390,10 +492,121 @@ class GatewayCore:
             raise self._none_available(model, dropped, allowed_localities, attempts)
         last: ProviderError | None = None
         for dep in cands:
-            self._may_start(last, deadline, attempts)
+            self._may_start(last, deadline, attempts, dep)
             started = self._clock()
             try:
                 result = await self._attempt(dep, req, deadline)
+            except _Skipped:
+                continue
+            except ProviderError as err:
+                attempts.append(_record(dep, err.kind, started, self._clock()))
+                err.attempts = attempts
+                if not self._fails_over(err):
+                    raise
+                last = err
+                continue
+            attempts.append(_record(dep, "ok", started, self._clock()))
+            return result
+        if last is None:  # every candidate's breaker closed on us between filtering and attempting
+            raise self._none_available(
+                model, {"breaker": 1, "locality": 0, "capability": []}, allowed_localities, attempts
+            )
+        raise last
+
+    # ── embeddings ───────────────────────────────────────────────────────────
+    #
+    # ADR 0152 d1 declared `Provider.embed()` and `OllamaProvider` has implemented it since
+    # 2026-09-20; nothing routed to it. This reuses every resilience primitive `chat` does
+    # (breaker, retry budget, bulkhead, locality, deadline) — the *only* difference from `chat` is
+    # what "capable" means (an ``embeddings`` flag, not tools/vision/context) and what the
+    # provider is asked to do — never a smaller-scoped, separately-trusted code path.
+
+    def _candidates_embed(
+        self, model: str, allowed: tuple[str, ...]
+    ) -> tuple[list[Deployment], dict[str, Any]]:
+        dropped: dict[str, Any] = {"locality": 0, "capability": [], "breaker": 0}
+        out: list[Deployment] = []
+        seen: set[str] = set()
+        for route in self._chain(model):
+            eligible = []
+            for dep in route.deployments:
+                if dep.key in seen:
+                    continue
+                seen.add(dep.key)
+                loc = dep.provider.locality
+                # Declared capabilities are permissive when unknown (`None`) — same rule as chat's
+                # `_missing()`: an undeclared deployment is never assumed incapable.
+                caps = dep.capabilities
+                if loc not in allowed or (loc == "external" and not dep.external_ok):
+                    dropped["locality"] += 1
+                elif caps is not None and not caps.embeddings:
+                    dropped["capability"].append("embeddings")
+                elif not self._state(dep).breaker.would_allow():
+                    dropped["breaker"] += 1
+                else:
+                    eligible.append(dep)
+            out.extend(self._order(route, eligible))
+        return out, dropped
+
+    async def _attempt_embed(
+        self, dep: Deployment, inputs: list[str], deadline: Deadline
+    ) -> EmbedResult:
+        st = self._state(dep)
+        slot = st.bulkhead.slot() if st.bulkhead else contextlib.nullcontext()
+        async with slot:  # type: ignore[attr-defined]
+            if not st.breaker.allow():
+                raise _Skipped
+            st.inflight += 1
+            started = self._clock()
+            try:
+                async with asyncio.timeout(deadline.remaining()):
+                    result = await dep.provider.embed(dep.model, inputs)
+            except TimeoutError:
+                timeout_err = ProviderError(
+                    "upstream_timeout",
+                    f"{dep.key} did not answer within the request deadline",
+                    provider=dep.provider.name,
+                )
+                self._note_failure(st, timeout_err)
+                raise timeout_err from None
+            except ProviderError as err:
+                self._note_failure(st, err)
+                raise
+            except Exception as exc:  # noqa: BLE001 - a provider bug must not escape the error contract
+                wrapped = ProviderError(
+                    "upstream_error", f"{type(exc).__name__}: {exc}", provider=dep.provider.name
+                )
+                self._note_failure(st, wrapped)
+                raise wrapped from exc
+            finally:
+                st.inflight -= 1
+            self._note_success(st, None, (self._clock() - started) * 1000.0)
+            return result
+
+    async def embed(
+        self,
+        model: str,
+        inputs: list[str],
+        *,
+        allowed_localities: tuple[str, ...] = DEFAULT_LOCALITIES,
+        caller_budget_ms: float | None = None,
+        attempts: list[dict[str, Any]] | None = None,
+    ) -> EmbedResult:
+        attempts = attempts if attempts is not None else []
+        route = self._chain(model)[0]
+        deadline = Deadline.from_budget(
+            route.total_timeout_s, caller_ms=caller_budget_ms, clock=self._clock
+        )
+        self.retry_budget.note_request()
+        cands, dropped = self._candidates_embed(model, allowed_localities)
+        if not cands:
+            raise self._none_available(model, dropped, allowed_localities, attempts)
+        last: ProviderError | None = None
+        for dep in cands:
+            self._may_start(last, deadline, attempts, dep)
+            started = self._clock()
+            try:
+                result = await self._attempt_embed(dep, inputs, deadline)
             except _Skipped:
                 continue
             except ProviderError as err:
@@ -433,7 +646,7 @@ class GatewayCore:
             raise self._none_available(model, dropped, allowed_localities, attempts)
         last: ProviderError | None = None
         for dep in cands:
-            self._may_start(last, deadline, attempts)
+            self._may_start(last, deadline, attempts, dep)
             st = self._state(dep)
             started = self._clock()
             committed = False

@@ -966,11 +966,101 @@ def build_default_router(*, endpoints: bool = True) -> Router:
 
     router = Router()
     default_model = os.getenv("EXAMLOPS_GATEWAY_DEFAULT_MODEL", "default")
-    router.add_route(default_model, [("echo", _echo)])
+    backends: list[tuple[str, Backend]] = []
+    # ADR 0151 d4: with the service configured it answers the default route first — it already
+    # knows every provider (Ollama, vLLM endpoints, routers) the operator wired up, dynamically,
+    # without this process rebuilding that table itself. Echo stays last: a dead or unconfigured
+    # service degrades to it, exactly like any other backend failover (R11), so `default` never
+    # raises for want of a model — it only ever gets worse, from a real answer to an echo.
+    if url := os.getenv("EXAMLOPS_LLM_GATEWAY_URL", "").strip():
+        try:
+            backends.append(("llm-gateway", gateway_service_backend(url)))
+        except Exception as exc:  # noqa: BLE001 - a bad URL must not break the default route
+            logger.warning("llm-gateway backend not added (%s: %s)", type(exc).__name__, exc)
+    backends.append(("echo", _echo))
+    router.add_route(default_model, backends)
     if endpoints:
         add_ollama_routes(router)
         add_endpoint_routes(router)
     return router
+
+
+def _service_transport() -> Any | None:
+    """Hook point for tests: ``None`` in production (a real socket); a test replaces this to
+    bind ``gateway_service_backend`` to an in-process fake service with no network at all."""
+    return None
+
+
+def gateway_service_backend(
+    url: str, *, key: str | None = None, transport: Any | None = None
+) -> Backend:
+    """A :data:`Backend` that POSTs to the deployed llm-gateway's ``/v1/chat/completions``.
+
+    Synchronous and whole-response only, matching every other :data:`Backend` in this module — the
+    service's own streaming lives behind its own API for callers built against it directly
+
+    Carries only the standard OpenAI sampling params — deliberately no ``extra_body.examlops.ollama``
+    hints (``think``/``num_ctx``/``keep_alive``). That tuning belongs to a caller that knows its
+    target model, the way ``skipper/llm.py`` already does; this is the generic in-process fallback.
+    One consequence, verified live against n1 2026-09-24: a thinking model such as ``qwen3`` answers
+    through here with its default ``think: true``, so a small ``max_tokens`` can be spent entirely on
+    ``reasoning_content`` and the visible ``text`` comes back empty with ``finish_reason: "length"`` —
+    not a bug here, but worth knowing before assuming an empty ``Completion.text`` means failure.
+    (``skipper/llm.py``'s ``ChatOpenAI``, the CLI's future ``--stream``); this is the in-process
+    router's fallback slot, which was never streaming either. Any failure (HTTP error, malformed
+    body, connection refused) raises, so the router's existing failover tries the next candidate —
+    no special-casing here, the same contract every backend already has.
+
+    ``url`` goes through the same static egress check (ADR 0154) every other provider construction
+    does — a bad or attacker-influenced ``EXAMLOPS_LLM_GATEWAY_URL`` refuses to build rather than
+    silently POSTing prompts wherever it points. Validated as ``locality="local"``: the deployed
+    gateway this backend reaches is site infrastructure by definition, never an external target, so
+    this refuses an Azure endpoint or a cloud-metadata address outright and otherwise allows any
+    ordinary local/site address — the DNS-rebinding *connection-time* re-check
+    (:func:`examlops.gateway.egress.check_resolved_addresses`) is deliberately not repeated here:
+    this is a sync, one-shot fallback call, not a pooled client with a connection to pin the way
+    :func:`examlops.gateway.egress.guarded_async_client` does for the async providers.
+    """
+    import httpx
+
+    from examlops.gateway.egress import validate_base_url
+
+    base = validate_base_url(url, locality="local")
+    key = key if key is not None else os.getenv("EXAMLOPS_LLM_GATEWAY_KEY", "").strip() or None
+
+    def _backend(model: str, messages: list[dict[str, Any]], **kw: Any) -> Completion:
+        body: dict[str, Any] = {"model": model, "messages": messages}
+        for param in ("temperature", "top_p", "max_tokens", "stop", "seed", "tools", "tool_choice"):
+            if kw.get(param) is not None:
+                body[param] = kw[param]
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        try:
+            with httpx.Client(transport=transport or _service_transport(), timeout=300.0) as client:
+                resp = client.post(f"{base}/v1/chat/completions", json=body, headers=headers)
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"llm-gateway unreachable at {base}: {exc}") from exc
+        if resp.status_code >= 400:
+            try:
+                err = resp.json().get("error", {})
+            except ValueError:
+                err = {}
+            code = err.get("code", f"http_{resp.status_code}")
+            raise RuntimeError(f"llm-gateway {code}: {err.get('message', resp.text[:200])}")
+        try:
+            data = resp.json()
+            choice = data["choices"][0]["message"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(f"llm-gateway returned a malformed response: {exc}") from exc
+        usage = data.get("usage") or {}
+        return Completion(
+            text=str(choice.get("content") or ""),
+            model=model,
+            backend="llm-gateway",
+            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+            completion_tokens=int(usage.get("completion_tokens", 0)),
+        )
+
+    return _backend
 
 
 def add_ollama_routes(router: Router) -> list[str]:

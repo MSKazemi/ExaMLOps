@@ -1,0 +1,5 @@
+# Real scrape credentials — never commit. Only *.example templates + README are tracked.
+*
+!.gitignore
+!README.md
+!*.example

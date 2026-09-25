@@ -529,6 +529,9 @@ services:
       AGENT_LLM_GATEWAY_URL: ${AGENT_LLM_GATEWAY_URL:-}
       AGENT_LLM_GATEWAY_KEY: ${AGENT_LLM_GATEWAY_KEY:-}
       AGENT_LLM_GATEWAY_MODEL: ${AGENT_LLM_GATEWAY_MODEL:-default}
+      # A distinct, typically smaller/faster model for the dashboard copilot's read-only,
+      # propose-only graph (ADR 0065); unset keeps it on the interactive model.
+      AGENT_LLM_GATEWAY_READONLY_MODEL: ${AGENT_LLM_GATEWAY_READONLY_MODEL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-4-8}
       MLFLOW_TRACKING_URI: http://mlflow:5000
@@ -717,6 +720,11 @@ services:
       # Generated fleet targets (node_exporter/DCGM + running vLLM endpoints), written by
       # `exa hpc prometheus-sd`. Re-read every 30s — no Prometheus reload needed.
       - ./targets:/etc/prometheus/targets:ro
+      # The llm_gateway scrape job's bearer token (its /metrics is admin-token gated, ADR 0156) —
+      # same "read from a mounted file, never from the committed config" pattern as
+      # alertmanager-secrets/ below. An absent file makes that one target answer 401, visible on
+      # Prometheus's own target-health page, not a silent gap.
+      - ./prometheus-secrets:/etc/prometheus/secrets:ro
       - prometheus_data:/prometheus
     ports:
       - "19090:9090"
@@ -926,6 +934,8 @@ services:
       PUBLIC_LOKI_URL: http://${PUBLIC_HOST:-localhost}:13100
       EXAMLOPS_DATAPLANE_URL: http://dataplane:8010
       PUBLIC_DATAPLANE_URL: http://${PUBLIC_HOST:-localhost}:18010
+      LLM_GATEWAY_URL: http://llm-gateway:8020
+      PUBLIC_LLM_GATEWAY_URL: http://${PUBLIC_HOST:-localhost}:18020
       JUPYTERHUB_URL: http://jupyterhub:8000
       PUBLIC_JUPYTERHUB_URL: http://${PUBLIC_HOST:-localhost}:18888
       PUBLIC_DASHBOARD_URL: http://${PUBLIC_HOST:-localhost}:18099

@@ -46,6 +46,11 @@ _EX_PROMOTE = (
     "Production needs recorded evaluation evidence (see `exa eval gate set --help`), a guardrail "
     "mode other than 'off', and every declared component to resolve."
 )
+_EX_INVOKE = (
+    "Examples:\n\n  exa genai-app invoke hpc-docs-assistant --message 'how do I submit a job?'\n\n"
+    "  exa genai-app invoke hpc-docs-assistant@Staging --message 'hello' --json\n\n"
+    "Makes a real, billed call through the resolved route — same tier as `exa gateway chat`."
+)
 
 
 def _fail(code: str, error: str, **extra: Any) -> None:
@@ -191,3 +196,39 @@ def promote_cmd(
         _output.print_json(out)
         return
     _output.ok(f"{name}@{canon} -> {out['version_id']} (was {out['previous'] or 'unset'})")
+
+
+@app.command("invoke", epilog=_EX_INVOKE)
+def invoke_cmd(
+    ref: str = typer.Argument(
+        ..., help="Application name, <name>@<alias> (default Production), or a version id"
+    ),
+    message: str = typer.Option(..., "--message", help="User message"),
+) -> None:
+    """Make one real, billed chat call through the resolved route (guardrail + optional RAG)."""
+    from examlops import genai_apps as ga
+    from examlops.gateway import GatewayError
+    from examlops.structured import StructuredOutputError
+
+    try:
+        out = ga.invoke(ref, message)
+    except ga.InvokeError as exc:
+        _fail(exc.code, str(exc))
+        return
+    except (GatewayError, StructuredOutputError) as exc:
+        # The gateway's own typed error, unchanged (ADR 0156 d1) — never re-wrapped as an
+        # InvokeError, which names only a resolution-layer failure that never reached it. This
+        # in-process hierarchy is distinguished by exception type, not a `.kind` string field
+        # (that's the deployed service's `ProviderError` shape) — the class name is the code.
+        _fail(type(exc).__name__, str(exc))
+        return
+    if _output.json_mode:
+        _output.print_json(out)
+        return
+    rag_note = (
+        f" [rag: {out['rag']['kb']}, {len(out['rag']['citations'])} citations]"
+        if out["rag"]
+        else ""
+    )
+    tag = " (cached)" if out["cached"] else ""
+    _output.ok(f"[{out['model']}] {out['reply']}{rag_note}  (cost ${out['cost_usd']:.6f}){tag}")

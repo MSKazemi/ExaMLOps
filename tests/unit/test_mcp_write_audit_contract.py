@@ -38,20 +38,56 @@ def platform(tmp_path, monkeypatch):
     monkeypatch.setenv("EXAMLOPS_HPC_REGISTRY", str(tmp_path / "clusters.yaml"))
     monkeypatch.setenv("EXAMLOPS_MCP_ALLOW_WRITES", "1")
     monkeypatch.setenv("EXAMLOPS_ACTOR", "test-actor")
+    monkeypatch.setenv("LLM_GATEWAY_ADMIN_TOKEN", "test-admin-token-for-audit-contract")
     # A fully local success path for dataplane_pull (ADR 0130): the built-in `files` connector
     # reading a tiny parquet drop through a `file://` store — same recipe as
     # tests/unit/test_dataplane_files.py / test_dataplane_pull.py, no live infrastructure needed.
     monkeypatch.setenv("EXAMLOPS_DATAPLANE_ALLOW_LOCAL_FILES", "1")
     monkeypatch.setenv("EXAMLOPS_DATAPLANE_STORE_URL", f"file://{tmp_path / 'dpstore'}")
+    # A fully local success path for genai_app_invoke (ADR 0159 §3 Phase 3): the gateway's own
+    # always-present echo route, no RAG binding, a real prompt version and a real, secret-stored
+    # virtual key — no live LLM or gateway service needed, the same reason this tool needed no
+    # `_reload_gateway_with_a_mocked_service`-style stub above it.
+    monkeypatch.delenv("EXAMLOPS_SECRETS_KEYS", raising=False)
+    monkeypatch.delenv("EXAMLOPS_SECRETS_ACTIVE_KEY", raising=False)
+    monkeypatch.delenv("EXAMLOPS_GATEWAY_CONFIG", raising=False)
+    monkeypatch.setattr("examlops.gateway.config.default_config_path", lambda: None, raising=True)
+
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("EXAMLOPS_SECRETS_KEY", Fernet.generate_key().decode())
 
     from examlops import dataplane as dpl
+    from examlops import genai_apps as ga
     from examlops.data import init_db
     from examlops.data.projects import create_project
+    from examlops.data.prompts import create_prompt_version, set_prompt_label
+    from examlops.gateway import issue_virtual_key
     from examlops.hpc_registry import register_pending
+    from examlops.secrets import set_secret
 
     init_db()
     create_project("proj")
     register_pending("cl", "mock", host="localhost")
+
+    v = create_prompt_version(
+        "ga-prompt", "Answer using {context}.", variables=["context"], actor="t"
+    )
+    set_prompt_label("ga-prompt", "prod", v)
+    raw_key = issue_virtual_key("default", "default", None, None, "t", source="test")
+    set_secret("gateway/ga-app", raw_key, tenant="default", actor="t")
+    ga_vid = ga.register(
+        {
+            "schema_version": 1,
+            "name": "ga-app",
+            "route": {"model": "default", "key_ref": "gateway/ga-app"},
+            "prompt": {"name": "ga-prompt", "label": "prod"},
+            "guardrail": {"mode": "enforce", "policy": "default"},
+        }
+    )["version_id"]
+    # Staging, not Production: Production is gated on evaluation evidence (ADR 0159 decision 3),
+    # ceremony this fixture has no reason to carry — `set_alias` to any *other* alias is ungated.
+    ga.set_alias("ga-app", "Staging", ga_vid)
 
     drop = tmp_path / "drop"
     drop.mkdir()
@@ -62,11 +98,22 @@ def platform(tmp_path, monkeypatch):
     yield
 
 
+def _reload_gateway_with_a_mocked_service():
+    """`gateway_service_reload` reaches a real network service; stub the one HTTP call it makes
+    (the same seam `test_mcp_gateway_service_tools.py` mocks) so it is a `_cases()` entry like
+    every other tool here, not one more networked exemption alongside `trigger_retrain`."""
+    from examlops.mcp import tools as T
+
+    with patch.object(T._client, "post", return_value={"reloaded": True, "routes": ["chat"]}):
+        return T.gateway_service_reload()
+
+
 def _cases():
     """(tool name, call) for every mutating tool that runs without a live service."""
     from examlops.mcp import tools as T
 
     return [
+        ("gateway_service_reload", _reload_gateway_with_a_mocked_service),
         ("set_traffic_split", lambda: T.set_traffic_split("JPCP", 100, 0)),
         ("disable_challenger", lambda: T.disable_challenger("JPCP")),
         ("set_drift_autoretrain", lambda: T.set_drift_autoretrain("JPCP", "PM100Dataset", True)),
@@ -76,6 +123,7 @@ def _cases():
         ("project_add_member", lambda: T.project_add_member("proj", "bob", "editor")),
         ("hpc_approve_cluster", lambda: T.hpc_approve_cluster("cl")),
         ("dataplane_pull", lambda: T.dataplane_pull("filesrc")),
+        ("genai_app_invoke", lambda: T.genai_app_invoke("ga-app@Staging", "hello")),
     ]
 
 

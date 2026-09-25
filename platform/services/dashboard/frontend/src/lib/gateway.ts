@@ -57,3 +57,44 @@ export const useRevokeKey = () => {
   const qc = useQueryClient()
   return useMutation({ mutationFn: (keyHash: string) => revokeKey(keyHash), onSuccess: () => invalidate(qc) })
 }
+
+// Live status (P6) — proxies the deployed llm-gateway's own unauthenticated `/ready`; never the
+// admin-token-gated `/admin/health`/`/admin/config` (see the backend router's own docstring for why).
+
+export interface GatewayStatus {
+  reachable: boolean
+  ready: boolean
+  healthyNow: boolean
+  routes: Record<string, { healthy: boolean; required: boolean; deployments: number }>
+  warnings: string[]
+}
+
+export const useGatewayStatus = () =>
+  useQuery<GatewayStatus>({
+    queryKey: ['gateway', 'status'],
+    queryFn: () => apiFetch<GatewayStatus>('/api/gateway/status'),
+    refetchInterval: 30_000,
+  })
+
+// Test chat (P6, admin) — one real message through the deployed gateway with an operator-supplied
+// virtual key, mirroring `exa gateway chat --key`. Never stores the key.
+
+export interface TestChatBody {
+  message: string
+  route?: string
+  key?: string
+}
+
+export interface TestChatResult {
+  ok: boolean
+  status: number | null
+  latencyMs: number
+  reply?: string
+  error?: string
+  code?: string
+}
+
+export const testChat = (body: TestChatBody): Promise<TestChatResult> =>
+  apiFetch<TestChatResult>('/api/gateway/test-chat', { method: 'POST', body: JSON.stringify(body) })
+
+export const useTestChat = () => useMutation({ mutationFn: (body: TestChatBody) => testChat(body) })

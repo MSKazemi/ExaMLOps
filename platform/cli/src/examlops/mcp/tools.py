@@ -504,6 +504,157 @@ def list_gateway_keys() -> dict[str, Any]:
     return _db_read(_q)
 
 
+# ── the live llm-gateway service (ADR 0151/0147) ────────────────────────────
+#
+# Everything above reads `platform.db`. These reach the *deployed* llm-gateway service itself —
+# the same one `exa gateway status|providers|validate` (iteration 2) talks to — so an agent has
+# the visibility ADR 0147 promises: an agent can tell "the copilot/exa ask is broken" apart from
+# "no model is currently servable" without an operator running a CLI command for it.
+
+
+def _gateway_service_url() -> str:
+    """Same resolution order as `gateway_cmd._gateway_url()` — two surfaces, one source of truth
+    for which service they mean, so they can never quietly disagree about it. Also validated
+    (ADR 0154) exactly as that CLI helper and `gateway_service_backend` are: an agent-callable
+    tool is the *most* important place to enforce this, since a prompt-injected agent is the
+    threat model the egress check exists for, not only a careless operator's shell.
+    """
+    from examlops.gateway.egress import validate_base_url
+
+    url = os.getenv("EXAMLOPS_LLM_GATEWAY_URL") or os.getenv("AGENT_LLM_GATEWAY_URL") or ""
+    return validate_base_url(url.rstrip("/") or "http://127.0.0.1:18020", locality="local")
+
+
+def _resolved_gateway_url() -> tuple[str | None, dict[str, Any] | None]:
+    """``(url, None)`` on success, ``(None, error_envelope)`` on a refused/invalid URL — resolved
+    exactly once, so no caller can hit the double-resolution trap of validating, using the result,
+    then re-resolving later in the same call and raising a second time (e.g. inside error-message
+    formatting) after already being in a failure path."""
+    try:
+        return _gateway_service_url(), None
+    except Exception as exc:  # noqa: BLE001 - never raise to an agent caller
+        return None, _err(str(exc))
+
+
+def gateway_service_status() -> dict[str, Any]:
+    """Live readiness of the deployed llm-gateway service: which routes it can serve right now.
+
+    Unauthenticated on the service side (`/ready`), so this never needs a token. Use this first
+    when a model call, the dashboard copilot, or `exa ask` seems broken — a "not ready" answer
+    here, naming which route, explains it without guessing.
+    """
+    url, err = _resolved_gateway_url()
+    if err is not None:
+        return err
+    return _get(f"{url}/ready")
+
+
+def gateway_service_providers() -> dict[str, Any]:
+    """Live provider health (up/down, latency, resident models) from the deployed llm-gateway's
+    admin API — *why* a route is unhealthy, not just that it is. Requires ``LLM_GATEWAY_ADMIN_TOKEN``
+    to be set for this process; returns a clear error rather than attempting an unauthenticated call.
+    """
+    token = os.getenv("LLM_GATEWAY_ADMIN_TOKEN", "")
+    if not token:
+        return _err("LLM_GATEWAY_ADMIN_TOKEN is not set — cannot reach the gateway's admin API")
+    url, err = _resolved_gateway_url()
+    if err is not None:
+        return err
+    return _get(f"{url}/admin/health", token=token)
+
+
+def gateway_service_reload() -> dict[str, Any]:
+    """Trigger the deployed llm-gateway to reload its `gateway.yaml`.
+
+    Mutating: swaps the live routing table, which can change which model answers a route —
+    write-gated the same as any other mutating tool, even though a bad config cannot brick the
+    service (ADR 0155 d3 keeps the last-good table and reports why the new one was rejected).
+    Requires ``LLM_GATEWAY_ADMIN_TOKEN``.
+    """
+    gate = _agent_write_gate("gateway_reload", {})
+    if gate is not None:
+        return gate
+    token = os.getenv("LLM_GATEWAY_ADMIN_TOKEN", "")
+    if not token:
+        return _err("LLM_GATEWAY_ADMIN_TOKEN is not set — cannot reach the gateway's admin API")
+    url, err = _resolved_gateway_url()
+    if err is not None:
+        return err
+    assert url is not None  # `_resolved_gateway_url` guarantees exactly one of (url, err)
+    try:
+        data = _client.post(f"{url}/admin/reload", {}, token=token)
+    except _client.ClientError as exc:
+        return _err(str(exc), status=getattr(exc, "status", None))
+    # Auditing after the reload has already taken effect, outside the try above, so a broken
+    # audit chain cannot report a reload that already happened as a failure the caller retries
+    # (same reasoning as `hpc_approve_cluster`).
+    out: dict[str, Any] = {"ok": True, "data": data}
+    warning = _audit_write("gateway_reloaded", url, {})
+    if warning:
+        out["audit_warning"] = warning
+    return out
+
+
+def genai_app_list(name: str | None = None) -> dict[str, Any]:
+    """Registered GenAI applications (ADR 0159) — a composed route+RAG+prompt+guardrail manifest,
+    newest first, with the aliases (Staging/Canary/Production) pointing at each version."""
+
+    def _q() -> dict[str, Any]:
+        from examlops.genai_apps import list_apps
+
+        return {"applications": list_apps(name)}
+
+    return _db_read(_q)
+
+
+def genai_app_show(ref: str) -> dict[str, Any]:
+    """One GenAI application version and its composed manifest.
+
+    ``ref`` is a version id (``gaa-sha256:...``) or ``<name>@<alias>``.
+    """
+
+    def _q() -> dict[str, Any]:
+        from examlops.genai_apps import get
+
+        row = get(ref)
+        if row is None:
+            return {"ok": False, "error": f"unknown genai application version {ref!r}"}
+        return {"application": row}
+
+    return _db_read(_q)
+
+
+def genai_app_invoke(ref: str, message: str) -> dict[str, Any]:
+    """Make one real, billed chat call through a GenAI application's resolved route.
+
+    Mutating in effect — it spends budget and appears on a cost ledger — even though it writes no
+    registry row, the same reason ``gateway_service_reload``/``trigger_retrain`` are write-gated.
+    ``ref`` is a version id or ``<name>@<alias>`` (defaults to Production). Orchestration only
+    (ADR 0159 §4): this calls the same ``examlops.genai_apps.service.invoke`` `exa genai-app
+    invoke` does, which itself never re-implements guardrail, RAG or routing logic — every step
+    reuses the subsystem's own existing call. A resolution-layer failure (unknown application, a
+    dangling component reference) returns a typed error named by its ``InvokeError.code``; a
+    failure *inside* the gateway call (a bad model, a guardrail block, a budget refusal) returns
+    the gateway's own typed error unchanged, never re-wrapped.
+    """
+    gate = _agent_write_gate("genai_app_invoke", {"ref": ref, "message": message})
+    if gate is not None:
+        return gate
+    from examlops.genai_apps import InvokeError, invoke
+
+    actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "mcp-agent"
+    try:
+        # `invoke()` writes its own `genai_app_invoked` audit row (ADR 0159 §3 Phase 3) — passing
+        # `actor` here, rather than letting it fall back to "cli", is the only extra step; a
+        # second `_audit_write` call here would double the audit row for one real call.
+        out = invoke(ref, message, actor=actor)
+    except InvokeError as exc:
+        return _err(str(exc), status=exc.code)
+    except Exception as exc:  # noqa: BLE001 - the gateway's own typed errors, never raised raw
+        return _err(str(exc), status=type(exc).__name__)
+    return {"ok": True, **out}
+
+
 # ── read-only tools: Evaluation & Data ────────────────────────────────────────
 
 
@@ -1397,6 +1548,34 @@ REGISTRY: tuple[ToolSpec, ...] = (
         gateway_cache_stats, tags=("read", "gateway", "finops"), use_cases=("finops", "monitoring")
     ),
     ToolSpec(list_gateway_keys, tags=("read", "gateway", "governance"), use_cases=("governance",)),
+    ToolSpec(
+        gateway_service_status,
+        tags=("read", "gateway", "llmops", "status"),
+        use_cases=("monitoring", "incident"),
+    ),
+    ToolSpec(
+        gateway_service_providers,
+        tags=("read", "gateway", "llmops"),
+        use_cases=("monitoring", "incident"),
+    ),
+    ToolSpec(
+        _idem(gateway_service_reload),
+        mutating=True,
+        idempotent=True,
+        tags=("write", "gateway", "llmops"),
+        use_cases=("management",),
+        tier="B",
+    ),
+    # ── genai applications (ADR 0159) ─────────────────────────────────────────
+    ToolSpec(genai_app_list, tags=("read", "gateway", "llmops"), use_cases=("management",)),
+    ToolSpec(genai_app_show, tags=("read", "gateway", "llmops"), use_cases=("management",)),
+    ToolSpec(
+        _idem(genai_app_invoke),
+        mutating=True,
+        tags=("write", "gateway", "llmops"),
+        use_cases=("management",),
+        tier="A",
+    ),
     # ── evaluation / data ─────────────────────────────────────────────────────
     ToolSpec(eval_gate, tags=("read", "eval", "quality"), use_cases=("monitoring", "governance")),
     ToolSpec(eval_results, tags=("read", "eval", "quality"), use_cases=("monitoring",)),

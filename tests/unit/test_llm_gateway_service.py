@@ -6,6 +6,7 @@ The upstream is a fake Ollama behind ``httpx.MockTransport``; the app is driven 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 
@@ -496,6 +497,120 @@ async def test_admin_health_reports_breakers_and_provider_probes(upstream):
     assert "base_url" not in json.dumps(data["providers"])  # health, not topology
 
 
+async def test_admin_health_reports_active_probe_state_even_before_the_loop_ever_ticks(upstream):
+    """The `active_probe` block always appears, off or on: `running`/`interval_s`/`last_results`
+    reflect the prober's actual state, which is "not yet started" for any test that never drives
+    the ASGI lifespan (httpx's `ASGITransport` does not trigger FastAPI's lifespan events on its
+    own — see `test_the_active_prober_is_started_and_stopped_by_the_apps_own_lifespan` below for
+    the one that does)."""
+    app = make_app(upstream)
+    async with client(app) as c:
+        data = (await c.get("/admin/health", headers=ADMIN_H)).json()
+    assert data["active_probe"] == {
+        "running": False,
+        "interval_s": pytest.approx(30.0),
+        "last_results": {},
+    }
+
+
+async def test_the_active_prober_is_started_and_stopped_by_the_apps_own_lifespan(upstream):
+    """Drives the real ASGI lifespan protocol (`app.router.lifespan_context`) — the one thing a
+    plain `httpx.ASGITransport` request never does on its own, and therefore the one thing every
+    other test in this file cannot prove. `interval_s=0.01` so the loop ticks fast enough to prove
+    it iterates within the test's own timeout, not just that a task object exists.
+
+    Uses a literal loopback IP rather than this file's shared `CFG` (`ollama.test`): every probe
+    triggers `OllamaProvider`'s DNS-rebinding precheck (BL-111), and resolving a real, deliberately
+    non-existent hostname over the actual system resolver has genuine, non-trivial latency — a
+    literal IP address needs no resolution at all (`check_resolved_addresses`'s own docstring:
+    "a no-op when the host is already a literal IP"), which is what keeps this test's timing
+    tight and non-flaky rather than racing a real (if bounded) network operation.
+    """
+    cfg = {
+        "version": 1,
+        "providers": {
+            "n1": {"type": "ollama", "base_url": "http://127.0.0.1:19999", "locality": "local"}
+        },
+        "models": {"chat": {"deployments": [{"provider": "n1", "model": "qwen3:8b"}]}},
+        "aliases": {},
+    }
+    app = make_app(upstream, config=cfg, active_probe_interval_s=0.01)
+    async with app.router.lifespan_context(app):
+        prober = app.state.gateway_prober
+        assert prober.running is True
+        await asyncio.sleep(0.05)
+        assert prober.last_results == {"n1": True}  # the fake upstream answers /api/tags
+    assert prober.running is False  # stopped on the way out of the context, not left dangling
+
+
+async def test_active_probe_interval_s_env_var_overrides_the_default(upstream, monkeypatch):
+    monkeypatch.setenv("LLM_GATEWAY_ACTIVE_PROBE_INTERVAL_S", "5")
+    app = make_app(upstream, active_probe_interval_s=None)
+    assert app.state.gateway_prober.interval_s == pytest.approx(5.0)
+
+
+async def test_active_probe_interval_s_env_var_unset_falls_back_to_the_documented_default(
+    upstream, monkeypatch
+):
+    monkeypatch.delenv("LLM_GATEWAY_ACTIVE_PROBE_INTERVAL_S", raising=False)
+    app = make_app(upstream, active_probe_interval_s=None)
+    from examlops.gateway.health import DEFAULT_INTERVAL_S
+
+    assert app.state.gateway_prober.interval_s == pytest.approx(DEFAULT_INTERVAL_S)
+
+
+async def test_admin_health_reports_warm_state_even_before_the_loop_ever_ticks(upstream):
+    app = make_app(upstream)
+    async with client(app) as c:
+        data = (await c.get("/admin/health", headers=ADMIN_H)).json()
+    assert data["warm"] == {
+        "running": False,
+        "interval_s": pytest.approx(300.0),
+        "last_results": {},
+    }
+
+
+async def test_the_warm_keeper_is_started_and_stopped_by_the_apps_own_lifespan(upstream):
+    """Same rationale as `test_the_active_prober_is_started_and_stopped_by_the_apps_own_lifespan`
+    (a literal loopback IP, not this file's shared `ollama.test` `CFG`, to keep timing tight and
+    non-flaky) — plus this model is flagged `warm: true`, so a real keep-alive chat should reach
+    the fake upstream, not just a `/api/tags` probe."""
+    cfg = {
+        "version": 1,
+        "providers": {
+            "n1": {"type": "ollama", "base_url": "http://127.0.0.1:19999", "locality": "local"}
+        },
+        "models": {
+            "chat": {"deployments": [{"provider": "n1", "model": "qwen3:8b", "warm": True}]}
+        },
+        "aliases": {},
+    }
+    app = make_app(upstream, config=cfg, active_probe_interval_s=0, warm_interval_s=0.01)
+    async with app.router.lifespan_context(app):
+        warmer = app.state.gateway_warmer
+        assert warmer.running is True
+        await asyncio.sleep(0.05)
+        assert warmer.last_results == {"n1/qwen3:8b": True}
+        assert len(upstream.chat_bodies) >= 2  # the loop actually iterated, not just ran once
+    assert warmer.running is False  # stopped on the way out of the context, not left dangling
+
+
+async def test_warm_interval_s_env_var_overrides_the_default(upstream, monkeypatch):
+    monkeypatch.setenv("LLM_GATEWAY_WARM_INTERVAL_S", "7")
+    app = make_app(upstream, warm_interval_s=None)
+    assert app.state.gateway_warmer.interval_s == pytest.approx(7.0)
+
+
+async def test_warm_interval_s_env_var_unset_falls_back_to_the_documented_default(
+    upstream, monkeypatch
+):
+    monkeypatch.delenv("LLM_GATEWAY_WARM_INTERVAL_S", raising=False)
+    app = make_app(upstream, warm_interval_s=None)
+    from examlops.gateway.health import DEFAULT_WARM_INTERVAL_S
+
+    assert app.state.gateway_warmer.interval_s == pytest.approx(DEFAULT_WARM_INTERVAL_S)
+
+
 async def test_admin_config_shows_the_source_and_no_secrets(upstream):
     async with client(make_app(upstream)) as c:
         data = (await c.get("/admin/config", headers=ADMIN_H)).json()
@@ -528,6 +643,34 @@ async def test_reload_keeps_the_last_good_config_when_the_new_one_is_invalid(ups
         ids = {m["id"] for m in (await c.get("/v1/models")).json()["data"]}
         assert "extra" in ids
         assert (await c.get("/admin/config", headers=ADMIN_H)).json()["last_reload_error"] is None
+
+
+async def test_admin_reload_as_the_process_first_ever_request_still_answers_config_invalid(
+    upstream, tmp_path
+):
+    """Regression: `admin_reload` calls `state.ensure_runtime()` before its own `state.loader()`
+    (to guarantee a previous runtime exists to fall back to). When `/admin/reload` is the very
+    first request the process has ever handled — no route has warmed `state.runtime` yet — and the
+    on-disk config is *already* invalid at that moment, `ensure_runtime()`'s own `loader()` call
+    used to raise `ConfigError` outside the handler's `except ConfigError` branch, escaping to the
+    generic top-level handler and answering with an unhandled 500 instead of the documented typed
+    `config_invalid` 422 (ADR 0156 d1: every failure is typed, never a bare 500). There genuinely
+    is no "previous good config" in this exact case (nothing ever loaded successfully), so this
+    only asserts the *error contract* stays correct — not that a nonexistent previous config keeps
+    serving, which `test_reload_keeps_the_last_good_config_when_the_new_one_is_invalid` above
+    already covers for the (far more common) warm-service case.
+    """
+    import yaml
+
+    path = tmp_path / "gateway.yaml"
+    bad = json.loads(json.dumps(CFG))
+    bad["models"]["chat"]["deployments"][0]["provider"] = "ghost"
+    path.write_text(yaml.safe_dump(bad))  # already broken before the app ever serves anything
+    async with client(make_app(upstream, config=None, config_path=path)) as c:
+        r = await c.post("/admin/reload", headers=ADMIN_H)  # the process's first-ever request
+        assert r.status_code == 422
+        assert r.json()["error"]["code"] == "config_invalid"
+        assert any("ghost" in e for e in r.json()["error"]["errors"])
 
 
 # ── metrics (ADR 0156 d2) ─────────────────────────────────────────────────────

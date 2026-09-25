@@ -189,6 +189,66 @@ async def test_a_fallback_can_never_widen_locality():
     assert ext.calls == 0
 
 
+def _random_locality_topology(rng: random.Random) -> tuple[list[Route], dict[str, Fake]]:
+    """A random route/fallback graph (PLAN.md P5: "fallback widening property test", spec §12.4).
+
+    Every deployment gets its own never-shared `Fake` provider so "was this specific deployment
+    permitted?" is unambiguous — a provider reused across two routes with different `external_ok`
+    would make that question meaningless. Fallback edges are drawn freely, including edges that
+    form cycles or point back at the start: `_chain`'s BFS is documented cycle-safe, so a property
+    test of this exact claim should not dodge the case that claim exists to cover.
+    """
+    n_routes = rng.randint(2, 5)
+    names = [f"r{i}" for i in range(n_routes)]
+    routes: list[Route] = []
+    providers_by_name: dict[str, Fake] = {}
+    for name in names:
+        deps = []
+        for j in range(rng.randint(1, 3)):
+            loc = rng.choice(_ALL_LOCALITIES)
+            ext_ok = rng.choice([True, False])
+            provider = Fake(f"{name}-p{j}", loc)
+            deps.append(dep(provider, external_ok=ext_ok))
+            providers_by_name[provider.name] = provider
+        fallbacks = rng.sample(names, k=rng.randint(0, min(2, n_routes)))
+        routes.append(Route(name, deps, fallbacks=fallbacks))
+    return routes, providers_by_name
+
+
+@pytest.mark.parametrize("trial", range(200))
+async def test_property_a_fallback_never_widens_locality_across_random_topologies(trial):
+    """200 randomized route/fallback graphs (deterministic per `trial`, so a failure reproduces by
+    its parametrize id): whatever the topology, the request either lands on a deployment permitted
+    under `allowed`/`external_ok`, or fails outright — a non-permitted deployment's `Fake.calls`
+    must be 0 in either case. This is the structural guarantee behind ADR 0154 d3's claim (checked
+    here as a property, not just the one worked example above), not a probabilistic one — every
+    trial must hold, not "most"."""
+    rng = random.Random(20260924_000 + trial)
+    routes, providers_by_name = _random_locality_topology(rng)
+    allowed = tuple(rng.sample(_ALL_LOCALITIES, k=rng.randint(1, len(_ALL_LOCALITIES))))
+
+    all_deps: dict[str, Deployment] = {d.provider.name: d for r in routes for d in r.deployments}
+    permitted_names = {
+        name
+        for name, d in all_deps.items()
+        if d.provider.locality in allowed and (d.provider.locality != "external" or d.external_ok)
+    }
+
+    c = core(routes, rng=random.Random(rng.random()))
+    try:
+        result = await c.chat(routes[0].name, req(), allowed_localities=allowed)
+    except ProviderError:
+        result = None
+
+    called = {name for name, p in providers_by_name.items() if p.calls > 0}
+    assert called <= permitted_names, (
+        f"trial {trial}: a locality-forbidden deployment was called "
+        f"(allowed={allowed}, called={called}, permitted={permitted_names})"
+    )
+    if result is not None:
+        assert result.provider in permitted_names
+
+
 # ── capability ────────────────────────────────────────────────────────────────
 
 
@@ -478,3 +538,147 @@ async def test_snapshot_reports_health_for_the_admin_surface():
     assert snap["breaker"] == "closed" and snap["ok"] == 1 and snap["errors"] == 0
     assert snap["ewma_ttft_ms"] == pytest.approx(12.0)
     assert snap["inflight"] == 0
+
+
+# ── active probe result feed-in (PLAN.md P1 "active probe loop", gateway/health.py) ───────────
+
+
+def test_deployments_for_provider_finds_every_route_sharing_it():
+    a, b = Fake("a"), Fake("b")
+    c = core(
+        [
+            Route("r1", [dep(a, model="m1"), dep(b, model="m1")]),
+            Route("r2", [dep(a, model="m2")]),  # same provider `a`, a different route AND model
+        ]
+    )
+    keys = {d.key for d in c.deployments_for_provider("a")}
+    assert keys == {"a/m1", "a/m2"}  # both of a's deployments, not b's
+    assert {d.key for d in c.deployments_for_provider("b")} == {"b/m1"}
+    assert c.deployments_for_provider("nonexistent") == []
+
+
+def test_warm_deployments_returns_only_the_ones_flagged_warm():
+    a, b = Fake("a"), Fake("b")
+    c = core(
+        [
+            Route("r1", [dep(a, model="m1", warm=True), dep(b, model="m1", warm=False)]),
+            Route("r2", [dep(a, model="m2")]),  # warm defaults to False
+        ]
+    )
+    assert {d.key for d in c.warm_deployments()} == {"a/m1"}
+
+
+def test_warm_deployments_deduplicates_by_key_across_routes():
+    """The same (provider, model) pair reachable from two route names must only ever produce one
+    warm target — a keep-alive ping is sent once per real upstream deployment, not once per route
+    that happens to reference it."""
+    a = Fake("a")
+    shared = dep(a, model="m", warm=True)
+    c = core([Route("r1", [shared]), Route("r2", [shared])])
+    assert [d.key for d in c.warm_deployments()] == ["a/m"]
+
+
+async def test_record_probe_result_opens_the_breaker_for_every_deployment_of_that_provider():
+    """A provider is shared by many routes/models; health is a property of the connection, not
+    any one route — an active probe failure must be visible everywhere that provider is used, not
+    only on the one route/model combination a request happened to hit."""
+    a = Fake("a")
+    c = core([Route("r1", [dep(a, model="m1")]), Route("r2", [dep(a, model="m2")])])
+    for _ in range(5):  # CircuitBreaker's default fail_threshold
+        c.record_probe_result("a", ok=False)
+    assert c.snapshot()["a/m1"]["breaker"] == "open"
+    assert c.snapshot()["a/m2"]["breaker"] == "open"  # the other route's deployment too
+
+
+async def test_record_probe_result_never_touches_real_request_stats():
+    """Deliberately breaker-only (see the method's own docstring): a probe is not a real request,
+    and must not make `ok`/`errors`/`ewma_ttft_ms` — which describe real traffic — lie."""
+    a = Fake("a")
+    c = core([Route("r", [dep(a)])])
+    await c.chat("r", req())
+    before = dict(c.snapshot()["a/m"])
+    c.record_probe_result("a", ok=False)
+    c.record_probe_result("a", ok=True)
+    after = c.snapshot()["a/m"]
+    assert after["ok"] == before["ok"] and after["errors"] == before["errors"]
+    assert after["ewma_ttft_ms"] == before["ewma_ttft_ms"]
+    assert after["last_error"] == before["last_error"]
+
+
+def test_record_probe_result_for_an_unknown_provider_is_a_silent_no_op():
+    """A provider that answers to no configured route (a stale name, a discovery race) must not
+    raise — the active probe loop iterates whatever providers the runtime currently has, and a
+    momentary mismatch during a reload must not crash the whole probe pass over every other one."""
+    c = core([Route("r", [dep(Fake("a"))])])
+    c.record_probe_result("ghost", ok=False)  # must not raise
+    assert c.snapshot()["a/m"]["breaker"] == "closed"  # unaffected
+
+
+# ── residency-aware min_useful deadline gate (design spec §5 "Deadline"/"Cold start") ──────────
+
+
+def test_min_useful_s_is_the_bare_floor_for_a_non_ollama_provider():
+    """§5 "Cold start" is explicitly scoped to `ollama`'s own residency reporting — no other
+    provider type is ever gated by it, even with no residency data at all."""
+    a = Fake("a")  # Fake.type == "fake", never "ollama"
+    c = core([Route("r", [dep(a)])])
+    assert c._min_useful_s(dep(a)) == c.min_useful_s  # noqa: SLF001
+
+
+def test_min_useful_s_is_the_bare_floor_when_residency_is_unknown():
+    a = Fake("a")
+    a.type = "ollama"
+    c = core([Route("r", [dep(a)])])
+    assert c._min_useful_s(dep(a)) == c.min_useful_s  # noqa: SLF001 - never probed yet
+
+
+def test_min_useful_s_is_the_cold_load_budget_for_a_confirmed_cold_ollama_model():
+    a = Fake("a")
+    a.type = "ollama"
+    c = core([Route("r", [dep(a, model="cold-model")])])
+    c.record_probe_result("a", ok=True, resident=["a-different-model"])
+    assert c._min_useful_s(dep(a, model="cold-model")) == c.cold_load_budget_s  # noqa: SLF001
+
+
+def test_min_useful_s_is_the_bare_floor_for_a_confirmed_resident_ollama_model():
+    a = Fake("a")
+    a.type = "ollama"
+    c = core([Route("r", [dep(a, model="warm-model")])])
+    c.record_probe_result("a", ok=True, resident=["warm-model"])
+    assert c._min_useful_s(dep(a, model="warm-model")) == c.min_useful_s  # noqa: SLF001
+
+
+def test_record_probe_result_with_resident_none_never_erases_prior_residency_data():
+    """A probe that raised (or otherwise cannot say) passes `resident=None` — that must not reset
+    a provider from "confirmed nothing is resident" back to "unknown/permissive", or a transient
+    probe hiccup would silently widen every subsequent deadline check."""
+    a = Fake("a")
+    a.type = "ollama"
+    c = core([Route("r", [dep(a, model="m")])])
+    c.record_probe_result("a", ok=True, resident=[])  # confirmed: nothing resident
+    assert c._min_useful_s(dep(a, model="m")) == c.cold_load_budget_s  # noqa: SLF001
+    c.record_probe_result("a", ok=False, resident=None)  # this probe couldn't say
+    assert c._min_useful_s(dep(a, model="m")) == c.cold_load_budget_s  # noqa: SLF001 - unchanged
+
+
+async def test_a_short_deadline_skips_a_confirmed_cold_deployment_without_ever_calling_it():
+    a = Fake("a")
+    a.type = "ollama"
+    c = core([Route("r", [dep(a, model="cold")])], cold_load_budget_s=10.0)
+    c.record_probe_result("a", ok=True, resident=[])  # confirmed cold
+    with pytest.raises(ProviderError) as ei:
+        await c.chat("r", req(), caller_budget_ms=500)  # 0.5s < the 10s cold-load budget
+    assert ei.value.kind == "upstream_timeout"
+    assert a.calls == 0  # never attempted — skipped before any network call
+
+
+async def test_a_short_deadline_still_allows_a_confirmed_resident_deployment():
+    """The same 2s budget that a confirmed-*cold* deployment would be skipped for (below the 10s
+    cold-load budget) must still go through for a confirmed-*resident* one (above the 1s bare
+    floor) — the whole point of residency-awareness rather than one fixed floor for everyone."""
+    a = Fake("a")
+    a.type = "ollama"
+    c = core([Route("r", [dep(a, model="warm")])], cold_load_budget_s=10.0)
+    c.record_probe_result("a", ok=True, resident=["warm"])  # confirmed already warm
+    result = await c.chat("r", req(), caller_budget_ms=2000)
+    assert result.provider == "a" and a.calls == 1

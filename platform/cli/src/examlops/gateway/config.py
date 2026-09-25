@@ -23,8 +23,9 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from examlops.gateway.egress import EgressDenied, validate_base_url
-from examlops.gateway.providers import OllamaProvider, Provider
+from examlops.gateway.providers import OllamaProvider, OpenAICompatProvider, Provider
 from examlops.gateway.providers.base import Capabilities
+from examlops.gateway.providers.openai_compat import OpenAICompatQuirks
 from examlops.gateway.resilience import RetryBudget
 from examlops.gateway.routing import Catalog, Deployment, GatewayCore, Route
 
@@ -46,7 +47,7 @@ class _Model(BaseModel):
 
 
 class ProviderCfg(_Model):
-    type: Literal["ollama"]
+    type: Literal["ollama", "openai_compat"]
     base_url: str
     locality: Locality = "local"
     external_ok: bool = False
@@ -59,6 +60,16 @@ class ProviderCfg(_Model):
     options: dict[str, Any] = Field(default_factory=dict)
     think: bool | None = None
     discover: bool = False
+    # ── openai_compat only (ADR 0152 d3) ────────────────────────────────────────────
+    #: The name of an environment variable holding the bearer key — never the key itself. A
+    #: literal secret in `gateway.yaml` is a config file checked into git or bind-mounted read-only
+    #: into a container; every other credential this service touches (`LLM_GATEWAY_ADMIN_TOKEN`,
+    #: `EXAMLOPS_LLM_GATEWAY_KEY`) is env-only for the same reason, so this field does not offer a
+    #: literal alternative.
+    api_key_env: str | None = None
+    constrains_schema: bool = False
+    send_stream_options: bool = True
+    retry_after_is_ms: bool = False
 
 
 class DeploymentCfg(_Model):
@@ -68,6 +79,10 @@ class DeploymentCfg(_Model):
     priority: int = 0
     external_ok: bool | None = None  # inherits the provider's
     price_per_1k: float | None = Field(None, ge=0)  # USD/1k tokens, for `cost_aware` (ADR 0083)
+    #: Design spec §5 "Cold start": a 1-token keep-alive preload at start and periodically
+    #: thereafter (`WarmKeeper`, `gateway/health.py`), so a model an operator has decided must
+    #: always answer fast never goes cold from being merely quiet for a while.
+    warm: bool = False
 
 
 class ModelCfg(_Model):
@@ -254,6 +269,29 @@ def generated_config(base_url: str, *, name: str | None = None) -> dict[str, Any
 def default_provider_factory(name: str, cfg: ProviderCfg) -> Provider:
     import httpx
 
+    timeout = httpx.Timeout(cfg.read_timeout_s, connect=cfg.connect_timeout_s)
+    if cfg.type == "openai_compat":
+        api_key = os.getenv(cfg.api_key_env, "") if cfg.api_key_env else None
+        if cfg.api_key_env and not api_key:
+            # Not a ConfigError (that would refuse a config whose secret is merely not-yet-set
+            # in *this* process's environment, e.g. during `exa gateway validate`); the provider
+            # is still built, unauthenticated — the upstream's own 401 makes the real failure
+            # explicit rather than the gateway silently sending a blank bearer token.
+            logger.warning(
+                "provider %r: api_key_env=%r is not set in this environment", name, cfg.api_key_env
+            )
+        return OpenAICompatProvider(
+            name,
+            cfg.base_url,
+            api_key=api_key or None,
+            locality=cfg.locality,
+            constrains_schema=cfg.constrains_schema,
+            quirks=OpenAICompatQuirks(
+                send_stream_options=cfg.send_stream_options,
+                retry_after_is_ms=cfg.retry_after_is_ms,
+            ),
+            timeout=timeout,
+        )
     return OllamaProvider(
         name,
         cfg.base_url,
@@ -261,7 +299,7 @@ def default_provider_factory(name: str, cfg: ProviderCfg) -> Provider:
         keep_alive=cfg.keep_alive,
         options=cfg.options,
         think=cfg.think,
-        timeout=httpx.Timeout(cfg.read_timeout_s, connect=cfg.connect_timeout_s),
+        timeout=timeout,
     )
 
 
@@ -304,7 +342,13 @@ async def build_runtime(
             discovered[pname] = {
                 m.name: m.capabilities
                 for m in await providers[pname].list_models()
-                if m.capabilities.chat
+                # A model discovery excludes here never becomes a route — historically that
+                # correctly filtered out embedding-only models, which the gateway had no way to
+                # serve. It now does (`/v1/embeddings`, ADR 0152 d1), so excluding them left a
+                # zero-config deployment permanently unable to route a real embedding call no
+                # matter what the operator installed. Keep any model with a capability this
+                # gateway can actually route a request to.
+                if m.capabilities.chat or m.capabilities.embeddings
             }
         except Exception as exc:  # noqa: BLE001 - discovery is advisory; the gateway still starts
             warnings.append(f"provider {pname!r}: discovery failed ({exc})")
@@ -322,6 +366,7 @@ async def build_runtime(
             max_queue=prov.max_queue,
             queue_timeout_s=prov.queue_timeout_s,
             price_per_1k=dcfg.price_per_1k,
+            warm=dcfg.warm,
         )
 
     routes = [

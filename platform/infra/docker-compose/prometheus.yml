@@ -91,6 +91,22 @@ scrape_configs:
       - targets: ['dataplane:8010']
     metrics_path: /metrics
 
+  # LLM gateway (ADR 0151-0156) — an opt-in Compose profile (llm-gateway/gateway), so DNS
+  # discovery like vllm's below, not a fixed static_configs target: a site that never enables the
+  # profile must never see LLMGatewayDown fire (the same reasoning test_absent_is_not_zero.py's
+  # envoy_cluster_membership exemption spells out — a rule that pages forever on a healthy,
+  # opted-out platform is how alerting gets switched off). `/metrics` is admin-token gated
+  # (ADR 0156) — see prometheus-secrets/README.md for the credentials file this reads.
+  - job_name: llm_gateway
+    dns_sd_configs:
+      - names: ['llm-gateway']
+        type: A
+        port: 8020
+        refresh_interval: 30s
+    metrics_path: /metrics
+    authorization:
+      credentials_file: /etc/prometheus/secrets/llm_gateway_admin_token
+
   # vLLM (Track V / ADR 0107) — TTFT, inter-token latency, queue depth, KV-cache usage.
   # The Compose service is a fixed target; endpoints launched on HPC land on whichever
   # node the scheduler allocated, so those are discovered from the endpoint registry via

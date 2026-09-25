@@ -7,6 +7,7 @@ vi.mock('./api', () => ({
 
 import { apiFetch } from './api'
 import {
+  getHistory,
   getInUse,
   isApplicable,
   listHardwareProfiles,
@@ -84,5 +85,22 @@ describe('hardware profile fetchers', () => {
       name: 'nb',
       hardwareProfile: 'gpu-small',
     })
+  })
+
+  it('history with no filter hits the bare endpoint', async () => {
+    vi.mocked(apiFetch).mockResolvedValue([])
+    await getHistory()
+    expect(apiFetch).toHaveBeenCalledWith('/api/v1/hardware-profiles/history')
+  })
+
+  it('history applies every filter as a query param', async () => {
+    vi.mocked(apiFetch).mockResolvedValue([])
+    await getHistory({ name: 'gpu-small', consumer: 'training', project: 'research', limit: 25 })
+    const [url] = vi.mocked(apiFetch).mock.calls[0]
+    const params = new URLSearchParams((url as string).split('?')[1])
+    expect(params.get('name')).toBe('gpu-small')
+    expect(params.get('consumer')).toBe('training')
+    expect(params.get('project')).toBe('research')
+    expect(params.get('limit')).toBe('25')
   })
 })

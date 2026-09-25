@@ -28,7 +28,7 @@ from typing import Any
 
 from examlops.data import genai_apps as store
 from examlops.data.audit import audit_best_effort
-from examlops.genai_apps.components import component_refusals
+from examlops.genai_apps.components import NOT_FOUND, UNREACHABLE, component_refusals
 from examlops.genai_apps.manifest import (
     ALIASES,
     GenAIAppManifestError,
@@ -43,10 +43,12 @@ __all__ = [
     "GateRefusal",
     "GenAIAppManifestError",
     "GenAIApplication",
+    "InvokeError",
     "canonical_alias",
     "diff",
     "evidence_refusals",
     "get",
+    "invoke",
     "list_apps",
     "model_key",
     "register",
@@ -297,3 +299,185 @@ def rollback(
         {"version_id": target, "from": prev, "reason": reason},
     )
     return {"ok": True, "name": name, "alias": alias, "version_id": target, "previous": prev}
+
+
+# -- invoke (Phase 3) ---------------------------------------------------------------------------
+
+
+class InvokeError(RuntimeError):
+    """A resolution-layer failure — never made it to the gateway. ``code`` names which.
+
+    ``application_not_found`` / ``no_active_version``: the reference itself doesn't resolve.
+    ``component_not_found`` / ``component_unreachable``: :mod:`.components`'s own two outcomes,
+    reused verbatim rather than re-typed, covering a declared route/RAG/prompt/guardrail (or, for
+    ``route.key_ref`` specifically, the secret it names) that does not currently resolve.
+
+    Deliberately a *different* exception family from :class:`examlops.gateway.GatewayError` and
+    its subclasses (ADR 0156 d1): a failure here never reached the gateway at all, so wrapping it
+    in the gateway's own taxonomy would claim the gateway saw a request it never received. Once
+    the gateway call is made, its own typed errors propagate unchanged — see ``invoke()``'s
+    docstring.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
+def _resolve_ref(ref: str) -> tuple[dict[str, Any], str, str]:
+    """``(manifest, version_id, name)`` for ``ref`` — a ``name``, ``name@alias`` or version_id.
+
+    Raises :class:`InvokeError` (``application_not_found`` / ``no_active_version``), never
+    ``LookupError`` — ``invoke()`` is the one caller that needs the distinction typed.
+    """
+    if ref.startswith(_ID_PREFIX):
+        row = store.get_version(ref)
+        if row is None:
+            raise InvokeError("application_not_found", f"unknown genai application version: {ref}")
+        return row["manifest"], row["version_id"], row["name"]
+    name, _, alias_part = ref.partition("@")
+    try:
+        alias = canonical_alias(alias_part or "Production")
+    except ValueError as exc:
+        raise InvokeError("application_not_found", str(exc)) from exc
+    a = store.get_alias(name, alias)
+    if a is None:
+        if store.list_versions(name, limit=1):
+            raise InvokeError(
+                "no_active_version", f"genai application {name!r} has no {alias} version"
+            )
+        raise InvokeError("application_not_found", f"no genai application named {name!r}")
+    row = store.get_version(a["version_id"])
+    if row is None:  # pragma: no cover - an alias never outlives its version row
+        raise InvokeError(
+            "application_not_found",
+            f"genai application {name!r}'s {alias} version {a['version_id']} is missing",
+        )
+    return row["manifest"], row["version_id"], row["name"]
+
+
+def _resolve_key(key_ref: str, *, tenant: str, actor: str) -> str:
+    """The raw virtual key ``key_ref`` names, via D7 secrets (ADR 0154 d1) — never at rest."""
+    from examlops.secrets import SecretAccessDenied, SecretBackendError, SecretNotFound, get_secret
+
+    try:
+        return get_secret(key_ref, tenant=tenant, actor=actor)
+    except SecretNotFound as exc:
+        raise InvokeError(NOT_FOUND, f"route.key_ref {key_ref!r}: {exc}") from exc
+    except (SecretAccessDenied, SecretBackendError) as exc:
+        raise InvokeError(UNREACHABLE, f"route.key_ref {key_ref!r}: {exc}") from exc
+
+
+def invoke(
+    ref: str,
+    message: str,
+    *,
+    tenant: str = "default",
+    actor: str | None = None,
+) -> dict[str, Any]:
+    """Resolve ``ref`` and make one real, billed chat call (ADR 0159 §3 Phase 3).
+
+    This function is orchestration only — every step reuses the subsystem's own existing call,
+    never a second implementation of it (§4 of the spec): guardrail scanning (both input and
+    output) happens inside :meth:`GatewayClient.chat` itself via the manifest's own declared
+    mode; an optional RAG binding calls :meth:`RagPipeline.query` with this call's own
+    ``generate_fn``, so the retrieved-context guardrail scan RAG already runs stays in force and
+    is never duplicated here; the prompt template is resolved by name via ``prompt_ref``, the same
+    mechanism ``exa gateway chat --prompt`` already uses.
+
+    Raises :class:`InvokeError` for anything wrong with the *reference* (unknown application,
+    empty alias, a declared component or the route's virtual key that does not currently
+    resolve) — none of this reaches the gateway. Once the gateway call is made, its own typed
+    errors (:class:`examlops.gateway.GatewayError` and subclasses — ``model_not_found``,
+    ``guardrail_blocked``, ``budget_exceeded``, …) propagate **unchanged**; this function does not
+    catch or re-wrap them, matching the "one taxonomy, never two" rule ADR 0156 states for the
+    gateway service itself.
+    """
+    manifest, version_id, name = _resolve_ref(ref)
+    refusals = component_refusals(manifest, tenant=tenant)
+    if refusals:
+        code = NOT_FOUND if any(r.code == NOT_FOUND for r in refusals) else UNREACHABLE
+        raise InvokeError(code, "; ".join(str(r) for r in refusals))
+
+    who = _actor(actor)
+    route = manifest["route"]
+    prompt = manifest["prompt"]
+    prompt_ref = (
+        f"{prompt['name']}@{prompt['label']}"
+        if "label" in prompt
+        else f"{prompt['name']}@v{prompt['version']}"
+    )
+    virtual_key = _resolve_key(route["key_ref"], tenant=tenant, actor=who)
+
+    from examlops.gateway import GatewayClient, build_default_router
+    from examlops.guardrails import DefaultGuardrail
+
+    guard = DefaultGuardrail(mode=manifest["guardrail"]["mode"], tenant=tenant)
+    client = GatewayClient(
+        build_default_router(), virtual_key=virtual_key, tenant=tenant, guardrail=guard
+    )
+
+    rag = manifest.get("rag")
+    rag_meta: dict[str, Any] | None = None
+    if rag:
+        from examlops.rag import RagPipeline
+
+        holder: dict[str, Any] = {}
+
+        def _generate(prompt_text: str) -> str:
+            comp = client.chat(
+                route["model"], [{"role": "user", "content": prompt_text}], prompt_ref=prompt_ref
+            )
+            holder["completion"] = comp
+            return comp.text
+
+        ans = RagPipeline(retrieval=rag.get("retrieval", "dense")).query(
+            rag["kb"],
+            message,
+            tenant=tenant,
+            k=rag.get("top_k", 5),
+            generate_fn=_generate,
+        )
+        completion = holder["completion"]
+        reply_text = ans.answer
+        rag_meta = {
+            "kb": rag["kb"],
+            "citations": [{"doc_id": c.doc_id, "score": c.score} for c in ans.citations],
+            "guardrail_flagged": ans.guardrail_flagged,
+        }
+    else:
+        completion = client.chat(
+            route["model"], [{"role": "user", "content": message}], prompt_ref=prompt_ref
+        )
+        reply_text = completion.text
+
+    # The call already happened and was already billed — an audit failure must not turn a real
+    # answer into a reported error (same reasoning `record()`'s callers already follow), but it
+    # must not be silent either: a lost `genai_app_invoked` row is exactly the kind of unaudited
+    # governance write ADR 0147's MCP write-tool contract exists to surface. Same wording
+    # `mcp.tools._audit_write` uses, so both surfaces read identically to an operator.
+    landed = audit_best_effort(
+        _SOURCE,
+        who,
+        "genai_app_invoked",
+        f"{name}:{version_id}",
+        {"model": route["model"], "rag": bool(rag), "cost_usd": completion.cost_usd},
+    )
+    out: dict[str, Any] = {
+        "ok": True,
+        "version_id": version_id,
+        "name": name,
+        "model": completion.model,
+        "reply": reply_text,
+        "prompt_tokens": completion.prompt_tokens,
+        "completion_tokens": completion.completion_tokens,
+        "cost_usd": completion.cost_usd,
+        "cached": completion.cached,
+        "rag": rag_meta,
+        "guardrail_mode": manifest["guardrail"]["mode"],
+    }
+    if not landed:
+        out["audit_warning"] = (
+            "action succeeded but was not audited: the audit datastore is unavailable"
+        )
+    return out

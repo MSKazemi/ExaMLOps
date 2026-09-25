@@ -350,6 +350,23 @@ async def test_embed(fake):
     assert res.usage.prompt_tokens == 3
 
 
+async def test_embed_with_a_malformed_response_raises_a_typed_provider_error(fake):
+    """Matches `chat()`'s own malformed-body handling — a `Provider.embed()` that let a raw
+    `JSONDecodeError` escape instead would violate the documented protocol contract ("one upstream
+    failure into one `ProviderError`"), even though `GatewayCore` happens to catch and rewrap any
+    exception anyway; a provider used directly (bypassing the routing core) must not leak one."""
+
+    def malformed_embed(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/embed":
+            return httpx.Response(200, text="not json")
+        return fake(request)
+
+    p = OllamaProvider("ollama-n1", BASE, transport=httpx.MockTransport(malformed_embed))
+    with pytest.raises(ProviderError) as ei:
+        await p.embed("nomic-embed-text:latest", ["hello"])
+    assert ei.value.kind == "upstream_error"
+
+
 # ── egress (ADR 0154 d2/d5) ───────────────────────────────────────────────────
 
 

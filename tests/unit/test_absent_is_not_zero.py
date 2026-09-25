@@ -177,12 +177,25 @@ _PROMQL_WORDS = {
 #                          failed registry read on the scrape, is `FeatureFreshnessUnreadable`
 #                          (`examlops_feature_freshness_read_errors_total`, exported from
 #                          import).
+#   llm_gateway_provider_up / llm_gateway_breaker_state
+#                          one series per currently-configured provider / (provider, model)
+#                          deployment, published unconditionally inside the `/metrics` handler
+#                          itself (gateway/service/app.py's `metrics_endpoint`) for whatever is in
+#                          the live routing table right now. A specific series disappearing means
+#                          "no longer configured" (an operator's own `exa gateway reload`, e.g.
+#                          removing a provider), not an outage of it — an `absent()` arm would page
+#                          on every intentional config change. The gateway's own outage is
+#                          `LLMGatewayDown` (`up{job="llm_gateway"} == 0`), the same argument the
+#                          guard already makes for `up` itself; a total scrape failure takes the
+#                          whole metric family down at once, which that alert already covers.
 _EXEMPT_METRICS = {
     "examlops_feature_view_stale",
     "dataplane_catalog_up",
     "dataplane_source_up",
     "envoy_cluster_membership_healthy",
     "envoy_cluster_membership_total",
+    "llm_gateway_provider_up",
+    "llm_gateway_breaker_state",
 }
 
 

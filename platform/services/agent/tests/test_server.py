@@ -447,3 +447,71 @@ def test_api_info_says_whether_long_term_memory_is_actually_on(monkeypatch):
 
     monkeypatch.setattr(server, "_get_graph", lambda: type("G", (), {"store": object()})())
     assert TestClient(server.app).get("/api/info").json()["memory"]["active"] is True
+
+
+# ── read-only graph model selection (speed, ADR 0065) ─────────────────────────
+
+
+def test_readonly_graph_uses_a_dedicated_faster_model_when_configured(monkeypatch):
+    """The propose-only dashboard-copilot path may use a different (faster) model than the
+    interactive CLI, without touching the interactive graph's own model choice."""
+    from skipper import config
+    from skipper import server as srv
+
+    srv._graph = None
+    srv._readonly_graph = None
+    srv._backend_info = {}
+    monkeypatch.setattr(
+        srv, "check_backend", lambda: {"ok": True, "type": "gateway", "model": "default"}
+    )
+    monkeypatch.setattr(config, "AGENT_LLM_GATEWAY_READONLY_MODEL", "llama3.2:3b")
+    seen = {}
+
+    def fake_build_graph(model=None, **kw):
+        seen["model"] = model
+        seen["read_only"] = kw.get("read_only")
+        return MagicMock()
+
+    monkeypatch.setattr(srv, "build_graph", fake_build_graph)
+    srv._get_readonly_graph()
+    assert seen == {"model": "llama3.2:3b", "read_only": True}
+
+
+def test_readonly_graph_falls_back_to_the_interactive_model_when_unset(monkeypatch):
+    """Unset must be a no-op: the read-only graph keeps using whatever model check_backend found."""
+    from skipper import config
+    from skipper import server as srv
+
+    srv._graph = None
+    srv._readonly_graph = None
+    srv._backend_info = {}
+    monkeypatch.setattr(
+        srv, "check_backend", lambda: {"ok": True, "type": "gateway", "model": "default"}
+    )
+    monkeypatch.setattr(config, "AGENT_LLM_GATEWAY_READONLY_MODEL", "")
+    seen = {}
+    monkeypatch.setattr(
+        srv, "build_graph", lambda model=None, **kw: (seen.update(model=model), MagicMock())[1]
+    )
+    srv._get_readonly_graph()
+    assert seen == {"model": "default"}
+
+
+def test_the_interactive_graph_never_reads_the_readonly_model_override(monkeypatch):
+    """The two graphs are independently selected: the CLI/full graph ignores the override entirely."""
+    from skipper import config
+    from skipper import server as srv
+
+    srv._graph = None
+    srv._readonly_graph = None
+    srv._backend_info = {}
+    monkeypatch.setattr(
+        srv, "check_backend", lambda: {"ok": True, "type": "gateway", "model": "default"}
+    )
+    monkeypatch.setattr(config, "AGENT_LLM_GATEWAY_READONLY_MODEL", "llama3.2:3b")
+    seen = {}
+    monkeypatch.setattr(
+        srv, "build_graph", lambda model=None, **kw: (seen.update(model=model), MagicMock())[1]
+    )
+    srv._get_graph()
+    assert seen == {"model": "default"}

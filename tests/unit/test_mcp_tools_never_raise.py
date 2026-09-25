@@ -36,6 +36,7 @@ SAMPLE_ARGS: dict[str, object] = {
     "project": "research",
     "command": "exa status",
     "limit": 5,
+    "ref": "does-not-exist",
 }
 
 READ_SPECS = [s for s in T.REGISTRY if not s.mutating]

@@ -682,6 +682,7 @@ indistinguishable from a wrong token. Nothing used to say which had happened.
 | `AGENT_LLM_GATEWAY_URL` | unset | Base URL of the LLM gateway. When set, it is preferred over Claude and Ollama. |
 | `AGENT_LLM_GATEWAY_KEY` / `AGENT_LLM_GATEWAY_KEY_FILE` | unset | Gateway virtual key, directly or from a mounted secret file. |
 | `AGENT_LLM_GATEWAY_MODEL` | `default` | Route or alias to ask the gateway for. |
+| `AGENT_LLM_GATEWAY_READONLY_MODEL` | unset | A faster model for just the dashboard copilot's read-only graph; unset keeps it on the interactive model. |
 | `ANTHROPIC_API_KEY` | unset | API key for the Claude backend. Used when no gateway is configured. |
 | `ANTHROPIC_MODEL` | `claude-opus-4-8` | Claude model id (adaptive thinking enabled, `max_tokens=16000`). |
 | `AGENT_MODEL` | `llama3.1:8b` | Ollama model name (fallback backend). Must support tool/function calling. Set in `.env`. |

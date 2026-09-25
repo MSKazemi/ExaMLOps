@@ -147,7 +147,10 @@ def _get_readonly_graph():
         with _graph_lock:
             if _readonly_graph is None:
                 _backend_info = check_backend()
-                _readonly_graph = build_graph(model=_backend_info.get("model"), read_only=True)
+                # A dedicated, faster model for this propose-only path (see config.py); falls
+                # back to the interactive model when unset, so this is a no-op until configured.
+                model = config.AGENT_LLM_GATEWAY_READONLY_MODEL or _backend_info.get("model")
+                _readonly_graph = build_graph(model=model, read_only=True)
     return _readonly_graph
 
 

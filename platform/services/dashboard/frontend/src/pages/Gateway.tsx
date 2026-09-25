@@ -1,10 +1,10 @@
 import { useState } from 'react'
-import { KeyRound, Copy, Ban } from 'lucide-react'
+import { KeyRound, Copy, Ban, Send } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { StatusPill } from '@/components/ui/status-pill'
 import { isAdmin } from '@/lib/auth'
-import { useVirtualKeys, useIssueKey, useRevokeKey } from '@/lib/gateway'
+import { useVirtualKeys, useIssueKey, useRevokeKey, useGatewayStatus, useTestChat } from '@/lib/gateway'
 
 /**
  * Gateway console (B2, dashboard-rebuild M2) — issue/revoke LLM virtual keys. Writes reuse the shared
@@ -21,6 +21,27 @@ export function Gateway() {
   const [budget, setBudget] = useState('')
   const [issued, setIssued] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
+
+  const { data: status, isLoading: statusLoading } = useGatewayStatus()
+  const testChat = useTestChat()
+  const [testMessage, setTestMessage] = useState('hello')
+  const [testRoute, setTestRoute] = useState('default')
+  const [testKey, setTestKey] = useState('')
+  const [testResult, setTestResult] = useState<Awaited<ReturnType<typeof testChat.mutateAsync>> | null>(null)
+
+  const doTestChat = async () => {
+    setTestResult(null)
+    try {
+      const r = await testChat.mutateAsync({
+        message: testMessage,
+        route: testRoute.trim() || 'default',
+        key: testKey.trim() || undefined,
+      })
+      setTestResult(r)
+    } catch (e) {
+      setTestResult({ ok: false, status: null, latencyMs: 0, error: e instanceof Error ? e.message : 'Request failed' })
+    }
+  }
 
   const doIssue = async () => {
     setMsg(null)
@@ -59,6 +80,78 @@ export function Gateway() {
           is stored.
         </p>
       </div>
+
+      {/* Live status — the deployed gateway's own /ready, no admin credential involved. */}
+      <section className="space-y-2">
+        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Live status</h2>
+        {statusLoading && <Skeleton className="h-8 w-48" />}
+        {!statusLoading && status && (
+          <div className="flex flex-wrap items-center gap-3">
+            <StatusPill
+              status={!status.reachable ? 'critical' : status.ready ? 'ok' : 'warn'}
+              label={!status.reachable ? 'Unreachable' : status.ready ? 'Ready' : 'Not ready'}
+            />
+            {status.reachable && !status.healthyNow && status.ready && (
+              <span className="text-xs text-muted-foreground">
+                latched ready, but no route is healthy right now
+              </span>
+            )}
+            {Object.keys(status.routes).length > 0 && (
+              <span className="text-xs text-muted-foreground">
+                {Object.values(status.routes).filter((r) => r.healthy).length}/{Object.keys(status.routes).length} routes healthy
+              </span>
+            )}
+          </div>
+        )}
+        {!statusLoading && !status?.reachable && (
+          <p className="text-xs text-muted-foreground">
+            Deployed gateway not reachable from the dashboard. Diagnose deeper provider/route health with{' '}
+            <code>exa gateway providers</code> / <code>exa gateway routes</code> on the CLI.
+          </p>
+        )}
+      </section>
+
+      {/* Test chat (admin) — one real message through the deployed gateway; needs a virtual key,
+          the same one `exa gateway chat --key` takes. Never stored by the dashboard. */}
+      {admin && (
+        <section className="space-y-2">
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Test chat</h2>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="text-xs text-muted-foreground">
+              Route
+              <input aria-label="Test route" value={testRoute} onChange={(e) => setTestRoute(e.target.value)}
+                className="mt-1 block w-32 rounded-md border border-border bg-transparent px-2 py-1 text-xs" />
+            </label>
+            <label className="text-xs text-muted-foreground">
+              Message
+              <input aria-label="Test message" value={testMessage} onChange={(e) => setTestMessage(e.target.value)}
+                className="mt-1 block w-64 rounded-md border border-border bg-transparent px-2 py-1 text-xs" />
+            </label>
+            <label className="text-xs text-muted-foreground">
+              Virtual key (optional)
+              <input aria-label="Test virtual key" type="password" value={testKey} onChange={(e) => setTestKey(e.target.value)}
+                placeholder="exa-…" className="mt-1 block w-40 rounded-md border border-border bg-transparent px-2 py-1 text-xs" />
+            </label>
+            <button onClick={doTestChat} disabled={testChat.isPending || !testMessage.trim()}
+              className="inline-flex items-center gap-1 rounded-md border border-primary bg-primary px-3 py-1.5 text-xs text-primary-foreground disabled:opacity-50">
+              <Send className="size-3" aria-hidden="true" /> Send
+            </button>
+          </div>
+          {testResult && (
+            <div
+              className="rounded-lg border border-border p-3 text-xs space-y-1"
+              style={{ background: testResult.ok ? 'oklch(0.72 0.18 155 / 8%)' : 'oklch(0.66 0.22 25 / 8%)' }}
+            >
+              <p>
+                <StatusPill status={testResult.ok ? 'ok' : 'critical'} label={testResult.ok ? 'ok' : 'failed'} />{' '}
+                {testResult.latencyMs.toFixed(0)}ms{testResult.status != null ? ` · HTTP ${testResult.status}` : ''}
+              </p>
+              {testResult.ok && <p className="font-mono">{testResult.reply}</p>}
+              {!testResult.ok && <p style={{ color: 'var(--error-text)' }}>{testResult.error}</p>}
+            </div>
+          )}
+        </section>
+      )}
 
       {msg && (
         <p className="text-sm rounded-lg px-4 py-3" style={{ background: 'oklch(0.66 0.22 25 / 12%)', border: '1px solid oklch(0.66 0.22 25 / 25%)', color: 'var(--error-text)' }}>
