@@ -1736,6 +1736,9 @@ postgres = [
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
 ]
+qdrant = [
+    { name = "qdrant-client" },
+]
 serving-sglang = [
     { name = "sglang" },
 ]
@@ -1787,6 +1790,7 @@ requires-dist = [
     { name = "pyjwt", marker = "extra == 'oidc'", specifier = ">=2.14.0" },
     { name = "pymysql", marker = "extra == 'dataplane-sql'", specifier = ">=1.2" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "qdrant-client", marker = "extra == 'qdrant'", specifier = ">=1.19.1" },
     { name = "redis", marker = "extra == 'coordination'", specifier = ">=8.1.0" },
     { name = "rich", specifier = ">=13.0" },
     { name = "scipy", marker = "extra == 'analysis'", specifier = ">=1.11" },
@@ -1800,7 +1804,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'dataplane-service'", specifier = ">=0.52.4" },
     { name = "vllm", marker = "extra == 'serving-vllm'", specifier = ">=0.28.0" },
 ]
-provides-extras = ["mcp", "analysis", "finops", "oidc", "backup", "serving-vllm", "serving-sglang", "postgres", "fairness", "guardrails-presidio", "vector", "coordination", "events", "synth", "dataplane-sql", "dataplane-files", "dataplane-kafka", "dataplane-service", "dataplane"]
+provides-extras = ["mcp", "analysis", "finops", "oidc", "backup", "serving-vllm", "serving-sglang", "postgres", "fairness", "guardrails-presidio", "vector", "qdrant", "coordination", "events", "synth", "dataplane-sql", "dataplane-files", "dataplane-kafka", "dataplane-service", "dataplane"]
 
 [[package]]
 name = "examlops-pipelines"
@@ -5638,6 +5642,18 @@ wheels = [
 ]
 
 [[package]]
+name = "portalocker"
+version = "3.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5e/77/65b857a69ed876e1951e88aaba60f5ce6120c33703f7cb61a3c894b8c1b6/portalocker-3.2.0.tar.gz", hash = "sha256:1f3002956a54a8c3730586c5c77bf18fae4149e07eaf1c29fc3faf4d5a3f89ac", size = 95644, upload-time = "2025-06-14T13:20:40.03Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4b/a6/38c8e2f318bf67d338f4d629e93b0b4b9af331f455f0390ea8ce4a099b26/portalocker-3.2.0-py3-none-any.whl", hash = "sha256:3cdc5f565312224bc570c49337bd21428bba0ef363bbcf58b9ef4a9f11779968", size = 22424, upload-time = "2025-06-14T13:20:38.083Z" },
+]
+
+[[package]]
 name = "prefect"
 version = "3.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -6901,6 +6917,25 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/35/c1/80dd2d20d6e57bc68e1dce1e84bf3e76c9577c1bf728199985c8b4ea0fd1/pyzmq-27.2.0-cp315-cp315t-win32.whl", hash = "sha256:ac126d48cf18aa955daabef43bf0009ff76ad4deee437d09ecf15388214b5beb", size = 591073, upload-time = "2026-08-20T19:07:31.341Z" },
     { url = "https://files.pythonhosted.org/packages/f8/b5/33b781666f3f52ae834bc9c8e38f4f0483a826c5a91cccc993292007bf10/pyzmq-27.2.0-cp315-cp315t-win_amd64.whl", hash = "sha256:edce90a1e588ec63adbf612cc0ad582de4169cd216c7ae53c15f42a2ee902f35", size = 670701, upload-time = "2026-08-20T19:07:32.895Z" },
     { url = "https://files.pythonhosted.org/packages/6e/97/bc4f0edefb992df4fdebcf9f0cc40f631cd4ed277e1ed59ef2cd99a5c8c5/pyzmq-27.2.0-cp315-cp315t-win_arm64.whl", hash = "sha256:a843094b4d3d633bc3623e47a2ff50742d6af02bc1f7606aa2e67e971e21878d", size = 581985, upload-time = "2026-08-20T19:07:34.19Z" },
+]
+
+[[package]]
+name = "qdrant-client"
+version = "1.19.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "grpcio" },
+    { name = "httpx", extra = ["http2"] },
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "portalocker" },
+    { name = "protobuf" },
+    { name = "pydantic" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4e/20/c8fcd645d3f595b086fa11a085980e9f641fd56fc6221fb325d634b8c4fa/qdrant_client-1.19.1.tar.gz", hash = "sha256:8f1d851a8463ce8cc11cf39ed8a9c9fb4b5f9de60e9a096ff56da42d1f074907", size = 360625, upload-time = "2026-09-16T06:43:13.818Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d0/9f/becebdda02beddd422587eba0d7dfac5b1f1e0aa1ada5bcf9b9e6f1c3717/qdrant_client-1.19.1-py3-none-any.whl", hash = "sha256:fca1a96c3f90f5fff853f6ee6877838a5768a04c963df9891a655a63313af8a0", size = 406533, upload-time = "2026-09-16T06:43:12.428Z" },
 ]
 
 [[package]]

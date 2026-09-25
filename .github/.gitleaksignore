@@ -61,3 +61,10 @@ fbb15ef60e99737280f5f9e0e41011166630e1bc:tests/unit/test_secrets.py:generic-api-
 # docs/guides/offline-inference.md — an `idempotency_key` example value in a job-manifest JSON
 # sample ("nightly-2026-09-21"), not a credential; same false-positive class as control-plane.md above
 85b824289ae8d88a8aadcd85516ddd4266f9d1c8:docs/guides/offline-inference.md:generic-api-key:36
+
+# tests/unit/test_genai_app.py — the fixture in
+# `test_a_key_ref_must_be_a_gateway_reference_never_a_raw_credential`, a key-shaped string the
+# test asserts is REFUSED as a `route.key_ref` (ADR 0159 forbids a raw credential there). Not a
+# credential: it authenticates nothing and matches no issued key. The fixture is now assembled at
+# runtime like the rest of the suite, so this pins only the one commit that carried the literal.
+0082b4b2b5a529090367c53dc16347ebe4c4b3d0:tests/unit/test_genai_app.py:generic-api-key:166
