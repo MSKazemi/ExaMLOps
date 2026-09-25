@@ -67,7 +67,7 @@ install rather than failing with a traceback:
 | `examlops[rag-eval]` | Ragas' non-LLM retrieval metrics behind `exa rag eval` (built-in metrics give the same numbers without it); cannot share an environment with `dataplane`/`dataplane-files` (ragas caps fsspec below the dataplane floor) |
 | `examlops[rag-llamaindex]` | LlamaIndex's sentence-aware chunker for `exa rag ingest --framework llamaindex` ([RAG](rag.md)) |
 | `examlops[rag-service]` | Run the RAG serving endpoint (`uvicorn --factory examlops.rag.service:create_app`) |
-| `examlops[serving-sglang]` | SGLang runtime for the GPU host that runs `sglang.launch_server` (the `exa` client needs none) |
+| `examlops[serving-sglang]` | SGLang runtime for the GPU host that runs `sglang.launch_server` (the `exa` client needs none); cannot be installed together with `serving-vllm` — each engine runs in its own server image |
 | `examlops[serving-vllm]` | In-process vLLM engine for offline batch scoring (GPU host) |
 | `examlops[supplychain]` | Sigstore keyless model signing and keyless-signed SLSA provenance (Fulcio + Rekor), `EXAMLOPS_SIGNING_SCHEME=sigstore` — see [supply-chain security](supply-chain-security.md); Ed25519/HMAC signing needs nothing extra |
 | `examlops[synth]` | Synthetic data generation and its release gate — `exa data synth` |

@@ -160,12 +160,28 @@ jobs:
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       # Every package the lock resolves, every extra included: what a full install runs.
+      # `--all-extras` in ONE export is impossible once extras are declared mutually exclusive
+      # ([tool.uv] conflicts in platform/cli/pyproject.toml: rag-eval vs dataplane*, serving-sglang
+      # vs serving-vllm) — uv refuses, and the audit silently had nothing to read. So the lock is
+      # exported as conflict-free partitions that together cover every extra, and each is audited.
+      # An export failure fails the job (set -e): a report that could not run must not look clean.
       - name: Audit the locked environment
         run: |
-          set -uo pipefail
-          uv export --frozen --no-hashes --no-emit-workspace --all-extras -o locked-requirements.txt
-          if uvx "$PIP_AUDIT" -r locked-requirements.txt --no-deps --disable-pip \
-               -f markdown -o pip-audit.md; then
+          set -euo pipefail
+          E="uv export --frozen --no-hashes --no-emit-workspace"
+          $E --package examlops --all-extras --no-extra rag-eval --no-extra serving-sglang \
+             -o req-extras-main.txt
+          $E --package examlops --extra rag-eval --extra serving-sglang -o req-extras-alt.txt
+          $E --all-groups -o req-workspace.txt
+          : > pip-audit.md
+          found=0
+          for req in req-extras-main.txt req-extras-alt.txt req-workspace.txt; do
+            if ! uvx "$PIP_AUDIT" -r "$req" --no-deps --disable-pip -f markdown -o "$req.md"; then
+              found=1
+            fi
+            { echo "### ${req%.txt}"; echo; cat "$req.md"; echo; } >> pip-audit.md
+          done
+          if [ "$found" -eq 0 ]; then
             echo "No known vulnerability in the locked environment." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning title=pip-audit::known vulnerabilities in uv.lock — see the job summary (REPORT, not a gate)"

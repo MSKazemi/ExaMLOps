@@ -120,7 +120,7 @@ serving-vllm = [
 # `python -m sglang.launch_server`. NOT needed by the client: SGLangServerEngine talks HTTP
 # to that server (ADR 0016 decision 1), so nothing in examlops imports sglang.
 serving-sglang = [
-    "sglang>=0.4",
+    "sglang>=0.5.10",
 ]
 # Fine-tuning (ADR 0044): `exa finetune --train` needs torch; `--backend peft` adapts the model
 # with Hugging Face PEFT (peft pulls transformers/accelerate itself). Both are imported lazily by
@@ -338,4 +338,9 @@ examlops = [
 conflicts = [
     [{ extra = "rag-eval" }, { extra = "dataplane-files" }],
     [{ extra = "rag-eval" }, { extra = "dataplane" }],
+    # sglang>=0.5.10 (the first release past PYSEC-2026-1919/-537/-539/-3063) pins
+    # outlines-core 0.1.26, which vllm>=0.28 cannot share. They are alternative inference SERVERS,
+    # each run in its own image (examlops talks to either over HTTP and imports neither), so the
+    # two extras are declared mutually exclusive rather than holding sglang at a vulnerable 0.5.2.
+    [{ extra = "serving-sglang" }, { extra = "serving-vllm" }],
 ]
