@@ -297,11 +297,52 @@ def test_an_approval_decision_that_could_not_be_audited_is_counted(monkeypatch, 
 #: was twice wrong. The scan below derives the truth from the tree; this mapping only has to say
 #: which test covers what.
 COVERED_AUDIT_SITES = {
+    ("examlops/finops/task_ledger.py", "apportion_standby"): (
+        "tests/unit/test_finops_task_ledger.py::"
+        "test_a_lost_apportioning_audit_is_counted_and_the_split_stands"
+    ),
+    ("examlops/slo/benchmarks.py", "record_benchmark"): (
+        "tests/unit/test_slo_benchmarks.py::"
+        "test_a_lost_benchmark_audit_is_counted_and_the_result_stands"
+    ),
+    ("examlops/cli/commands/feature_cmd.py", "_audit"): (
+        "tests/unit/test_feature_store_cli.py::test_a_lost_manual_materialize_audit_is_counted"
+    ),
+    ("examlops/feature_store/definitions.py", "_audit"): (
+        "tests/unit/test_feature_store_cli.py"
+        "::test_a_lost_sync_audit_is_counted_and_the_view_is_still_applied"
+    ),
+    ("examlops/feature_store/scheduler.py", "_audit"): (
+        "tests/unit/test_feature_store_cli.py::test_a_lost_scheduled_materialize_audit_is_counted"
+    ),
     ("examlops/distributed/__init__.py", "_audit"): (
         "tests/unit/test_distributed_launch.py::test_a_lost_distributed_audit_is_counted"
     ),
     ("examlops/distributed/launch.py", "supervise"): (
         "tests/unit/test_distributed_launch.py::test_a_lost_attempt_audit_is_counted_and_the_run_goes_on"
+    ),
+    ("examlops/distributed/durable.py", "mirror_run"): (
+        "tests/unit/test_distributed_durable_store.py::test_a_lost_mirror_or_restore_audit_is_counted"
+    ),
+    ("examlops/distributed/durable.py", "restore_latest"): (
+        "tests/unit/test_distributed_durable_store.py::test_a_lost_mirror_or_restore_audit_is_counted"
+    ),
+    ("examlops/distributed/scheduled.py", "_run_attempt"): (
+        "tests/unit/test_distributed_scheduled.py::test_a_lost_scheduled_audit_is_counted"
+    ),
+    ("examlops/distributed/scheduled.py", "supervise_scheduled"): (
+        "tests/unit/test_distributed_scheduled.py::test_a_lost_scheduled_audit_is_counted"
+    ),
+    ("examlops/distributed/scheduled.py", "link_mlflow"): (
+        "tests/unit/test_distributed_scheduled.py::test_a_lost_scheduled_audit_is_counted"
+    ),
+    ("examlops/cli/_policy_hook.py", "enforce"): (
+        "tests/unit/test_policy_cli_hook.py::"
+        "test_a_lost_approval_audit_is_counted_and_the_approved_run_goes_on"
+    ),
+    ("examlops/autoscale/activator.py", "_wake"): (
+        "tests/unit/test_autoscale_review_fixes.py::"
+        "test_a_lost_activation_audit_is_counted_and_the_refusal_stands"
     ),
     ("examlops/policy/http_gate.py", "_audit"): (
         "tests/unit/test_policy_http_gate.py::test_a_lost_policy_audit_is_counted_and_the_verdict_stands"
@@ -320,6 +361,15 @@ COVERED_AUDIT_SITES = {
     ),
     ("examlops/agent_versions/service.py", "rollback"): (
         "tests/unit/test_agent_versions.py::test_a_lost_rollback_audit_is_counted"
+    ),
+    ("examlops/agent_versions/service.py", "set_canary"): (
+        "tests/unit/test_agent_versions_rollout.py::test_a_lost_canary_audit_is_counted"
+    ),
+    ("examlops/agent_versions/reeval.py", "on_model_alias_changed"): (
+        "tests/unit/test_agent_versions_rollout.py::test_a_lost_reeval_audit_is_counted"
+    ),
+    ("examlops/agent_versions/reeval.py", "resolve"): (
+        "tests/unit/test_agent_versions_rollout.py::test_a_lost_reeval_audit_is_counted"
     ),
     (
         "examlops/admission_seam/reservations.py",
@@ -362,6 +412,12 @@ COVERED_AUDIT_SITES = {
         "tests/unit/test_offline_inference.py::test_a_lost_offline_cancel_audit_is_counted"
     ),
     ("examlops/secrets/__init__.py", "_audit"): "test_a_governance_audit_loss_is_counted",
+    ("examlops/secrets/inject.py", "_audit"): (
+        "tests/unit/test_secrets_review_hardening.py::test_a_lost_injection_audit_is_counted"
+    ),
+    ("examlops/secrets/leases.py", "_audit"): (
+        "tests/unit/test_secrets_review_hardening.py::test_a_lost_lease_audit_is_counted"
+    ),
     ("examlops/supplychain/__init__.py", "_audit"): "test_a_governance_audit_loss_is_counted",
     ("examlops/policy/__init__.py", "_audit"): (
         "test_a_policy_decision_from_the_other_policy_module_is_counted"
@@ -381,8 +437,13 @@ COVERED_AUDIT_SITES = {
     ("examlops/guardrails/__init__.py", "_record"): (
         "test_a_guardrail_block_that_could_not_be_audited_is_counted"
     ),
-    ("examlops/cli/commands/approvals.py", "approve"): (
+    # `exa approvals approve` writes its event through the SDK (ADR 0078 clause 2); the same test
+    # drives the command end to end, so it now proves the SDK site.
+    ("examlops/sdk/models.py", "approve"): (
         "test_an_approval_decision_that_could_not_be_audited_is_counted"
+    ),
+    ("examlops/sdk/models.py", "retrain"): (
+        "tests/unit/test_sdk_models_ops.py::test_a_lost_sdk_retrain_audit_is_counted"
     ),
     ("examlops/cli/commands/approvals.py", "reject"): (
         "test_an_approval_decision_that_could_not_be_audited_is_counted"
@@ -427,6 +488,23 @@ COVERED_AUDIT_SITES = {
         "tests/unit/test_finetune_lora.py"
         "::test_a_lost_finetune_audit_is_counted_and_the_run_still_registers"
     ),
+    # ADR 0044 clauses 1-2: the scheduler job and MLflow provenance audits.
+    ("examlops/finetuning/runner.py", "_record_provenance"): (
+        "tests/unit/test_finetune_scheduler_mlflow.py"
+        "::test_a_lost_scheduler_submission_audit_is_counted_and_the_job_still_runs"
+    ),
+    ("examlops/finetuning/scheduler.py", "_attempt"): (
+        "tests/unit/test_finetune_scheduler_mlflow.py"
+        "::test_a_lost_scheduler_submission_audit_is_counted_and_the_job_still_runs"
+    ),
+    ("examlops/finetuning/scheduler.py", "scheduler_runner"): (
+        "tests/unit/test_finetune_scheduler_mlflow.py::test_a_lost_refusal_audit_is_counted"
+    ),
+    # ADR 0044 clause 3: the adapter registry / serving-gate audit (register, promote, load,
+    # serve refusal) — formerly `except Exception: pass`, now counted.
+    ("examlops/finetuning/__init__.py", "_audit"): (
+        "tests/unit/test_finetune_serving_trust.py::test_a_lost_serve_refusal_audit_is_counted"
+    ),
     # ADR 0159. The same three-site shape as the agent-version registry above, and covered the
     # same way — the alias test also breaks the *refusal* audit, because a block that was not
     # recorded reads afterwards exactly like a block that never happened.
@@ -438,6 +516,53 @@ COVERED_AUDIT_SITES = {
     ),
     ("examlops/genai_apps/service.py", "rollback"): (
         "tests/unit/test_genai_app.py::test_a_lost_rollback_audit_is_counted"
+    ),
+    ("examlops/engines/quality.py", "_persist"): (
+        "tests/unit/test_engines_quantization_gate.py::"
+        "test_a_lost_quantization_gate_audit_is_counted_and_the_verdict_stands"
+    ),
+    # The 2026-09 ADR implementation wave: ten sites, each with its own test that breaks the audit
+    # log, asserts the counter for that site's action, and asserts the operation's outcome stood.
+    ("examlops/cli/commands/eval_cmd.py", "online_enable"): (
+        "tests/unit/test_eval_online_audit_loss.py"
+        "::test_a_lost_online_enable_audit_is_counted_and_the_schedule_is_saved"
+    ),
+    ("examlops/cli/commands/eval_cmd.py", "online_disable"): (
+        "tests/unit/test_eval_online_audit_loss.py"
+        "::test_a_lost_online_disable_audit_is_counted_and_the_schedule_is_stopped"
+    ),
+    ("examlops/evaluation/online.py", "_audit"): (
+        "tests/unit/test_eval_online_audit_loss.py"
+        "::test_a_lost_online_cycle_audit_is_counted_and_the_window_is_still_recorded"
+    ),
+    ("examlops/cli/commands/gateway_cmd.py", "reasoning_set_budget"): (
+        "tests/unit/test_gateway_reasoning_budget_audit_loss.py"
+        "::test_a_lost_budget_audit_is_counted_and_the_cap_is_still_set_and_removed"
+    ),
+    ("examlops/guardrails/policy.py", "_report_invalid"): (
+        "tests/unit/test_guardrails_policy_audit_loss.py"
+        "::test_a_lost_invalid_policy_audit_is_counted_and_the_builtin_guardrail_still_blocks"
+    ),
+    ("examlops/rag/__init__.py", "ingest"): (
+        "tests/unit/test_rag_audit_loss.py"
+        "::test_a_lost_ingest_audit_is_counted_and_the_documents_are_still_indexed"
+    ),
+    # `_tenant_for` is nested inside `create_app`, so the scan reports the one call twice.
+    ("examlops/rag/service.py", "_tenant_for"): (
+        "tests/unit/test_rag_audit_loss.py"
+        "::test_a_lost_tenant_denial_audit_is_counted_and_the_request_is_still_refused"
+    ),
+    ("examlops/rag/service.py", "create_app"): (
+        "tests/unit/test_rag_audit_loss.py"
+        "::test_a_lost_tenant_denial_audit_is_counted_and_the_request_is_still_refused"
+    ),
+    ("examlops/supplychain/provenance.py", "record_provenance"): (
+        "tests/unit/test_supplychain_provenance_audit_loss.py"
+        "::test_a_lost_provenance_anchor_audit_is_counted_and_the_provenance_still_verifies"
+    ),
+    ("examlops/supplychain/provenance.py", "_envelope"): (
+        "tests/unit/test_supplychain_provenance_audit_loss.py"
+        "::test_a_lost_keyless_fallback_audit_is_counted_and_the_ed25519_fallback_still_signs"
     ),
     # In the agent suite (`platform/services/agent/tests/`), which has the deps these need.
     (
@@ -567,7 +692,7 @@ def test_every_converted_site_has_a_test_that_its_loss_is_counted():
 #: hands the cause back to its caller (`mcp._audit` returns "action succeeded but was not
 #: audited: …"), and a narrow `except ImportError` falling through to a documented alternative.
 #: `log.debug` does not count as disclosure — it is invisible at any production log level.
-SWALLOWED_AUDIT_WRITES_CEILING = 15
+SWALLOWED_AUDIT_WRITES_CEILING = 14
 
 
 def _blanket(handler: ast.ExceptHandler) -> bool:

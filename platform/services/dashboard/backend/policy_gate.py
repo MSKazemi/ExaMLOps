@@ -267,6 +267,9 @@ ROUTE_POLICY: dict[tuple[str, str], Gate | Exempt] = {
     ("POST", "/api/v1/workbenches"): _G("dashboard_workbenches_create"),
     ("POST", "/api/v1/workbenches/{project}/{name}/status"): _G("dashboard_workbenches_status"),
     ("DELETE", "/api/v1/workbenches/{project}/{name}"): _G("dashboard_workbenches_delete"),
+    # ── hardware profiles (ADR 0157 Phase 4) ───────────────────────────────────────────────
+    ("POST", "/api/v1/hardware-profiles"): _G("dashboard_hardware_profiles_set"),
+    ("DELETE", "/api/v1/hardware-profiles/{name}"): _G("dashboard_hardware_profiles_delete"),
     # ── CLI console ─────────────────────────────────────────────────────────────────────────
     ("POST", "/api/v1/cli/runs"): _X(_CLI),
     ("POST", "/api/v1/cli/runs/{run_id}/cancel"): _X(

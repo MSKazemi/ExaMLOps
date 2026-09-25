@@ -17,14 +17,19 @@ from typing import Any
 # (decision 4) checkpoints *application* state, which is none of those three, so it gets its own
 # value rather than being mislabelled as a finer granularity than it has.
 GRANULARITIES = ("application", "process", "container", "accelerator_state")
-# ADR 0109 decision 8: tiers, not one granularity.
-TIERS = ("local_memory", "peer_memory", "persistent_storage")
+# ADR 0109 decision 8: tiers, not one granularity. ``local_storage`` is node-local disk: faster
+# than the shared persistent tier for a localized fault and, like local memory, gone with the node.
+# It is reported separately from ``local_memory`` so a disk-backed cache is never labelled as RAM.
+TIERS = ("local_memory", "local_storage", "peer_memory", "persistent_storage")
 BASES = ("measured", "declared", "unknown")
 
 STATE_AGENT_SESSION = "agent_session_checkpoint"
 # A distributed training run's own sharded checkpoints (ADR 0032), pinned by the
 # ``training-checkpoint`` backend.
 STATE_TRAINING_RUN = "training_run_checkpoint"
+# A running inference engine replica whose accelerator memory the engine itself can release and
+# re-acquire (vLLM sleep mode) - ADR 0109 decision 5, engine-delegated.
+STATE_SERVING_REPLICA = "serving_replica"
 
 
 class SuspendError(Exception):

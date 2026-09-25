@@ -29,7 +29,15 @@ from pathlib import Path
 from typing import Any, Protocol
 
 # Security-critical decisions that MUST fail closed on engine error (R4).
-FAIL_CLOSED_DECISIONS = {"supply_chain", "deploy", "budget", "tenancy", "slo"}
+FAIL_CLOSED_DECISIONS = {
+    "supply_chain",
+    "deploy",
+    "budget",
+    "tenancy",
+    "slo",
+    "datasheet",
+    "residency",
+}
 
 
 @dataclass
@@ -324,6 +332,49 @@ def slo_gate(servable: str, reasons: list[str], *, tenant: str = "default") -> E
     return evaluate("slo", PolicyInput("slo_gate", resource=servable, tenant=tenant))
 
 
+def datasheet_gate(model: str, reasons: list[str], *, tenant: str = "default") -> EngineDecision:
+    """Refuse promotion unless the model's training datasets carry a datasheet (ADR 0079 d6).
+
+    ``reasons`` come from :func:`examlops.cards.datasheet.promotion_reasons` (no datasheet, or
+    one below the floor). Empty ``reasons`` defers to the engine, so a site rule on the
+    ``datasheet`` action can still tighten — never loosen — the built-in refusal.
+    """
+    if reasons:
+        result = EngineDecision(
+            allow=False,
+            reasons=[f"datasheet gate: {r}" for r in reasons],
+            effect="deny",
+            engine="builtin",
+        )
+        _audit("datasheet", PolicyInput("promote", resource=model, tenant=tenant), result)
+        return result
+    return evaluate("datasheet", PolicyInput("promote", resource=model, tenant=tenant))
+
+
+def residency_gate(
+    model: str, cluster: str, reasons: list[str], *, tenant: str = "default"
+) -> EngineDecision:
+    """Refuse to train where a dataset may not be processed (ADR 0029 d2, D6 residency).
+
+    ``reasons`` come from :func:`examlops.policy_engine.residency.residency_reasons`. Empty
+    defers to the engine (a site rule on ``residency`` may tighten, never loosen).
+    """
+    resource = f"{model}@{cluster}"
+    if reasons:
+        result = EngineDecision(
+            allow=False,
+            reasons=[f"residency gate: {r}" for r in reasons],
+            effect="deny",
+            engine="builtin",
+        )
+        _audit("residency", PolicyInput("allocate", resource=resource, tenant=tenant), result)
+        return result
+    return evaluate(
+        "residency",
+        PolicyInput("allocate", resource=resource, tenant=tenant, context={"cluster": cluster}),
+    )
+
+
 # --- Signed, versioned bundle (R2, D3 signing) ---------------------------------------
 def _bundle_content(tenant: str = "default") -> str:
     """The effective policy text for a tenant: base policy.yaml + optional tenant overlay (R7)."""
@@ -437,6 +488,8 @@ __all__ = [
     "budget_gate",
     "card_gate",
     "slo_gate",
+    "datasheet_gate",
+    "residency_gate",
     "sign_bundle",
     "verify_bundle",
 ]

@@ -272,6 +272,7 @@ nav:
           - Heterogeneous hardware: guides/heterogeneous-hardware.md
   - Extending ExaMLOps:
       - Programmable MLOps (extend without forking): guides/programmable-mlops.md
+      - Python SDK (import examlops): guides/python-sdk.md
       - Pluggable carbon & FinOps providers: guides/finops-providers.md
       - Authored providers (edit a formula from a notebook): guides/authored-providers.md
       - Provider security & trust tiers: guides/provider-security-trust-tiers.md
@@ -279,6 +280,7 @@ nav:
       - Offline (batch) inference: guides/offline-inference.md
       - Agent versions: guides/agent-versions.md
       - Agent tool broker: guides/tool-broker.md
+      - Agent runtime: guides/agent-runtime.md
   - Components:
       - Prefect — Pipelines: components/prefect.md
       - Control Plane — Retraining API: components/control-plane.md

@@ -65,8 +65,8 @@ class JobRequest:
     priority_class: str = "batch"
     #: ISO-8601 instant by which the job must have finished, or ``None``.
     deadline: str | None = None
-    #: How long the job may be deferred (seconds). Recorded and echoed; no shipped policy shifts
-    #: work on it yet - see the ADR 0116 status line.
+    #: How long the job may be deferred (seconds). Read by the ``carbon`` admission gate
+    #: (``gates.CarbonGate``); no fair-share policy shifts work on it.
     flexibility_s: float = 0.0
     #: Estimated run time, used only to size a GPU-hour reservation.
     est_runtime_s: float | None = None

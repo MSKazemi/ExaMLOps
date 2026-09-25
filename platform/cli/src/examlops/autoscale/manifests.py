@@ -2,9 +2,9 @@
 
 Pure generators — nothing here talks to a cluster and nothing is rendered unless asked for
 (``exa serve autoscale manifest``). The Prometheus triggers use the same series the controller
-reads (``examlops_predict_requests_total`` / ``examlops_predict_latency_seconds``); the policy
-metrics ``queue_depth`` and ``gpu_util`` have **no per-model series in the platform**, so a policy
-targeting them is refused rather than rendered as a trigger that never fires.
+reads (:mod:`examlops.autoscale.queries` — one definition for both); ``gpu_util`` has a series only
+when the site sets ``EXAMLOPS_AUTOSCALE_GPU_UTIL_QUERY``, and without it a policy targeting it is
+refused rather than rendered as a trigger that never fires.
 
 Assumptions the operator must own (not verifiable here, no cluster): the ``scaleTargetRef`` name
 (KServe raw-deployment mode names a predictor Deployment ``<isvc>-predictor``) and the Prometheus
@@ -20,7 +20,9 @@ from examlops.autoscale import AutoscalePolicy
 
 KEDA_API = "keda.sh/v1alpha1"
 _NAME_RE = re.compile(r"[^a-z0-9-]+")
-SOURCED_METRICS = ("rps", "p95")
+#: Always sourced; ``gpu_util`` joins them when ``EXAMLOPS_AUTOSCALE_GPU_UTIL_QUERY`` is set
+#: (see :mod:`examlops.autoscale.queries`).
+SOURCED_METRICS = ("rps", "p95", "queue_depth")
 
 
 class ManifestError(ValueError):
@@ -35,21 +37,28 @@ def k8s_name(model: str) -> str:
 
 
 def _query(model: str, metric: str) -> str:
-    sel = f'model_name=~"(?i)^{re.escape(model)}$"'
-    if metric == "rps":
-        return f"sum(rate(examlops_predict_requests_total{{{sel}}}[1m]))"
-    return (
-        "histogram_quantile(0.95, sum by (le) "
-        f"(rate(examlops_predict_latency_seconds_bucket{{{sel}}}[5m])))"
-    )
+    from examlops.autoscale.queries import QueryTemplateError, query_for
+
+    try:
+        expr = query_for(metric, model)
+    except QueryTemplateError as exc:
+        raise ManifestError(str(exc)) from exc
+    if expr is None:
+        raise ManifestError(
+            f"{model}: target_metric {metric!r} has no per-model series in the platform "
+            f"(sourced now: {', '.join(_sourced())}); refusing to render a dead trigger"
+        )
+    return expr
+
+
+def _sourced() -> tuple[str, ...]:
+    from examlops.autoscale.queries import sourced_metrics
+
+    return sourced_metrics()
 
 
 def _check(model: str, policy: AutoscalePolicy) -> None:
-    if policy.target_metric not in SOURCED_METRICS:
-        raise ManifestError(
-            f"{model}: target_metric {policy.target_metric!r} has no per-model series in the "
-            f"platform (only {', '.join(SOURCED_METRICS)}); refusing to render a dead trigger"
-        )
+    _query(model, policy.target_metric)
 
 
 def render_keda_scaledobject(
@@ -92,17 +101,20 @@ def render_knative_overlay(
     """A partial KServe ``InferenceService`` carrying Knative autoscaling — an overlay to merge into
     the manifest from ``exa serve manifest`` (``kubectl apply --server-side`` merges fields).
 
-    Knative's built-in metrics are ``rps`` and ``concurrency``; ``p95`` is not one, so it is refused.
-    Scale-to-zero maps to ``min-scale: 0`` plus a pod-retention period.
+    Knative's built-in metrics are ``rps`` and ``concurrency``; the policy's ``queue_depth`` (mean
+    requests in flight) *is* Knative's ``concurrency``, so it maps onto it. ``p95`` and ``gpu_util``
+    are not Knative metrics and are refused. Scale-to-zero maps to ``min-scale: 0`` plus a
+    pod-retention period.
     """
-    if policy.target_metric != "rps":
+    knative_metric = {"rps": "rps", "queue_depth": "concurrency"}.get(policy.target_metric)
+    if knative_metric is None:
         raise ManifestError(
-            f"{model}: the Knative overlay supports target_metric 'rps' only "
-            f"(got {policy.target_metric!r}); use --kind keda for p95"
+            f"{model}: the Knative overlay supports target_metric rps|queue_depth "
+            f"(got {policy.target_metric!r}); use --kind keda for p95/gpu_util"
         )
     base = k8s_name(model)
     ann: dict[str, str] = {
-        "autoscaling.knative.dev/metric": "rps",
+        "autoscaling.knative.dev/metric": knative_metric,
         "autoscaling.knative.dev/target": f"{policy.target_value:g}",
         "autoscaling.knative.dev/min-scale": str(policy.min_replicas),
         "autoscaling.knative.dev/max-scale": str(policy.max_replicas),

@@ -18,9 +18,11 @@ This module imports no torch: ``examlops.cli`` stays importable without it, and 
 without torch installed gives :class:`TorchNotInstalled` (a clear message), not an ImportError at
 CLI start-up. Only the worker processes need torch.
 
-What this does **not** do (see ADR 0032's Status): submit through a scheduler, multi-node rendezvous
-(the builder emits the flags, nothing has run them across nodes), NCCL/GPU (the script selects it,
-nothing has run it), FSDP/DeepSpeed, or MinIO/NFS shard storage.
+Scheduler submission (mock/Slurm/Flux, with scheduler-level resubmission) lives in
+:mod:`examlops.distributed.scheduled`; durable checkpoint mirroring in
+:mod:`examlops.distributed.durable`. What has still never been *observed* (see ADR 0032's Status):
+a multi-node rendezvous, NCCL on GPUs, and DeepSpeed/Megatron — the command builder emits the
+multi-node/elastic flags and they are unit-tested as strings only.
 """
 
 from __future__ import annotations
@@ -85,8 +87,18 @@ def build_torchrun_command(
     nnodes: int = 1,
     rdzv_endpoint: str | None = None,
     rdzv_id: str | None = None,
+    strategy: str = "ddp",
+    entrypoint: str | None = None,
+    min_nodes: int | None = None,
+    launcher: list[str] | None = None,
 ) -> list[str]:
-    """The real torchrun command for the reference script.
+    """The real torchrun command for the reference script (or a model's ``entrypoint`` module).
+
+    ``entrypoint`` is a Python module run with ``torchrun -m``; it must honour the reference
+    script's argument contract (``--run-dir --steps --checkpoint-every --seed --strategy``) and its
+    checkpoint layout (``checkpoint_files``). ``min_nodes`` makes the rendezvous elastic
+    (``--nnodes=min:max``): torch elastic re-rendezvouses when a node leaves or joins, within the
+    bounds. ``launcher`` replaces the torchrun prefix (a scheduler job uses its own interpreter).
 
     ``nnodes == 1`` uses ``--standalone`` (a local c10d rendezvous on a free port).
     ``nnodes > 1`` emits the c10d flags against ``rdzv_endpoint``; those flags are built and
@@ -96,14 +108,17 @@ def build_torchrun_command(
     """
     if nproc_per_node < 1 or nnodes < 1 or max_restarts < 0:
         raise ValueError("nproc_per_node and nnodes must be >= 1 and max_restarts >= 0")
-    cmd = [*_launcher_prefix()]
-    if nnodes == 1:
+    if min_nodes is not None and not 1 <= min_nodes <= nnodes:
+        raise ValueError(f"min_nodes must be between 1 and nnodes ({nnodes}), got {min_nodes}")
+    elastic = min_nodes is not None and min_nodes < nnodes
+    cmd = [*(launcher or _launcher_prefix())]
+    if nnodes == 1 and not elastic:
         cmd.append("--standalone")
     else:
         if not rdzv_endpoint:
             raise ValueError("a multi-node launch needs rdzv_endpoint")
         cmd += [
-            f"--nnodes={nnodes}",
+            f"--nnodes={min_nodes}:{nnodes}" if elastic else f"--nnodes={nnodes}",
             "--rdzv_backend=c10d",
             f"--rdzv_endpoint={rdzv_endpoint}",
             f"--rdzv_id={rdzv_id or 'examlops'}",
@@ -111,10 +126,11 @@ def build_torchrun_command(
     cmd += [
         f"--nproc-per-node={nproc_per_node}",
         f"--max-restarts={max_restarts}",
-        str(Path(train_ddp.__file__).resolve()),
+        *(["-m", entrypoint] if entrypoint else [str(Path(train_ddp.__file__).resolve())]),
         f"--run-dir={run_dir}",
         f"--steps={steps}",
         f"--checkpoint-every={checkpoint_every}",
+        f"--strategy={strategy}",
     ]
     if seed is not None:
         cmd.append(f"--seed={seed}")
@@ -229,8 +245,19 @@ def classify(returncode: int, metrics: dict[str, Any] | None, run_dir: Path) -> 
     return "recoverable"
 
 
-def _register_checkpoints(run_id: str, run_dir: Path, cfg_hash: str | None) -> list[dict[str, Any]]:
-    """Record each valid on-disk checkpoint once in ``training_checkpoints`` (state = manifest)."""
+def _register_checkpoints(
+    run_id: str,
+    run_dir: Path,
+    cfg_hash: str | None,
+    *,
+    uri_for: Callable[[int], str | None] | None = None,
+    mlflow_run_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Record each valid on-disk checkpoint once in ``training_checkpoints`` (state = manifest).
+
+    ``uri_for(step)`` names the checkpoint's durable copy when one was mirrored; the recorded URI is
+    then the durable one, not the scratch directory that the next job may not see.
+    """
     from examlops.distributed import write_checkpoint
 
     have = {c["step"] for c in platform_db.list_training_checkpoints(run_id)}
@@ -239,6 +266,7 @@ def _register_checkpoints(run_id: str, run_dir: Path, cfg_hash: str | None) -> l
         if not st.valid:
             continue
         m = st.manifest
+        uri = (uri_for(st.step) if uri_for else None) or str(st.directory)
         if st.step not in have:
             write_checkpoint(
                 run_id,
@@ -251,9 +279,12 @@ def _register_checkpoints(run_id: str, run_dir: Path, cfg_hash: str | None) -> l
                     "shards": [{k: s[k] for k in ("rank", "sha256")} for s in m["shards"]],
                 },
                 shard_count=int(m["world_size"]),
-                uri=str(st.directory),
+                uri=uri,
+                mlflow_run_id=mlflow_run_id,
             )
-        out.append({"step": st.step, "world_size": m["world_size"], "dir": str(st.directory)})
+        out.append(
+            {"step": st.step, "world_size": m["world_size"], "dir": str(st.directory), "uri": uri}
+        )
     return out
 
 
@@ -276,8 +307,16 @@ def supervise(
     runner: Runner | None = None,
     sleep: Callable[[float], None] = time.sleep,
     require_torch: bool = True,
+    strategy: str = STRATEGY,
+    entrypoint: str | None = None,
+    checkpoint_store: str | None = None,
 ) -> SupervisedRun:
-    """Run, and on a recoverable failure resubmit, up to ``max_attempts`` times."""
+    """Run, and on a recoverable failure resubmit, up to ``max_attempts`` times.
+
+    ``checkpoint_store`` (a local/NFS directory or an fsspec URL; default
+    ``EXAMLOPS_DIST_CHECKPOINT_STORE``) mirrors every valid checkpoint to durable storage after each
+    attempt, and restores the newest one into an empty run directory before the first.
+    """
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
     if runner is None and require_torch and not torch_available():
@@ -296,13 +335,21 @@ def supervise(
         checkpoint_every=checkpoint_every,
         seed=seed,
         max_restarts=max_restarts,
+        strategy=strategy,
+        entrypoint=entrypoint,
     )
+    from examlops.distributed import durable
+
+    store = durable.resolve_store(checkpoint_store)
+    durable_steps: set[int] = set()
+    if store is not None:
+        durable.restore_latest(store, run_id, run_dir, actor=actor)
     platform_db.create_distributed_run(
         run_id,
         model,
         nodes=1,
         gpus_per_node=nproc_per_node,
-        strategy=STRATEGY,
+        strategy=strategy,
         checkpoint_every=f"{checkpoint_every} steps",
     )
     pkg_root = str(Path(examlops.__file__).resolve().parent.parent)
@@ -316,7 +363,7 @@ def supervise(
             "model": model,
             "nproc": nproc_per_node,
             "steps": steps,
-            "strategy": STRATEGY,
+            "strategy": strategy,
             "max_attempts": max_attempts,
         },
     )
@@ -340,7 +387,12 @@ def supervise(
             {"attempt": n, "returncode": rc, "outcome": outcome, "seconds": round(secs, 3)},
         )
         cfg_hash = (metrics or {}).get("config_hash")
-        result.checkpoints = _register_checkpoints(run_id, run_dir, cfg_hash)
+        if store is not None:
+            mres = durable.mirror_run(store, run_id, run_dir, cfg_hash, actor=actor)
+            durable_steps.update(mres.mirrored + mres.already)
+        result.checkpoints = _register_checkpoints(
+            run_id, run_dir, cfg_hash, uri_for=durable.uri_for(store, run_id, only=durable_steps)
+        )
         if outcome == "success":
             result.status, result.metrics = "complete", metrics
             break

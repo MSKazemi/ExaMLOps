@@ -108,6 +108,11 @@ if card_completeness("JPCP") < 0.7:
 - Cards are **versioned** and **audited** (D4) and feed **D1** (Annex-IV system
   description) + **D2** (NIST RMF `system_description` evidence).
 - Publishing is opt-in and applies the naming-scrub path, excluding PII/internal fields.
+- **Datasheets** (Gebru et al.'s seven-section questionnaire) are operator-authored files next to
+  the pack's datasets: `exa cards lint <dataset> --template` prints the skeleton and
+  `--datasheet` lints it. The `datasheet` policy gate can require a complete one before
+  `exa pipeline promote`, and its `distribution.residency` feeds the `residency` gate — see
+  [Policy-as-code › Datasheets](policy-as-code.md#datasheets-adr-0079-decision-6).
 
 ## See also
 

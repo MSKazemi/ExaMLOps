@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 530,
+ "total_commands": 588,
  "total_groups": 75,
  "panels": [
   {
@@ -48,7 +48,7 @@
     {
      "cmd": "exa docs",
      "group": "docs",
-     "help": "Generate the full command reference from the live CLI tree.",
+     "help": "Generate the full command reference from the live CLI tree (or the SDK's, with --sdk).",
      "anchor": "exa-docs-generate-the-command-reference-from-live-code",
      "guide": null
     },
@@ -190,7 +190,7 @@
     {
      "cmd": "exa pipeline distributed run",
      "group": "pipeline",
-     "help": "Train the reference DDP script under real torchrun; resubmit and resume on failure.",
+     "help": "Train under real torchrun (locally or via the scheduler); resubmit and resume on failure.",
      "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
      "guide": "components/prefect.md"
     },
@@ -198,6 +198,55 @@
      "cmd": "exa pipeline distributed status",
      "group": "pipeline",
      "help": "Show a distributed run + its checkpoints.",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed suspend backends",
+     "group": "pipeline",
+     "help": "Every suspend backend: honest capability, preemption verdict, restore timing split.",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed suspend capability",
+     "group": "pipeline",
+     "help": "One backend's capability, measured from recorded restores, and why it may not promise.",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed suspend discard",
+     "group": "pipeline",
+     "help": "Release a snapshot's pin and record. The workload's own checkpoint is never deleted.",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed suspend list",
+     "group": "pipeline",
+     "help": "Suspend records, newest first.",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed suspend resume",
+     "group": "pipeline",
+     "help": "Restore a suspended snapshot and record the timing split. Exit 1 if it cannot.",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed suspend show",
+     "group": "pipeline",
+     "help": "One suspend record.",
+     "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline distributed suspend snapshot",
+     "group": "pipeline",
+     "help": "Suspend a subject: pin (or release) its state and record it. Audited; exit 1 on refusal.",
      "anchor": "exa-pipeline-distributed-distributed-training-checkpointresume-e6",
      "guide": "components/prefect.md"
     },
@@ -274,7 +323,14 @@
     {
      "cmd": "exa pipeline run",
      "group": "pipeline",
-     "help": "Run training pipeline(s) locally via Prefect.",
+     "help": "Run training pipeline(s) locally via Prefect (or distributed with --distributed).",
+     "anchor": "exa-pipeline-prefect-training-pipeline",
+     "guide": "components/prefect.md"
+    },
+    {
+     "cmd": "exa pipeline show",
+     "group": "pipeline",
+     "help": "Show a pack model's pipeline IR: the registry YAML, or the JSON graph with --ir. Read-only; runs nothing and takes a model name, not a path.",
      "anchor": "exa-pipeline-prefect-training-pipeline",
      "guide": "components/prefect.md"
     },
@@ -344,7 +400,7 @@
     {
      "cmd": "exa reproduce build",
      "group": "reproduce",
-     "help": "Capture + sign a reproducibility bundle for a model version (R1/R2).",
+     "help": "Capture + sign a reproducibility bundle for a model version (R1/R2). Commits (platform + model library), hardware, the image digest and the AI-BOM are collected automatically; the options add what only the operator knows.",
      "anchor": "exa-reproduce-reproducibility-bundles-a8",
      "guide": "guides/reproducibility-bundles.md"
     },
@@ -595,6 +651,13 @@
      "guide": "guides/feature-store.md"
     },
     {
+     "cmd": "exa feature materialize-due",
+     "group": "feature",
+     "help": "Materialize every view whose schedule interval has elapsed (ADR 0017 clause 4).",
+     "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
+     "guide": "guides/feature-store.md"
+    },
+    {
      "cmd": "exa feature similar",
      "group": "feature",
      "help": "Entities whose embedding is nearest to this one's (ADR 0020 clause 4).",
@@ -605,6 +668,20 @@
      "cmd": "exa feature skew",
      "group": "feature",
      "help": "Assert online == offline as-of for an entity (skew must be zero) (R2/GWT-1).",
+     "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa feature status",
+     "group": "feature",
+     "help": "Freshness, schedule and online-store tier of every feature view (ADR 0017 clause 4).",
+     "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
+     "guide": "guides/feature-store.md"
+    },
+    {
+     "cmd": "exa feature sync",
+     "group": "feature",
+     "help": "Apply the use-case pack's feature-view definitions to the registry (ADR 0017).",
      "anchor": "exa-feature-serving-feature-store-zero-trainserve-skew-a3",
      "guide": "guides/feature-store.md"
     },
@@ -720,6 +797,13 @@
    ],
    "commands": [
     {
+     "cmd": "exa models attest",
+     "group": "models",
+     "help": "Record SLSA v1 provenance + a digest-bound AI-BOM for a version (ADR 0013).",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
      "cmd": "exa models bom",
      "group": "models",
      "help": "Generate a CycloneDX AI-BOM for a model version.",
@@ -804,9 +888,30 @@
      "guide": "components/mlflow.md"
     },
     {
+     "cmd": "exa models provenance",
+     "group": "models",
+     "help": "Show and verify a version's SLSA v1 provenance; exit 1 when it does not verify.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
      "cmd": "exa models quantize",
      "group": "models",
      "help": "Quantize a model → register a new signed + BOM'd version (GWT-3).",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models quantize-gate",
+     "group": "models",
+     "help": "Quality-retention gate: a quantized version vs its base version (ADR 0016, C3). Mandatory for promotion: `exa pipeline promote` and the training-flow promotion refuse a quantized version that has not passed it. No configured C3 gate, or missing scores on either side, is a refusal — never a pass. The verdict is recorded in gate_reports and audited.",
+     "anchor": "exa-models-mlflow-model-registry",
+     "guide": "components/mlflow.md"
+    },
+    {
+     "cmd": "exa models release-check",
+     "group": "models",
+     "help": "CI gate: exit 1 unless the version is signed, has a bound AI-BOM and verified provenance.",
      "anchor": "exa-models-mlflow-model-registry",
      "guide": "components/mlflow.md"
     },
@@ -1025,7 +1130,14 @@
     {
      "cmd": "exa serve adapter route",
      "group": "serve",
-     "help": "Route a request through a base + adapter — refuses a base mismatch (R4/GWT-4).",
+     "help": "Route a request through a base + adapter — refuses a base mismatch (R4/GWT-4). --engine torch / vllm really run the request through the adapter and accept only a promoted adapter whose registry signature (and, for torch, bundle digest) verifies.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve autoscale activate",
+     "group": "serve",
+     "help": "Wake a model from zero replicas and wait until it is ready; cold start is measured + audited.",
      "anchor": "exa-serve-ray-serve-operations",
      "guide": "components/ray-serve.md"
     },
@@ -1088,7 +1200,7 @@
     {
      "cmd": "exa serve backend",
      "group": "serve",
-     "help": "Show the active serving backend (ray-compose default | kserve-k8s).",
+     "help": "Show the active serving backend (ray-compose default | kserve-k8s | kuberay-k8s).",
      "anchor": "exa-serve-ray-serve-operations",
      "guide": "components/ray-serve.md"
     },
@@ -1180,6 +1292,13 @@
      "cmd": "exa serve infer-check",
      "group": "serve",
      "help": "Smoke-test the Ray Serve inference pipeline with a valid synthetic HPC job.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
+     "cmd": "exa serve kuberay-manifest",
+     "group": "serve",
+     "help": "Render the Ray multi-model server as a KubeRay RayService (ADR 0015 d1). The dense multi-model path on Kubernetes: every model in the registry behind one Ray cluster, the same application the Compose ray-serving service runs, checked against the pinned KubeRay schema. Nothing is applied to a cluster.",
      "anchor": "exa-serve-ray-serve-operations",
      "guide": "components/ray-serve.md"
     },
@@ -1345,6 +1464,13 @@
      "guide": "components/ray-serve.md"
     },
     {
+     "cmd": "exa serve verifier-manifest",
+     "group": "serve",
+     "help": "Render the ClusterStorageContainer that verifies model signatures in the pod (ADR 0142 d3). Install once per cluster (it is cluster-scoped). KServe InferenceServices rendered by the platform name it, so every artifact is downloaded and then checked against its D3 signature before the model server starts; EXAMLOPS_SERVING_VERIFY=enforce stops the pod on a failure.",
+     "anchor": "exa-serve-ray-serve-operations",
+     "guide": "components/ray-serve.md"
+    },
+    {
      "cmd": "exa predict",
      "group": "predict",
      "help": "Send an inference request to the Ray Serve inference pipeline.",
@@ -1492,6 +1618,20 @@
      "guide": "guides/model-gateway.md"
     },
     {
+     "cmd": "exa gateway schema list",
+     "group": "gateway",
+     "help": "Registered output schemas + per-route defaults from structured.yaml (ADR 0035 cl. 3).",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway schema show",
+     "group": "gateway",
+     "help": "Print one registered output schema as JSON.",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
      "cmd": "exa gateway schema test",
      "group": "gateway",
      "help": "Validate (and optionally repair) an object against a JSON Schema (R1/R8).",
@@ -1539,6 +1679,13 @@
      "help": "Upsert a single vector (rejected if dim mismatches the collection).",
      "anchor": "exa-vector-vector-store-collections-upsert-densesparsehybrid-search-reindex-drop",
      "guide": "guides/vector-store.md"
+    },
+    {
+     "cmd": "exa rag eval",
+     "group": "rag",
+     "help": "Score a knowledge base's retrieval (context precision/recall) through the C2 harness.",
+     "anchor": "exa-rag-knowledge-bases-with-citations",
+     "guide": "guides/rag.md"
     },
     {
      "cmd": "exa rag ingest",
@@ -1687,6 +1834,27 @@
      "guide": "guides/guardrails.md"
     },
     {
+     "cmd": "exa guardrails checks",
+     "group": "guardrails",
+     "help": "List the checks a guardrail policy can compose, and whether each can run here.",
+     "anchor": "exa-guardrails-injection-pii-toxicity-defense",
+     "guide": "guides/guardrails.md"
+    },
+    {
+     "cmd": "exa guardrails policy show",
+     "group": "guardrails",
+     "help": "Show the effective policy for a tenant and route (layers: default → tenant → routes).",
+     "anchor": "exa-guardrails-injection-pii-toxicity-defense",
+     "guide": "guides/guardrails.md"
+    },
+    {
+     "cmd": "exa guardrails policy validate",
+     "group": "guardrails",
+     "help": "Validate a guardrail policy file; exit 1 on any error (a CI gate).",
+     "anchor": "exa-guardrails-injection-pii-toxicity-defense",
+     "guide": "guides/guardrails.md"
+    },
+    {
      "cmd": "exa guardrails stats",
      "group": "guardrails",
      "help": "Show guardrail action counts (allow/redact/block).",
@@ -1696,7 +1864,7 @@
     {
      "cmd": "exa guardrails test",
      "group": "guardrails",
-     "help": "Run a text through the guardrail and show the action + findings.",
+     "help": "Run a text through the guardrail and show the action + findings. Uses the declarative guardrail policy (EXAMLOPS_GUARDRAIL_POLICY or <config dir>/guardrails.yaml) when one is configured — the same checks the gateway runs for this tenant and route — else the built-in guardrail.",
      "anchor": "exa-guardrails-injection-pii-toxicity-defense",
      "guide": "guides/guardrails.md"
     }
@@ -1729,6 +1897,13 @@
      "group": "chat",
      "help": "Interactive conversation with the Skipper agent",
      "anchor": "exa-chat-hold-a-conversation-with-the-agent",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent alias canary",
+     "group": "agent",
+     "help": "Start a share of the agent's new sessions on its Canary version; existing ones stay put.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
      "guide": "guides/agent.md"
     },
     {
@@ -1802,6 +1977,27 @@
      "guide": "guides/agent.md"
     },
     {
+     "cmd": "exa agent runtime sandboxes",
+     "group": "agent",
+     "help": "The sandbox isolation each substrate provider offers on this host (measured, not assumed).",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent runtime serve",
+     "group": "agent",
+     "help": "Run the agent runtime (threads/runs HTTP surface) and its maintenance loop.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent runtime snapshot",
+     "group": "agent",
+     "help": "Compile the agent snapshot the runtime serves from (versions, aliases, grants, quotas).",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
      "cmd": "exa agent status",
      "group": "agent",
      "help": "Show the agent's reachability, LLM backend, model and memory tier. Exits non-zero when the agent is unreachable *or* when it is up but its backend is unusable. Both mean \"do not trust an answer from this agent\", which is the question a script is really asking, and collapsing them into one exit code is what makes this usable as a health gate.",
@@ -1816,6 +2012,13 @@
      "guide": "guides/agent.md"
     },
     {
+     "cmd": "exa agent version compat",
+     "group": "agent",
+     "help": "State-compatibility verdict between two versions: compatible, incompatible or inert.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
      "cmd": "exa agent version diff",
      "group": "agent",
      "help": "Which components differ between two versions, by name.",
@@ -1823,9 +2026,30 @@
      "guide": "guides/agent.md"
     },
     {
+     "cmd": "exa agent version evidence",
+     "group": "agent",
+     "help": "Export a version's evidence pack: tuple, evals, judges, grants, moves, audit (read-only).",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
      "cmd": "exa agent version list",
      "group": "agent",
      "help": "List registered versions, newest first, with the aliases pointing at each.",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent version reeval",
+     "group": "agent",
+     "help": "Re-evaluations enqueued because a model an agent follows was promoted (ADR 0146 d2).",
+     "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
+     "guide": "guides/agent.md"
+    },
+    {
+     "cmd": "exa agent version reeval-resolve",
+     "group": "agent",
+     "help": "Close a pending re-evaluation; `passed` lifts a blocking agent's model pin.",
      "anchor": "exa-agent-is-the-agent-up-and-which-brain-is-it-using",
      "guide": "guides/agent.md"
     },
@@ -2012,6 +2236,13 @@
      "guide": null
     },
     {
+     "cmd": "exa mcp scopes",
+     "group": "mcp",
+     "help": "Show the OAuth scope each MCP tool needs on the authenticated HTTP transport (ADR 0082).",
+     "anchor": "exa-mcp-mcp-server-agent-to-agent-a2a-surface",
+     "guide": null
+    },
+    {
      "cmd": "exa mcp serve",
      "group": "mcp",
      "help": "Run the MCP server so agents can drive ExaMLOps.",
@@ -2139,7 +2370,7 @@
     {
      "cmd": "exa drift estimate",
      "group": "drift",
-     "help": "Label-free performance estimate (CBPE-like) before labels arrive (C5·R3/R4).",
+     "help": "Label-free performance estimate before labels arrive (C5·R3/R4). A drop vs `--baseline` warns; the same drop confirmed by realized labels in the recent window is CRITICAL and is what `exa drift trigger` acts on (ADR 0022 decision 4).",
      "anchor": "exa-drift-prediction-input-concept-drift-detection",
      "guide": "guides/drift-advanced.md"
     },
@@ -2249,6 +2480,13 @@
      "guide": "guides/evaluation.md"
     },
     {
+     "cmd": "exa eval evaluators",
+     "group": "eval",
+     "help": "List evaluator specs and which engine (native / Ragas / DeepEval / gateway) runs each.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
      "cmd": "exa eval feedback accuracy",
      "group": "eval",
      "help": "Compute live accuracy (RMSE/MAE) from labelled predictions — real quality, not drift proxy.",
@@ -2305,6 +2543,34 @@
      "guide": "guides/evaluation.md"
     },
     {
+     "cmd": "exa eval online disable",
+     "group": "eval",
+     "help": "Stop scheduling a model's online evaluation (config and recorded results are kept).",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval online enable",
+     "group": "eval",
+     "help": "Schedule online evaluation for a model (validated now, run by `exa eval online run`).",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval online run",
+     "group": "eval",
+     "help": "Evaluate each scheduled model's sampled live traffic (ADR 0007 decision 3). A real cycle needs `EXAMLOPS_EVAL_ONLINE_ENABLED=1` (default off), takes a distributed lease so only one scheduler acts, scores each window once, persists to the eval store (which the C3 gate and `exa slo export-metrics` read) and is audited. With `EXAMLOPS_EVAL_METRICS_TEXTFILE` set it also rewrites that node_exporter textfile after each cycle.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
+     "cmd": "exa eval online status",
+     "group": "eval",
+     "help": "Show every online-eval schedule and the outcome of its latest window.",
+     "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
+     "guide": "guides/evaluation.md"
+    },
+    {
      "cmd": "exa eval operator-qa",
      "group": "eval",
      "help": "Ask the agent a fixed set of operator questions and report the pass rate. Measures whether the agent can answer what a new operator actually asks. Grading is deterministic (does the answer name the right command), so no judge model is involved and no judge calibration is required. Exits non-zero if the agent is unreachable, so an unanswerable run can never be mistaken for a bad score.",
@@ -2314,7 +2580,7 @@
     {
      "cmd": "exa eval run",
      "group": "eval",
-     "help": "Run a deterministic eval suite over items and persist scores (exit != 0 on error only).",
+     "help": "Run an eval suite over items and persist scores (exit != 0 on error only).",
      "anchor": "exa-eval-continuous-evaluation-ground-truth-feedback",
      "guide": "guides/evaluation.md"
     },
@@ -2329,6 +2595,20 @@
      "cmd": "exa slo apply",
      "group": "slo",
      "help": "Apply all SLO specs from a YAML file (R1).",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo benchmark record",
+     "group": "slo",
+     "help": "Store a benchmark run; refused (exit 1) when any condition is missing.",
+     "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
+     "guide": "guides/slos.md"
+    },
+    {
+     "cmd": "exa slo benchmark results",
+     "group": "slo",
+     "help": "List stored benchmark results with the conditions they were measured under.",
      "anchor": "exa-slo-model-quality-slos-error-budgets-burn-rate-alerts",
      "guide": "guides/slos.md"
     },
@@ -2663,6 +2943,20 @@
      "guide": "guides/heterogeneous-hardware.md"
     },
     {
+     "cmd": "exa hardware profile history",
+     "group": "hardware",
+     "help": "The append-only ledger of profile resolutions: which version, for whom, with what status.",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
+     "cmd": "exa hardware profile in-use",
+     "group": "hardware",
+     "help": "Profiles in use by running workbenches and recent training/serving, with their status. Exits 1 when any entry is degraded, unresolvable or missing (a deleted version that is still referenced) — so a CI or cron job can act on it.",
+     "anchor": "exa-hardware-heterogeneous-hardware-hybrid-hpccloud-placement-e8",
+     "guide": "guides/heterogeneous-hardware.md"
+    },
+    {
      "cmd": "exa hardware profile list",
      "group": "hardware",
      "help": "List hardware profiles by their active-labeled version.",
@@ -2806,6 +3100,34 @@
      "cmd": "exa finops economics",
      "group": "finops",
      "help": "Unit economics per workload kind (per prediction / per token / per agent task).",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa finops specdecode",
+     "group": "finops",
+     "help": "Speculative-decoding acceptance rate + estimated speedup per model (ADR 0016 d4).",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa finops task-cost apportion",
+     "group": "finops",
+     "help": "Split a pool's standby cost across its tasks by a declared rule (audited).",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa finops task-cost record",
+     "group": "finops",
+     "help": "Record one metered cost entry for an agent task.",
+     "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
+     "guide": "guides/finops-providers.md"
+    },
+    {
+     "cmd": "exa finops task-cost show",
+     "group": "finops",
+     "help": "Show one task's ledger: per-component totals, total, and what is unmetered.",
      "anchor": "exa-finops-finops-green-ai-budgets-and-carbon-accounting",
      "guide": "guides/finops-providers.md"
     },
@@ -2989,6 +3311,20 @@
      "guide": "guides/audit-trail.md"
     },
     {
+     "cmd": "exa audit maintain",
+     "group": "audit",
+     "help": "Run the scheduled audit maintenance: checkpoint + WORM + transparency log + retention. The same job the control plane runs in the background (ADR 0028). One cycle holds a cluster-wide lease, so running this next to the control plane never double-prunes. Retention pruning runs only with EXAMLOPS_AUDIT_PRUNE_SCHEDULED=1 and a retention policy. Exit 1 when a single cycle (--once / --dry-run) is degraded.",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
+     "cmd": "exa audit maintenance-runs",
+     "group": "audit",
+     "help": "Show recent scheduled audit-maintenance cycles (is the schedule actually running?).",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
      "cmd": "exa audit prune",
      "group": "audit",
      "help": "Prune old audit events under the retention policy WITHOUT breaking the chain (ADR 0028). Dry run by default. Refused unless EXAMLOPS_AUDIT_RETENTION_DAYS is set, the chain verifies, a fresh signed checkpoint is anchored to the WORM store, and the deleted rows are archived. A signed prune record keeps exa audit verify passing over what remains.",
@@ -3024,6 +3360,13 @@
      "guide": "guides/audit-trail.md"
     },
     {
+     "cmd": "exa audit verify-transparency",
+     "group": "audit",
+     "help": "Re-check checkpoint receipts against the Rekor / Sigstore transparency log. Exit 1 on a failure.",
+     "anchor": "exa-audit-tamper-evident-hash-chained-audit-log-d4",
+     "guide": "guides/audit-trail.md"
+    },
+    {
      "cmd": "exa audit verify-worm",
      "group": "audit",
      "help": "Verify the external WORM anchor: its own chain + agreement with the DB checkpoints (item 2.4).",
@@ -3045,6 +3388,13 @@
      "guide": null
     },
     {
+     "cmd": "exa secrets backends",
+     "group": "secrets",
+     "help": "Show every secrets backend (vault · sops · local · env): configured, reachable, writes. Reports the resolution order, which backend `set`/`rotate` write to, OpenBao/Vault health (sealed / initialised, via the unauthenticated health endpoint), the sops binary and file, and the local keyring's key ids. Never prints a secret or a key.",
+     "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
+     "guide": "guides/secrets.md"
+    },
+    {
      "cmd": "exa secrets get",
      "group": "secrets",
      "help": "Resolve a secret. Redacts by default; --reveal prints plaintext. Also reports the backend that served it (vault/local/env), and warns when a configured vault was unreachable — that fallback changes which store the value came from.",
@@ -3052,9 +3402,37 @@
      "guide": "guides/secrets.md"
     },
     {
+     "cmd": "exa secrets lease issue",
+     "group": "secrets",
+     "help": "Mint a short-lived credential; prints the lease (id, TTL) and, with --reveal, the fields. Needs EXAMLOPS_VAULT_ADDR and a mounted dynamic engine. A path with no lease (a static KV secret) is refused rather than presented as short-lived. Audited without the credential.",
+     "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
+     "guide": "guides/secrets.md"
+    },
+    {
+     "cmd": "exa secrets lease renew",
+     "group": "secrets",
+     "help": "Extend a lease (bounded by the engine's max TTL); audited.",
+     "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
+     "guide": "guides/secrets.md"
+    },
+    {
+     "cmd": "exa secrets lease revoke",
+     "group": "secrets",
+     "help": "Revoke a lease now — the credential stops working at the manager; audited.",
+     "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
+     "guide": "guides/secrets.md"
+    },
+    {
      "cmd": "exa secrets list",
      "group": "secrets",
      "help": "List secret metadata (paths/versions) — never values.",
+     "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
+     "guide": "guides/secrets.md"
+    },
+    {
+     "cmd": "exa secrets refs",
+     "group": "secrets",
+     "help": "Audit an environment for startup injection (ADR 0011 clause 2): references vs plaintext. Lists every credential-carrying variable as `reference` (secret://path — resolved through the secrets client), `file` (secret+file:///run/secrets/x), `bootstrap` (the store's own key or token) or `plaintext` (a credential in clear — what injection replaces), and whether each reference resolves. Values are never printed; each resolution is an audited access. `--strict` makes it a deploy gate.",
      "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
      "guide": "guides/secrets.md"
     },
@@ -3082,7 +3460,7 @@
     {
      "cmd": "exa secrets set",
      "group": "secrets",
-     "help": "Store an encrypted secret in the local store (audited).",
+     "help": "Store a secret in the write backend (local store by default; audited). EXAMLOPS_SECRETS_WRITE_BACKEND=vault|sops writes to OpenBao/Vault or the SOPS file instead; an unreachable manager fails the command rather than writing somewhere else.",
      "anchor": "exa-secrets-encrypted-secrets-rotation-and-leak-scanning",
      "guide": "guides/secrets.md"
     },
@@ -3146,6 +3524,13 @@
      "cmd": "exa governance crosswalk",
      "group": "governance",
      "help": "Show the control → EU AI Act + ISO/IEC 42001 crosswalk (R5).",
+     "anchor": "exa-governance-nist-ai-rmf-control-coverage-crosswalk",
+     "guide": "guides/governance-nist-rmf.md"
+    },
+    {
+     "cmd": "exa governance features",
+     "group": "governance",
+     "help": "Per-feature declarations: which controls each feature serves and what evidence it emits.",
      "anchor": "exa-governance-nist-ai-rmf-control-coverage-crosswalk",
      "guide": "guides/governance-nist-rmf.md"
     },
@@ -3403,7 +3788,7 @@
     {
      "cmd": "exa project scope-audit",
      "group": "project",
-     "help": "Report platform.db tables that carry no project/tenant scope (read-only, ADR 0014). Every table is classified scoped / model-scoped / exempt (with a reason) / UNSCOPED. Exits 1 if a table is UNSCOPED or an exemption has gone stale. known_gaps lists the user-data tables that are still not partitioned by project.",
+     "help": "Report platform.db tables that carry no project/tenant scope (read-only, ADR 0014). Every table is classified scoped / model- or dataset-scoped / exempt (with a reason) / UNSCOPED. Exits 1 if a table is UNSCOPED or an exemption has gone stale. known_gaps lists the user-data tables that are still not partitioned by project.",
      "anchor": "exa-project-projects-with-cpumemorystoragegpu-quotas",
      "guide": "guides/projects-workspaces.md"
     },
@@ -3811,6 +4196,13 @@
      "guide": null
     },
     {
+     "cmd": "exa admission reconcile",
+     "group": "admission",
+     "help": "Reclaim leaked quota (ADR 0116 decision 3): expire reservations whose TTL lapsed, and release committed job reservations whose scheduler job has ended. A job the scheduler cannot answer for keeps its quota. Run it periodically (cron / a Prefect schedule).",
+     "anchor": "exa-admission-admission-control-queue-per-tenant-fair-share",
+     "guide": null
+    },
+    {
      "cmd": "exa admission reservations",
      "group": "admission",
      "help": "List two-phase quota reservations, or preview which leaked ones would expire. Read-only.",
@@ -3835,6 +4227,20 @@
      "cmd": "exa admission submit",
      "group": "admission",
      "help": "Enqueue a work item (durable). A worker claims it under the global + per-tenant caps. **This enqueues; it does not dispatch.** `examlops.admission` is a facade whose `dispatch` is injected by whatever embeds it, and the control plane runs its own admission accounting on this table rather than through the facade — so an item submitted here waits until something claims it. `exa admission stats` reports how long the oldest queued item has been waiting, which is what tells a busy queue from a stranded one.",
+     "anchor": "exa-admission-admission-control-queue-per-tenant-fair-share",
+     "guide": null
+    },
+    {
+     "cmd": "exa admission topology",
+     "group": "admission",
+     "help": "Show the typed resource graph admission reasons over (ADR 0116): scale-up domains and their free GPUs from the node inventory plus the site's declared topology file. Read-only.",
+     "anchor": "exa-admission-admission-control-queue-per-tenant-fair-share",
+     "guide": null
+    },
+    {
+     "cmd": "exa admission translate",
+     "group": "admission",
+     "help": "Show how one JobRequest maps onto an execution backend (ADR 0116): the native resources the adapter receives, and the fields that backend cannot enforce. Read-only; nothing is submitted.",
      "anchor": "exa-admission-admission-control-queue-per-tenant-fair-share",
      "guide": null
     },

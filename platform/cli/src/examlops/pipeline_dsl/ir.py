@@ -94,6 +94,8 @@ STEP_KINDS: dict[str, StepKind] = {
                 "output_features",
                 "splits",
                 "dataplane",
+                # ADR 0017: the pack feature view the training feature gate enforces.
+                "feature_view",
             }
         ),
         required_params=frozenset({"name"}),

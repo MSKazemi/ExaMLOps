@@ -6,7 +6,8 @@ between "a model is in the registry" and "this is the exact, untampered model we
 trained and approved."
 
 Design: ADR 0013 · spec `design/vision/specs/D3-supply-chain-security.md`.
-Backed by `platform_db.model_signatures` + `platform_db.model_boms`.
+Backed by `platform_db.model_signatures`, `platform_db.model_boms` and
+`platform_db.model_provenance`.
 
 ## Signing schemes
 
@@ -28,8 +29,47 @@ in the legacy HMAC digest:
 - A **forged** signature fails, because verifiers cannot sign. A signature made with a key
   outside the trust bundle is refused as `untrusted-key`.
 
-Keyless Sigstore signing (Fulcio certificates, a transparency log) is not implemented. The
-`cert` column holds the Ed25519 key id today and is where a certificate would go.
+The `cert` column holds the Ed25519 key id for `ed25519-v2` rows and the signer identity for
+`sigstore-v1` rows (next section).
+
+### Keyless signing with Sigstore
+
+`EXAMLOPS_SIGNING_SCHEME=sigstore` switches the signer to **Sigstore keyless** signing
+(`sigstore-v1`). The signer holds no long-lived key: it presents an OIDC identity token to
+**Fulcio**, receives a short-lived certificate for an ephemeral key, and the signature is logged
+in the **Rekor** transparency log. The Sigstore bundle (certificate, signature, inclusion proof)
+is stored as the signature. It covers the same statement an Ed25519 signature covers (model,
+version, manifest digest), so a bundle cannot be moved to another version either.
+
+Install the optional extra first: `pip install 'examlops[supplychain]'` (the `sigstore` library,
+imported only on this path).
+
+| Variable | Where | Meaning |
+|---|---|---|
+| `EXAMLOPS_SIGNING_SCHEME` | signer | `auto` (default: Ed25519 when a private key is configured, else legacy HMAC) or `sigstore`. Any other value refuses to sign rather than silently picking a scheme |
+| `EXAMLOPS_SIGSTORE_IDENTITY_TOKEN` / `EXAMLOPS_SIGSTORE_IDENTITY_TOKEN_FILE` | signer | The OIDC token. Unset → the ambient CI credential (GitHub Actions, GitLab, Buildkite, GCP). There is no interactive browser flow |
+| `EXAMLOPS_SIGSTORE_IDENTITIES` | every verifier | Comma-separated identity–issuer pairs (identity, a pipe character, issuer) allowed to sign models — see the example below |
+| `EXAMLOPS_SIGSTORE_INSTANCE` | both | `production` (default) or `staging` |
+| `EXAMLOPS_SIGSTORE_OFFLINE` | verifiers | Truthy → verify with the trusted root already in the local TUF cache (air-gapped HPC) |
+
+For example:
+
+```bash
+export EXAMLOPS_SIGSTORE_IDENTITIES='https://github.com/MSKazemi/ExaMLOps/.github/workflows/train.yml@refs/heads/main|https://token.actions.githubusercontent.com'
+```
+
+Verification trusts **identities, not keys**, and fails closed: an empty
+`EXAMLOPS_SIGSTORE_IDENTITIES` answers `untrusted-identity`; an entry without an issuer is
+dropped rather than widened to "any issuer"; a missing `sigstore` library answers `unavailable`,
+which `enforce` refuses like any other failure to verify. A verifier that only ever sees
+Ed25519/HMAC rows does not need the extra.
+
+**Offline fallback.** When keyless signing cannot run — no OIDC token, Fulcio or Rekor
+unreachable — and an Ed25519 private key is configured, the signer falls back to it (the
+"D7-managed key" the ADR names for offline HPC). The fallback is audited as
+`model_sign_keyless_fallback` with the reason. With no key to fall back to, signing fails.
+Provenance signing falls back the same way and is audited as `model_provenance_keyless_fallback`
+(with no key it is recorded unsigned, which never verifies).
 
 ### Keys
 
@@ -87,6 +127,83 @@ their fine-tuning run, but it must not pass unnoticed either. If you need unsign
 rather than merely visible, that is what `EXAMLOPS_SIGN_AT_REGISTRATION=required` is for on the
 model-signing path.
 
+## SLSA build provenance
+
+Every version the pipeline registers can carry **SLSA v1 provenance**: an in-toto Statement v1
+whose subject is `models:/<model>/<version>` with the manifest digest the signature covers, and
+whose predicate records the build — model, dataset and pinned dataset revision, backend,
+framework, parameters (bounded to 64 × 1 KiB), the source commit (`EXAMLOPS_SOURCE_COMMIT`,
+`GITHUB_SHA` or `CI_COMMIT_SHA`) and repository (`EXAMLOPS_SOURCE_REPOSITORY`), the builder id (`EXAMLOPS_BUILDER_ID`), the MLflow run id and
+the HPC job id and scheduler.
+
+The statement is signed in a **DSSE** envelope with the Ed25519 signing key (`ed25519-dsse`,
+PAE-encoded per DSSE v1), or — under `EXAMLOPS_SIGNING_SCHEME=sigstore` — keyless into a Sigstore
+bundle with a Rekor entry (`sigstore-v1`). With no key at all it is recorded **unsigned**
+(`none`): it documents the build, but it is not evidence and never verifies.
+
+Each record is also anchored in the hash-chained audit trail: the `model_provenance_recorded`
+event carries the SHA-256 of the exact envelope stored, so rewriting the `model_provenance` row
+later is detectable from the chain (and from the WORM anchor, when `EXAMLOPS_AUDIT_WORM_PATH` is
+set). Re-recording the same build is a no-op; a *different* statement for a version that already
+has one is refused unless `--replace` is given, and the replacement is audited too. The write
+itself is insert-if-absent, so two recorders racing on one version cannot silently overwrite each
+other. A build first recorded **unsigned** (no key at the time) is signed by re-recording the same
+build once a key exists — that adds the missing signature, so it needs no `--replace`.
+
+### SLSA build type: training v1
+
+`buildDefinition.buildType` is
+`https://github.com/MSKazemi/ExaMLOps/blob/main/docs/guides/supply-chain-security.md#slsa-build-type-training-v1`:
+
+| Field | Content |
+|---|---|
+| `externalParameters` | `model`, `version`, `dataset`, `datasetRevision`, `backend`, `framework`, `parameters` |
+| `internalParameters` | `examlops` — the platform version that ran the build |
+| `resolvedDependencies` | `dataset:<name>` (annotation `revision`) and the source repository (digest `gitCommit`) |
+| `runDetails.metadata.invocationId` | the MLflow run id |
+| `runDetails.byproducts` | `hpc-job` with `jobId` and `scheduler` |
+
+### At registration
+
+`EXAMLOPS_PROVENANCE_AT_REGISTRATION` sets what the training pipeline records after signing:
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | Record the AI-BOM and provenance whenever signing produced a manifest digest (Ed25519 or Sigstore) — no second artifact download; skip otherwise |
+| `required` | Always record them, downloading the registered artifacts when signing did not; fail the training run when it cannot |
+| `off` | Never |
+
+The AI-BOM recorded here carries an `examlops:artifact_digest` property, which binds it to the
+signed bytes.
+
+## Release gate
+
+`exa models release-check <model> <version>` exits 1 unless the version carries the required
+evidence (default: all three):
+
+| Requirement | Passes when |
+|---|---|
+| `signature` | a signature row exists **and** is a valid Ed25519 / Sigstore signature by a trusted key or identity over its recorded digest (`bad-signature` / `untrusted-key` otherwise). A legacy HMAC row is refused (`legacy-hmac`): it is a shared-secret MAC over a different digest, so nothing else can be bound to it. Whether the artifact bytes still match is verify-before-load's job |
+| `bom` | an AI-BOM is recorded, names an artifact digest (`unbound` otherwise — re-run `exa models attest`), and that digest equals the verified signature's digest, or with no verified signature the verified provenance subject (`bom-mismatch` otherwise, also when two recorded BOMs for the version bind different digests) |
+| `provenance` | provenance is recorded, its signature verifies under the trust bundle / trusted identities, and its subject digest equals the signed digest |
+
+The same check governs **promotion** when the policy engine's `supply_chain` gate is armed with
+a `require` list:
+
+```yaml
+# policy.yaml
+gates:
+  supply_chain:
+    mode: enforce          # or monitor: audit a would-deny, never block
+    require: [signature, bom, provenance]
+```
+
+`exa pipeline promote` then refuses a version that lacks any of them (not overridable by
+`--force`), and so does the **autopilot**, which promotes on its own road: an armed
+`supply_chain` gate is consulted for the Staging candidate there too (blocked cycles are audited
+as `autopilot_promote_blocked`), and a candidate version that cannot be resolved is refused. Without `require`, the gate keeps its original meaning (signature only). A misspelt
+requirement denies: a typo must not drop a check.
+
 ## CLI
 
 ```bash
@@ -98,6 +215,18 @@ exa models verify JPCP 17 --mode warn      # record only, never blocks
 # Or a local artifact directory (relative paths inside it are part of the signature)
 exa models sign JPCP 17 --path ./artifacts/jpcp
 exa models verify JPCP 17 --path ./artifacts/jpcp
+
+# Record signed SLSA provenance + a digest-bound AI-BOM (versions registered before this existed)
+exa models attest JPCP 17 --dataset FData --dataset-revision abc123
+exa models attest JPCP 17 --path ./artifacts/jpcp --sign
+
+# Show and verify provenance (exit 1 when it does not verify); export the signed envelope
+exa models provenance JPCP 17
+exa models provenance JPCP 17 --output ./evidence/jpcp-17.intoto.json
+
+# CI gate: signed + bound AI-BOM + verified provenance, or exit 1
+exa models release-check JPCP 17
+exa models release-check JPCP 17 --require signature,provenance
 
 # Emit a CycloneDX AI-BOM (data revision + framework + key deps)
 exa models bom JPCP 17 --dataset FData --dataset-revision abc123 --framework sklearn

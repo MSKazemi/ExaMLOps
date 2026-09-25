@@ -207,7 +207,45 @@ def create_workbench(
     from examlops.data.projects import assign_resource_to_project
 
     assign_resource_to_project(project, "storage", f"workbench:{name}", added_by=created_by)
+    if profile_name is not None and profile_version is not None:
+        _record_profile_use(project, name, profile_name, profile_version, actor=created_by)
     return get_workbench(name, project)  # type: ignore[return-value]
+
+
+def _record_profile_use(
+    project: str, name: str, profile_name: str, profile_version: int, *, actor: str | None
+) -> None:
+    """Ledger the resolution this workbench was created from (ADR 0157 Phase 4).
+
+    Written only after the row exists, so a refused or conflicting create leaves no trace. The
+    resolution is re-taken at the pinned version — ``unchecked``, because a workbench has no HPC
+    target — and the write is fail-open (see ``hardware_profiles.record_resolution``).
+    """
+    from examlops.hardware_profiles import (  # noqa: PLC0415
+        HardwareProfileError,
+        record_resolution,
+        resolve_profile,
+    )
+
+    try:
+        resolution = resolve_profile(profile_name, version=profile_version)
+    except HardwareProfileError as exc:  # deleted between create and here — say so, don't fail
+        logger.warning("workbench %s/%s: profile resolution not recorded (%s)", project, name, exc)
+        return
+    except Exception as exc:  # noqa: BLE001 - the row exists: a failed re-read must not undo it
+        # The workbench is already created; raising here would report a failed create for a
+        # workbench that exists (and a retry would then conflict). Same fail-open contract as
+        # ``record_resolution`` — the in-use report shows it as ``unchecked`` ("no recorded
+        # resolution"), never as fine.
+        logger.warning("workbench %s/%s: profile resolution not recorded (%s)", project, name, exc)
+        return
+    record_resolution(
+        resolution,
+        consumer="workbench",
+        consumer_ref=f"{project}/{name}",
+        project=project,
+        actor=actor,
+    )
 
 
 def get_workbench(name: str, project: str) -> dict[str, Any] | None:

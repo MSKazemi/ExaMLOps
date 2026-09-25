@@ -83,6 +83,10 @@ def repair_object(obj: Any, schema: dict[str, Any]) -> Any:
     """Best-effort repair toward the schema: coerce scalar types, drop unknown props (R2)."""
     stype = schema.get("type")
     if stype == "object" and isinstance(obj, dict):
+        if "properties" not in schema:
+            # A free-form object (``{"type": "object"}``, e.g. tool-call arguments) declares no
+            # properties to keep, so "drop unknown" would empty it: there is nothing to repair.
+            return obj
         props = schema.get("properties", {})
         repaired = {k: repair_object(v, props[k]) for k, v in obj.items() if k in props}
         # Fill required-but-missing with a typed zero value so validation can pass.
@@ -90,6 +94,8 @@ def repair_object(obj: Any, schema: dict[str, Any]) -> Any:
             if req not in repaired:
                 repaired[req] = _zero_value(props.get(req, {}))
         return repaired
+    if stype == "array" and isinstance(obj, list) and isinstance(schema.get("items"), dict):
+        return [repair_object(v, schema["items"]) for v in obj]
     if stype == "integer":
         try:
             return int(obj)
@@ -271,7 +277,7 @@ def reasoning_budget_mode() -> str:
 @dataclass(frozen=True)
 class ResolvedBudget:
     max_thinking_tokens: int
-    source: str  # request | key | project | model | default
+    source: str  # request | key | project | model | route | default
 
 
 def resolve_reasoning_budget(
@@ -285,7 +291,8 @@ def resolve_reasoning_budget(
     """The applicable budget for one request, or ``None`` when nothing constrains it.
 
     Candidates: the caller's own ``requested`` cap, a cap on the virtual key, on its project, on
-    the model, and the ``EXAMLOPS_REASONING_BUDGET_DEFAULT`` floor. **The tightest wins** - a
+    the model, the route default in ``structured.yaml`` (clause 3), and the
+    ``EXAMLOPS_REASONING_BUDGET_DEFAULT`` floor. **The tightest wins** - a
     narrower scope can tighten a broader one but never loosen it, so a per-key exception cannot
     quietly lift a model-wide limit. A store that cannot be read is skipped, not fatal: the
     request is served and the unenforced budget is the visible cost of an unreadable store.
@@ -299,6 +306,15 @@ def resolve_reasoning_budget(
         for row in store.applicable(tenant, key_hash=key_hash, project=project, model=model):
             candidates.append(ResolvedBudget(int(row["max_thinking_tokens"]), row["scope"]))
     except Exception:  # noqa: BLE001
+        pass
+    # ADR 0035 clause 3: a per-route default from ``structured.yaml`` is one more candidate.
+    try:
+        from examlops.structured.policy import route_defaults
+
+        route_cap = route_defaults(model).reasoning_budget
+        if route_cap is not None:
+            candidates.append(ResolvedBudget(route_cap, "route"))
+    except Exception:  # noqa: BLE001 - same rule as an unreadable store: skipped, not fatal
         pass
     default = os.getenv("EXAMLOPS_REASONING_BUDGET_DEFAULT", "").strip()
     if default.isdigit():

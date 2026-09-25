@@ -37,6 +37,7 @@ __all__ = [
     "set_compliance_system",
     "set_fairness_config",
     "slo_sli_ratio",
+    "slo_sample_totals",
     "store_policy_bundle",
     "upsert_slo_spec",
 ]
@@ -432,6 +433,24 @@ def slo_sli_ratio(
                      WHERE model=? AND tenant=? AND name=?{clause}
                      ORDER BY id DESC LIMIT ?)""",
             params,
+        ).fetchone()
+    return float(row["good"]), float(row["total"])
+
+
+def slo_sample_totals(model: str, name: str, *, tenant: str = "default") -> tuple[float, float]:
+    """All-time ``(good, total)`` over every recorded sample of one SLO.
+
+    The monotonic sums behind the ``examlops_slo_good_total`` / ``examlops_slo_events_total``
+    counters. A burn rate is a rate over a *short* window, which PromQL can only take from a
+    counter (``increase``); the ``examlops_slo_sli`` gauge is the ratio over the SLO's whole
+    window and cannot answer "how fast is the budget burning over the last 5 minutes".
+    """
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT COALESCE(SUM(good),0) AS good, COALESCE(SUM(total),0) AS total
+               FROM slo_samples WHERE model=? AND tenant=? AND name=?""",
+            (model, tenant, name),
         ).fetchone()
     return float(row["good"]), float(row["total"])
 

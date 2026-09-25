@@ -25,6 +25,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from examlops.hpc_placement import ResourceAsk
+
 from .ir import STEP_KINDS, IRError, build_ir, new_node
 
 __all__ = [
@@ -51,16 +53,10 @@ class Ref:
     type: str
 
 
-@dataclass(frozen=True)
-class Resources:
-    """A scheduler-neutral resource ask (mirrors ``hpc_placement.ResourceAsk``)."""
-
-    gpus: int = 0
-    cpus: int = 0
-    nodes: int = 1
-
-    def as_dict(self) -> dict[str, int]:
-        return {"gpus": self.gpus, "cpus": self.cpus, "nodes": self.nodes}
+#: A step's scheduler-neutral resource ask. It *is* ``hpc_placement.ResourceAsk`` — the class the
+#: ``--cluster auto`` placement scores — not a mirror of it, so the two cannot drift (ADR 0080
+#: decision 1: "resource asks (``ResourceAsk``, reused from placement)").
+Resources = ResourceAsk
 
 
 @dataclass

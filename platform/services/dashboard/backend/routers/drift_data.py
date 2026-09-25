@@ -205,6 +205,43 @@ async def drift_events(
     return out
 
 
+@router.get("/perf-estimates")
+async def drift_perf_estimates(
+    _=Depends(_viewer),
+    model: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+) -> list[dict]:
+    """Label-free performance estimates next to the realized score (ADR 0022 decision 2).
+
+    The rows ``exa drift estimate`` / ``exa drift run-advanced`` store in ``perf_estimates``,
+    newest first. ``gap`` is ``estimated - realized`` when both exist (``None`` otherwise — an
+    unmeasured realized score is not a zero), so a panel can show where the estimate ran ahead of
+    the labels.
+    """
+    clauses, params = [], []
+    if model:
+        clauses.append("model=?")
+        params.append(model)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with readable("the performance-estimate log"):
+        conn = connect(_db_path())
+        try:
+            rows = conn.execute(
+                "SELECT id, ts, model, metric, estimated, realized, baseline, method "
+                f"FROM perf_estimates {where} ORDER BY ts DESC, id DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        est, real = d.get("estimated"), d.get("realized")
+        d["gap"] = (est - real) if (est is not None and real is not None) else None
+        out.append(d)
+    return out
+
+
 @router.get("/auto-retrain")
 async def drift_auto_retrain(_=Depends(_viewer)) -> list[dict]:
     """Auto-retrain configuration for all models."""

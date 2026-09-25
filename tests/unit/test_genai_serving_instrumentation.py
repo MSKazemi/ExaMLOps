@@ -355,5 +355,11 @@ def test_the_gateway_engine_edge_is_instrumented_end_to_end(spans):
 
     router = gw.build_engine_router("my-llm", engines.EngineConfig(engine="echo"))
     gw.GatewayClient(router).chat("my-llm", [{"role": "user", "content": "hi there"}])
-    names = [s.attributes["gen_ai.operation.name"] for s in spans.get_finished_spans()]
+    # The gateway's guardrail check now has a GUARDRAIL span too (ADR 0021), which deliberately
+    # carries no gen_ai.operation.name — the GenAI registry defines no guardrail operation.
+    names = [
+        s.attributes["gen_ai.operation.name"]
+        for s in spans.get_finished_spans()
+        if "gen_ai.operation.name" in s.attributes
+    ]
     assert "model" in names  # the engine span, which did not exist before

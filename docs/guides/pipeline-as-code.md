@@ -27,7 +27,9 @@ A complete twin of the reference `jpcp.yaml` is `examples/pipeline-as-code/jpcp_
   sections (`serving`, `prefect`, `inference`, `project`, `enabled`, `dataplane_bus_uuid`, `engine`,
   `fairness`, `autoscale`), carried through unchanged.
 * `resources=Resources(gpus=..., cpus=..., nodes=...)` on `train`, and `cluster="name|auto"` on the
-  pipeline, are run-time placement asks (reusing `--cluster` / `--gpus`).
+  pipeline, are the placement ask. `Resources` *is* `examlops.hpc_placement.ResourceAsk` — the
+  class `--cluster auto` placement scores — not a copy of it. Both lower into the YAML's
+  `placement:` section (below) and default `--cluster` / `--gpus` at run time.
 * Dataset order is the order you pass them to `train`; it is the run order and is part of the hash.
 
 ## Compile, explain, run
@@ -35,13 +37,18 @@ A complete twin of the reference `jpcp.yaml` is `examples/pipeline-as-code/jpcp_
 ```bash
 exa pipeline compile flows/jpcp.py --out jpcp.ir.json          # print / write the IR + hash
 exa pipeline compile flows/jpcp.py --out jpcp.ir.json --yaml jpcp.yaml   # also lower to YAML
+exa pipeline compile flows/jpcp.py -o jpcp.yaml                # the registry YAML *as* the IR
 exa pipeline explain jpcp.ir.json                              # read-only topological plan
+exa pipeline explain usecases/reference/models/jpcp.yaml       # a registry YAML is an IR too
+exa pipeline show JPCP                                         # a pack model's IR, by name
+exa pipeline show JPCP --ir                                    # ... as the JSON graph + hash
 exa pipeline run --ir jpcp.ir.json --dummy                     # train through the real generator
+exa pipeline run --ir jpcp.yaml --dummy                        # same, from the YAML form
 exa pipeline decompile models/jpcp.yaml --out flows/jpcp.py    # the reverse: YAML -> DSL source
 ```
 
-`compile` exits 1 on a validation error, on an unlowerable pipeline when `--yaml` is given, or when
-policy denies it. `--out` and `--yaml` write files; the IR is deterministic, so the same pipeline
+`compile` exits 1 on a validation error, on an unlowerable pipeline when a YAML is to be written
+(`--yaml`, or an `--out` ending in `.yaml`/`.yml`), or when policy denies it. `--out` and `--yaml` write files; the IR is deterministic, so the same pipeline
 always produces the same `content_hash`, and editing the JSON afterwards is caught on load.
 
 ## Adopt an existing YAML: `exa pipeline decompile`
@@ -69,6 +76,46 @@ common one — quote it). A file that silently dropped a section would be worse 
 
 ## The IR
 
+**The per-model registry YAML is the IR** (ADR 0080 decision 2): it is what is reviewed, committed
+and run. Every IR surface accepts it — `explain FILE.yaml`, `run --ir FILE.yaml`, `show NAME`
+reads it from the pack, and `compile -o FILE.yaml` writes it. The JSON graph below is the same
+pipeline in a form that also keeps step ids, typed ports and a content hash; a YAML is turned into
+it by the decompiler's two gates (every key placed, and the graph lowers back to the identical
+mapping), so a command given either form behaves identically. Files over 4 MiB are refused before
+parsing.
+
+### The `placement:` section
+
+```yaml
+placement:
+  cluster: auto   # an ACTIVE cluster name, or 'auto' (placement picks, ADR 0077)
+  gpus: 2         # the train step's ask — hpc_placement.ResourceAsk
+  cpus: 8
+  nodes: 1
+```
+
+Every key is optional; the section is what the train step's `resources=` and the pipeline's
+`cluster=` lower to, so nothing about a training pipeline is dropped by lowering any more (only
+`resources=` on a non-train step, which the flow never schedules as its own job, is reported as
+not carried). It is validated fail-closed: an unknown key, a bool/negative/non-integer count,
+`nodes: 0`, an empty cluster name or an absurd count (above 65 536 GPUs) is an error. An empty
+`placement: {}` is refused by `decompile` (it would not round-trip).
+
+`exa pipeline run --model NAME` uses a pack model's `placement.cluster` (and `gpus`) as the
+default for `--cluster`/`--gpus`, the same way `run --ir` uses the IR's target. The whole ask —
+`gpus`, `cpus` and `nodes` — is what `--cluster auto` placement scores, not only the GPU count;
+an explicit `--gpus` replaces just the GPU count, and `--hardware-profile` replaces the whole ask.
+An explicit `--cluster` always wins, a model with no section behaves exactly as before, and an
+invalid section — or a model YAML that does not parse — stops the run with exit 1 rather than
+being ignored.
+
+The same ask is also what a Slurm/Flux job *requests*: `gpus` → the scheduler's GPU count,
+`cpus` → `cpus_per_task`, `nodes` → `nodes`, so a job placed for its GPUs is submitted asking for
+them. Explicit `EXAMLOPS_HPC_GPUS`/`_CPUS`/`_NODES` (or the `EXAMLOPS_SLURM_*` fallbacks) still
+win over the section; an invalid section fails the submission instead of being dropped.
+
+### The JSON graph
+
 `schema_version: 1`, `kind: training`, `name`, `nodes` (id, kind, params, typed `inputs`/`outputs`,
 `resources`), `edges` (`from`/`output` to `to`/`input`), `registry` (the YAML sections above) and
 `target`. Step kinds: `dataset`, `train`, `evaluate`, `promote` (lower today) and `hpo`,
@@ -89,11 +136,17 @@ metrics and registration (opt-in: `EXAMLOPS_LIVE_PIPELINE_EQUIV=1 pytest -m live
 tests/integration/test_pipeline_dsl_run_equivalence.py`, about 40 s).
 
 Refused rather than skipped: an unlowerable step kind, a dataset the train step does not consume,
-a second train step, a missing evaluate step, an evaluate split other than `validation`. `run --ir`
-supports the inline (mock) scheduler only, because a Slurm/Flux node re-loads models from the pack
-and would not know an IR-only model; for real HPC, lower with `--yaml` into the pack's `models/`
-directory, review and commit it, then run it by name. The YAML has no field for `resources` or
-`target.cluster`; `compile --yaml` lists what it dropped, and `run --ir` uses them as placement hints.
+a second train step, a missing evaluate step, an evaluate split other than `validation`, and a
+train-step ask the `placement:` section cannot hold (e.g. `nodes=0`).
+
+**Slurm and Flux.** `run --ir` runs on every scheduler the platform supports, not only the inline
+mock one. A Slurm/Flux compute node re-loads models from the use-case pack and would not otherwise
+know an IR-only model, so the generator stages the lowered YAML into the job's working directory
+through the scheduler adapter's own transport (`executor.put` — a copy on a shared filesystem,
+SFTP over SSH) and the job runs `slurm_train_script.py --model-yaml <staged file>`, which registers
+it before resolving the model. The node refuses (exit 1) a staged file that is missing or that
+defines a different model than the job asked for. The `config_class` shim must still exist in the
+node's pack — the same requirement a YAML-authored model has. Models from the pack stage nothing.
 
 ## Trust: what is and is not sandboxed
 
@@ -125,8 +178,7 @@ policies:
 
 ## Not built yet
 
-Inference-pipeline authoring, remote-scheduler runs of IR-only models, `exa pipeline show --ir`
-(use `explain`), Prefect deployment from an IR, recording the IR hash on the MLflow run, and
+Inference-pipeline authoring, Prefect deployment from an IR, recording the IR hash on the MLflow run, and
 importing Snakemake/Nextflow. See ADR 0080 for the design intent.
 
 `hpo` and `custom_python` validate, compile and `explain`, and are **refused** at lowering and at

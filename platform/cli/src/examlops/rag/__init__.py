@@ -16,6 +16,7 @@ import hashlib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 _EMBED_DIM = 64
 # Minimal D8 seam — prompt-injection patterns in retrieved (untrusted) content.
@@ -38,6 +39,14 @@ class RagAnswer:
     retrieval_span_id: str | None = None
     guardrail_flagged: bool = False
     contexts: list[str] = field(default_factory=list)
+    #: B8 structured answer (``query(..., structured=True)``): the validated object plus the
+    #: citation-grounding verdict. ``None`` for a free-text answer. With a structured answer,
+    #: ``citations`` are the chunks the model validly cited (ADR 0035 clause 1/3), not every hit.
+    structured: dict[str, Any] | None = None
+    grounded: bool | None = None
+    #: Citations the model made that name no retrieved chunk — dropped, never returned. Kept as the
+    #: model sent them, for diagnosis.
+    dropped_citations: list[Any] = field(default_factory=list)
 
 
 # ── embedding + chunking (pure) ───────────────────────────────────────────────
@@ -55,16 +64,10 @@ def default_embed(text: str) -> list[float]:
 
 
 def chunk_text(text: str, size: int = 40, overlap: int = 10) -> list[str]:
-    """Split text into overlapping word-window chunks (R1)."""
-    words = text.split()
-    if not words:
-        return []
-    if len(words) <= size:
-        return [" ".join(words)]
-    step = max(1, size - overlap)
-    return [
-        " ".join(words[i : i + size]) for i in range(0, len(words), step) if words[i : i + size]
-    ]
+    """Split text into overlapping word-window chunks (R1) — the ``native`` framework chunker."""
+    from examlops.rag.frameworks import native_split
+
+    return native_split(text, size, overlap)
 
 
 # ── rerankers (pluggable, R2/GWT-3) ───────────────────────────────────────────
@@ -128,6 +131,14 @@ class RagPipeline:
     #: collection's stamp under *this* id, so a pipeline whose encoder differs from the one that
     #: built the knowledge base is refused instead of scoring vectors that mean nothing.
     encoder_id: str | None = None
+    #: Which framework chunks documents at ingest (ADR 0019 decision 1): ``native`` | ``llamaindex``
+    #: | ``auto``; ``None`` reads ``EXAMLOPS_RAG_FRAMEWORK`` (default ``native``). See
+    #: :mod:`examlops.rag.frameworks`.
+    framework: str | None = None
+    #: Per-pipeline D8 guardrail over retrieved content, ``text -> (flagged, neutralized)``. ``None``
+    #: uses the process-wide one from :func:`set_guardrail` (or the built-in injection filter). The
+    #: RAG service sets one per tenant so two tenants never share a guardrail's state or mode.
+    guardrail: Callable[[str], tuple[bool, str]] | None = None
 
     def __post_init__(self) -> None:
         if self.retrieval not in RETRIEVAL_MODES:
@@ -172,9 +183,11 @@ class RagPipeline:
         own ``encoder_id``.
         """
         from examlops.data import get_db, init_db
+        from examlops.rag.frameworks import get_chunker
         from examlops.vector_store import VecItem
 
         encoder = encoder or self.encoder_id or "token-hash"
+        chunker = get_chunker(self.framework)  # before any write: an unavailable one fails clean
 
         init_db()
         store = self._store()
@@ -190,7 +203,7 @@ class RagPipeline:
         for doc in docs:
             doc_id = doc["id"]
             for ci, chunk in enumerate(
-                chunk_text(doc["text"], self.chunk_size, self.chunk_overlap)
+                chunker.split(doc["text"], self.chunk_size, self.chunk_overlap)
             ):
                 items.append(
                     VecItem(
@@ -210,19 +223,30 @@ class RagPipeline:
                        chunk_count=excluded.chunk_count, updated_at=CURRENT_TIMESTAMP""",
                 (kb, tenant, source_revision, encoder, len(items)),
             )
+        from examlops.data.audit import audit_best_effort
+
+        audit_best_effort(
+            "exa-rag",
+            None,
+            "rag_ingest",
+            f"{tenant}/{kb}",
+            {
+                "docs": len(docs),
+                "chunks": len(items),
+                "framework": chunker.name,
+                "encoder": encoder,
+                "source_revision": source_revision,
+            },
+            tenant=tenant,
+        )
         return len(items)
 
-    def query(
-        self,
-        kb: str,
-        question: str,
-        *,
-        tenant: str = "default",
-        k: int = 5,
-        generate_fn: Callable[[str], str] | None = None,
-        prompt_label: str | None = None,
-    ) -> RagAnswer:
-        """embed→retrieve→rerank→assemble→generate, citing chunks (R2/R3/GWT-1)."""
+    def retrieve(self, kb: str, question: str, *, tenant: str = "default", k: int = 5) -> list[Any]:
+        """embed→retrieve→rerank, trimmed to ``k`` — the retrieval half of :meth:`query`.
+
+        Exposed on its own so retrieval quality can be evaluated (``exa rag eval``) without paying
+        for a generation per question.
+        """
         store = self._store()
         qv = self.embed_fn(question)
         # Ask under the encoder that produced *this query's* vector, so the store can compare it
@@ -250,20 +274,66 @@ class RagPipeline:
             hits = store.search(
                 kb, qv, max(k * 3, k), None, tenant, encoder_id=encoder_id
             )  # over-retrieve for rerank
-        hits = self.reranker(question, hits)[:k]  # rerank then trim (GWT-3)
+        return list(self.reranker(question, hits)[:k])  # rerank then trim (GWT-3)
+
+    def query(
+        self,
+        kb: str,
+        question: str,
+        *,
+        tenant: str = "default",
+        k: int = 5,
+        generate_fn: Callable[[str], str] | None = None,
+        prompt_label: str | None = None,
+        structured: bool = False,
+    ) -> RagAnswer:
+        """embed→retrieve→rerank→assemble→generate, citing chunks (R2/R3/GWT-1).
+
+        ``structured=True`` produces the answer through B8 structured output
+        (:mod:`examlops.rag.grounded`): a schema-valid object whose citations must name retrieved
+        chunks, with ``RagAnswer.grounded`` saying whether any valid citation survived.
+        """
+        hits = self.retrieve(kb, question, tenant=tenant, k=k)
 
         span_id = self._retriever_span(question, hits, tenant)
 
         # D8 guardrail over untrusted retrieved content (R7/GWT-6).
         flagged = False
         contexts: list[str] = []
+        guard = self.guardrail or _apply_guardrail
         for h in hits:
-            f, safe = _apply_guardrail(str(h.metadata.get("text", "")))
+            f, safe = guard(str(h.metadata.get("text", "")))
             flagged = flagged or f
             contexts.append(safe)
 
         prompt = self._assemble_prompt(question, contexts, prompt_label)
-        answer = (generate_fn or self._default_generate)(prompt)
+        gen = generate_fn or self._default_generate
+        if structured:
+            from examlops.rag.grounded import generate_grounded
+
+            ga = generate_grounded(
+                prompt,
+                len(contexts),
+                generate_fn=generate_fn or self._schema_generate,
+                model=f"rag:{kb}",
+                tenant=tenant,
+            )
+            return RagAnswer(
+                answer=ga.answer,
+                # Only the chunks the answer validly cites (ADR 0035): returning every retrieved
+                # hit would let an ungrounded answer carry citations it never made.
+                citations=[Citation(hits[i - 1].id, hits[i - 1].score) for i in ga.citations],
+                retrieval_span_id=span_id,
+                guardrail_flagged=flagged,
+                contexts=contexts,
+                structured={
+                    **ga.as_dict(),
+                    "cited_chunks": [hits[i - 1].id for i in ga.citations],
+                },
+                grounded=ga.grounded,
+                dropped_citations=list(ga.dropped_citations),
+            )
+        answer = gen(prompt)
         return RagAnswer(
             answer=answer,
             citations=[Citation(h.id, h.score) for h in hits],
@@ -287,14 +357,50 @@ class RagPipeline:
             f"Context:\n{ctx}\n\nQuestion: {question}\nAnswer:"
         )
 
+    def _schema_generate(self, prompt: str) -> Any:
+        """Default structured generator: constrained decoding at the gateway (ADR 0035).
+
+        Asks the gateway for the registered ``rag_answer`` schema and returns its parsed object;
+        :func:`examlops.rag.grounded.parse_json_answer` passes a dict through unchanged. A D5
+        refusal propagates; any other gateway failure degrades to the free-text default, whose
+        output B8 then repairs and the grounding check marks ungrounded — visible, never silent.
+        """
+        try:
+            from examlops.gateway import (
+                GatewayClient,
+                ReasoningPolicyDenied,
+                build_default_router,
+            )
+        except Exception:  # noqa: BLE001 - no gateway at all: the offline placeholder
+            return self._default_generate(prompt)
+        try:
+            comp = GatewayClient(build_default_router()).chat(
+                "default", [{"role": "user", "content": prompt}], response_schema="rag_answer"
+            )
+        except ReasoningPolicyDenied:
+            raise
+        except Exception:  # noqa: BLE001 - degrade, see docstring
+            return self._default_generate(prompt)
+        return comp.parsed if comp.parsed is not None else comp.text
+
     def _default_generate(self, prompt: str) -> str:
         try:
-            from examlops.gateway import GatewayClient, build_default_router
-
+            from examlops.gateway import (
+                GatewayClient,
+                ReasoningPolicyDenied,
+                build_default_router,
+            )
+        except Exception:  # noqa: BLE001 - no gateway at all: the offline placeholder below
+            return prompt.split("Answer:")[-1].strip() or "(no answer)"
+        try:
             comp = GatewayClient(build_default_router()).chat(
                 "default", [{"role": "user", "content": prompt}]
             )
             return comp.text
+        except ReasoningPolicyDenied:
+            # A D5 refusal (ADR 0035 clause 3) is a decision, not an outage: answering with the
+            # placeholder below would turn "policy said no" into a successful-looking empty answer.
+            raise
         except Exception:
             return prompt.split("Answer:")[-1].strip() or "(no answer)"
 
@@ -302,8 +408,14 @@ class RagPipeline:
         try:
             from examlops.telemetry import genai
 
-            with genai.genai_span("tool", system="rag", model="retriever", tenant=tenant) as span:
-                span.set_attribute("examlops.rag.query", question[:256])
+            # A RETRIEVER span (ADR 0021 decision 1): ``retrieval`` is the GenAI operation and
+            # OpenInference kind RETRIEVER, so Phoenix/Langfuse draw it as retrieval, not a tool.
+            with genai.genai_span(
+                "retrieval", system="rag", model="retriever", tenant=tenant
+            ) as span:
+                # The question is user content: it rides on the span only under the same gate
+                # and redactor as every other prompt (EXAMLOPS_GENAI_CAPTURE_CONTENT, D8).
+                genai.maybe_capture_content(span, prompt=question[:256])
                 span.set_attribute("examlops.rag.doc_ids", [h.id for h in hits])
                 span.set_attribute("examlops.rag.scores", [round(h.score, 4) for h in hits])
             return "recorded"

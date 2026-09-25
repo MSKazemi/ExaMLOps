@@ -210,6 +210,46 @@ tests:
               summary: "The control plane cannot evaluate prediction drift"
               description: "Drift evaluations keep failing, so no drift.status_changed or alert.drift event is sent. The control-plane log says why."
 
+  - name: a stale feature view alerts, a fresh one does not
+    interval: 15s
+    input_series:
+      - series: 'examlops_feature_view_stale{job="control_plane",view="job_features"}'
+        values: '1x200'
+      - series: 'examlops_feature_view_stale{job="control_plane",view="node_features"}'
+        values: '0x200'
+    alert_rule_test:
+      - eval_time: 20m         # stale, but not yet for the 30m `for:`
+        alertname: FeatureViewStale
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: FeatureViewStale
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane, view: job_features}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#featureviewstale"
+              summary: "Feature view job_features is stale"
+              description: "The online store for job_features is past its TTL or was never materialized. `exa feature status` shows its age and schedule; `exa feature materialize-due` runs what is due."
+
+  - name: repeated failed freshness reads alert, a quiet counter does not
+    interval: 1m
+    input_series:
+      - series: 'examlops_feature_freshness_read_errors_total{job="control_plane"}'
+        values: '0+1x40'
+      - series: 'examlops_feature_freshness_read_errors_total{job="control_plane_b"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 5m          # failing, but not yet for the 10m `for:`
+        alertname: FeatureFreshnessUnreadable
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: FeatureFreshnessUnreadable
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane, job: control_plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#featurefreshnessunreadable"
+              summary: "Control plane cannot read feature-view freshness during scrapes"
+              description: "The feature-view freshness gauges are stale or missing, so FeatureViewStale cannot be trusted. The control-plane log says why."
+
   - name: a single failed drift evaluation does not alert
     interval: 15s
     input_series:
@@ -218,6 +258,32 @@ tests:
     alert_rule_test:
       - eval_time: 20m
         alertname: DriftEvaluationFailing
+        exp_alerts: []
+
+  # ── Scheduled audit maintenance (ADR 0028) ───────────────────────────────────────────────────
+  - name: audit maintenance that keeps failing alerts, one failed step does not
+    interval: 1m
+    input_series:
+      - series: 'examlops_audit_maintenance_errors_total{job="control_plane"}'
+        values: '0x60 1x60 2x120'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: AuditMaintenanceFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, service: control-plane}
+            exp_annotations:
+              runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#auditmaintenancefailing"
+              summary: "Scheduled audit-trail maintenance keeps failing"
+              description: "Audit checkpoints are not being signed, anchored off-platform or transparency-logged on schedule. `exa audit maintenance-runs` shows which step fails and why."
+
+  - name: a single failed audit maintenance step does not alert
+    interval: 1m
+    input_series:
+      - series: 'examlops_audit_maintenance_errors_total{job="control_plane"}'
+        values: '0x60 1x200'
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: AuditMaintenanceFailing
         exp_alerts: []
 
   # ── The gateway stops using a model server that fails its health check ──────────────────────

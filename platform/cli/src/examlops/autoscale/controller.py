@@ -16,19 +16,24 @@ smallest controller that closes that loop, built on the house pattern of ``exa a
 
 What is built and what is not (be exact):
 
-* Signals: ``rps`` and ``p95`` come from Prometheus (``examlops_predict_requests_total``,
-  ``examlops_predict_latency_seconds`` — the series Ray Serve already exports). ``queue_depth`` and
-  ``gpu_util`` have **no per-model source anywhere in the platform**, so a policy that targets them
-  holds with ``signal absent``.
+* Signals (:mod:`examlops.autoscale.queries`): ``rps``, ``p95`` and ``queue_depth`` (mean requests
+  in flight, by Little's law over ``examlops_predict_latency_seconds_sum``) come from Prometheus —
+  the series the model server already exports. ``gpu_util`` has a source only when the site sets
+  ``EXAMLOPS_AUTOSCALE_GPU_UTIL_QUERY`` (its GPU exporter's labels are site knowledge); without it
+  a policy that targets it holds with ``signal absent``.
 * Policies: a model's DB override (``exa serve autoscale set``) else the ``autoscale:`` block of its
   model YAML (:mod:`examlops.autoscale.policy_yaml`).
 * Appliers: :class:`DesiredStateApplier` (``desired``) records the decided count as desired
   replicas — intent for an external owner of replicas, not a change to a running replica.
   :class:`RecordApplier` records the executed change (scale event + audit) and touches no
   serving substrate — the actuator is then a human or an external system (a KEDA/Knative generator).
+  :class:`~examlops.autoscale.k8s.KubernetesApplier` (``k8s``) patches the predictor Deployment's
+  ``scale`` subresource and refuses when an HPA/KEDA object already owns it.
   :class:`RayServeApplier` is **not built**: Ray Serve here is one deployment hosting every model,
   scaled through ``RAY_AUTOSCALE_MAX_REPLICAS`` / ``autoscaling_config`` at deploy time, and no
   admin route changes a single model's replica count. It refuses honestly rather than pretending.
+* GPU-aware (clause 4, E3): with ``EXAMLOPS_AUTOSCALE_GPU_CAPACITY`` set, a scale-up is refused when
+  the fleet's committed GPUs (Σ replicas × ``gpu_fraction``) would exceed it.
 """
 
 from __future__ import annotations
@@ -58,6 +63,7 @@ DEFAULT_LEASE_TTL_S = 120
 DEFAULT_INTERVAL_S = 30
 _MODEL_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 SIGNAL_NAMES = ("rps", "p95", "queue_depth", "gpu_util")
+_GPU_EPS = 1e-9
 
 
 def is_enabled() -> bool:
@@ -80,6 +86,48 @@ def lease_ttl_s() -> int:
 
 def interval_s() -> int:
     return _env_int("EXAMLOPS_AUTOSCALE_INTERVAL", DEFAULT_INTERVAL_S)
+
+
+def gpu_capacity() -> float | None:
+    """Total GPUs the autoscaler may commit across models (E3 fractions count), or None = unbounded.
+
+    A value that is set but unparsable or not positive is **0** — fail closed: a typo must not
+    silently lift the ceiling.
+    """
+    raw = os.getenv("EXAMLOPS_AUTOSCALE_GPU_CAPACITY", "").strip()
+    if not raw:
+        return None
+    try:
+        val = float(raw)
+    except ValueError:
+        return 0.0
+    return val if val > 0 and math.isfinite(val) else 0.0
+
+
+def committed_gpus(
+    applier: ScaleApplier, configs: list[dict[str, Any]], *, skip: str | None = None
+) -> float | None:
+    """Σ replicas × gpu_fraction over every policy, or None when no capacity is configured.
+
+    A model whose replicas are unknown counts at its ``max_replicas`` — the conservative
+    reading: capacity that cannot be accounted for is treated as taken. ``skip`` leaves one model
+    out (the activator's model, whose replicas are the measured zero it is about to change).
+    Shared by the controller and the cold-start activator so both enforce one ceiling.
+    """
+    if gpu_capacity() is None:
+        return None
+    total = 0.0
+    for cfg in configs:
+        model = str(cfg["model"])
+        if skip is not None and model == skip:
+            continue
+        try:
+            cur = applier.current_replicas(model)
+        except Exception:  # noqa: BLE001 - unknown, counted conservatively
+            cur = None
+        n = int(cfg.get("max_replicas") or 0) if cur is None else cur
+        total += n * float(cfg.get("gpu_fraction") or 1.0)
+    return total
 
 
 # ── signals ──────────────────────────────────────────────────────────────────
@@ -146,18 +194,27 @@ class PrometheusSignals:
         return None if math.isnan(value) or math.isinf(value) else value
 
     def read(self, model: str, policy: AutoscalePolicy) -> Signals:
+        from examlops.autoscale.queries import QueryTemplateError, query_for, selector
+
         if not _MODEL_RE.match(model):
             return Signals()  # cannot be safely put in a PromQL matcher → everything absent
-        sel = f'model_name=~"(?i)^{re.escape(model)}$"'
-        reqs = f"examlops_predict_requests_total{{{sel}}}"
+        values: dict[str, float | None] = {}
+        for metric in SIGNAL_NAMES:
+            try:
+                expr = query_for(metric, model)
+            except QueryTemplateError as exc:
+                # A broken operator template is a misconfigured source, not a measured value.
+                raise SignalSourceDown(str(exc)) from exc
+            # A metric with no source is absent (None) and is never queried.
+            values[metric] = self._query(expr) if expr is not None else None
         sig = Signals(
-            rps=self._query(f"sum(rate({reqs}[1m]))"),
-            p95=self._query(
-                "histogram_quantile(0.95, sum by (le) "
-                f"(rate(examlops_predict_latency_seconds_bucket{{{sel}}}[5m])))"
-            ),
+            rps=values["rps"],
+            p95=values["p95"],
+            queue_depth=values["queue_depth"],
+            gpu_util=values["gpu_util"],
         )
         if policy.scale_to_zero_after_s > 0:
+            reqs = f"examlops_predict_requests_total{{{selector(model)}}}"
             inc = self._query(f"sum(increase({reqs}[{int(policy.scale_to_zero_after_s)}s]))")
             # No series is "no data", not "no traffic": only a measured zero proves idleness.
             sig.idle_confirmed = None if inc is None else inc == 0
@@ -258,10 +315,16 @@ class RayServeApplier(RecordApplier):
 
 
 def make_applier(name: str) -> ScaleApplier:
+    def _k8s() -> ScaleApplier:
+        from examlops.autoscale.k8s import KubernetesApplier
+
+        return KubernetesApplier()
+
     appliers: dict[str, Callable[[], ScaleApplier]] = {
         "record": RecordApplier,
         "desired": DesiredStateApplier,
         "ray": RayServeApplier,
+        "k8s": _k8s,
     }
     if name not in appliers:
         raise ValueError(f"unknown applier {name!r} (choose: {', '.join(sorted(appliers))})")
@@ -341,6 +404,7 @@ class AutoscaleController:
         self.holder = f"{socket.gethostname()}:{os.getpid()}"
         self.consecutive_failures: dict[str, int] = {}
         self._last_audited: dict[str, str] = {}
+        self._gpu_committed: float | None = None
 
     # -- audit ---------------------------------------------------------------
     def _audit(self, action: str, model: str, details: dict[str, Any], tenant: str) -> None:
@@ -355,6 +419,10 @@ class AutoscaleController:
             return
         self._last_audited[model] = key
         self._audit(action, model, {"reason": reason}, tenant)
+
+    # -- GPU packing (clause 4) -----------------------------------------------
+    def _committed_gpus(self, configs: list[dict[str, Any]]) -> float | None:
+        return committed_gpus(self.applier, configs)
 
     # -- one cycle -----------------------------------------------------------
     def run_cycle(self) -> CycleReport:
@@ -382,7 +450,9 @@ class AutoscaleController:
 
             budget = self.cap if self.cap is not None else max_changes()
             attempted = 0
-            for cfg in effective_configs():
+            configs = effective_configs()
+            self._gpu_committed = self._committed_gpus(configs)
+            for cfg in configs:
                 try:
                     res, used = self._one(cfg, budget - attempted)
                 except Exception as exc:  # noqa: BLE001 - one model never stops the cycle
@@ -453,12 +523,28 @@ class AutoscaleController:
             "observed": observed,
             "applier": self.applier.name,
         }
+        capacity = gpu_capacity()
+        extra_gpus = (target - current) * float(policy.gpu_fraction)
+        if (
+            capacity is not None
+            and self._gpu_committed is not None
+            and extra_gpus > 0
+            and self._gpu_committed + extra_gpus > capacity + _GPU_EPS
+        ):
+            reason = (
+                f"GPU capacity: +{extra_gpus:g} GPU on {self._gpu_committed:g} committed exceeds "
+                f"EXAMLOPS_AUTOSCALE_GPU_CAPACITY={capacity:g}"
+            )
+            self._audit("autoscale_refused", model, {**detail, "reason": reason}, tenant)
+            return ModelResult(model, REFUSED, reason, current, target), 0
         if budget <= 0:
             reason = "storm cap reached this cycle"
             self._audit("autoscale_refused", model, {**detail, "reason": reason}, tenant)
             return ModelResult(model, REFUSED, reason, current, target), 0
 
         if self.dry_run:
+            if self._gpu_committed is not None:  # the preview packs as the real cycle would
+                self._gpu_committed += extra_gpus
             self._audit("autoscale_dry_run", model, {**detail, "dry_run": True}, tenant)
             return ModelResult(model, DRY_RUN, decision.reason, current, target), 1
 
@@ -476,6 +562,8 @@ class AutoscaleController:
             return ModelResult(model, FAILED, str(exc), current, target), 1
         self.consecutive_failures.pop(model, None)
         self._last_audited.pop(model, None)
+        if self._gpu_committed is not None:
+            self._gpu_committed += extra_gpus
         applied = ScaleDecision(target, current, decision.reason, True)
         apply_scale(
             model,
@@ -526,6 +614,8 @@ __all__ = [
     "SignalSource",
     "SignalSourceDown",
     "Signals",
+    "committed_gpus",
+    "gpu_capacity",
     "is_enabled",
     "make_applier",
 ]

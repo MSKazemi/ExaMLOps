@@ -233,6 +233,25 @@ async def test_promotion_gate_outcome_blocks_when_gate_cannot_run(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_promotion_gate_outcome_blocks_a_failing_quantization(monkeypatch):
+    """ADR 0016 d3: a quantized version is held to the quality-retention gate here too."""
+    import sys
+
+    import routers.models as m
+
+    passing = type("G", (), {"run_eval_gate": staticmethod(lambda *a, **k: None)})
+    refused = type("R", (), {"passed": False, "reason": "no C3 eval gate is configured for jpcp"})()
+    quality = type("Q", (), {"quantization_quality_gate": staticmethod(lambda *a, **k: refused)})
+    monkeypatch.setitem(sys.modules, "examlops.evaluation.gate", passing)
+    monkeypatch.setitem(sys.modules, "examlops.engines.quality", quality)
+    verdict = m._promotion_gate_outcome("jpcp", "3-awq")
+    assert verdict == (
+        403,
+        "promotion blocked by quantization quality gate: no C3 eval gate is configured for jpcp",
+    )
+
+
+@pytest.mark.asyncio
 async def test_successful_alias_set_is_audited(client, fake_deps, monkeypatch):
     import routers.models as m
 

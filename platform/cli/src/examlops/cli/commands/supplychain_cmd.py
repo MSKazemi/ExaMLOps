@@ -164,3 +164,175 @@ def bom(
     if _output.json_mode:
         _output.print_json(doc)
     _output.ok(f"AI-BOM generated for {model}@{version}")
+
+
+_EVIDENCE_EXAMPLES = (
+    "Examples:\n\n"
+    "  exa models attest JPCP 17 --dataset FData --dataset-revision abc123\n\n"
+    "  exa models attest JPCP 17 --path ./artifacts/jpcp --sign\n\n"
+    "  exa models provenance JPCP 17\n\n"
+    "  exa models provenance JPCP 17 --output ./evidence/jpcp-17.intoto.json\n\n"
+    "  exa models release-check JPCP 17\n\n"
+    "  exa models release-check JPCP 17 --require signature,provenance"
+)
+
+
+@app.command("attest", epilog=_EVIDENCE_EXAMPLES)
+def attest(
+    model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
+    version: str = typer.Argument(..., help="Model version"),
+    path: str | None = typer.Option(None, "--path", help=_PATH_HELP),
+    dataset: str | None = typer.Option(None, "--dataset", help="Training dataset name"),
+    dataset_revision: str | None = typer.Option(
+        None, "--dataset-revision", help="Pinned dataset revision (A1)"
+    ),
+    framework: str | None = typer.Option(None, "--framework", help="ML framework"),
+    run_id: str | None = typer.Option(None, "--run-id", help="MLflow run id of the training run"),
+    sign: bool = typer.Option(False, "--sign", help="Also (re-)sign the version's artifacts"),
+    replace: bool = typer.Option(
+        False, "--replace", help="Overwrite provenance already recorded for this version"
+    ),
+) -> None:
+    """Record SLSA v1 provenance + a digest-bound AI-BOM for a version (ADR 0013)."""
+    from examlops.cli._policy_gate import enforce_and_confirm
+    from examlops.supplychain import SigningKeyMissing
+    from examlops.supplychain.provenance import BuildContext, ProvenanceExists
+    from examlops.supplychain.release import attest_registered_version, attest_version
+
+    if not enforce_and_confirm(
+        "model_attest",
+        {"model": model, "version": version, "path": path, "actor": _actor()},
+        what=f"attesting {model}@{version}",
+        prompt=f"Record provenance for {model}@{version}?",
+    ):
+        return
+    ctx = BuildContext.from_env(
+        run_id=run_id, dataset=dataset, dataset_revision=dataset_revision, framework=framework
+    )
+    try:
+        if path is None:
+            result = attest_registered_version(
+                model, version, ctx=ctx, sign=sign, actor=_actor(), replace=replace
+            )
+        else:
+            paths = _artifact_paths(path)
+            if not paths:
+                _output.error(f"No artifact files found under {path}")
+            result = attest_version(
+                model,
+                version,
+                paths,
+                root=_root(path),
+                ctx=ctx,
+                sign=sign,
+                actor=_actor(),
+                replace=replace,
+            )
+    except ProvenanceExists as exc:
+        _output.error(str(exc), hint="Re-run with --replace to overwrite it deliberately")
+    except SigningKeyMissing as exc:
+        _output.error(str(exc), hint=_KEY_HINT)
+    except ValueError as exc:
+        _output.error(str(exc))
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "model": result.model,
+                "version": result.version,
+                "subject_digest": result.subject_digest,
+                "signature_algo": result.signature_algo,
+                "provenance_algo": result.provenance_algo,
+                "bom_recorded": result.bom_recorded,
+            }
+        )
+    _output.ok(
+        f"Attested {model}@{version}: provenance {result.provenance_algo}, AI-BOM bound to "
+        f"{result.subject_digest[:23]}…"
+    )
+    if result.provenance_algo == "none":
+        _output.warning(
+            "provenance is UNSIGNED (no signing key): recorded, but the release gate refuses it"
+        )
+
+
+@app.command("provenance", epilog=_EVIDENCE_EXAMPLES)
+def provenance(
+    model: str = typer.Argument(..., help="Model name"),
+    version: str = typer.Argument(..., help="Model version"),
+    output: str | None = typer.Option(
+        None, "--output", help="Write the signed envelope (DSSE / Sigstore bundle) to this file"
+    ),
+) -> None:
+    """Show and verify a version's SLSA v1 provenance; exit 1 when it does not verify."""
+    import json
+
+    from examlops.supplychain.provenance import get_provenance, verify_provenance
+
+    row = get_provenance(model, version)
+    if row is None:
+        _output.error(
+            f"No provenance recorded for {model}@{version}",
+            hint=f"exa models attest {model} {version}",
+        )
+    verdict = verify_provenance(model, version)
+    if output:
+        out = Path(output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(row["envelope"], indent=2))
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "model": model,
+                "version": version,
+                "verified": verdict.ok,
+                "reason": verdict.reason,
+                "algo": row["algo"],
+                "key_id": row["key_id"],
+                "subject_digest": row["subject_digest"],
+                "builder_id": row["builder_id"],
+                "recorded_at": row["recorded_at"],
+                "statement": row["statement"],
+            }
+        )
+    else:
+        _output.info(
+            f"{model}@{version} · {row['algo']} · builder {row['builder_id']} · "
+            f"subject {row['subject_digest'][:23]}…"
+        )
+    if output:
+        _output.ok(f"Envelope written to {output}")
+    if verdict.ok:
+        _output.ok(f"{model}@{version} provenance verified")
+        return
+    _output.error(f"{model}@{version} provenance FAILED verification: {verdict.reason}")
+
+
+@app.command("release-check", epilog=_EVIDENCE_EXAMPLES)
+def release_check(
+    model: str = typer.Argument(..., help="Model name"),
+    version: str = typer.Argument(..., help="Model version"),
+    require: str = typer.Option(
+        "signature,bom,provenance",
+        "--require",
+        help="Comma-separated evidence to require: signature, bom, provenance",
+    ),
+) -> None:
+    """CI gate: exit 1 unless the version is signed, has a bound AI-BOM and verified provenance."""
+    from examlops.supplychain.release import check_release
+
+    try:
+        result = check_release(model, version, require=require)
+    except ValueError as exc:
+        _output.error(str(exc))
+    if _output.json_mode:
+        _output.print_json(result.to_dict())
+    else:
+        for f in result.findings:
+            _output.info(f"{'ok  ' if f.ok else 'FAIL'} {f.check:<11} {f.reason}")
+    if result.ok:
+        _output.ok(f"{model}@{version} carries the required supply-chain evidence")
+        return
+    _output.error(
+        f"{model}@{version} is not releasable: " + "; ".join(result.failures()),
+        hint=f"exa models attest {model} {version}",
+    )

@@ -66,8 +66,13 @@ can deny it or require approval) and is audited (`tool_grant_set`, `tool_grant_r
 Every decision writes one audit row, `tool_broker:allow|deny|require_approval`, with the agent, the
 agent version, `on_behalf_of`, session, correlation id, tool, tier, reason code and the **redacted**
 arguments (secret-named keys masked, credential-shaped text masked with the dataplane redactor).
-Audit is best-effort by design (`audit_best_effort`): a lost row is counted in
-`audit_events_dropped`, never silently.
+For a **read**, audit is best-effort (`audit_best_effort`): a lost row is counted in
+`audit_events_dropped`, never silently. A **write** (tier A/B/C) in `enforce` mode is a synchronous
+evidence-chain action (ADR 0145 d3): if its record cannot be written, the write is **not
+performed** and the call answers `evidence_unavailable`. A denial stays denied either way.
+
+The agent runtime ([Agent runtime](agent-runtime.md)) calls the broker with the caller's grant set
+taken from its agent snapshot (`BrokerContext.grant_resolver`), not from a live `tool_grants` read.
 
 The tool itself is untouched: it keeps its own `plan_required` gate for an agent principal
 (`EXAMLOPS_PRINCIPAL_KIND=agent`) and its own `agent_write` policy gate. The broker calls the tool
@@ -115,9 +120,15 @@ Skipper is not routed through the broker (its code was out of scope for this cha
   the last as a follow-up).
 - **Blast-radius contracts and autonomy levels** (ADR 0113) as a per-call input; only the write tier
   ceiling is enforced.
-- **Synchronous evidence-chain writes** for tool writes and denials: decisions use best-effort audit.
-- **Serving-snapshot delivery** of grants (ADR 0127): grants are read live from `platform.db`.
-- **The sandbox seam** (`SandboxProvider`) and per-agent-version network egress for the sandbox.
+- **Denials are not refused on audit loss** (they already change nothing); only writes fail closed.
+  The audit row is the platform hash chain, written by the broker process, not a separate
+  evidence service.
+- **The MCP server** (`exa mcp serve`) still resolves grants live from `platform.db`; only the
+  agent runtime reads them from its snapshot. The broker's rate-limit counters and the operator
+  `tool_call` policy still live in `platform.db`, so the broker itself is not statically stable.
+- **Sandbox egress attempts are blocked but not recorded**: the sandbox seam
+  ([Agent runtime](agent-runtime.md#sandboxes)) starts every sandbox with no network; recording
+  each attempt needs the egress proxy, which is operator-provided.
 - **The whole model half** of ADR 0145 (the inference gateway path, Skipper's migration onto it) - a
   separate work stream.
 - Tenant scoping of grants: `tool_grants` has no tenant column (listed as a known gap in the scope

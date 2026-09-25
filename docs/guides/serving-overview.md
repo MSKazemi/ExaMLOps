@@ -129,9 +129,10 @@ These are the parts that exist as code but do not yet do what their names sugges
   other clients at.
 - **Skipper does not call models through the gateway.** It builds its model client from its own
   configuration, so gateway keys, budgets, guardrails and per-call cost do not apply to its calls.
-- **SGLang is a stub.** Only the vLLM engines and the `echo` development engine serve requests.
+- **SGLang is served, not embedded.** `engine: sglang` is a client of a running `sglang.launch_server` (`engine.base_url` / `EXAMLOPS_SGLANG_BASE_URL`); `exa serve llm args` renders its launch command, but no launcher starts it for you yet and KServe manifests render vLLM only.
 - **Quantization records provenance only.** `exa models quantize` registers, signs and records a
-  quantized version, but no quantizer runs on any host.
+  quantized version, but no quantizer runs on any host. Promoting one needs a passing
+  `exa models quantize-gate` (quality retention vs its base version, ADR 0016).
 - **No customer-agent hosting.** Skipper is the one agent the platform runs. There is no registry,
   versioning or runtime for bringing your own agent.
 - **KV-cache-aware routing is simulated.** `exa serve routing simulate` compares routing strategies

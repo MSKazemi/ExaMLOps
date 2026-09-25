@@ -126,6 +126,10 @@ def _engine_for(rec: dict[str, Any]) -> Any:
             else None,
         )
     rec["base_url"] = base_url
+    if cfg.engine == "sglang":  # ADR 0016 decision 1: same wire protocol, its own client
+        from examlops.engines import SGLangServerEngine
+
+        return SGLangServerEngine(base_url, rec.get("hf_model_id") or rec["model"], cfg)
     return VLLMServerEngine(base_url, rec.get("hf_model_id") or rec["model"], cfg)
 
 
@@ -355,6 +359,9 @@ def status(model: str = typer.Argument(..., help="Endpoint name")) -> None:
         metrics = _engine_for(rec).metrics()
         if metrics:
             payload["metrics"] = _headline_metrics(metrics)
+            spec = _spec_decode_status(rec, metrics)
+            if spec is not None:  # ADR 0016 decision 4: acceptance from the server's counters
+                payload["spec_decode"] = spec
 
     if _output.json_mode:
         _output.print_json(payload)
@@ -366,6 +373,32 @@ def status(model: str = typer.Argument(..., help="Endpoint name")) -> None:
             ["Metric", "Value"],
             [[k, f"{v:g}"] for k, v in payload["metrics"].items()],
         )
+    if payload.get("spec_decode"):
+        spec = payload["spec_decode"]
+        _output.detail(
+            f"speculative decoding: acceptance {spec['acceptance_rate']:.1%}, "
+            f"estimated speedup <= {spec['estimated_speedup']:.2f}x "
+            f"({spec['accepted_tokens']}/{spec['proposed_tokens']} draft tokens accepted)"
+        )
+
+
+def _spec_decode_status(rec: dict[str, Any], metrics: dict[str, float]) -> dict[str, Any] | None:
+    """Server-side acceptance + speedup bound, at the endpoint's **own** draft lookahead.
+
+    The Leviathan bound grows with lookahead γ; computing it at γ=1 for a γ=4 server would print
+    a "speedup ≤" figure below the real bound, i.e. a false upper bound.
+    """
+    from examlops.engines.specdecode import spec_decode_from_metrics
+
+    spec_cfg = (rec.get("engine_config") or {}).get("speculative_decoding") or {}
+    try:
+        lookahead = max(int(spec_cfg.get("num_speculative_tokens") or 1), 1)
+    except (TypeError, ValueError):
+        lookahead = 1
+    out = spec_decode_from_metrics(metrics, lookahead=lookahead)
+    if out is not None:
+        out["lookahead"] = lookahead
+    return out
 
 
 def _headline_metrics(metrics: dict[str, float]) -> dict[str, float]:
@@ -375,6 +408,10 @@ def _headline_metrics(metrics: dict[str, float]) -> dict[str, float]:
     saturation; the full time series lives in Prometheus, which scrapes the same endpoint.
     """
     keys = (
+        "sglang:num_running_reqs",
+        "sglang:num_queue_reqs",
+        "sglang:token_usage",
+        "sglang:cache_hit_rate",
         "vllm:num_requests_running",
         "vllm:num_requests_waiting",
         "vllm:kv_cache_usage_perc",
@@ -424,8 +461,24 @@ def args_cmd(model: str = typer.Argument(..., help="Endpoint or model name")) ->
 
     rec = get_llm_endpoint(model)
     cfg = _engine_config(model, rec.get("engine_config") or {} if rec else {})
-    rendered = to_vllm_args(cfg)
     hf = (rec or {}).get("hf_model_id") or cfg.hf_model_id or model
+    if cfg.engine == "sglang":  # ADR 0016 decision 1: SGLang has its own launch renderer
+        from examlops.engines.sglang_server import render_launch_command, to_sglang_args
+
+        try:
+            sg_args = to_sglang_args(cfg, model_path=hf)
+        except ValueError as exc:
+            _output.error(str(exc))
+            raise typer.Exit(1) from exc
+        if _output.json_mode:
+            _output.print_json(
+                {"model": model, "hf_model_id": hf, "engine": "sglang", "args": sg_args}
+            )
+            return
+        _output.print_record({"model": hf, "args": " ".join(sg_args)})
+        _output.detail(render_launch_command(cfg, model_path=hf))
+        return
+    rendered = to_vllm_args(cfg)
     if _output.json_mode:
         _output.print_json({"model": model, "hf_model_id": hf, "args": rendered})
         return

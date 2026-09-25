@@ -5,6 +5,286 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), versioning: [S
 
 ## [Unreleased]
 
+### Added - ADR enterprise wave: 30 partially-implemented ADRs taken toward enterprise grade (2026-09-25)
+
+Thirty decided-but-partially-built ADRs had their unbuilt clauses implemented in parallel, one
+isolated branch each. An independent adversarial review hardened every branch before integration
+(fail-open paths, tenant bypasses, unbounded queries, unwired gates). Each ADR's own status line records
+which clauses are now built and which remain open, and why.
+
+#### ADR 0007
+
+- **Continuous evaluation, online (ADR 0007).** `exa eval online enable|disable|status|run` schedules evaluation of sampled live traffic: labelled predictions from `platform_db`, or GenAI spans from Tempo (TraceQL, filtered by model and tenant on the server). It runs behind the `EXAMLOPS_EVAL_ONLINE_ENABLED` kill-switch and a coordinator lease, scores each window once, audits every cycle, and writes results to the eval store the C3 gate reads.
+- **Eval results reach Prometheus.** `exa slo export-metrics` now publishes `examlops_eval_score` (plus Wilson bounds, sample size and a last-run timestamp) for the latest result per suite/model/alias/metric. The online scheduler can also rewrite a node_exporter textfile (`EXAMLOPS_EVAL_METRICS_TEXTFILE`).
+- **Evaluator engines.** `exa eval run --evaluator/-e` and the new `exa eval evaluators` cover `abs_error` (MAE), Ragas-formula text metrics (`string_similarity`, `string_presence`, stemmed `rouge_l`), rubric judges (`judge:<rubric>`) and DeepEval metrics (`deepeval:<metric>`), all behind one seam. The new `examlops[eval-metrics]` extra installs rapidfuzz and rouge-score. Ragas and DeepEval run when they are importable, but cannot be workspace extras because of pins (click and fsspec).
+- **Judges run at temperature 0, enforced.** Judge calls go through the gateway with `temperature=0` and the semantic cache bypassed. A judge configured or declared at any other temperature is refused, including during calibration, and every score records whether the temperature was enforced.
+
+- Hardened in independent review before integration (6 fix group(s)).
+
+#### ADR 0011
+
+- **Secrets (ADR 0011):** SOPS + age is a new tier in the secrets client (vault → sops → local → env), configured with `EXAMLOPS_SOPS_FILE`. Each read decrypts one key; writes never put the value on a command line.
+- **Secrets (ADR 0011):** `exa secrets set`/`rotate` now write to the manager of record, chosen by `EXAMLOPS_SECRETS_WRITE_BACKEND=local|vault|sops`. A write to vault creates a new KV v2 version. If the manager is unreachable the write fails; it never falls back to a local copy.
+- **Secrets (ADR 0011):** services resolve secrets at startup. The control plane, dashboard, agent, dataplane and LLM gateway resolve `VAR=secret://<path>` and `VAR=secret+file:///run/secrets/x` references before they read their config. An unresolvable reference stops the service, and every resolution is audited. New `exa secrets refs [--env-file] [--strict]` finds plaintext credentials and checks that each reference resolves.
+- **Secrets (ADR 0011):** new `exa secrets lease issue|renew|revoke` for short-lived credentials from OpenBao dynamic engines, and `exa secrets backends` to show each tier's health and where writes go.
+
+- Hardened in independent review before integration (9 fix group(s)).
+
+#### ADR 0013
+
+- **ML supply-chain security, ADR 0013 (still partially implemented).** Keyless **Sigstore** model signing (Fulcio certificate plus a Rekor transparency-log entry), switched on by `EXAMLOPS_SIGNING_SCHEME=sigstore`. It needs the new optional extra `examlops[supplychain]`. Verifiers trust `identity|issuer` pairs (`EXAMLOPS_SIGSTORE_IDENTITIES`) and fail closed. If keyless signing can't run, the signer falls back to the Ed25519 key and records a `model_sign_keyless_fallback` audit event.
+- **SLSA v1 build provenance** for every registered model version: an in-toto statement in a DSSE envelope, signed with Ed25519 or keyless. It is stored in the new `model_provenance` table and anchored in the hash-chained audit trail. The training pipeline records it at registration (`EXAMLOPS_PROVENANCE_AT_REGISTRATION=auto|required|off`), together with an AI-BOM bound to the signed artifact digest.
+- New commands: `exa models attest`, `exa models provenance` and `exa models release-check` (a CI gate that exits 1 unless the version is signed, has a digest-bound AI-BOM and has verified provenance).
+- The policy engine's `supply_chain` gate accepts `require: [signature, bom, provenance]`, which `exa pipeline promote` enforces.
+
+- Hardened in independent review before integration (1 fix group(s)).
+
+#### ADR 0014
+
+- **Project-level authorization on model and dataset paths (ADR 0014 decision 4).** With `EXAMLOPS_MULTITENANCY` on, the control plane's model routes now check that the caller holds the needed relation on every project that owns the model, not just its scope. The routes are retrain, `/v1/retrain`, approve/reject, `/api/changes`, retract-approval and cancel-command. Denied: 403, audited `authz_deny`. Membership store unreadable: 503, audited `authz_error`. Every decision is counted in `control_plane_project_authz_decisions_total{outcome}`. The `cplane.project_gate.ROUTE_PROJECT` table classifies every mutating route, and a test fails on any new route left unclassified.
+- The same check (`examlops.authz.guard.resource_allowed`) now also runs in `exa pipeline promote`, `exa pipeline run --model` (it also checks `--project`; running with no model at all is admin-only), `exa serve traffic`, `exa drift auto-retrain enable|disable` and `exa data snapshot|list|diff|checkout`. A model or dataset that no project has claimed belongs to `default`.
+- `exa project scope-audit` has a new `dataset-scoped` class. `dataset_revisions`, `dataset_cards`, `synthetic_datasets` and `data_retention` are no longer known gaps.
+- Fix: OpenFGA checks now send the child→project `parent` link as a contextual tuple. Before, a project-level grant did not reach a model or dataset that no one had granted on directly.
+- **Upgrade note:** before enabling multi-tenancy, grant each service principal that retrains or reports changes (for example the Dataplane bus bridge, CI, autopilot) `editor` on its projects, or add it to `EXAMLOPS_AUTHZ_ADMINS`. Otherwise its requests are refused with 403.
+
+- Hardened in independent review before integration (9 fix group(s)).
+
+#### ADR 0015, 0142
+
+- **Kubernetes serving: verify-before-load in the pod, GitOps delivery, KubeRay (ADR 0142 d3/d6, ADR 0015 d1/d4/d5).**
+  - KServe pods now check the model's `exa models sign` signature after the download and before the model server starts. An `InferenceService` names the platform's `ClusterStorageContainer`, and an `LLMInferenceService` overrides its `storage-initializer`. Both run `python -m examlops.supplychain.pod_verifier`, which downloads with KServe's own `kserve_storage` and then verifies.
+  - The mode is the same `EXAMLOPS_SERVING_VERIFY` (`off`/`warn`/`enforce`) the Ray path uses. With `enforce`, a render is refused when nothing in the pod could run the check, and the pod stops when a check fails or cannot be answered.
+  - New command `exa serve verifier-manifest` renders the storage container. The verifier image is built from `platform/infra/kserve/verified-storage-initializer/Dockerfile`.
+  - `EXAMLOPS_KSERVE_DELIVERY=gitops` writes planned KServe objects to `EXAMLOPS_KSERVE_GITOPS_DIR/<namespace>/` with a `kustomization.yaml` for Argo CD or Flux to reconcile, instead of a server-side apply. The writes are deterministic and atomic, and the apply stays plan-gated and audited.
+  - New command `exa serve kuberay-manifest` and new backend `kuberay-k8s` render the Ray multi-model server as a KubeRay `RayService`. It is validated against a vendored KubeRay v1.7.1 schema. Metrics, OTLP settings and the verify mode carry over from Compose; credentials and `OTEL_SDK_DISABLED` are never rendered.
+
+- Hardened in independent review before integration (1 fix group(s)).
+
+#### ADR 0016
+
+- **Optimized inference engines (ADR 0016), follow-up:** **SGLang is now a real engine.** `engine: sglang` resolves to `SGLangServerEngine`, an OpenAI-compatible client of a running `sglang.launch_server` (`engine.base_url` / `EXAMLOPS_SGLANG_BASE_URL`). `engines.to_sglang_args()` renders the launch argv and refuses fields SGLang cannot honour, and `exa serve llm args|status` handle SGLang endpoints. **Quantized versions now need a passing quality-retention gate:** a mandatory C3 gate compares `<base>-<method>` against its base version, refuses when no gate or scores exist, and always blocks. It is enforced by `exa pipeline promote` (with an audited `--force` override), the training-flow promotion and the dashboard, and exposed as the new `exa models quantize-gate`. **Speculative-decoding acceptance and estimated speedup (Leviathan et al. 2023) now reach FinOps:** every built engine feeds bounded windows into the new additive `specdecode_windows` table, readable with the new `exa finops specdecode`.
+
+- Hardened in independent review before integration (9 fix group(s)).
+
+#### ADR 0017
+
+- **Feature store (ADR 0017): one feature definition now governs both training and serving.** Use-case packs declare typed feature views in `features/*.yaml`; the reference pack declares the 384-dim F-DATA job embedding (`fdata_job_features`), and JPCP/MACK/MCBound bind it through `datasets[].feature_view`.
+  - **Training:** `training_flow` runs a new feature gate that checks the pinned training data with the same `transform_row` serving uses. It fails the run closed (`EXAMLOPS_FEATURE_GATE`), ingests the rows and checks them back through point-in-time retrieval, and tags the MLflow run with `feature_view`/`feature_view_fingerprint`.
+  - **Serving:** `FeatureTransformer` applies the pack's serving view, and fills in the materialized online features when a request names only its `job_id`.
+  - **Scheduled materialization:** a view's `materialize_interval_seconds` sets its schedule. The control plane runs the materializer (`CONTROL_PLANE_FEATURE_MATERIALIZE_SECONDS`) and publishes `examlops_feature_view_*` freshness gauges, with a new `FeatureViewStale` alert and runbook.
+  - **Optional Redis online store:** `examlops[features-online]` with `EXAMLOPS_FEATURE_ONLINE_STORE=redis`. It falls back to the durable table on a miss or outage.
+  - **New CLI:** `exa feature sync`, `exa feature status`, `exa feature materialize-due`, `exa feature apply --interval`. `exa feature materialize` is now audited.
+
+- Hardened in independent review before integration (1 fix group(s)).
+
+#### ADR 0019
+
+- **RAG (ADR 0019) — serving endpoint, grounded answers, Ragas eval, LlamaIndex chunker.** `serving/rag_pipeline/app.py` (`examlops.rag.service`) hosts the RAG pipeline over HTTP: `POST /v1/rag/query|ingest`, `GET /v1/rag/kbs`, `/healthz`/`/readyz`/`/metrics`. Tokens are tenant-bound and auth fails closed (`EXAMLOPS_RAG_TOKEN[S]`). D8 guardrails run on the question, on the retrieved context (enforce by default, `EXAMLOPS_RAG_CONTEXT_GUARD`) and on the answer. Requests have body, `k`, concurrency and deadline bounds (`EXAMLOPS_RAG_MAX_BODY`/`_MAX_CONCURRENT`/`_TIMEOUT`), and ingest and cross-tenant denials are audited. `exa rag query --structured` builds the answer through B8 `generate_structured` and checks its citations: a cited chunk number that was not retrieved is dropped, and the answer reports `grounded`. `exa rag eval KB --items qa.jsonl` scores `context_precision`/`context_recall` as C2 evaluators. They use Ragas' non-LLM ID-based metrics when installed and the built-in math otherwise (`--backend`, `EXAMLOPS_RAG_EVAL_BACKEND`). Results are recorded as model `rag:<kb>` at the KB's source revision, so `exa eval gate` can block a re-ingest whose retrieval got worse. `exa rag ingest --framework native|llamaindex|auto` (`EXAMLOPS_RAG_FRAMEWORK`) selects the chunker: LlamaIndex `SentenceSplitter` or the default word window. New optional extras: `rag-llamaindex`, `rag-eval`, `rag-service`.
+
+- Hardened in independent review before integration (6 fix group(s)).
+
+#### ADR 0021
+
+- **AgentOps: agent traces reach Langfuse and Phoenix, and agent SLOs get burn-rate alerts (ADR 0021).**
+  - Every Skipper LLM, tool and retriever span now carries its session (`gen_ai.conversation.id` / `session.id`, the same key as `agent_sessions.session_id`) and its step (`examlops.agent.step`).
+  - Every GenAI span now carries `openinference.span.kind`.
+  - Guardrail checks are now GUARDRAIL spans (verdict and finding categories only, never text).
+  - RAG and Skipper retrieval are now RETRIEVER spans. The RAG question now reaches a span only through the content-capture gate and redactor.
+  - The agent entrypoint now installs the tracer provider. Before this, Skipper spans went to OTel's no-op provider.
+  - New `examlops.telemetry.otlp_http` (optional extra `examlops[agentops]`, with a stdlib fallback) adds OTLP/HTTP export. Set `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` for the primary exporter. Set `EXAMLOPS_OTEL_CONSUMERS=langfuse,phoenix` to add Langfuse or Phoenix as extra consumers. Security defaults: https only for credentials, no redirects, bounded retries, and a misconfigured consumer is skipped.
+  - New C6 SLI source `c4` (`exa slo set skipper <slo> --source c4 --query tool_success|tool_success:<tool>|session_ok`) gives the agent an error budget, a burn rate and a `slo_breached` audit.
+  - `exa slo generate` now records platform-ingested SLIs (c1/c2/c4/c5/c8/availability) from the exported `examlops_slo_sli` series, so their burn-rate alerts can fire. Before, it pasted a non-PromQL query into the rules.
+
+- Hardened in independent review before integration (8 fix group(s)).
+
+#### ADR 0022
+
+- **Advanced drift: named detectors, confirmed-estimate retrain signal, A5 rejection folding (ADR 0022).**
+  - The concept, estimate and profile seams now include the libraries the ADR names, each lazily imported with a pure-Python fallback that records why it ran:
+    - concept: `ddm` (pure-Python DDM), `river-ddm` and `evidently` (`exa drift concept --detector`, `EXAMLOPS_DRIFT_CONCEPT_DETECTOR`)
+    - estimator: `nannyml` CBPE/DLE (`exa drift estimate --estimator`, `EXAMLOPS_DRIFT_PERF_ESTIMATOR`)
+    - profiler: `whylogs` (`exa drift profile --profiler`, `EXAMLOPS_DRIFT_QUALITY_PROFILER`)
+  - New optional extra `examlops[drift-advanced]` (river, evidently).
+  - A label-free performance estimate that realized labels confirm is now CRITICAL (`confirmed_by_labels`), and `exa drift trigger` acts on it; an unconfirmed estimate never does. The trigger no longer lets a newer estimate warning hide a realized-error CRITICAL, and it audits the `signal` that fired.
+  - The inference ingress now counts every A5 contract rejection (`inference_rejections`). `exa drift run-advanced` and `exa drift profile` fold them into the data-quality profile (`EXAMLOPS_DRIFT_ADVANCED_REJECTION_WINDOW`, default 3600 s).
+  - Dashboard: `GET /api/drift/perf-estimates` and an estimated-vs-realized table on the Drift page's Concept & Quality tab.
+  - Fixed: the concept test now reads labelled predictions in arrival order; it used an unordered join.
+
+- Hardened in independent review before integration (8 fix group(s)).
+
+#### ADR 0026
+
+- **Guardrails: declarative policy engine (ADR 0026 clause 3).** A YAML policy (`EXAMLOPS_GUARDRAIL_POLICY` or `<config dir>/guardrails.yaml`) lists input/output checks per tenant and per route. Built-in checks: `injection`, `pii`, `secret`, `toxicity`, `topics`, `length`. The `llm_guard` check runs LLM-Guard scanners from the new optional `examlops[guardrails-llmguard]` extra, and other checks can plug in under the `exa.guardrails.checks` entry-point group. Layers resolve default → tenant → matching routes, with `off|monitor|enforce` modes. In enforce, a check that crashes, times out or is unavailable blocks the text. An invalid policy file falls back to the built-in guardrail and is audited. The file reloads when it changes. The policy applies to the gateway client and the `llm-gateway` service (the requested model is the route). The policy's `allowed_tools`/`blocked_tools` now gate every MCP agent write. New commands: `exa guardrails checks`, `exa guardrails policy validate|show` and `exa guardrails test --route`. Guardrail audit events are now recorded under the tenant whose traffic was blocked.
+
+- Hardened in independent review before integration (9 fix group(s)).
+
+#### ADR 0027
+
+- **NIST AI RMF backbone completes its evidence and mapping clauses (ADR 0027).** New D6 and D7 evidence collectors in `examlops.compliance.security_evidence`. `access_documented` requires an owner relation covering the model. `access_enforced` requires `EXAMLOPS_MULTITENANCY` default-deny and counts audited authz decisions. `secrets_managed` requires OpenBao or the encrypted store. `secrets_rotation` requires every stored secret to be written or rotated within `EXAMLOPS_GOVERNANCE_SECRET_MAX_AGE_DAYS`, default 90. `environmental_impact` comes from `carbon_records`. The RBAC control no longer passes on audit-trail coverage: it moves from GOVERN-4.1 to GOVERN-2.1 (the old id remains an alias) and now requires authorization evidence. MEASURE-2.7 now also requires secrets evidence.
+- Catalogue **2.0.0** encodes all **72 AI RMF 1.0 subcategories**, and validation checks the count per function. The report rolls controls up to subcategories as satisfied, partial or gap, and reports subcategories no control reaches as *organisational*, never as covered.
+- New `governance/features.yaml` declares, per feature, the controls it serves and the evidence it emits. `exa governance validate` checks it in both directions: no claim without evidence, no evidence nobody owns, no orphan collector, and every module must resolve.
+- New `exa governance features`. `exa governance catalogue` gains `--subcategories`. The report shows the features behind each control and framework coverage, and its audit event is written under the report's tenant. Secrets audit events now carry their tenant on the row.
+
+- Hardened in independent review before integration (1 fix group(s)).
+
+#### ADR 0028
+
+- **Audit trail — scheduled maintenance + transparency log (ADR 0028).** The periodic half of the immutable audit trail now runs itself. The control plane runs `examlops.audit_maintenance` every `EXAMLOPS_AUDIT_MAINTENANCE_SECONDS` (default 3600): it signs the chain head and anchors it to the WORM store, logs it to a transparency log, and — opt-in with `EXAMLOPS_AUDIT_PRUNE_SCHEDULED=1` — prunes under the retention policy. One cycle at a time across replicas (coordinator lease), recorded in `audit_maintenance_runs`. New `examlops.audit_transparency`: a Rekor `hashedrekord` client (dedicated ECDSA P-256 key, deterministic signatures so retries are idempotent, https-only, response cap, SET verification) and optional keyless Sigstore signing (`examlops[audit-sigstore]`). New CLI `exa audit maintain [--once|--dry-run]`, `exa audit maintenance-runs`, `exa audit verify-transparency`. New metrics `examlops_audit_maintenance_errors_total` / `examlops_audit_maintenance_last_success_timestamp_seconds`, alert `AuditMaintenanceFailing` (runbook). Additive tables `audit_transparency_entries`, `audit_maintenance_runs`.
+
+- Hardened in independent review before integration (1 fix group(s)).
+
+#### ADR 0029, 0079
+
+- **Policy-as-code covers every mutating `exa` command (ADR 0079 d2).** The CLI root now wraps every admin, destructive or cli-only command, and any plugin command, so it calls `policy.decide` before running. Gated is the default. The action name is the command path (`exa project grant` → `project_grant`, `exa secrets set` → `secrets_set`, `exa serve traffic` → `serve_traffic`). With no rule the command behaves exactly as before and writes no audit row. A deny exits 1 and a require_approval asks first, defaulting to no. `--dry-run` is never gated. A forcing guard (`tests/unit/test_policy_cli_hook.py`) fails if a new command could slip past the gate.
+- **Control plane approval and admin routes are gated.** `/approve`, `/reject`, `/approvals/{id}/approve|reject`, `/modelzoo/sync`, `PUT /modelzoo/config` and `/admin/reload` now decide under the same action names as `exa approvals approve|reject`, `exa modelzoo sync|config-set` and `exa production reload`. One policy rule therefore governs the terminal, the dashboard and direct API calls. The dashboard forwards `X-Policy-Approved` on approve and reject.
+- **Datasheets for Datasets (ADR 0079 d6).** `examlops.cards.datasheet` lints the seven-section Gebru et al. questionnaire. `exa cards lint <ds> --datasheet` checks it and `--template` prints a skeleton to fill in. A new `datasheet` policy gate can block `exa pipeline promote` until the model's training datasets are documented.
+- **Data-residency policy (ADR 0029 d2, D6).** A new `residency` gate checks the datasheet's `distribution.residency` against a cluster's `region:` in `clusters.yaml` when running `exa pipeline run --cluster`. With `--cluster auto`, placement never picks a forbidden region.
+
+- Hardened in independent review before integration (1 fix group(s)).
+
+#### ADR 0030
+
+- **GPU sharing is now wired into the platform (ADR 0030).** Fractional GPU asks now reach placement, Slurm/Flux submission, KServe manifests and cost accounting:
+  - **Placement:** `ResourceAsk` carries `gpu_fraction`/`mig_profile`. Placement prefers clusters that can slice a GPU and reports the mechanism and isolation for each candidate.
+  - **Slurm/Flux:** the training flow maps an ask onto Slurm `--gres=gpu:<mig-type>:<n>` or `--gres=shard:<k>`, or onto Flux `-g<n> --requires=<property>`. It does this only where the cluster's `capabilities` declare the mechanism. Otherwise the job falls back to a whole GPU with an explicit warning, never a silent over-commit. The job is linked to an audited `gpu_allocations` row.
+  - **KServe:** a model YAML `gpu_sharing:` block makes the pods request a MIG slice (`nvidia.com/mig-<profile>`), a time-sliced GPU or a HAMi fraction, validated against the pinned KServe CRD schema.
+  - **Cost:** `exa models cost --record` bills each job's GPU-hours at its allocated fraction. This feeds budgets, carbon and project roll-ups, and a new `GPU Share` column shows it.
+  - **CLI:** `exa hpc gpu-share plan` gains `--cluster`, `--scheduler` and `--gpus`.
+  - **Schema:** additive columns `gpu_allocations.job_id/scheduler/requested_fraction` and `model_costs.gpu_fraction/gpu_mechanism`.
+  - **New env vars:** `EXAMLOPS_HPC_GPU_FRACTION`, `EXAMLOPS_HPC_MIG_PROFILE`, `EXAMLOPS_HPC_GPU_SHARING`.
+
+- Hardened in independent review before integration (1 fix group(s)).
+
+#### ADR 0031
+
+- **Autoscaling (ADR 0031):** new `k8s` applier. It patches a model's predictor Deployment through the Kubernetes `scale` subresource. It uses CA-verified https, allows plain http only to loopback, never calls anonymously, and refuses when an HPA/KEDA object already owns the Deployment.
+- **Autoscaling (ADR 0031):** new cold-start activator (`examlops.autoscale.activator`). Waking is single-flight, waiters are bounded, and the cold start is measured and recorded as an audited scale event. It is wired into the inference router behind `EXAMLOPS_AUTOSCALE_ACTIVATOR` (503 `cold_start` on failure), and new `exa serve autoscale activate` does the same by hand.
+- **Autoscaling (ADR 0031):** `queue_depth` is now sourced (mean in-flight requests by Little's law), and `gpu_util` can be sourced through an operator PromQL template (`EXAMLOPS_AUTOSCALE_GPU_UTIL_QUERY`). One query definition is shared by the controller and the KEDA generator. The Knative overlay maps `queue_depth` to `concurrency`.
+- **Autoscaling (ADR 0031):** GPU-aware packing. With `EXAMLOPS_AUTOSCALE_GPU_CAPACITY` set, a scale-up whose replicas × `gpu_fraction` would exceed the capacity is refused; a bad value counts as capacity 0.
+
+- Hardened in independent review before integration (8 fix group(s)).
+
+#### ADR 0032
+
+- **Distributed training through the scheduler, with durable checkpoints (ADR 0032).** `exa pipeline run --model M --distributed` reads the model YAML's new `distributed:` block (strategy `ddp`/`fsdp` (default)/`zero`/`megatron`, nodes, `min_nodes` for torch-elastic `--nnodes=min:max`, GPUs/processes per node, restarts, attempts, `entrypoint`, allow-listed `nccl:` settings) and submits a generated torchrun job through the phase-23 scheduler (mock/Slurm/Flux). The rendezvous host is read at run time from the allocation's node list. Recoverable failures are resubmitted through the scheduler and resume from the newest verified checkpoint. `exa pipeline distributed run --scheduler --model M` adds `--strategy/--nodes/--min-nodes/--checkpoint-store/--dataset-revision/--mlflow-run-id`. The reference script now trains with FSDP2 (`fully_shard`) as well as DDP. Checkpoints are mirrored to an NFS directory or `s3://` MinIO (`EXAMLOPS_DIST_CHECKPOINT_STORE`) and re-verified on restore. Run cost goes to `exa models cost`, the MLflow run is tagged with the checkpoint, and OpenLineage events link dataset revision → run → checkpoint. A fail-fast preflight refuses plans this host cannot run (e.g. ZeRO without DeepSpeed). `exa pipeline distributed launch` no longer prints a placeholder `train.py`.
+
+- Hardened in independent review before integration (1 fix group(s)).
+
+#### ADR 0035
+
+- **Structured-output policy (ADR 0035 clause 3).** Built-in output schemas (`tool_call`, `rag_answer`, `extraction`, `classification`) that callers can name: `GatewayClient.chat(response_schema="rag_answer")`. `structured.yaml` (`EXAMLOPS_STRUCTURED_CONFIG`) adds site schemas and per-route default schemas and reasoning budgets. It is validated in full and ignored entirely if invalid. A route budget is one more candidate, and the tightest budget still wins. Budgets are gated through D5 policy-as-code: action `reasoning_request` is checked before dispatch (`ReasoningPolicyDenied`, which denies if the engine errors), and action `reasoning_budget_set` gates `exa gateway reasoning set-budget`, which is now audited. `RagPipeline.query(structured=True)` returns schema-validated answers citing only the chunks the model used, and drops invented chunk numbers. New `exa gateway schema list|show`; `schema test` accepts a registered name. Fix: repair no longer empties free-form object fields and now repairs array items.
+
+- Hardened in independent review before integration (2 fix group(s)).
+
+#### ADR 0038
+
+- **Reproducibility bundles now fill themselves, restore the dataset and feed compliance (ADR 0038).** Every bundle now records these without operator input: the platform and model-library commits, the host hardware (GPUs from `nvidia-smi`, with the probe status recorded), the scheduler request and job id that were submitted, the A2 lineage run, the image digest (from `EXAMLOPS_IMAGE_DIGEST`), and a hash of the D3 AI-BOM. It also pins A3 feature views when you pass `--feature-view` or set `EXAMLOPS_FEATURE_VIEWS`. `exa reproduce verify` re-checks all of these. `exa reproduce run --execute` now checks out the recorded model-library commit and `--restore-dataset DIR` puts the pinned dataplane snapshot or lakeFS commit back (size/MD5-checked, bounded, path-safe). lakeFS revisions are verified against lakeFS itself. The recorded resources are re-requested as `EXAMLOPS_HPC_*`, with `--scheduler recorded|mock|slurm|flux`. The EU AI Act technical file (`exa compliance technical-file`) gains a re-verified Reproducibility section (Annex IV §2), and `exa governance report` gains control MEASURE-2.1 (catalogue 1.1.0).
+
+- Hardened in independent review before integration (2 fix group(s)).
+
+#### ADR 0044
+
+- **Fine-tuning (ADR 0044): PEFT, scheduler training, MLflow, and inference served through an adapter.**
+  - **PEFT backend:** `exa finetune --train --backend peft` trains through Hugging Face PEFT (`peft.get_peft_model` + `LoraConfig`). It needs the new optional extra `examlops[finetune]`, is imported lazily, and refuses clearly when peft is absent.
+  - **Full fine-tune:** `--method full` trains every weight of the reference stack.
+  - **Scheduler training:** `--scheduler` (with `--gpus/--partition/--time-limit/--account`) submits the run as a mock/Slurm/Flux job. The wait is bounded, the job is recorded in `hpc_jobs` and the submission is audited. The job id is stamped on the adapter.
+  - **Adapter bundle:** each run writes a verify-before-load bundle (`adapter/adapter_model.pt` + `adapter_config.json`).
+  - **MLflow:** when `MLFLOW_TRACKING_URI` is set, completed adapters are logged to MLflow with their measured metrics, provenance tags and bundle. A full fine-tune is registered as a model version. Control this with `--mlflow/--no-mlflow`.
+  - **Adapter-served inference:** `exa serve adapter route --engine torch|vllm` really runs the request through the adapter.
+    - `torch`: CPU inference on one shared base, with digest-verified tensors and weight-level base-mismatch refusal.
+    - `vllm`: the runtime LoRA load/unload API with per-request `model` routing.
+  - **Serving gate:** engines that serve inference accept only promoted adapters whose HMAC signature verifies. `--allow-unpromoted` overrides this and is audited.
+  - **Registering external adapters:** `--adapter-uri` records where the serving host reads a PEFT adapter.
+  - **Schema:** new additive `lora_adapters` columns `hpc_job_id`, `mlflow_run_id`, `mlflow_artifact_uri` and `mlflow_model_version`.
+
+- Hardened in independent review before integration (8 fix group(s)).
+
+#### ADR 0078
+
+- **Python SDK (ADR 0078):** `import examlops` now has typed namespaces: `examlops.models` (`list`/`get`/`diff`/`lineage`/`cost`), `examlops.drift.status`, `examlops.audit.query` (tenant-filtered before the LIMIT, capped at 10 000) and `examlops.hpc` (`place`/`clusters`/`capacity`). Results are frozen dataclasses with `to_dict()`, and errors are a typed `examlops.SDKError` hierarchy.
+- **Governed SDK mutations:** `examlops.models.retrain/approve/promote` need `confirm=True` (or `dry_run=True`). They consult the ADR 0079 policy engine: a deny raises, and `require_approval` needs `approved=True`. Completed mutations are audited. `promote` runs `exa pipeline promote` in a bounded child process, so every promotion gate applies unchanged.
+- **One code path:** `exa models list/info/diff/lineage/cost`, `exa drift status`, `exa audit`, `exa hpc clusters/capacity` and `exa approvals approve` now render SDK results, as do the MCP `list_models`/`hpc_clusters`/`hpc_place` tools. `exa approvals approve` now consults a new `model_approve` policy action (no rule ⇒ unchanged). `exa models list` now orders versions numerically ("10" > "9").
+- **Discoverability and stability:** `exa docs --sdk` prints the SDK reference, and the MCP agent card carries it under `sdk`. The SDK API version is now 0.2. A deprecation policy (`examlops.sdk.deprecation`, at least one minor release of warnings before removal) is enforced by tests, and the package ships a `py.typed` marker. New guide: `docs/guides/python-sdk.md`.
+
+- Hardened in independent review before integration (11 fix group(s)).
+
+#### ADR 0080
+
+- **Pipeline-as-code: the registry YAML is the IR (ADR 0080).** A new per-model YAML `placement:` section (`cluster`/`gpus`/`cpus`/`nodes`, validated fail-closed) carries the train step's resource ask and the target cluster, so lowering no longer drops them. `exa pipeline explain` and `exa pipeline run --ir` accept a registry YAML as well as the JSON graph. `exa pipeline compile -o model.yaml` writes the YAML as the IR. New `exa pipeline show NAME [--ir]` (read-only) prints a pack model's IR by name. `exa pipeline run --model NAME` uses the YAML placement as the default for `--cluster`/`--gpus`; an explicit flag wins.
+- **`exa pipeline run --ir` now runs on Slurm/Flux** (it was mock-only). The lowered YAML is staged to the job's working directory through the scheduler adapter's executor, and `slurm_train_script.py --model-yaml` registers it on the compute node, refusing a missing or mismatched file.
+- The pipeline DSL's `Resources` is now `examlops.hpc_placement.ResourceAsk` itself, not a copy.
+
+- Hardened in independent review before integration (7 fix group(s)).
+
+#### ADR 0081, 0082
+
+- **MCP write safety (ADR 0081 rule 3).** Every mutating MCP tool now takes `dry_run` and `confirm`. `dry_run=true` returns a no-change preview: intent, blast radius, current state, policy decision and required consent. A human's direct tier-B/C call needs `confirm=true` (`EXAMLOPS_MCP_CONFIRM_TIERS`; `EXAMLOPS_MCP_AUTO_CONFIRM` is the explicit `--yes`, and `CI` alone does not auto-confirm). Skipper's bridge confirms only after its human interrupt.
+- **HITL for high-impact agent writes (ADR 0082 layer 4).** An agent's tier-B/C plan needs a human-minted approval token before `apply_plan` runs it (`EXAMLOPS_MCP_HITL_TIERS`, default `B,C`). An agent can never apply a tier-C plan.
+- **OAuth 2.1 resource server on MCP HTTP (ADR 0082 layer 3).** With `EXAMLOPS_MCP_AUTH=oauth` + `EXAMLOPS_MCP_RESOURCE`, the MCP server serves RFC 9728 metadata, verifies bearers through the ADR 0120 verifier with the audience bound to the MCP resource, and enforces per-tool scopes (`mcp:tools:read|write|admin`, `mcp:tool:<name>`). It returns RFC 6750 challenges, caps request bodies, audits refusals and authorized writes with the verified principal, and counts decisions in `examlops_mcp_http_auth_total`. Origin is validated in every mode. New `exa mcp scopes`.
+- **Docs:** the trust-tier guide now covers ADR 0081's T1/T2/T3 contract, including that T1 plugins run with full host privilege (use OS isolation for untrusted plugins), and the full MCP write-safety and auth stack.
+
+- Hardened in independent review before integration (3 fix group(s)).
+
+#### ADR 0083
+
+- **LLMOps calculation providers (ADR 0083):** new built-in `cost-latency` scorer for `llm_routing`, `-(cost_usd + latency_ms × latency_weight)`, selected with `EXAMLOPS_LLM_ROUTING_PROVIDER=cost-latency` or `llm_routing: {provider: cost-latency, latency_weight: …}` in `providers.yaml`. `gateway.yaml` deployments accept `price_per_1k`; `cost_aware` routing ranks by it when declared, falls back to locality otherwise, and passes the observed TTFT to the provider. The LLMOps console gains a "How the numbers are computed" section (`calculations` in `GET /api/v1/llmops/overview`) showing each domain's active provider and its own methodology.
+- **Fixed:** the `llm_cost`/`llm_cache`/`llm_routing`/`rag_quality` provider blocks are now read from `~/.config/examlops/providers.yaml`, as ADR 0083 documents. Before, only `finops.yaml` was read, so a `providers.yaml` price card was silently ignored. A `finops.yaml` block is still honoured when `providers.yaml` has none for that domain. A failing `llm_cost` provider now logs a warning instead of falling back silently.
+
+- Hardened in independent review before integration (1 fix group(s)).
+
+#### ADR 0092, 0093
+
+- **Projects: pipeline surfaces read live from Prefect and Ray Serve (ADR 0092).** `exa project pipelines` and `exa project show` (and the dashboard's project page) now build a project's Prefect training surface from the deployments tagged `project:<name>`: schedules, work pool, the newest started run and its state, and the project storage prefix as artifact destination. The Ray Serve surface comes from the serve app's `/models`: served models, aliases, per-model health and unserved models. Only URLs someone configured are contacted (env, `exa` config/context, or `--live`; `--no-live` and `EXAMLOPS_PROJECT_PIPELINES_LIVE=0` turn it off). If a source is unreachable, that surface falls back to the `project_pipelines` registry, marked `source: registry`, and each successful read writes through to the registry. Reads are bounded: per-request timeout `EXAMLOPS_PROJECT_PIPELINES_TIMEOUT` (default 2 s), deployments paged 200 at a time and capped at 1000. New module `examlops.project_pipelines`.
+- **Dashboard: the project anatomy tolerates partial failures (ADR 0093).** `GET /api/v1/projects/{name}` is now assembled through `bff.aggregate`, one source per section with its own timeout. A section that fails is named under `_partial` and the page shows "Some sections could not be loaded". The Pipelines card shows a live/registry badge with pool, last run, aliases and unserved models.
+
+- Hardened in independent review before integration (7 fix group(s)).
+
+#### ADR 0108, 0116
+
+- **Admission seam (ADR 0116):** `decide()` now consults policy, budget and carbon gates. Turn them on with `EXAMLOPS_ADMISSION_GATES=policy,budget,carbon`; with it unset nothing changes. Deny wins over defer. A gate that cannot answer denies as "unverified". The carbon gate defers only flexible work, and only on a marginal (decision-type) grid signal above `EXAMLOPS_ADMISSION_CARBON_MAX_G`. Blocked decisions are audited as `admission_gate_blocked`.
+- **Typed resource graph (ADR 0116 decision 6):** built from the `hpc_nodes` inventory plus a site topology file (`EXAMLOPS_RESOURCE_TOPOLOGY` or `<config dir>/topology.yaml`) declaring scale-up domains, PDUs, fabrics and storage. A job with `scale_up_domain: required` that no single domain can hold is now queued from live state instead of placed across domains. New `exa admission topology`.
+- **One JobRequest for every backend:** `examlops.admission_seam.translate` maps a request onto the mock, Slurm and Flux adapters and checks the round trip, and lists what each backend cannot enforce. New `exa admission translate`.
+- **More work goes through admission** (behind `EXAMLOPS_ADMISSION_DISPATCH_ENABLED`, off by default): every platform scheduler job (`scheduler_jobs.submit`) and HPC LLM serving launches. Quota is bound to the scheduler job id and released when the job reaches a terminal state, or when the serving endpoint is stopped. A new guard fails on any unlisted direct `submit_job` call.
+
+- Hardened in independent review before integration (7 fix group(s)).
+
+#### ADR 0109
+
+- **Suspend/resume seam (ADR 0109): tiered replica, vLLM sleep, CLI and status.**
+  - New `tiered-training-checkpoint` backend keeps a verified node-local replica of pinned ADR 0032 checkpoints (decision 8). The replica is content-addressed and copies only changed shards. Its tier (`local_memory` or `local_storage`) is read from the filesystem, and its size is capped. Restore uses the replica when it verifies and falls back to the persistent pin otherwise, saying why.
+  - New `vllm-sleep` backend suspends a vLLM replica through the engine's own sleep mode (level 1; decision 5). Its capability is deliberately narrow: host-memory tier, no GPU state, no preemption promise.
+  - New `exa pipeline distributed suspend backends|capability|snapshot|resume|discard|show|list`. Snapshot, resume and discard are audited and exit 1 on refusal.
+  - `exa status` (and `--json`) now reports every suspend backend's capability, preemption verdict and restore timing split (`state_transfer_s` / `communicator_rebuild_s`).
+  - Suspend-record listing filters by tenant before the row limit.
+
+- Hardened in independent review before integration (1 fix group(s)).
+
+#### ADR 0144, 0145, 0146
+
+- **Agent runtime (ADR 0144).** New `examlops.agent_runtime` hosts registered agent versions for many tenants: threads, runs, interrupts and durable state over a plain-Python journaling engine or a LangGraph adapter. It adds the `reject`/`enqueue`/`interrupt`/`rollback` multitask strategies, a separate agent state store, derived idempotency keys so a recovered run never repeats a tool call, and idle-session suspension that frees sandbox and quota. Sessions stay on the worker chosen for their thread id, and the HTTP surface follows the LangGraph Agent Protocol shape. New `exa agent runtime serve` (loopback by default) follows a digest-sealed snapshot and keeps the last-known-good copy if a new one fails its checks. Also new: `exa agent runtime snapshot` and `exa agent runtime sandboxes`.
+- **Per-session sandboxes (ADR 0145 d6).** A `SandboxProvider` seam for Docker (gVisor when `runsc` is installed, otherwise `container-weak`), Apptainer, and agent-sandbox `v1beta1`. Isolation is measured on the host, and a stronger tenant requirement is refused. Egress is denied by default, and the sandbox environment is cleared. A brokered tool write whose evidence record cannot be written is not performed.
+- **Agent rollout gates (ADR 0146).** Promotion to Production now requires non-inferiority within the declared margin and a state-compatibility check (`exa agent version compat`, `--state-strategy pin|drain`). Canaries apply to new sessions only (`exa agent alias canary`), and each session stays on the version it started on. A rollback sets what happens to in-flight sessions (`continue`/`interrupt`/`quarantine`). Shadow testing replays recorded sessions. A model promotion queues re-evaluation of the agents that follow that model (`exa agent version reeval`, `exa agent version reeval-resolve`). An agent version can export a sealed evidence pack (`exa agent version evidence`). `eval_suite_results.agent_version_id` links results to the agent version they measured.
+
+- Hardened in independent review before integration (7 fix group(s)).
+
+#### ADR 0143, 0148
+
+- **Generative serving (ADR 0143).** New `EndpointPicker` interface (`examlops.inference_gateway.picker`) with one implementation per substrate: a `/metrics`-scraping gateway scorer for plain `vllm serve` pools, plus Ray Serve LLM and llm-d picker models that render their runtime config. Prefix keys are salted per project, so a cached prompt never hits across tenants. Requests get session affinity. KV-aware scoring stays off until `EXAMLOPS_KV_ROUTING` is set and the pool reaches the break-even replica count. A saturated pool returns `429` + `Retry-After`. A shared conformance fixture requires ≥95% session affinity and zero cross-salt hits from every picker.
+- **LoRA adapters are supply chain (ADR 0143 d8).** The `engine:` block takes `lora_adapters`, `max_loras` and `max_lora_rank`, rendered as static `--lora-modules`. Runtime adapter updating is refused on shared deployments, whether it comes from config or from `VLLM_ALLOW_RUNTIME_LORA_UPDATING`. Before any Compose, Slurm/Flux or KServe launch, every adapter is verified through `supplychain.verify_before_load`.
+- **Tool-call validity policy (ADR 0143 d9).** Agent tool steps are sent with `tool_choice=required` (or a named function). Parse failures are counted (`examlops_tool_call_parse_total`); `EXAMLOPS_TOOL_CHOICE_POLICY=enforce|off`.
+- **`exa slo benchmark record|results` (ADR 0143 d5).** A TTFT/TPOT/goodput result is stored only with its conditions and a declared SLO pair; queue wait is counted in TTFT. Writes are idempotent and audited.
+- **Per-task agent cost ledger (ADR 0148 d4).** `exa finops task-cost record|apportion|show` covers model calls, tool calls, sandbox-seconds, idle-state GB-hours and hot-pool standby. Every entry is owned by a project. No rate is ever assumed zero. Standby is split by a declared, audited rule, and a task's total equals the sum of its entries. `exa finops economics` shows the ledger beside the lower bound.
+- **W3C trace context propagation (ADR 0148 d1, partial).** `examlops.telemetry.propagation` carries `traceparent` on vLLM server calls and on the Skipper agent's outbound HTTP calls, including the OIP `predict` tool. An MCP `_meta` helper is available.
+
+- Hardened in independent review before integration (10 fix group(s)).
+
+#### ADR 0157
+
+- **Hardware Profiles Phase 4: resolution ledger, in-use visibility, dashboard API (ADR 0157).** Every profile consumer (`exa workbench create`, `exa pipeline run`, `exa pipeline distributed launch`, and a model YAML's `resources.hardware_profile` at serving deploy) now appends its resolution to a new append-only, project-scoped `hardware_profile_resolutions` table: exact version, target cluster, status, unconfirmed fields and actor. The write is fail-open, so it adds visibility without becoming a gate. New `exa hardware profile in-use [--days] [--project]` exits 1 on any `degraded`/`unresolvable`/`missing` entry, where `missing` means a deleted version that something still references. New `exa hardware profile history [NAME] [--consumer] [--project] [--limit]` answers "which version did that run use". `exa status` shows profiles needing attention (`--json`: a `hardware_profiles` key). `exa hardware profile delete` names every consumer still bound before it asks for confirmation. `exa pipeline run --hardware-profile` tags the MLflow run `hardware_profile=name@vN`. Profile shapes are validated (slug name, non-negative resources, `nodes >= 1`, known MIG profile).
+- **Dashboard: `/api/v1/hardware-profiles` (ADR 0157 Phase 4) and the profile select on the workbench form (Phase 2).** Viewers can list, show, resolve, see in-use and read history. Admins with `platform.manage` can create or delete a version; both are audited and policy-gated. The router reuses the CLI's `examlops.hardware_profiles` code path. The New-workbench form offers the profiles applicable to workbenches, and each workbench row shows its profile, version and latest status.
+
+- Hardened in independent review before integration (1 fix group(s)).
+
 ### Added - `exa reproduce` really rebuilds the environment, and really checks the image digest (ADR 0038 clause 2)
 
 - **`exa reproduce run --execute --rebuild-env`** materialises the bundle's recorded package set

@@ -37,7 +37,13 @@ def test_the_real_schema_has_no_unclassified_table(db):
     assert report["stale_exemptions"] == []
     assert report["ok"] is True
     # The report is honest about what is NOT partitioned today.
-    assert "dataset_revisions" in report["known_gaps"]
+    assert "prompt_versions" in report["known_gaps"]
+    # Dataset-keyed tables reach their project through the dataset's membership (enforced by the
+    # `exa data` guards), so they are no longer listed as gaps.
+    by_table = {t["table"]: t["status"] for t in report["tables"]}
+    for table in ("dataset_revisions", "dataset_cards", "synthetic_datasets", "data_retention"):
+        assert by_table[table] == "dataset-scoped", table
+        assert table not in report["known_gaps"]
     assert report["summary"]["scoped"] >= 40 and report["total"] >= 100
 
 
@@ -67,6 +73,8 @@ def test_classification_rules():
     assert scope_audit.classify("t", ["id", "tenant"])[0] == "scoped"
     assert scope_audit.classify("t", ["id", "project"])[0] == "scoped"
     assert scope_audit.classify("t", ["id", "model"])[0] == "model-scoped"
+    assert scope_audit.classify("t", ["id", "dataset"])[0] == "dataset-scoped"
+    assert scope_audit.classify("t", ["model", "dataset"])[0] == "model-scoped"
     assert scope_audit.classify("coord_locks", ["key"])[0] == "exempt"
     assert scope_audit.classify("brand_new", ["id"])[0] == "UNSCOPED"
 

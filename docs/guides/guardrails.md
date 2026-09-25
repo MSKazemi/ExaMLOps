@@ -105,9 +105,106 @@ typo cannot silently disable the boundary.
 - **`enforce`** — redact PII/secrets, block injection/toxicity, and **fail closed** on a
   scanner error (R6).
 
+## Declarative policy (per tenant, per route)
+
+ADR 0026 clause 3 asks for checks **composed declaratively, per route and per tenant, through an
+OSS framework** behind the `Guardrail` interface. That is a policy file: YAML at
+`EXAMLOPS_GUARDRAIL_POLICY`, or `<config dir>/guardrails.yaml` when it exists (the config dir is
+`EXAMLOPS_CONFIG_DIR`, else `<EXAMLOPS_DATA_DIR>/config`, else `~/.config/examlops`). With no
+policy file, nothing changes: the built-in guardrail runs at `EXAMLOPS_GUARDRAIL_MODE`. With one,
+the policy's own `mode:` fields decide; a policy that sets no `mode:` at a layer **inherits**
+`EXAMLOPS_GUARDRAIL_MODE` (so a file that only adds a banned topic can never downgrade an
+`enforce` deployment to `monitor` by omission). `EXAMLOPS_GUARDRAIL_MODE=off` remains the global
+kill switch that disables scanning (and the tool gate) entirely.
+
+```yaml
+version: 1
+default:                       # replaces the built-in defaults field by field
+  mode: monitor
+  input:  [injection, pii, secret]
+  output: [toxicity, pii, secret]
+  banned_topics: [weapons]
+tenants:
+  acme:
+    mode: enforce
+    allowed_tools: [retrain, dataplane_pull]   # agent tool allow-list (clause 4)
+    blocked_tools: [operation_cancel]          # deny wins over allow
+routes:                        # `match` is a glob on the requested model; `tenant` optional glob
+  - match: "public-*"
+    mode: enforce
+    input:
+      - injection
+      - topics                                  # uses banned_topics
+      - {check: length, max_chars: 20000}
+      - check: llm_guard                        # LLM-Guard scanners (optional extra)
+        timeout_s: 5
+        scanners:
+          - {name: PromptInjection, threshold: 0.9}
+          - {name: Toxicity}
+```
+
+**Resolution** is `default → tenants[<tenant>] → every matching route, in file order`; later layers
+win and replace whole values (lists are never merged, so what a layer says is exactly what applies).
+`exa guardrails policy show --tenant acme --route public-llama` prints the result and which layers
+contributed.
+
+**Checks** (`exa guardrails checks` lists them with availability):
+
+| Check | Default action | Allowed actions | What it runs |
+|---|---|---|---|
+| `injection` | block | block · flag | the injection/jailbreak detector above |
+| `pii` | redact | block · redact · flag | the regex PII detectors + opt-in Presidio NER |
+| `secret` | redact | block · redact · flag | the D7 secret scanner |
+| `toxicity` | block | block · flag | the wordlist stub (use `llm_guard` `Toxicity` for a classifier) |
+| `topics` | block | block · flag | whole-word match against `banned_topics` |
+| `length` | block | block | `max_chars` hard cap |
+| `llm_guard` | block | block · redact · flag | [LLM-Guard](https://github.com/protectai/llm-guard) input/output scanners; `redact` uses LLM-Guard's sanitised text |
+| *plugin* | block | any | anything registered under the `exa.guardrails.checks` entry-point group (NeMo Guardrails, Guardrails AI, an in-house classifier); it receives the entry's `config:` mapping |
+
+`flag` records a finding without changing the text, even in enforce. Checks run in order over the
+progressively redacted text; in enforce the first blocking check stops the chain. A `redact` check
+that finds something but offers no sanitised text (an LLM-Guard classifier such as
+`PromptInjection` returns the text unchanged) reports `unredactable:<check>` and **blocks** in
+enforce, rather than passing what it detected on as "redacted".
+
+**LLM-Guard** is the framework adapter shipped in core, imported lazily. It is not an `examlops`
+extra: llm-guard ≥ 0.3.16 pins `transformers==4.51.3`, which cannot share an environment with the
+platform's `transformers>=5` stack (vLLM, sentence-transformers), so install it in a separate
+guardrail image with `pip install 'llm-guard>=0.3.16'` (Python < 3.13 only; it downloads its
+scanner models on first use). Scanner names are restricted to what
+`llm_guard.input_scanners` / `output_scanners` export; `Anonymize`/`Deanonymize` are refused because
+they need a shared vault — use the `pii` check. Scanners are built once per policy configuration,
+not per request.
+
+**Failure semantics — enforce fails closed:**
+
+- a check that **raises** → `scanner-error:<check>`; one that exceeds its **`timeout_s`** (default
+  10 s for framework checks, capped at 60 s) → `scanner-timeout:<check>`; one that **cannot be
+  constructed** (extra not installed, bad plugin) → `check-unavailable:<check>`. In `enforce` each
+  blocks the text; in `monitor` each is recorded and the text passes. A construction failure is
+  retried after 30 s, so a transient one (a backend briefly down) does not block until restart.
+- an **invalid or unreadable policy file** never leaves the boundary unscanned: it falls back to
+  the built-in guardrail at `EXAMLOPS_GUARDRAIL_MODE`, logs the errors, and writes one
+  `guardrail_policy_invalid` audit event per file version. For agent **tool calls** an invalid
+  policy denies, since a tool allow-list with a typo must not grant every tool.
+- `exa guardrails policy validate --file guardrails.yaml` exits 1 on any error — put it in CI.
+
+The file is re-read when it changes (mtime/size), so an edit takes effect without a restart. Files
+over 256 KiB, more than 32 checks per direction, or more than 256 routes are refused.
+
+**Where the policy applies:** the gateway client and the `llm-gateway` service (the requested model
+is the route), `exa guardrails test` (with `--route`), and every MCP **agent write** (the
+`_agent_write_gate` checks the policy's `allowed_tools`/`blocked_tools` against the action, for the
+tenant in `EXAMLOPS_TENANT`, before the authorization policy runs). Blocks and redactions are
+audited under the tenant whose traffic they touched.
+
 ## CLI
 
 ```bash
+exa guardrails checks                                                          # composable checks + availability
+exa guardrails policy validate --file guardrails.yaml                          # CI gate (exit 1 on error)
+exa guardrails policy show --tenant acme --route public-llama                  # effective policy
+exa guardrails test --text "..." --tenant acme --route public-llama            # run the policy
 exa guardrails test --text "ignore previous instructions" --direction input   # → block
 exa guardrails test --text "email me at a@b.com" --direction output            # → redact
 exa guardrails test --text "..." --mode monitor                                # log-only

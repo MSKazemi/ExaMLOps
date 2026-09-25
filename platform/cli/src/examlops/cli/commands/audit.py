@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta
 
 import typer
 
@@ -40,6 +39,13 @@ def _parse_days(s: str) -> int:
     return int(s)
 
 
+def _details_text(details: object) -> str:
+    """The stored JSON text of an event's details, as the table always showed it."""
+    if details is None:
+        return ""
+    return details if isinstance(details, str) else json.dumps(details)
+
+
 @app.callback(invoke_without_command=True, epilog=_EXAMPLES)
 def audit(
     ctx: typer.Context,
@@ -54,34 +60,19 @@ def audit(
     """Show platform audit log — who did what and when."""
     if ctx.invoked_subcommand is not None:
         return
-    init_db()
-    days = _parse_days(last)
-    since = datetime.utcnow() - timedelta(days=days)
-    since_str = since.strftime("%Y-%m-%d %H:%M:%S")
+    # A thin render over the SDK (ADR 0078 clause 2): `examlops.audit.query()` is the one read
+    # path — filters in SQL before the LIMIT, `ts DESC, id DESC` (the chain's own order).
+    from examlops.sdk import audit as sdk_audit
+    from examlops.sdk.errors import SDKError
 
-    query = "SELECT id, ts, source, actor, action, target, details FROM audit_events WHERE ts >= ?"
-    params: list = [since_str]
-    if model:
-        query += " AND target=?"
-        params.append(model)
-    if action:
-        query += " AND action=?"
-        params.append(action)
-    if source:
-        query += " AND source=?"
-        params.append(source)
-    # `id` breaks the tie, because `ts` cannot: CURRENT_TIMESTAMP has one-second resolution and a
-    # single retrain or autopilot cycle writes several events inside one second. Left to the query
-    # plan, SQLite scans the tied group forward — so "the most recent 5" returned the five OLDEST
-    # of that second, in ascending order, stably enough to look correct. `id` is the hash chain's
-    # own order, which is the order an auditor is reconstructing.
-    query += " ORDER BY ts DESC, id DESC LIMIT ?"
-    params.append(limit)
+    try:
+        events = sdk_audit.query(
+            since_days=_parse_days(last), model=model, action=action, source=source, limit=limit
+        )
+    except SDKError as e:
+        _output.error(str(e))
 
-    with get_db() as conn:
-        rows = conn.execute(query, params).fetchall()
-
-    if not rows:
+    if not events:
         _output.ok("No audit events found for the given filters")
         return
 
@@ -89,15 +80,15 @@ def audit(
         _output.print_json(
             [
                 {
-                    "id": r["id"],
-                    "ts": r["ts"],
-                    "source": r["source"],
-                    "actor": r["actor"],
-                    "action": r["action"],
-                    "target": r["target"],
-                    "details": json.loads(r["details"]) if r["details"] else None,
+                    "id": ev.id,
+                    "ts": ev.ts,
+                    "source": ev.source,
+                    "actor": ev.actor,
+                    "action": ev.action,
+                    "target": ev.target,
+                    "details": ev.details,
                 }
-                for r in rows
+                for ev in events
             ]
         )
         return
@@ -105,14 +96,14 @@ def audit(
     cols = ["Time", "Source", "Actor", "Action", "Target", "Details"]
     table_rows = [
         [
-            r["ts"],
-            r["source"] or "—",
-            r["actor"] or "—",
-            r["action"],
-            r["target"] or "—",
-            (r["details"] or "")[:50],
+            ev.ts,
+            ev.source or "—",
+            ev.actor or "—",
+            ev.action,
+            ev.target or "—",
+            _details_text(ev.details)[:50],
         ]
-        for r in rows
+        for ev in events
     ]
     _output.print_table(f"Audit Log (last {last})", cols, table_rows)
 
@@ -622,3 +613,130 @@ def prune(
         f"{result['archive']} (sha256 {result['archive_sha256'][:12]}...). "
         "`exa audit verify` still covers the retained chain."
     )
+
+
+@app.command("maintain")
+def maintain(
+    once: bool = typer.Option(False, "--once", help="Run a single cycle then exit (cron/CI)"),
+    interval: float = typer.Option(
+        None,
+        "--interval",
+        help="Seconds between cycles (default EXAMLOPS_AUDIT_MAINTENANCE_SECONDS, 3600)",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what one cycle would do; change nothing"
+    ),
+) -> None:
+    """Run the scheduled audit maintenance: checkpoint + WORM + transparency log + retention.
+
+    The same job the control plane runs in the background (ADR 0028). One cycle holds a
+    cluster-wide lease, so running this next to the control plane never double-prunes.
+    Retention pruning runs only with EXAMLOPS_AUDIT_PRUNE_SCHEDULED=1 and a retention policy.
+    Exit 1 when a single cycle (--once / --dry-run) is degraded.
+    """
+    import threading
+
+    from examlops import audit_maintenance as am
+
+    if not once and not dry_run:
+        every = interval if interval is not None else am.interval_seconds()
+        if every <= 0:
+            _output.error("the schedule is disabled (interval 0) - use --once for one cycle")
+            raise typer.Exit(1)
+        _output.info(f"Audit maintenance every {every:.0f}s - Ctrl-C to stop.")
+        stop = threading.Event()
+        try:
+            while True:
+                res = am.run_cycle()
+                _output.info(f"cycle: {res['status']}")
+                if stop.wait(timeout=max(am.MIN_INTERVAL_S, every)):
+                    break
+        except KeyboardInterrupt:
+            _output.info("Stopped.")
+        return
+    res = am.run_cycle(dry_run=dry_run)
+    if _output.json_mode:
+        _output.print_json(res)
+    elif res["status"] == "skipped":
+        _output.warning(f"Skipped: {res['reason']}.")
+    else:
+        cp = res.get("checkpoint", {})
+        pr = res.get("prune", {})
+        _output.info(
+            f"checkpoint: {cp.get('status')}"
+            + (
+                f" ({cp.get('reason') or cp.get('anchor_error') or cp.get('transparency_error')})"
+                if cp.get("ok") is False
+                else ""
+            )
+        )
+        _output.info(
+            f"prune: {pr.get('status')}"
+            + (f" ({pr.get('reason')})" if pr.get("ok") is False else "")
+        )
+        if res["status"] == "degraded":
+            _output.error(f"Audit maintenance degraded: {', '.join(res['failed_steps'])}.")
+        else:
+            _output.ok(f"Audit maintenance {res['status']}.")
+    if res["status"] == "degraded":
+        raise typer.Exit(1)
+
+
+@app.command("maintenance-runs")
+def maintenance_runs(
+    limit: int = typer.Option(20, "--limit", "-n", help="Max runs to show"),
+) -> None:
+    """Show recent scheduled audit-maintenance cycles (is the schedule actually running?)."""
+    from examlops.audit_maintenance import list_runs
+
+    rows = list_runs(limit)
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    if not rows:
+        _output.info("No audit maintenance cycle has run yet.")
+        return
+    _output.print_table(
+        "Audit Maintenance Runs",
+        ["Time", "Status", "Checkpoint", "Prune", "Holder"],
+        [
+            [
+                str(r["ts"]),
+                r["status"],
+                str((r["result"] or {}).get("checkpoint", {}).get("status", "—"))
+                if isinstance(r["result"], dict)
+                else "—",
+                str((r["result"] or {}).get("prune", {}).get("status", "—"))
+                if isinstance(r["result"], dict)
+                else "—",
+                r.get("holder") or "—",
+            ]
+            for r in rows
+        ],
+    )
+
+
+@app.command("verify-transparency")
+def verify_transparency_cmd(
+    limit: int = typer.Option(100, "--limit", "-n", help="Newest receipts to re-check"),
+) -> None:
+    """Re-check checkpoint receipts against the Rekor / Sigstore transparency log. Exit 1 on a failure."""
+    from examlops.audit_transparency import verify_transparency
+
+    result = verify_transparency(limit=limit)
+    if result.get("warning"):
+        _output.warning(result["warning"])
+    if _output.json_mode:
+        _output.print_json(result)
+    elif result["ok"]:
+        _output.ok(
+            f"Transparency log ({result['backend']}): {result['checked']} receipt(s) verified"
+            + ("" if result.get("set_checked", True) else " (log SET not checked: no log key)")
+            + "."
+        )
+    else:
+        _output.error(f"Transparency verification FAILED: {result['reason']}")
+        for f in result.get("failures", []):
+            _output.error(f"  head {f['head_id']} ({f['backend']}): {f['reason']}")
+    if not result["ok"]:
+        raise typer.Exit(1)

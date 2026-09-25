@@ -32,6 +32,10 @@ PLATFORM_DB = ROOT / "platform" / "cli" / "src" / "examlops" / "platform_db.py"
 RETAINED: dict[str, str] = {
     "audit_events": "the tamper-evident chain; ageing it out is what it exists to prevent",
     "audit_checkpoints": "the WORM anchors for that chain",
+    "audit_transparency_entries": "transparency-log receipts proving a checkpoint was published",
+    "audit_maintenance_runs": (
+        "self-bounded: audit_maintenance keeps only the newest MAX_RUNS_KEPT cycles on every write"
+    ),
     "attestations": "supply-chain evidence, referenced by verification long after the fact",
     "compliance_records": "the EU-AI-Act register",
     "model_cards": "published model documentation",
@@ -50,11 +54,24 @@ RETAINED: dict[str, str] = {
     "gpu_allocations": "cost attribution reads it",
     "inference_energy": "the measurement carbon accounting is computed from",
     "explanations": "a stored explanation is referenced by the decision it explains",
+    "specdecode_windows": (
+        "FinOps history (ADR 0016 d4), excluded by the command's own contract like carbon_records; "
+        "one row per flushed window, never per request — it still grows with time (at most one row "
+        "per active (model, tenant, engine, lookahead) key per flush window), it is not bounded"
+    ),
     "catalog_pulls": (
         "the only thread between a catalog entry and the model definition it became (ADR 0158) — "
         "pruning it would leave a pulled model with no answer to 'what did this start from, at "
         "which entry_hash?', the same provenance question data_versions and lineage_events are "
         "kept for. It is an operator action, not traffic: one row per `exa catalog pull`"
+    ),
+    "hardware_profile_resolutions": (
+        "the provenance ledger of ADR 0157 Phase 4 — the only answer to 'which exact version of "
+        "this hardware profile did that workbench / training run / deployment get, and with what "
+        "status?' (`exa hardware profile history|in-use`, `exa status`); pruning it erases that "
+        "for past runs, the question data_versions is kept for. One row per resolution at a "
+        "workbench create, a pipeline or distributed launch, or a serving deploy — operator "
+        "actions and deploy-time sizing, never per request"
     ),
 }
 
@@ -74,6 +91,7 @@ GROWS_UNREVIEWED: dict[str, str] = {
     "structured_output_events": "one per constrained decode",
     "reasoning_usage": "per-request reasoning-token accounting",
     "agent_tool_calls": "one per agent step",
+    "agent_turn_outcomes": "one per ended agent turn (the session_ok SLI reads it)",
     "explain_logs": "one per explanation request",
     "ab_assignments": "one per assigned request",
     "ab_results": "one per scored request",

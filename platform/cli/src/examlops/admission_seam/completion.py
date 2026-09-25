@@ -20,14 +20,17 @@ dispatching call itself (:mod:`examlops.admission_seam.dispatch`) is released in
 
 **The TTL sweep stays the backstop, not the mechanism.** A holder that is killed between reserving
 and completing never reaches either site; its row lapses at ``expires_at`` (holding nothing from
-that instant) and ``exa admission expire`` marks it ``expired``. Completion and expiry can race —
-they resolve the same row under the same scoped write lock, so exactly one of them wins and the
+that instant) and ``exa admission reconcile`` marks it ``expired``. A *committed* job
+reservation is never TTL-swept (a running job outlives any TTL); ``exa admission reconcile``
+also asks the scheduler about each one and releases those whose job has ended
+(:func:`reconcile_job_reservations`). Completion and expiry can race — they resolve the same row under the same scoped write lock, so exactly one of them wins and the
 other reports that it released nothing.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from examlops.data import quota_reservations as store
@@ -70,7 +73,11 @@ def normalize_outcome(state: str | None) -> str | None:
     """
     if not state:
         return None
-    key = str(state).strip().upper()
+    # sacct writes "CANCELLED by 1234" and truncates to "CANCELLED+"; the first word is the state.
+    words = str(state).strip().upper().split()
+    if not words:
+        return None
+    key = words[0].rstrip("+")
     if key.lower() in OUTCOMES:  # the operation vocabulary, and COMPLETED/FAILED/CANCELLED
         return key.lower()
     return _JOB_STATES.get(key) or None
@@ -129,6 +136,56 @@ def release_on_completion(
         "gpus": sum(int(r["gpus"] or 0) for r in rows),
         "gpu_hours": sum(float(r["gpu_hours"] or 0.0) for r in rows),
     }
+
+
+def reconcile_job_reservations(
+    status_of: Callable[[str, str], str | None],
+    *,
+    actor: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Release committed job reservations whose job the scheduler says has ended.
+
+    The terminal-state chokepoint (:func:`on_job_terminal_state`) only runs when someone records a
+    terminal state, and several submissions never do: a serving allocation that hits its wall time
+    or crashes (only ``stop()`` releases it), a Slurm/Flux reindex that succeeds (only failures
+    are reconciled there), an asset build whose wait timed out. A ``committed`` row is exempt from
+    the TTL sweep by design — a running job outlives any admission TTL — so without this those
+    rows would hold their GPUs for ever.
+
+    ``status_of(scheduler, job_id)`` returns the scheduler's state for the job. A state that is not
+    recognisably terminal (including ``UNKNOWN``), or a lookup that raises, keeps the reservation:
+    releasing quota under a job that may still hold the GPUs is the invisible failure; a leak is
+    visible here and in ``exa admission reservations``.
+    """
+    released: list[dict[str, Any]] = []
+    still_running: list[dict[str, Any]] = []
+    unverified: list[dict[str, Any]] = []
+    for holder in store.committed_job_holders():
+        _, _, rest = holder.partition(":")
+        scheduler, _, job_id = rest.partition(":")
+        if not scheduler or not job_id:
+            unverified.append({"holder": holder, "error": "malformed job holder"})
+            continue
+        try:
+            state = status_of(scheduler, job_id)
+        except Exception as exc:  # noqa: BLE001 - one unreachable scheduler must not stop the rest
+            unverified.append({"holder": holder, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        outcome = normalize_outcome(state)
+        entry: dict[str, Any] = {"holder": holder, "state": state}
+        if outcome is None:
+            still_running.append(entry)
+            continue
+        if dry_run:
+            released.append(entry | {"outcome": outcome, "dry_run": True})
+            continue
+        out = release_on_completion(
+            holder, outcome=outcome, actor=actor, reason=f"reconciled: job {state}"
+        )
+        if out["released"]:
+            released.append(entry | {"outcome": outcome, "gpus": out["gpus"]})
+    return {"released": released, "still_running": still_running, "unverified": unverified}
 
 
 def on_job_terminal_state(job_id: str, scheduler: str, state: str | None) -> dict[str, Any] | None:

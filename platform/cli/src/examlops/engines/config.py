@@ -37,6 +37,8 @@ class Completion:
     # would read as "reasoned for free"); ``reasoning_text`` is the raw trace and is content.
     reasoning_tokens: int | None = None
     reasoning_text: str | None = None
+    # ADR 0143 d9: the OpenAI-compatible ``message.tool_calls`` when the server returned any.
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 @runtime_checkable
@@ -120,6 +122,34 @@ class MultimodalConfig:
         )
 
 
+class RuntimeLoraRefused(ValueError):
+    """Runtime LoRA adapter updating was requested on a shared deployment (ADR 0143 d8)."""
+
+
+@dataclass
+class LoraAdapter:
+    """ADR 0143 d8 — one statically-loaded LoRA adapter.
+
+    Adapters are supply-chain artifacts: ``model``/``version`` name the registered, signed
+    artifact that :func:`examlops.engines.lora.verify_lora_adapters` checks before the server is
+    started; ``path`` is where the serving host finds the verified bytes.
+    """
+
+    name: str
+    path: str
+    model: str | None = None  # registry name of the signed adapter artifact
+    version: str | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> LoraAdapter:
+        return cls(
+            name=str(d.get("name", "")),
+            path=str(d.get("path", "")),
+            model=(str(d["model"]) if d.get("model") else None),
+            version=(str(d["version"]) if d.get("version") is not None else None),
+        )
+
+
 @dataclass
 class EngineConfig:
     engine: str = "vllm"
@@ -150,6 +180,13 @@ class EngineConfig:
     # sends no cap and enforces after the fact from the reported usage; the platform never guesses
     # a provider parameter name.
     reasoning_cap_param: str | None = None
+    # ADR 0143 d8: static LoRA adapters only. ``shared`` defaults to True (fail closed): runtime
+    # adapter updating is refused unless the deployment is explicitly declared single-tenant.
+    lora_adapters: list[LoraAdapter] = field(default_factory=list)
+    max_loras: int | None = None
+    max_lora_rank: int | None = None
+    allow_runtime_lora_updating: bool = False
+    shared: bool = True
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EngineConfig:
@@ -179,6 +216,15 @@ class EngineConfig:
             reasoning_cap_param=(
                 str(d["reasoning_cap_param"]) if d.get("reasoning_cap_param") else None
             ),
+            lora_adapters=[
+                LoraAdapter.from_dict(a)
+                for a in (d.get("lora_adapters") or [])
+                if isinstance(a, dict)
+            ],
+            max_loras=d.get("max_loras"),
+            max_lora_rank=d.get("max_lora_rank"),
+            allow_runtime_lora_updating=bool(d.get("allow_runtime_lora_updating", False)),
+            shared=bool(d.get("shared", True)),
         )
 
 
@@ -236,6 +282,42 @@ def validate_engine_block(block: dict[str, Any]) -> list[str]:
         errors.append("reasoning_cap_param must be a request-field name (an identifier)")
 
     errors.extend(_validate_multimodal(block.get("multimodal")))
+    errors.extend(_validate_lora(block))
+    return errors
+
+
+_LORA_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+
+
+def _validate_lora(block: dict[str, Any]) -> list[str]:
+    """ADR 0143 d8: static adapters are well-formed; runtime updating is never on when shared."""
+    errors: list[str] = []
+    adapters = block.get("lora_adapters")
+    if adapters is not None:
+        if not isinstance(adapters, list):
+            return ["lora_adapters must be a list"]
+        seen: set[str] = set()
+        for i, a in enumerate(adapters):
+            if not isinstance(a, dict):
+                errors.append(f"lora_adapters[{i}] must be a mapping")
+                continue
+            name = str(a.get("name") or "")
+            if not name or not set(name) <= _LORA_NAME_CHARS:
+                errors.append(f"lora_adapters[{i}].name must be a non-empty [A-Za-z0-9._-] name")
+            if name in seen:
+                errors.append(f"lora_adapters[{i}].name {name!r} is duplicated")
+            seen.add(name)
+            if not a.get("path") or any(c.isspace() or c == "=" for c in str(a.get("path"))):
+                errors.append(f"lora_adapters[{i}].path must be a path without spaces or '='")
+    for key in ("max_loras", "max_lora_rank"):
+        val = block.get(key)
+        if val is not None and (isinstance(val, bool) or not isinstance(val, int) or val < 1):
+            errors.append(f"{key} must be a positive int")
+    if block.get("allow_runtime_lora_updating") and block.get("shared", True):
+        errors.append(
+            "allow_runtime_lora_updating is refused on a shared deployment (ADR 0143 d8): "
+            "load adapters statically via lora_adapters"
+        )
     return errors
 
 
@@ -384,6 +466,7 @@ def to_vllm_args(
         args += ["--speculative-config", json.dumps(payload, sort_keys=True)]
 
     args += _multimodal_args(config.multimodal)
+    args += lora_args(config)
 
     if host:
         args += ["--host", str(host)]
@@ -407,4 +490,33 @@ def _multimodal_args(mm: MultimodalConfig) -> list[str]:
         args += ["--mm-processor-cache-gb", str(mm.mm_processor_cache_gb)]
     if mm.enable_mm_embeds:
         args.append("--enable-mm-embeds")
+    return args
+
+
+def lora_args(config: EngineConfig) -> list[str]:
+    """ADR 0143 d8 — the static ``--lora-modules`` flags; refuses runtime updating when shared.
+
+    Raising here (rather than only validating YAML) means every substrate — Compose, Slurm/Flux,
+    KServe, ``exa serve llm args`` — refuses, because :func:`to_vllm_args` is the one renderer.
+    """
+    if config.allow_runtime_lora_updating and config.shared:
+        raise RuntimeLoraRefused(
+            "runtime LoRA adapter updating is never enabled on a shared deployment (ADR 0143 d8)"
+        )
+    if not config.lora_adapters:
+        return []
+    for a in config.lora_adapters:
+        # Re-checked at render time, not only in YAML validation: ``EngineConfig.from_dict`` does
+        # not validate, and the Compose launcher joins these args with spaces into one env var,
+        # so a path carrying whitespace would smuggle extra flags onto ``vllm serve``.
+        if not a.name or not set(a.name) <= _LORA_NAME_CHARS:
+            raise ValueError(f"LoRA adapter name {a.name!r} must be a [A-Za-z0-9._-] name")
+        if not a.path or any(c.isspace() or c == "=" for c in a.path):
+            raise ValueError(f"LoRA adapter {a.name!r} path must be non-empty, no spaces or '='")
+    args = ["--enable-lora", "--lora-modules"]
+    args += [f"{a.name}={a.path}" for a in config.lora_adapters]
+    if config.max_loras is not None:
+        args += ["--max-loras", str(int(config.max_loras))]
+    if config.max_lora_rank is not None:
+        args += ["--max-lora-rank", str(int(config.max_lora_rank))]
     return args

@@ -26,6 +26,7 @@ is worse than no telemetry.
 
 from __future__ import annotations
 
+import itertools
 from typing import Any
 
 try:  # pragma: no cover - import guard (langchain is a hard dep of the agent, not of tests)
@@ -102,9 +103,17 @@ class SkipperTracer(_BASE):  # type: ignore[misc,valid-type]
     unique per run and is what pairs a start callback with its end.
     """
 
-    def __init__(self, *, tenant: str = "default", system: str = "skipper") -> None:
+    def __init__(
+        self, *, tenant: str = "default", system: str = "skipper", session_id: str | None = None
+    ) -> None:
         self.tenant = tenant
         self.system = system
+        # ADR 0021 decision 1: every span names its session (the ``agent_sessions`` key, so a
+        # trace joins the platform's own row) and its step — the 0-based order in which this
+        # turn *started* its LLM, tool and retriever calls. ``itertools.count`` is advanced
+        # atomically under the GIL, so parallel tool calls still get distinct steps.
+        self.session_id = session_id
+        self._steps = itertools.count()
         # run_id → (span, model). The model is carried here rather than stashed on the span:
         # an SDK Span defines __slots__, so an attribute set on it would raise.
         self._spans: dict[Any, tuple[Any, str]] = {}
@@ -188,6 +197,33 @@ class SkipperTracer(_BASE):  # type: ignore[misc,valid-type]
     def on_tool_error(self, error: BaseException, *, run_id: Any = None, **_kw: Any) -> None:
         self._fail(run_id, error)
 
+    # ── retrievers (RETRIEVER spans, ADR 0021 decision 1) ────────────────────
+    def on_retriever_start(
+        self,
+        serialized: dict | None,
+        query: str,
+        *,
+        run_id: Any = None,
+        **_kw: Any,
+    ) -> None:
+        # The query is user content and is deliberately not attached (the capture gate and its
+        # redactor live on the model spans); the span records timing, name and result count.
+        self._start("retrieval", run_id, str((serialized or {}).get("name") or "retriever"))
+
+    def on_retriever_end(self, documents: Any, *, run_id: Any = None, **_kw: Any) -> None:
+        entry = self._spans.pop(run_id, None)
+        if entry is None:
+            return
+        span = entry[0]
+        try:
+            span.set_attribute("examlops.retrieval.documents", len(documents or []))
+        except Exception:  # noqa: BLE001
+            pass
+        self._end(span)
+
+    def on_retriever_error(self, error: BaseException, *, run_id: Any = None, **_kw: Any) -> None:
+        self._fail(run_id, error)
+
     # ── plumbing ─────────────────────────────────────────────────────────────
     def _start(self, kind: str, run_id: Any, model: str) -> None:
         genai = _genai()
@@ -195,6 +231,7 @@ class SkipperTracer(_BASE):  # type: ignore[misc,valid-type]
             return
         try:
             span = genai.start_span(kind, system=self.system, model=model, tenant=self.tenant)
+            genai.set_agent_context(span, session_id=self.session_id, step=next(self._steps))
             self._spans[run_id] = (span, model)
         except Exception:  # noqa: BLE001
             pass
@@ -218,7 +255,7 @@ class SkipperTracer(_BASE):  # type: ignore[misc,valid-type]
         self._end(span)
 
 
-def tracer(tenant: str = "default") -> SkipperTracer | None:
+def tracer(tenant: str = "default", session_id: str | None = None) -> SkipperTracer | None:
     """A handler, or ``None`` when tracing is off — so callers attach nothing by default."""
     genai = _genai()
     if genai is None:
@@ -228,7 +265,7 @@ def tracer(tenant: str = "default") -> SkipperTracer | None:
             return None
     except Exception:  # noqa: BLE001
         return None
-    return SkipperTracer(tenant=tenant)
+    return SkipperTracer(tenant=tenant, session_id=session_id)
 
 
 def traced(cfg: dict, tenant: str = "default") -> dict:
@@ -238,8 +275,14 @@ def traced(cfg: dict, tenant: str = "default") -> dict:
     second call site that forgets is exactly how clause 2 came to be half-implemented in the
     first place. When tracing is disabled this returns ``cfg`` unchanged — not a config with an
     inert handler in it — so the default path is byte-identical to what it was.
+
+    The turn's ``thread_id`` becomes the spans' session id (ADR 0021 decision 1) — the value
+    ``skipper.instrument`` records as ``agent_sessions.session_id``, so a trace and the
+    platform's session row join on it.
     """
-    handler = tracer(tenant)
+    configurable = cfg.get("configurable") or {}
+    thread_id = configurable.get("thread_id") if isinstance(configurable, dict) else None
+    handler = tracer(tenant, session_id=str(thread_id) if thread_id else None)
     if handler is None:
         return cfg
     merged = dict(cfg)

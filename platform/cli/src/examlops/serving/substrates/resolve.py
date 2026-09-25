@@ -35,6 +35,12 @@ class ResolvedRef:
 
     ``digest`` is ``sha256:<hex>`` when a D3 signature is on record, else the literal
     ``"unsigned"`` — an unknown digest is represented, never invented (P5).
+
+    ``signature`` is the public part of that D3 record (algo, digest, signature, key id) as
+    canonical JSON, or ``None`` when nothing is on record. It is what the in-pod verifier checks
+    the downloaded bytes against (ADR 0142 d3, R-SUB-20): a pod has no ``platform.db`` to read,
+    so the record travels in the rendered object. Nothing in it is secret — an Ed25519 signature
+    and a key id verify only against a trust bundle the pod is given separately.
     """
 
     model: str
@@ -43,6 +49,7 @@ class ResolvedRef:
     artifact_uri: str
     digest: str = UNSIGNED
     project: str = "default"
+    signature: str | None = None
 
 
 def scheme_of(uri: str) -> str:
@@ -94,6 +101,29 @@ def signature_digest(model: str, version: str) -> str:
     return UNSIGNED
 
 
+# The columns of a ``model_signatures`` row a verifier needs; everything else (who signed, when)
+# is provenance for the audit trail, not input to the check.
+_SIGNATURE_FIELDS = ("algo", "digest", "signature", "cert")
+
+
+def signature_record(model: str, version: str) -> str | None:
+    """The public D3 record for ``model``/``version`` as canonical JSON, or ``None``."""
+    try:
+        from examlops.data.registry import get_model_signature
+    except ImportError:  # pragma: no cover - the data layer ships with the package
+        return None
+    try:
+        row = get_model_signature(model, str(version))
+    except Exception:  # noqa: BLE001 - an unreadable store is "no signature on record"
+        return None
+    if not row or not row.get("digest") or not row.get("signature"):
+        return None
+    import json
+
+    public = {k: row.get(k) for k in _SIGNATURE_FIELDS if row.get(k) is not None}
+    return json.dumps(public, sort_keys=True, separators=(",", ":"))
+
+
 def resolve_ref(
     model: str,
     *,
@@ -122,6 +152,7 @@ def resolve_ref(
             storage_uri(artifact_uri),
             signature_digest(model, version),
             project,
+            signature_record(model, str(version)),
         )
     if client is None:
         import mlflow
@@ -139,4 +170,5 @@ def resolve_ref(
         storage_uri(str(uri)),
         signature_digest(model, str(version)),
         project,
+        signature_record(model, str(version)),
     )

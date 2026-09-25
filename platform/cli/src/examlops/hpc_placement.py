@@ -29,9 +29,46 @@ ScoreFn = Callable[["ResourceAsk", dict], float]
 
 @dataclass
 class ResourceAsk:
+    """A scheduler-neutral resource ask. Also the pipeline DSL's ``Resources`` (ADR 0080): one
+    class, so a step's ask and a placement ask can never drift apart.
+
+    ``gpu_fraction`` / ``mig_profile`` (ADR 0030 decision 1) say how much of *each* of the ``gpus``
+    devices the job needs. The defaults (``1.0`` / ``None``) are a whole-GPU ask, so every existing
+    caller is unchanged. A fractional ask is scored by what each cluster can actually allocate for
+    it (:mod:`examlops.gpu_sharing`): a cluster that must round it up to a whole GPU spends more of
+    its headroom than one that can slice it, and the candidate says which mechanism it would use.
+    """
+
     gpus: int = 0
     cpus: int = 0
     nodes: int = 1
+    gpu_fraction: float = 1.0
+    mig_profile: str | None = None
+
+    def __post_init__(self) -> None:
+        if not (0.0 < float(self.gpu_fraction) <= 1.0):
+            raise ValueError(f"gpu_fraction must be in (0, 1], got {self.gpu_fraction!r}")
+
+    @property
+    def is_fractional(self) -> bool:
+        return self.gpus > 0 and (self.gpu_fraction < 1.0 or bool(self.mig_profile))
+
+    def as_dict(self) -> dict[str, int]:
+        """The whole-device shape the pipeline DSL/IR serializes (ADR 0080)."""
+        return {"gpus": self.gpus, "cpus": self.cpus, "nodes": self.nodes}
+
+
+def _gpu_sharing_choice(ask: ResourceAsk, capabilities: dict | None) -> dict | None:
+    """What this cluster would allocate for a fractional ask (``None`` for a whole-GPU ask)."""
+    if not ask.is_fractional:
+        return None
+    from examlops.gpu_sharing import FractionalAsk, caps_from_capabilities, select_mechanism
+
+    choice = select_mechanism(
+        FractionalAsk("placement", fraction=ask.gpu_fraction, mig_profile=ask.mig_profile),
+        caps_from_capabilities(capabilities),
+    )
+    return choice.as_dict()
 
 
 @dataclass
@@ -99,8 +136,13 @@ def can_satisfy(ask: ResourceAsk, cap: dict) -> bool:
 
 
 def headroom_score(ask: ResourceAsk, cap: dict) -> float:
-    """Higher = more idle headroom after satisfying the ask (GPUs weighted heaviest)."""
-    return (cap["idle_gpus"] - ask.gpus) * 100 + (cap["idle_nodes"] - ask.nodes)
+    """Higher = more idle headroom after satisfying the ask (GPUs weighted heaviest).
+
+    A fractional ask consumes ``gpus × gpu_alloc_fraction`` — the share this cluster would really
+    allocate (``choose_cluster`` publishes it). Absent (a whole-GPU ask) it is 1.0, as before.
+    """
+    gpus = ask.gpus * float(cap.get("gpu_alloc_fraction", 1.0))
+    return (cap["idle_gpus"] - gpus) * 100 + (cap["idle_nodes"] - ask.nodes)
 
 
 def carbon_objective_state(signal: CarbonSignal | None) -> tuple[bool, str]:
@@ -168,19 +210,23 @@ def choose_cluster(
         cap = _effective_capacity(c)
         if carbon_usable and carbon_signal is not None:
             cap["carbon_intensity_decision"] = carbon_signal.grams_per_kwh
+        sharing = _gpu_sharing_choice(ask, c.get("capabilities"))
+        if sharing is not None:
+            cap["gpu_alloc_fraction"] = sharing["allocated_fraction"]
         fits = can_satisfy(ask, cap)
-        candidates.append(
-            {
-                "name": c["name"],
-                "scheduler": c.get("scheduler"),
-                "fits": fits,
-                "score": score(ask, cap) if fits else float("-inf"),
-                "idle_gpus": cap["idle_gpus"],
-                "total_gpus": cap["total_gpus"],
-                "idle_nodes": cap["idle_nodes"],
-                "total_nodes": cap["total_nodes"],
-            }
-        )
+        candidate = {
+            "name": c["name"],
+            "scheduler": c.get("scheduler"),
+            "fits": fits,
+            "score": score(ask, cap) if fits else float("-inf"),
+            "idle_gpus": cap["idle_gpus"],
+            "total_gpus": cap["total_gpus"],
+            "idle_nodes": cap["idle_nodes"],
+            "total_nodes": cap["total_nodes"],
+        }
+        if sharing is not None:
+            candidate["gpu_sharing"] = sharing
+        candidates.append(candidate)
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
     fitting = [c for c in candidates if c["fits"]]
@@ -197,6 +243,14 @@ def choose_cluster(
         f"{best['idle_gpus']}/{best['total_gpus']} idle GPUs, "
         f"{best['idle_nodes']}/{best['total_nodes']} idle nodes"
     )
+    if best.get("gpu_sharing"):
+        # ADR 0030 decision 4: the isolation level and any whole-GPU waste are surfaced, never
+        # left for the operator to discover on the bill.
+        share = best["gpu_sharing"]
+        reason += (
+            f" [gpu sharing: {share['mechanism']} ({share['isolation']} isolation), "
+            f"{share['allocated_fraction']:.3f} GPU per device — {share['note']}]"
+        )
     if policy and policy.get("action") != "allow":
         # ADR 0112 R-ec/R-ed: say which policy actually placed the job, and why it is not the
         # one that was asked for — a silent substitution would read as the requested policy.

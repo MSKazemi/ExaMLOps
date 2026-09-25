@@ -66,8 +66,17 @@ def _compute_stats(values: list[float]) -> dict[str, float]:
 
 
 def _drift_rows(model_filter: str | None) -> list[dict]:
-    """One computation for every consumer (examlops.drift_status); see its module docstring."""
-    return drift_status.model_rows(model_filter)
+    """One computation for every consumer (examlops.drift_status); see its module docstring.
+
+    Read through the SDK (ADR 0078 clause 2): ``examlops.drift.status()`` is the same rows, typed.
+    """
+    from examlops.sdk import drift as sdk_drift
+    from examlops.sdk.errors import SDKError
+
+    try:
+        return [r.to_dict() for r in sdk_drift.status(model_filter)]
+    except SDKError as e:
+        _output.error(str(e), hint="Is the platform datastore reachable? Try: exa doctor")
 
 
 @app.command(epilog=_EXAMPLES_STATUS)
@@ -277,8 +286,10 @@ def auto_retrain_enable(
     cooldown: int = typer.Option(3600, "--cooldown", help="Seconds between triggers"),
 ):
     """Enable drift-triggered auto-retrain for a model."""
+    from examlops.cli._model_authz import guard_model
     from examlops.usecase import default_dataset_for
 
+    guard_model(model, "editor")  # ADR 0014 d4: arms future retrains of this project's model
     init_db()
     # No hardcoded dataset (ADR 0094): resolve the model's primary dataset from the pack YAML.
     dataset = dataset or default_dataset_for(model)
@@ -306,6 +317,9 @@ def auto_retrain_disable(
     model: str = typer.Argument(..., help="Model name"),
 ):
     """Disable drift-triggered auto-retrain for a model."""
+    from examlops.cli._model_authz import guard_model
+
+    guard_model(model, "editor")  # ADR 0014 d4
     init_db()
     cfg = get_drift_auto_retrain(model)
     if cfg is None:
@@ -575,14 +589,16 @@ def trigger(
 
     # C5 (R2): concept-CRITICAL detections are also auto-retrain consumable, subject
     # to the same cooldown. Skip any model already triggered above on prediction drift.
-    from examlops.data.drift import latest_drift_event
+    # ADR 0022 decision 4: the signal is realized-error concept drift *or* a label-free
+    # performance estimate that realized labels confirmed; an unconfirmed estimate never fires.
+    from examlops.drift_advanced import concept_retrain_signal
 
     already = {t["model"] for t in triggered}
     for model, ar in enabled_configs.items():
         if model in already:
             continue
-        ev = latest_drift_event(model, "concept")
-        if not ev or ev["severity"] != "CRITICAL":
+        ev = concept_retrain_signal(model)
+        if not ev:
             continue
         # The concept path is the second door into an autonomous retrain, so ADR 0114's
         # suppression has to hold here as well. Only the corruption axis is consulted:
@@ -608,7 +624,12 @@ def trigger(
                 continue
         if dry_run:
             triggered.append(
-                {"model": model, "z": ev.get("score") or 0.0, "action": "would retrain (concept)"}
+                {
+                    "model": model,
+                    "z": ev.get("score") or 0.0,
+                    "signal": ev["signal"],
+                    "action": "would retrain (concept)",
+                }
             )
             continue
         if not claim_drift_trigger(model, ar["cooldown_s"]):
@@ -631,6 +652,9 @@ def trigger(
                 model,
                 {
                     "drift_kind": "concept",
+                    "signal": ev["signal"],
+                    "severity": ev["severity"],
+                    "drift_event_id": ev.get("id"),
                     "score": ev.get("score"),
                     "flow_run_id": result.get("flow_run_id"),
                     "command_id": result.get("command_id"),
@@ -640,6 +664,7 @@ def trigger(
                 {
                     "model": model,
                     "z": ev.get("score") or 0.0,
+                    "signal": ev["signal"],
                     "flow_run_id": result.get("flow_run_id"),
                 }
             )
@@ -1214,7 +1239,12 @@ def concept(
     detector: str = typer.Option(
         None,
         "--detector",
-        help="builtin (default) | river-adwin (needs `pip install river`; falls back to builtin)",
+        help=(
+            "builtin (default) | ddm | river-adwin | river-ddm | evidently "
+            "(the last three need `pip install 'examlops[drift-advanced]'`; "
+            "a missing library falls back to builtin and says so). "
+            "Default: $EXAMLOPS_DRIFT_CONCEPT_DETECTOR or builtin"
+        ),
     ),
 ):
     """Concept-drift test on realized error as delayed labels arrive (C5·R1)."""
@@ -1254,12 +1284,27 @@ def estimate(
     alias: str = typer.Option(None, "--alias", help="Restrict to one serving alias"),
     baseline: float = typer.Option(None, "--baseline", help="Baseline metric to compare against"),
     window: int = typer.Option(200, "--window", help="Recent predictions to estimate over"),
+    estimator: str = typer.Option(
+        None,
+        "--estimator",
+        help=(
+            "builtin (CBPE-like, default) | nannyml (CBPE / DLE; needs "
+            "`pip install nannyml statsmodels` on Python < 3.13, falls back to builtin). "
+            "Default: $EXAMLOPS_DRIFT_PERF_ESTIMATOR or builtin"
+        ),
+    ),
 ):
-    """Label-free performance estimate (CBPE-like) before labels arrive (C5·R3/R4)."""
+    """Label-free performance estimate before labels arrive (C5·R3/R4).
+
+    A drop vs `--baseline` warns; the same drop confirmed by realized labels in the recent window
+    is CRITICAL and is what `exa drift trigger` acts on (ADR 0022 decision 4).
+    """
     from examlops.drift_advanced import estimate_performance
 
     init_db()
-    res = estimate_performance(model, alias=alias, baseline=baseline, window=window)
+    res = estimate_performance(
+        model, alias=alias, baseline=baseline, window=window, estimator=estimator
+    )
     if _output.json_mode:
         _output.print_json(res)
         return
@@ -1272,7 +1317,15 @@ def estimate(
     )
     if res.get("realized") is not None:
         _output.info(f"  realized (labelled): {res['realized']:.4f}")
-    if res.get("warn"):
+    if res.get("estimator_fallback"):
+        _output.warning(f"  estimator fell back to builtin: {res['estimator_fallback']}")
+    if res.get("confirmed"):
+        _output.warning(
+            f"Estimated performance dropped ≥{int(0.10 * 100)}% vs baseline {baseline:.4f} "
+            f"and realized labels confirm it (n={res['realized_n']}) — CRITICAL, "
+            "auto-retrain consumable."
+        )
+    elif res.get("warn"):
         _output.warning(
             f"Estimated performance dropped ≥{int(0.10 * 100)}% vs baseline "
             f"{baseline:.4f} — warning only (awaiting labels)."
@@ -1283,14 +1336,33 @@ def estimate(
 def profile(
     model: str = typer.Argument(..., help="Model name"),
     last_n: int = typer.Option(200, "--last-n", help="Recent predictions to profile"),
-    bad_payloads: int = typer.Option(0, "--bad-payloads", help="A5 bad-payload count to fold in"),
+    bad_payloads: int = typer.Option(
+        None,
+        "--bad-payloads",
+        help=(
+            "A5 bad-payload count to fold in (default: the contract rejections the inference "
+            "ingress recorded in the last $EXAMLOPS_DRIFT_ADVANCED_REJECTION_WINDOW seconds)"
+        ),
+    ),
+    profiler: str = typer.Option(
+        None,
+        "--profiler",
+        help=(
+            "builtin (default) | whylogs (needs whylogs, which needs NumPy < 2; falls back "
+            "to builtin). Default: $EXAMLOPS_DRIFT_QUALITY_PROFILER or builtin"
+        ),
+    ),
 ):
     """Profile recent inference inputs: schema / nulls / ranges / cardinality (C5·R5)."""
     import json as _json
 
+    from examlops.data.drift import count_inference_rejections
     from examlops.drift_advanced import profile_inference
+    from examlops.drift_advanced.scheduler import rejection_window_s
 
     init_db()
+    if bad_payloads is None:
+        bad_payloads = count_inference_rejections(model, since_s=rejection_window_s())
     with get_db() as conn:
         rows = conn.execute(
             "SELECT features_json FROM predictions WHERE model=? ORDER BY id DESC LIMIT ?",
@@ -1305,7 +1377,7 @@ def profile(
                     batch.append(obj)
             except (ValueError, TypeError):
                 continue
-    prof = profile_inference(model, batch, bad_payloads=bad_payloads)
+    prof = profile_inference(model, batch, bad_payloads=bad_payloads, profiler=profiler)
     if _output.json_mode:
         _output.print_json(
             {
@@ -1313,14 +1385,20 @@ def profile(
                 "n": prof.n,
                 "null_fraction": prof.null_fraction,
                 "severity": prof.severity,
+                "bad_payloads": prof.bad_payloads,
+                "profiler": prof.profiler,
+                "profiler_fallback": prof.profiler_fallback,
                 "fields": prof.fields,
             }
         )
         return
+    if prof.profiler_fallback:
+        _output.warning(f"profiler fell back to builtin: {prof.profiler_fallback}")
     color = {"OK": "green", "WARN": "yellow", "CRITICAL": "red"}.get(prof.severity, "white")
     _output.info(
         f"Data-quality profile for {model}: [{color}]{prof.severity}[/{color}] "
-        f"(n={prof.n}, null_fraction={prof.null_fraction:.2%})"
+        f"(n={prof.n}, null_fraction={prof.null_fraction:.2%}, "
+        f"bad_payloads={prof.bad_payloads})"
     )
     if prof.fields:
         _output.print_table(

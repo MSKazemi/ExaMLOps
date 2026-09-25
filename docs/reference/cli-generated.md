@@ -14,6 +14,14 @@ ExaMLOps platform CLI — manage models, training, inference, and services.
 
 Admission-control queue (per-tenant fair-share)
 
+### `exa admission reconcile`
+
+Reclaim leaked quota (ADR 0116 decision 3): expire reservations whose TTL lapsed, and release
+committed job reservations whose scheduler job has ended. A job the scheduler cannot answer
+for keeps its quota. Run it periodically (cron / a Prefect schedule).
+
+- `--dry-run` — Report what would be expired/released; change nothing
+
 ### `exa admission reservations`
 
 List two-phase quota reservations, or preview which leaked ones would expire. Read-only.
@@ -51,6 +59,19 @@ what tells a busy queue from a stranded one.
 - `--project` — Project attribution
 - `--priority` — Higher runs first within a tenant
 
+### `exa admission topology`
+
+Show the typed resource graph admission reasons over (ADR 0116): scale-up domains and their
+free GPUs from the node inventory plus the site's declared topology file. Read-only.
+
+### `exa admission translate`
+
+Show how one JobRequest maps onto an execution backend (ADR 0116): the native resources the
+adapter receives, and the fields that backend cannot enforce. Read-only; nothing is submitted.
+
+- `--request` — JobRequest JSON file to translate
+- `--backend` — mock | slurm | flux
+
 ## `exa agent`
 
 Skipper agent — health, backend and memory
@@ -59,17 +80,25 @@ Skipper agent — health, backend and memory
 
 Agent aliases - Staging / Canary / Production pointers, promotion gated by evidence
 
+#### `exa agent alias canary`
+
+Start a share of the agent's new sessions on its Canary version; existing ones stay put.
+
+- `--reason` — Why (recorded in the audit log)
+
 #### `exa agent alias rollback`
 
 Move an alias back to the version it held before its latest move (not re-gated).
 
 - `--reason` — Why (recorded in the history)
+- `--in-flight` — continue | interrupt | quarantine: what the agent runtime does with sessions still running on the rolled-back version (ADR 0146 d4)
 
 #### `exa agent alias set`
 
 Point an alias at a version. Production requires recorded evaluation evidence.
 
 - `--reason` — Why (recorded in the history)
+- `--state-strategy` — pin | drain: required to replace Production with an incompatible or unknown checkpoint schema (ADR 0146 d5)
 
 #### `exa agent alias show`
 
@@ -134,6 +163,33 @@ Summarise memory owned by the authenticated principal and tenant.
 
 - `--local` — Read AGENT_MEMORY_DB on this machine
 
+### `exa agent runtime`
+
+Agent runtime - compile its snapshot, serve it, inspect sandbox isolation (ADR 0144/0145)
+
+#### `exa agent runtime sandboxes`
+
+The sandbox isolation each substrate provider offers on this host (measured, not assumed).
+
+#### `exa agent runtime serve`
+
+Run the agent runtime (threads/runs HTTP surface) and its maintenance loop.
+
+- `--snapshot` — Agent snapshot file to serve from and follow (default: $EXAMLOPS_AGENT_SNAPSHOT)
+- `--host` — Bind address (loopback by default)
+- `--port` — Listen port
+- `--state-db` — Agent state store (default: $EXAMLOPS_AGENT_STATE_DB)
+- `--worker` — This worker's id (affinity)
+- `--peer` — Every worker id in the pool, this one included (repeatable)
+- `--interval` — Seconds between snapshot/sweep/recovery passes
+- `--allow-remote` — Allow binding beyond loopback (put TLS in front)
+
+#### `exa agent runtime snapshot`
+
+Compile the agent snapshot the runtime serves from (versions, aliases, grants, quotas).
+
+- `--out` — Write the snapshot here (atomically)
+
 ### `exa agent status`
 
 Show the agent's reachability, LLM backend, model and memory tier.
@@ -153,9 +209,19 @@ Print the A2A-shaped Agent Card of a registered version (read-only, content-addr
 
 - `--out` — Write the card JSON to this file
 
+#### `exa agent version compat`
+
+State-compatibility verdict between two versions: compatible, incompatible or inert.
+
 #### `exa agent version diff`
 
 Which components differ between two versions, by name.
+
+#### `exa agent version evidence`
+
+Export a version's evidence pack: tuple, evals, judges, grants, moves, audit (read-only).
+
+- `--out` — Write the evidence pack JSON here
 
 #### `exa agent version list`
 
@@ -163,6 +229,21 @@ List registered versions, newest first, with the aliases pointing at each.
 
 - `--agent, -a` — Only this agent
 - `--limit, -n` — Max versions
+
+#### `exa agent version reeval`
+
+Re-evaluations enqueued because a model an agent follows was promoted (ADR 0146 d2).
+
+- `--agent, -a` — Only this agent
+- `--status` — pending | passed | failed
+- `--limit, -n` — Max entries
+
+#### `exa agent version reeval-resolve`
+
+Close a pending re-evaluation; `passed` lifts a blocking agent's model pin.
+
+- `--outcome` — passed | failed
+- `--reason` — Why (recorded in the audit log)
 
 #### `exa agent version register`
 
@@ -340,6 +421,25 @@ Archival export of the audit trail (D4·R4). Append-only — never deletes.
 - `--out` — Write the archival JSON export to this file
 - `--before` — Only events before this ISO timestamp
 
+### `exa audit maintain`
+
+Run the scheduled audit maintenance: checkpoint + WORM + transparency log + retention.
+
+The same job the control plane runs in the background (ADR 0028). One cycle holds a
+cluster-wide lease, so running this next to the control plane never double-prunes.
+Retention pruning runs only with EXAMLOPS_AUDIT_PRUNE_SCHEDULED=1 and a retention policy.
+Exit 1 when a single cycle (--once / --dry-run) is degraded.
+
+- `--once` — Run a single cycle then exit (cron/CI)
+- `--interval` — Seconds between cycles (default EXAMLOPS_AUDIT_MAINTENANCE_SECONDS, 3600)
+- `--dry-run` — Report what one cycle would do; change nothing
+
+### `exa audit maintenance-runs`
+
+Show recent scheduled audit-maintenance cycles (is the schedule actually running?).
+
+- `--limit, -n` — Max runs to show
+
 ### `exa audit prune`
 
 Prune old audit events under the retention policy WITHOUT breaking the chain (ADR 0028).
@@ -380,6 +480,12 @@ Recompute the hash chain and report integrity (D4·R2/R6). Exit 1 if broken.
 ### `exa audit verify-anchors`
 
 Verify every telemetry anchor against its side table (ADR 0110 decision 5). Exit 1 on a break.
+
+### `exa audit verify-transparency`
+
+Re-check checkpoint receipts against the Rekor / Sigstore transparency log. Exit 1 on a failure.
+
+- `--limit, -n` — Newest receipts to re-check
 
 ### `exa audit verify-worm`
 
@@ -696,6 +802,8 @@ Lint a dataset card (datasheet) for missing required fields; exit 1 on any findi
 
 - `--revision` — Dataset revision (A1); required
 - `--license` — Dataset license
+- `--datasheet` — Also lint the Gebru et al. datasheet questionnaire authored for this dataset (<pack>/datasheets/<dataset>.yaml or EXAMLOPS_DATASHEETS_DIR)
+- `--template` — Print a datasheet questionnaire skeleton to fill in, and exit
 
 ### `exa cards model`
 
@@ -1126,9 +1234,10 @@ Probe the Dataplane bus bridge health and runtime stats endpoints.
 
 ## `exa docs`
 
-Generate the full command reference from the live CLI tree.
+Generate the full command reference from the live CLI tree (or the SDK's, with --sdk).
 
 - `--out` — Write Markdown to this file instead of stdout
+- `--sdk` — Emit the Python SDK reference (the `examlops` public surface) instead of the CLI's
 
 ## `exa doctor`
 
@@ -1169,7 +1278,7 @@ Concept-drift test on realized error as delayed labels arrive (C5·R1).
 
 - `--alias` — Restrict to one serving alias
 - `--window` — Recent window size (samples)
-- `--detector` — builtin (default) | river-adwin (needs `pip install river`; falls back to builtin)
+- `--detector` — builtin (default) | ddm | river-adwin | river-ddm | evidently (the last three need `pip install 'examlops[drift-advanced]'`; a missing library falls back to builtin and says so). Default: $EXAMLOPS_DRIFT_CONCEPT_DETECTOR or builtin
 
 ### `exa drift consume-telemetry`
 
@@ -1221,11 +1330,15 @@ on its own here (ADR 0114 decision 1).
 
 ### `exa drift estimate`
 
-Label-free performance estimate (CBPE-like) before labels arrive (C5·R3/R4).
+Label-free performance estimate before labels arrive (C5·R3/R4).
+
+A drop vs `--baseline` warns; the same drop confirmed by realized labels in the recent window
+is CRITICAL and is what `exa drift trigger` acts on (ADR 0022 decision 4).
 
 - `--alias` — Restrict to one serving alias
 - `--baseline` — Baseline metric to compare against
 - `--window` — Recent predictions to estimate over
+- `--estimator` — builtin (CBPE-like, default) | nannyml (CBPE / DLE; needs `pip install nannyml statsmodels` on Python < 3.13, falls back to builtin). Default: $EXAMLOPS_DRIFT_PERF_ESTIMATOR or builtin
 
 ### `exa drift events`
 
@@ -1274,7 +1387,8 @@ Show input embedding distribution drift for all models (or one model).
 Profile recent inference inputs: schema / nulls / ranges / cardinality (C5·R5).
 
 - `--last-n` — Recent predictions to profile
-- `--bad-payloads` — A5 bad-payload count to fold in
+- `--bad-payloads` — A5 bad-payload count to fold in (default: the contract rejections the inference ingress recorded in the last $EXAMLOPS_DRIFT_ADVANCED_REJECTION_WINDOW seconds)
+- `--profiler` — builtin (default) | whylogs (needs whylogs, which needs NumPy < 2; falls back to builtin). Default: $EXAMLOPS_DRIFT_QUALITY_PROFILER or builtin
 
 ### `exa drift reset`
 
@@ -1441,6 +1555,10 @@ because a question that leaks its own answer measures nothing.
 - `--record` — Persist the rate to the eval store so runs are comparable
 - `--agent-model` — Label the recorded run belongs to
 
+### `exa eval evaluators`
+
+List evaluator specs and which engine (native / Ragas / DeepEval / gateway) runs each.
+
 ### `exa eval feedback`
 
 Ground-truth feedback loop
@@ -1525,6 +1643,50 @@ nothing to compare against, so a regression is invisible by construction.
 - `--metric` — Only this metric
 - `--limit` — Most recent rows to show
 
+### `exa eval online`
+
+Scheduled online evaluation of sampled live traffic (ADR 0007)
+
+#### `exa eval online disable`
+
+Stop scheduling a model's online evaluation (config and recorded results are kept).
+
+- `--tenant` — Tenant scope
+
+#### `exa eval online enable`
+
+Schedule online evaluation for a model (validated now, run by `exa eval online run`).
+
+- `--suite` — Suite name the results are recorded under
+- `--evaluator, -e` — Evaluator spec (repeatable) — see `exa eval evaluators`
+- `--source` — Traffic source: predictions (platform_db) | tempo (spans)
+- `--alias` — Alias the traffic is recorded as
+- `--sample` — Items scored per window (by request_hash)
+- `--window` — Seconds of traffic per evaluation window
+- `--judge-model` — Gateway model for judge:/deepeval: specs (temperature 0)
+- `--tenant` — Tenant scope
+
+#### `exa eval online run`
+
+Evaluate each scheduled model's sampled live traffic (ADR 0007 decision 3).
+
+A real cycle needs `EXAMLOPS_EVAL_ONLINE_ENABLED=1` (default off), takes a distributed lease so
+only one scheduler acts, scores each window once, persists to the eval store (which the C3 gate
+and `exa slo export-metrics` read) and is audited. With `EXAMLOPS_EVAL_METRICS_TEXTFILE` set it
+also rewrites that node_exporter textfile after each cycle.
+
+- `--once` — Run one cycle and exit (default: loop)
+- `--dry-run` — Preview: pull and score, write nothing, take no lease
+- `--model` — Only this model
+- `--tenant` — Only this tenant
+- `--interval` — Seconds between cycles (0 = env/300)
+
+#### `exa eval online status`
+
+Show every online-eval schedule and the outcome of its latest window.
+
+- `--tenant` — Only this tenant (default: all)
+
 ### `exa eval operator-qa`
 
 Ask the agent a fixed set of operator questions and report the pass rate.
@@ -1543,7 +1705,7 @@ unanswerable run can never be mistaken for a bad score.
 
 ### `exa eval run`
 
-Run a deterministic eval suite over items and persist scores (exit != 0 on error only).
+Run an eval suite over items and persist scores (exit != 0 on error only).
 
 - `--model` — Model the suite evaluates
 - `--items` — JSONL of {output, reference?, prompt?}
@@ -1552,6 +1714,8 @@ Run a deterministic eval suite over items and persist scores (exit != 0 on error
 - `--sample` — Sample N items by request_hash
 - `--dataset-revision` — A1 revision
 - `--run-id` — Idempotency key (default: derived)
+- `--evaluator, -e` — Evaluator spec (repeatable; default exact_match + json_valid) — see `exa eval evaluators`
+- `--judge-model` — Gateway model that answers judge:/deepeval: specs (temp 0)
 
 ### `exa eval safety`
 
@@ -1693,6 +1857,7 @@ Register/patch a feature view — the single train+serve definition (R1).
 - `--ttl` — Freshness TTL in seconds (0 = no staleness alert)
 - `--revision` — A1 dataset revision pin
 - `--embedding` — Feature holding an embedding; materialize then indexes it for `exa feature similar`
+- `--interval` — Scheduled re-materialization interval in seconds (0 = manual only)
 
 ### `exa feature freshness`
 
@@ -1724,6 +1889,13 @@ Materialize latest offline values → online store (R6); index its embedding, if
 - `--start` — Window start timestamp
 - `--end` — Window end timestamp
 
+### `exa feature materialize-due`
+
+Materialize every view whose schedule interval has elapsed (ADR 0017 clause 4).
+
+- `--dry-run` — List due views; materialize nothing
+- `--view` — Only this view (still only if due)
+
 ### `exa feature similar`
 
 Entities whose embedding is nearest to this one's (ADR 0020 clause 4).
@@ -1737,6 +1909,17 @@ Assert online == offline as-of for an entity (skew must be zero) (R2/GWT-1).
 
 - `--entity-id` — Entity id
 - `--asof` — Event timestamp to compare as-of
+
+### `exa feature status`
+
+Freshness, schedule and online-store tier of every feature view (ADR 0017 clause 4).
+
+### `exa feature sync`
+
+Apply the use-case pack's feature-view definitions to the registry (ADR 0017).
+
+- `--dry-run` — Show what would change; apply nothing
+- `--dir` — Definitions dir (default: the active pack's features/)
 
 ## `exa features`
 
@@ -1814,6 +1997,13 @@ Without ``--train`` nothing is trained: the adapter is registered as a paper rec
 - `--seed` — --train: seed (default: EXAMLOPS_SEED, else 0)
 - `--backend` — --train: fine-tuning backend (torch-lora | peft)
 - `--run-id` — --train: explicit training run id
+- `--scheduler` — --train: run as a job on the configured scheduler (EXAMLOPS_HPC_SCHEDULER)
+- `--gpus` — --scheduler: GPUs for the job
+- `--partition` — --scheduler: partition / queue
+- `--time-limit` — --scheduler: wall time (HH:MM:SS)
+- `--account` — --scheduler: charge account
+- `--mlflow` — --train: log the adapter to MLflow (default: when MLFLOW_TRACKING_URI is set)
+- `--adapter-uri` — Without --train: where the serving host reads this adapter (a PEFT adapter directory, passed to vLLM as lora_path). Stored, never opened here.
 
 ## `exa finops`
 
@@ -1938,6 +2128,49 @@ Unit economics per workload kind (per prediction / per token / per agent task).
 
 - `--kind, -k` — predictive | generative | agentic (default: all three)
 - `--days` — Only the last N days (default: all)
+
+### `exa finops specdecode`
+
+Speculative-decoding acceptance rate + estimated speedup per model (ADR 0016 d4).
+
+- `--model, -m` — Only this model
+- `--tenant` — Only this tenant
+- `--days` — Only the last N days (default: all)
+- `--limit, -n` — Max rows (capped at 500)
+
+### `exa finops task-cost`
+
+Per-task agent cost ledger: model/tool calls, sandbox, idle state, standby (ADR 0148)
+
+#### `exa finops task-cost apportion`
+
+Split a pool's standby cost across its tasks by a declared rule (audited).
+
+- `--cost` — The pool's standby cost in USD
+- `--project` — Owning project (required)
+- `--task` — Task served (repeat); TASK=WEIGHT ok
+- `--rule` — equal | weighted
+- `--period` — Period label; one apportioning per period
+- `--tenant` — Tenant scope (D6)
+
+#### `exa finops task-cost record`
+
+Record one metered cost entry for an agent task.
+
+- `--project` — Owning project (required)
+- `--component` — model_call | tool_call | sandbox_seconds | idle_state_gb_hours
+- `--cost` — Cost in USD (model_call / tool_call)
+- `--quantity` — sandbox seconds, or GB for idle_state_gb_hours
+- `--hours` — idle_state_gb_hours: hours held idle
+- `--rate` — USD per second / per GB-hour (else the EXAMLOPS_* rate env var)
+- `--entry-id` — Idempotency key for this entry
+- `--tenant` — Tenant scope (D6)
+
+#### `exa finops task-cost show`
+
+Show one task's ledger: per-component totals, total, and what is unmetered.
+
+- `--tenant` — Tenant scope (D6)
 
 ## `exa fleet`
 
@@ -2072,6 +2305,14 @@ Reasoning-vs-output token/cost split + structured-output outcomes.
 
 Structured output — schema-constrained (B8)
 
+#### `exa gateway schema list`
+
+Registered output schemas + per-route defaults from structured.yaml (ADR 0035 cl. 3).
+
+#### `exa gateway schema show`
+
+Print one registered output schema as JSON.
+
 #### `exa gateway schema test`
 
 Validate (and optionally repair) an object against a JSON Schema (R1/R8).
@@ -2127,9 +2368,15 @@ NIST AI RMF control coverage & crosswalk
 
 List the versioned NIST AI RMF control catalogue (R1).
 
+- `--subcategories` — List all AI RMF 1.0 subcategories and the platform controls mapped to each
+
 ### `exa governance crosswalk`
 
 Show the control → EU AI Act + ISO/IEC 42001 crosswalk (R5).
+
+### `exa governance features`
+
+Per-feature declarations: which controls each feature serves and what evidence it emits.
 
 ### `exa governance report`
 
@@ -2154,6 +2401,28 @@ Check an agent tool call against the per-tenant allow-list (R7).
 - `--mode` — off | monitor | enforce
 - `--tenant` — Tenant scope
 
+### `exa guardrails checks`
+
+List the checks a guardrail policy can compose, and whether each can run here.
+
+### `exa guardrails policy`
+
+Declarative guardrail policy — per-tenant / per-route checks and modes
+
+#### `exa guardrails policy show`
+
+Show the effective policy for a tenant and route (layers: default → tenant → routes).
+
+- `--tenant` — Tenant to resolve for
+- `--route` — Route (model) to resolve for
+- `--file` — Policy YAML (default: the configured policy file)
+
+#### `exa guardrails policy validate`
+
+Validate a guardrail policy file; exit 1 on any error (a CI gate).
+
+- `--file` — Policy YAML (default: the configured policy file)
+
 ### `exa guardrails stats`
 
 Show guardrail action counts (allow/redact/block).
@@ -2164,10 +2433,15 @@ Show guardrail action counts (allow/redact/block).
 
 Run a text through the guardrail and show the action + findings.
 
+Uses the declarative guardrail policy (EXAMLOPS_GUARDRAIL_POLICY or
+<config dir>/guardrails.yaml) when one is configured — the same checks the gateway runs for
+this tenant and route — else the built-in guardrail.
+
 - `--text` — Text to run through the guardrail
 - `--direction` — input | output
-- `--mode` — off | monitor | enforce
+- `--mode` — off | monitor | enforce (default: the policy's mode, or enforce with no policy)
 - `--tenant` — Tenant policy scope (D6)
+- `--route` — Route (model) whose per-route policy overrides apply
 
 ## `exa hardware`
 
@@ -2235,6 +2509,24 @@ Delete a hardware profile version, or the whole name (every version + every labe
 
 - `--version` — Delete only this version (omit: the whole name — every version)
 - `--yes, -y` — Skip confirmation
+
+#### `exa hardware profile history`
+
+The append-only ledger of profile resolutions: which version, for whom, with what status.
+
+- `--consumer` — workbench|training|serving — filter to one consumer kind
+- `--project, -p` — Scope to one project
+- `--limit, -n` — Most recent N resolutions
+
+#### `exa hardware profile in-use`
+
+Profiles in use by running workbenches and recent training/serving, with their status.
+
+Exits 1 when any entry is degraded, unresolvable or missing (a deleted version that is still
+referenced) — so a CI or cron job can act on it.
+
+- `--days` — Training/serving window: latest resolution within N days
+- `--project, -p` — Scope to one project
 
 #### `exa hardware profile list`
 
@@ -2340,6 +2632,9 @@ Select the best GPU-sharing mechanism for a request (honest fallback).
 - `--timeslice` — Cluster supports time-slicing
 - `--record` — Persist the allocation
 - `--tenant` — Tenant scope
+- `--cluster` — Use a registered ACTIVE cluster's declared GPU-sharing capabilities and scheduler (overrides --mig-capable/--timeslice)
+- `--scheduler` — Also show the resources this maps to on slurm|flux|mock (ADR 0030 decision 3)
+- `--gpus` — GPU devices the ask spans (with --scheduler)
 
 ### `exa hpc gpus`
 
@@ -2453,6 +2748,12 @@ List the MCP prompts (reusable agent workflows) ExaMLOps ships.
 
 List the MCP resources (readable context) ExaMLOps exposes to agents.
 
+### `exa mcp scopes`
+
+Show the OAuth scope each MCP tool needs on the authenticated HTTP transport (ADR 0082).
+
+- `--all` — Include mutating (write) tools (default) or reads only
+
 ### `exa mcp serve`
 
 Run the MCP server so agents can drive ExaMLOps.
@@ -2471,6 +2772,18 @@ List the tools ExaMLOps exposes to agents over MCP.
 ## `exa models`
 
 MLflow model registry
+
+### `exa models attest`
+
+Record SLSA v1 provenance + a digest-bound AI-BOM for a version (ADR 0013).
+
+- `--path` — Local artifact file or directory. Default: the registered version's artifacts, downloaded from MLflow exactly as the serving plane downloads them
+- `--dataset` — Training dataset name
+- `--dataset-revision` — Pinned dataset revision (A1)
+- `--framework` — ML framework
+- `--run-id` — MLflow run id of the training run
+- `--sign` — Also (re-)sign the version's artifacts
+- `--replace` — Overwrite provenance already recorded for this version
 
 ### `exa models bom`
 
@@ -2550,6 +2863,12 @@ an identical result is only evidence of parity when a transformation actually oc
 
 - `--tolerance` — Override the model's declared parity_tolerance
 
+### `exa models provenance`
+
+Show and verify a version's SLSA v1 provenance; exit 1 when it does not verify.
+
+- `--output` — Write the signed envelope (DSSE / Sigstore bundle) to this file
+
 ### `exa models quantize`
 
 Quantize a model → register a new signed + BOM'd version (GWT-3).
@@ -2558,6 +2877,20 @@ Quantize a model → register a new signed + BOM'd version (GWT-3).
 - `--path` — Local artifact dir to sign for the new version (D3)
 - `--dataset` — Training dataset (for BOM)
 - `--dataset-revision` — Pinned dataset revision (for BOM)
+
+### `exa models quantize-gate`
+
+Quality-retention gate: a quantized version vs its base version (ADR 0016, C3).
+
+Mandatory for promotion: `exa pipeline promote` and the training-flow promotion refuse a
+quantized version that has not passed it. No configured C3 gate, or missing scores on either
+side, is a refusal — never a pass. The verdict is recorded in gate_reports and audited.
+
+### `exa models release-check`
+
+CI gate: exit 1 unless the version is signed, has a bound AI-BOM and verified provenance.
+
+- `--require` — Comma-separated evidence to require: signature, bom, provenance
 
 ### `exa models rollback`
 
@@ -2792,7 +3125,7 @@ the modelzoo and want to wire it into ExaMLOps training and inference.
 
 Compile a Python pipeline definition (@pipeline) to a validated, hashed IR.
 
-- `--out, -o` — Write the IR (JSON) to this file
+- `--out, -o` — Write the IR to this file: a .yaml/.yml path gets the registry YAML, anything else the JSON graph
 - `--yaml` — Also lower the IR to the per-model registry YAML at this path
 - `--untrusted` — Load through the provider AST allow-list (no imports/open/eval); default is trusted-tier Python
 
@@ -2849,21 +3182,73 @@ Resume from the last integrity-valid checkpoint (R4/GWT-3). Exit 1 if none valid
 
 #### `exa pipeline distributed run`
 
-Train the reference DDP script under real torchrun; resubmit and resume on failure.
+Train under real torchrun (locally or via the scheduler); resubmit and resume on failure.
 
-- `--local` — Run on this machine (the only mode built; no scheduler submission)
-- `--nproc` — Worker processes (torchrun nproc-per-node)
-- `--steps` — Training steps
-- `--checkpoint-every` — Steps per checkpoint
-- `--max-attempts` — Submissions before giving up (recoverable failures only)
-- `--elastic-restarts` — torchrun in-job --max-restarts (same node)
+- `--local` — Run torchrun on this machine
+- `--scheduler` — Submit through the configured scheduler (EXAMLOPS_HPC_SCHEDULER: mock, slurm or flux); a recoverable failure is resubmitted there
+- `--model, -m` — Model whose YAML `distributed:` block supplies the plan
+- `--strategy` — ddp | fsdp | zero | megatron  [default: YAML, else ddp locally]
+- `--nodes` — Nodes (with --scheduler)
+- `--min-nodes` — Elastic lower bound (< --nodes enables torch elastic)
+- `--nproc` — Worker processes per node  [default: 2 locally]
+- `--steps` — Training steps  [default: 12]
+- `--checkpoint-every` — Steps per checkpoint  [default: 4]
+- `--max-attempts` — Submissions before giving up (recoverable failures only)  [default: 3]
+- `--elastic-restarts` — torchrun in-job --max-restarts  [default: 0]
 - `--backoff` — Base seconds between attempts
 - `--seed` — Seed (default: EXAMLOPS_SEED, else 0)
 - `--run-id` — Explicit run id
+- `--checkpoint-store` — Durable checkpoint store: s3://bucket/prefix (MinIO) or a shared NFS mount  [default: EXAMLOPS_DIST_CHECKPOINT_STORE]
+- `--dataset-revision` — A1 dataset revision the run is pinned to (--scheduler)
+- `--mlflow-run-id` — MLflow run to link the checkpoints to (--scheduler)
 
 #### `exa pipeline distributed status`
 
 Show a distributed run + its checkpoints.
+
+#### `exa pipeline distributed suspend`
+
+Suspend/resume seam — pin, restore, release (ADR 0109)
+
+##### `exa pipeline distributed suspend backends`
+
+Every suspend backend: honest capability, preemption verdict, restore timing split.
+
+##### `exa pipeline distributed suspend capability`
+
+One backend's capability, measured from recorded restores, and why it may not promise.
+
+##### `exa pipeline distributed suspend discard`
+
+Release a snapshot's pin and record. The workload's own checkpoint is never deleted.
+
+##### `exa pipeline distributed suspend list`
+
+Suspend records, newest first.
+
+- `--subject` — Filter by subject id
+- `--status` — Filter by status
+- `--tenant` — Filter by tenant
+- `--limit` — Maximum rows
+
+##### `exa pipeline distributed suspend resume`
+
+Restore a suspended snapshot and record the timing split. Exit 1 if it cannot.
+
+##### `exa pipeline distributed suspend show`
+
+One suspend record.
+
+##### `exa pipeline distributed suspend snapshot`
+
+Suspend a subject: pin (or release) its state and record it. Audited; exit 1 on refusal.
+
+- `--kind` — What is suspended
+- `--backend` — Suspend backend (default: selected)
+- `--run-dir` — Training run directory (default: the launcher's run dir)
+- `--config-hash` — Only pin a checkpoint written under this config hash
+- `--base-url` — vLLM server root (vllm-sleep)
+- `--tenant` — Tenant the record belongs to
 
 ### `exa pipeline explain`
 
@@ -2939,7 +3324,7 @@ Show data quality check history for a model (last 20 runs).
 
 ### `exa pipeline run`
 
-Run training pipeline(s) locally via Prefect.
+Run training pipeline(s) locally via Prefect (or distributed with --distributed).
 
 - `--model, -m` — Run for a single model only
 - `--dataset, -d` — Run for a single dataset class only
@@ -2952,7 +3337,16 @@ Run training pipeline(s) locally via Prefect.
 - `--gpus, -g` — GPUs to request (for --cluster auto placement)
 - `--hardware-profile` — Named hardware profile (ADR 0157) to request instead of restating --gpus; must be applicable to 'training'. With --gpus, --gpus overrides only its gpu_count.
 - `--project, -p` — Scope the run to a Project (ADR 0088): tags the run and attributes its cost
-- `--ir` — Train a pipeline-as-code IR (from `exa pipeline compile`); inline scheduler only
+- `--ir` — Train a pipeline-as-code IR: a JSON graph from `exa pipeline compile`, or a per-model registry YAML. Runs on mock/Slurm/Flux (the YAML is staged to the node)
+- `--distributed` — Distributed, fault-tolerant training (ADR 0032): torchrun per the model YAML's `distributed:` block, submitted through the scheduler and resubmitted/resumed on failure
+
+### `exa pipeline show`
+
+Show a pack model's pipeline IR: the registry YAML, or the JSON graph with --ir.
+
+Read-only; runs nothing and takes a model name, not a path.
+
+- `--ir` — Show the compiled JSON graph instead of the registry YAML
 
 ### `exa pipeline validate`
 
@@ -3184,6 +3578,8 @@ Backfill OpenFGA from the native authz_relations table (idempotent; needs owner 
 
 Show the project's two pipeline surfaces: Prefect (training) + Ray Serve (serving) (P7).
 
+- `--live` — Hydrate the pipeline surfaces from Prefect + Ray Serve (ADR 0092). Default: only from the URLs you configured (env/config file); --live also tries the built-in defaults, --no-live reads the registry only.
+
 ### `exa project remove-member`
 
 Remove a person's role(s) from a project.
@@ -3198,9 +3594,9 @@ Revoke a subject's relation on an object (audited).
 
 Report platform.db tables that carry no project/tenant scope (read-only, ADR 0014).
 
-Every table is classified scoped / model-scoped / exempt (with a reason) / UNSCOPED. Exits 1
-if a table is UNSCOPED or an exemption has gone stale. ``known_gaps`` lists the user-data
-tables that are still not partitioned by project.
+Every table is classified scoped / model- or dataset-scoped / exempt (with a reason) / UNSCOPED.
+Exits 1 if a table is UNSCOPED or an exemption has gone stale. ``known_gaps`` lists the
+user-data tables that are still not partitioned by project.
 
 ### `exa project set-quota`
 
@@ -3215,6 +3611,8 @@ Update resource quotas for an existing project.
 ### `exa project show`
 
 Show the full project anatomy: quota, resources by kind, members, budget, consumption.
+
+- `--live` — Hydrate the pipeline surfaces from Prefect + Ray Serve (ADR 0092). Default: only from the URLs you configured (env/config file); --live also tries the built-in defaults, --no-live reads the registry only.
 
 ### `exa project storage`
 
@@ -3347,6 +3745,21 @@ Statically validate a provider file against the AST sandbox (exit 1 if rejected)
 
 RAG — ingest knowledge bases and query with citations
 
+### `exa rag eval`
+
+Score a knowledge base's retrieval (context precision/recall) through the C2 harness.
+
+- `--items` — JSONL of {question, relevant_ids: [doc or doc#chunk ids]}
+- `-k, --k` — Chunks retrieved per question
+- `--tenant` — Tenant namespace
+- `--retrieval` — dense | hybrid
+- `--backend` — Metric backend: auto (ragas if installed) | ragas | native
+- `--suite` — C2 suite name to record under
+- `--dataset-revision` — A1 revision of the question set
+- `--version` — Candidate version for the C3 gate (default: KB source revision)
+- `--alias` — Record this run as a baseline alias (e.g. Production)
+- `--record` — Persist to eval_suite_results (C2)
+
 ### `exa rag ingest`
 
 Chunk, embed, and index documents into a knowledge base.
@@ -3354,6 +3767,7 @@ Chunk, embed, and index documents into a knowledge base.
 - `--docs` — JSONL of {id, text}
 - `--tenant` — Tenant namespace (D6)
 - `--source-revision` — A1 dataset/source revision to version against
+- `--framework` — Chunking framework: native | llamaindex | auto (default: EXAMLOPS_RAG_FRAMEWORK or native)
 
 ### `exa rag list`
 
@@ -3370,6 +3784,7 @@ Answer a question from a knowledge base, citing retrieved chunks.
 - `--tenant` — Tenant namespace
 - `--retrieval` — dense (embedding) | hybrid (embedding + BM25, rank-fused — finds exact ids/codes)
 - `--fusion` — Hybrid fusion: rrf (default) | convex
+- `--structured` — B8 structured answer: schema-valid JSON whose citations must name retrieved chunks
 
 ## `exa report`
 
@@ -3391,12 +3806,19 @@ Reproducibility bundles — signed manifest + verify (A8)
 
 Capture + sign a reproducibility bundle for a model version (R1/R2).
 
+Commits (platform + model library), hardware, the image digest and the AI-BOM are
+collected automatically; the options add what only the operator knows.
+
 - `--dataset` — Dataset name
 - `--revision` — A1 dataset revision
 - `--seed` — RNG seed to record
 - `--hyperparams` — JSON hyperparameters
 - `--metrics` — JSON recorded metrics
-- `--image-digest` — Container image digest
+- `--image-digest` — Container image digest (default: EXAMLOPS_IMAGE_DIGEST)
+- `--feature-view` — A3 feature view the model trains on (repeatable); pinned by definition hash
+- `--resources` — JSON scheduler request, e.g. '{"nodes": 1, "gpus": 2}' (EXAMLOPS_HPC_* keys)
+- `--scheduler` — Scheduler that ran the training
+- `--lineage-run-id` — A2 lineage run id
 
 ### `exa reproduce list`
 
@@ -3418,6 +3840,8 @@ Rebuild plan + metric-match within tolerance; --execute performs the rebuild (AD
 - `--train-cmd` — [--execute] Custom training command run in the checkout; must print 'EXAMLOPS_REPRO_METRICS=<json>' (default: the pipeline training flow)
 - `--timeout` — [--execute] Training timeout, seconds
 - `--keep-worktree` — [--execute] Keep the detached worktree for inspection
+- `--restore-dataset` — [--execute] Restore the pinned dataset (dataplane snapshot or lakeFS commit) into this empty directory; training sees it as EXAMLOPS_REPRO_DATA_DIR
+- `--scheduler` — [--execute] Where training runs: 'recorded' (the bundle's scheduler), 'mock', 'slurm' or 'flux'. The recorded resources are re-requested either way (default: the caller's EXAMLOPS_HPC_SCHEDULER, else mock)
 
 ### `exa reproduce show`
 
@@ -3456,6 +3880,14 @@ Scaffold a new model: model class, config, unit test, and YAML.
 
 Secrets management, rotation, and leak scanning
 
+### `exa secrets backends`
+
+Show every secrets backend (vault · sops · local · env): configured, reachable, writes.
+
+Reports the resolution order, which backend `set`/`rotate` write to, OpenBao/Vault health
+(sealed / initialised, via the unauthenticated health endpoint), the sops binary and file,
+and the local keyring's key ids. Never prints a secret or a key.
+
 ### `exa secrets get`
 
 Resolve a secret. Redacts by default; --reveal prints plaintext.
@@ -3466,11 +3898,51 @@ vault was unreachable — that fallback changes which store the value came from.
 - `--tenant` — Tenant scope
 - `--reveal` — Print the plaintext value (dangerous)
 
+### `exa secrets lease`
+
+Dynamic short-lived credentials from an OpenBao/Vault secrets engine (leases).
+
+#### `exa secrets lease issue`
+
+Mint a short-lived credential; prints the lease (id, TTL) and, with --reveal, the fields.
+
+Needs EXAMLOPS_VAULT_ADDR and a mounted dynamic engine. A path with no lease (a static KV
+secret) is refused rather than presented as short-lived. Audited without the credential.
+
+- `--tenant` — Tenant scope
+- `--reveal` — Print the credential fields (dangerous)
+
+#### `exa secrets lease renew`
+
+Extend a lease (bounded by the engine's max TTL); audited.
+
+- `--increment` — Requested extension in seconds (the engine caps it)
+- `--tenant` — Tenant scope
+
+#### `exa secrets lease revoke`
+
+Revoke a lease now — the credential stops working at the manager; audited.
+
+- `--tenant` — Tenant scope
+
 ### `exa secrets list`
 
 List secret metadata (paths/versions) — never values.
 
 - `--tenant` — Filter by tenant
+
+### `exa secrets refs`
+
+Audit an environment for startup injection (ADR 0011 clause 2): references vs plaintext.
+
+Lists every credential-carrying variable as `reference` (secret://path — resolved through the
+secrets client), `file` (secret+file:///run/secrets/x), `bootstrap` (the store's own key or
+token) or `plaintext` (a credential in clear — what injection replaces), and whether each
+reference resolves. Values are never printed; each resolution is an audited access.
+`--strict` makes it a deploy gate.
+
+- `--env-file` — Check a dotenv file instead of this process's environment
+- `--strict` — Exit 1 on any plaintext credential or unresolvable reference
 
 ### `exa secrets rewrap`
 
@@ -3494,7 +3966,10 @@ Scan a file/dir for likely secrets; exit non-zero on any finding (CI gate, R10).
 
 ### `exa secrets set`
 
-Store an encrypted secret in the local store (audited).
+Store a secret in the write backend (local store by default; audited).
+
+EXAMLOPS_SECRETS_WRITE_BACKEND=vault|sops writes to OpenBao/Vault or the SOPS file instead;
+an unreachable manager fails the command rather than writing somewhere else.
 
 - `--tenant` — Tenant scope
 
@@ -3551,6 +4026,7 @@ Register an adapter trained elsewhere (alias of `exa finetune` without `--train`
 - `--rank` — LoRA rank
 - `--asserted-eval, --eval` — A score you measured elsewhere — stored as UNVERIFIED (operator-asserted)
 - `--eval-floor` — C3 quality floor
+- `--adapter-uri` — Where the serving host reads this adapter (a PEFT adapter directory, passed to vLLM as lora_path). Stored, never opened here.
 
 #### `exa serve adapter list`
 
@@ -3568,12 +4044,25 @@ Promote an adapter — blocked by the C3 eval-gate unless a measured score clear
 
 Route a request through a base + adapter — refuses a base mismatch (R4/GWT-4).
 
+``--engine torch`` / ``vllm`` really run the request through the adapter and accept only a
+promoted adapter whose registry signature (and, for torch, bundle digest) verifies.
+
 - `--prompt` — Prompt text
 - `--hot-set` — Hot-set size (LRU)
+- `--engine` — registry (routing only) | torch (CPU inference through a trained bundle) | vllm (a running vllm serve --enable-lora)
+- `--base-url` — --engine vllm: server root (default EXAMLOPS_VLLM_BASE_URL)
+- `--allow-unpromoted` — Serve an adapter the C3 gate has not promoted (audited)
 
 ### `exa serve autoscale`
 
 Autoscaling & scale-to-zero (E5)
+
+#### `exa serve autoscale activate`
+
+Wake a model from zero replicas and wait until it is ready; cold start is measured + audited.
+
+- `--applier` — desired | k8s | record — who owns the replicas
+- `--timeout` — Seconds to wait for readiness
 
 #### `exa serve autoscale manifest`
 
@@ -3605,7 +4094,7 @@ Run the autoscale controller: signals -> decide_scale -> apply (audited, dry run
 
 - `--once` — Run one cycle and exit (default: loop)
 - `--apply` — Execute decisions (needs EXAMLOPS_AUTOSCALE_ENABLED=1). Default: dry run
-- `--applier` — record (ledger only) | desired (write desired replicas) | ray (not built: refuses)
+- `--applier` — record (ledger only) | desired (write desired replicas) | k8s (patch the predictor Deployment's scale) | ray (not built: refuses)
 - `--interval` — Seconds between cycles (0 = env/30)
 
 #### `exa serve autoscale savings`
@@ -3642,7 +4131,7 @@ Show the autoscale policy + recent scale events + cold-start time.
 
 ### `exa serve backend`
 
-Show the active serving backend (ray-compose default | kserve-k8s).
+Show the active serving backend (ray-compose default | kserve-k8s | kuberay-k8s).
 
 ### `exa serve batch`
 
@@ -3745,6 +4234,22 @@ Show recent explain requests for a model.
 ### `exa serve infer-check`
 
 Smoke-test the Ray Serve inference pipeline with a valid synthetic HPC job.
+
+### `exa serve kuberay-manifest`
+
+Render the Ray multi-model server as a KubeRay RayService (ADR 0015 d1).
+
+The dense multi-model path on Kubernetes: every model in the registry behind one Ray cluster,
+the same application the Compose ray-serving service runs, checked against the pinned KubeRay
+schema. Nothing is applied to a cluster.
+
+- `--image` — Pinned ray-serving image (tag or digest); default EXAMLOPS_KUBERAY_IMAGE
+- `--name` — RayService name
+- `--project` — examlops.io/project label
+- `--min-workers` — Minimum Ray worker pods
+- `--max-workers` — Maximum Ray worker pods (≤256)
+- `--out` — Write manifest YAML to this file
+- `--registry-dir` — Dir of per-model YAML (default: RAY_MODELS_DIR)
 
 ### `exa serve llm`
 
@@ -3947,6 +4452,17 @@ Show traffic split configuration for all models.
 - `--watch, -w` — Live auto-refreshing view (Ctrl-C to exit)
 - `--interval` — Refresh interval in seconds for --watch
 
+### `exa serve verifier-manifest`
+
+Render the ClusterStorageContainer that verifies model signatures in the pod (ADR 0142 d3).
+
+Install once per cluster (it is cluster-scoped). KServe InferenceServices rendered by the
+platform name it, so every artifact is downloaded and then checked against its D3 signature
+before the model server starts; EXAMLOPS_SERVING_VERIFY=enforce stops the pod on a failure.
+
+- `--image` — Verified storage-initializer image; default EXAMLOPS_KSERVE_VERIFIER_IMAGE
+- `--out` — Write manifest YAML to this file
+
 ## `exa slo`
 
 Model-quality SLOs — error budgets & burn-rate alerts
@@ -3954,6 +4470,24 @@ Model-quality SLOs — error budgets & burn-rate alerts
 ### `exa slo apply`
 
 Apply all SLO specs from a YAML file (R1).
+
+### `exa slo benchmark`
+
+Generative benchmark results, stored only with their conditions (ADR 0143 d5)
+
+#### `exa slo benchmark record`
+
+Store a benchmark run; refused (exit 1) when any condition is missing.
+
+- `--file` — JSON file: {conditions: {...}, samples: [[ttft_ms, tpot_ms], ...]}
+- `--tenant` — Tenant scope (D6)
+
+#### `exa slo benchmark results`
+
+List stored benchmark results with the conditions they were measured under.
+
+- `--limit` — Newest N results (max 500)
+- `--tenant` — Tenant scope (D6)
 
 ### `exa slo burn`
 
@@ -4046,8 +4580,8 @@ Declare or version-bump one SLO spec (R1).
 
 - `--target` — Objective ratio 0..1
 - `--window` — Rolling window (e.g. 30d)
-- `--source` — c1 (gateway latency/errors) | c2 (eval quality) | c5 (drift verdicts) | c8 (fairness disparity) | availability (serving readiness probe) | prometheus
-- `--query` — SLI expression: PromQL for prometheus; `latency_ms<=800` or `errors` for c1; `[suite:]metric` for c2; a drift kind for c5; `version:<v>` for availability
+- `--source` — c1 (gateway latency/errors) | c2 (eval quality) | c4 (agent tool/session success) | c5 (drift verdicts) | c8 (fairness disparity) | availability (serving readiness probe) | prometheus
+- `--query` — SLI expression: PromQL for prometheus; `latency_ms<=800` or `errors` for c1; `[suite:]metric` for c2; `tool_success[:<tool>]` or `session_ok` for c4; a drift kind for c5; `version:<v>` for availability
 - `--tenant` — Tenant scope (D6)
 - `--gate` — Gate promotion when budget exhausted (C3)
 

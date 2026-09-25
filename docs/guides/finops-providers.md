@@ -266,6 +266,71 @@ finops:
 The default reproduces the platform's original cost arithmetic exactly, so `exa models cost` is unchanged
 until you opt in. Drift-score and promotion-policy domains can follow the same pattern. See ADR 0074.
 
+## LLMOps calculations — token cost, cache savings, routing, RAG quality (ADR 0083)
+
+Four LLMOps figures are computed through the same provider substrate, one domain each:
+
+| Domain | Default | Other built-ins | Live call site |
+|---|---|---|---|
+| `llm_cost` | `token-rate` | — | gateway accounting (`GatewayClient`, the LLM gateway service), eval usage |
+| `llm_cache` | `hit-savings` | — | `exa gateway cache stats`, the dashboard caching panel |
+| `llm_routing` | `least-cost` | `cost-latency` | the gateway's `cost_aware` routing strategy |
+| `rag_quality` | `retrieval-lite` | — | `exa rag` context precision / recall |
+
+**Where the config lives.** Each domain has a flat block in `~/.config/examlops/providers.yaml`
+(the same file `placement`, `drift` and `promotion` use). A block under `finops:` in
+`finops.yaml` is still read, but only when `providers.yaml` has no block for that domain.
+The order of precedence is the usual one: `--provider`, then `EXAMLOPS_<DOMAIN>_PROVIDER` (for example
+`EXAMLOPS_LLM_COST_PROVIDER`), then the block's `provider:`, then the default.
+
+```yaml
+# ~/.config/examlops/providers.yaml
+llm_cost:                       # a contract price card, USD per 1k tokens
+  provider: token-rate
+  input_price_per_1k: 0.0005
+  output_price_per_1k: 0.0015   # reasoning tokens are billed at the output rate
+llm_routing:                    # trade price against observed time-to-first-token
+  provider: cost-latency
+  latency_weight: 0.00001       # cost units per ms of TTFT; see the note below
+```
+
+`latency_weight` converts milliseconds into whatever unit `cost_usd` is in. On the gateway's
+`cost_aware` path, `cost_usd` is the deployment's `price_per_1k` (USD per 1k tokens) or the
+locality marker, so the weight is in USD-per-1k-tokens per millisecond. The built-in default,
+`0.001`, makes 100 ms of TTFT weigh as much as $0.10 per 1k tokens, which is far above typical
+token prices. With the default, `cost-latency` therefore ranks almost purely by latency. Pick
+the weight from the trade-off you want: `0.00001` makes 100 ms equal to $0.001 per 1k tokens.
+
+`llm_cost`, `llm_cache` and `rag_quality` stay on the caller's own arithmetic until an operator
+selects a provider. A locally served model therefore keeps its zero marginal cost instead of
+picking up a generic price. `llm_routing` always runs, because choosing a deployment is the entire
+job of the `cost_aware` strategy. A selected provider that fails to load is logged as a warning.
+The caller then falls back to its own arithmetic, and a broken provider never stops a request.
+
+**Per-deployment prices for `cost_aware`.** A deployment in `gateway.yaml` may declare
+`price_per_1k` (USD per 1k tokens, `>= 0`). `cost_aware` ranks by that price when it is set.
+Otherwise it falls back to locality, where local and site deployments are free and external ones
+cost a flat marker. The deployment's observed TTFT is always passed in as `latency_ms`, so
+selecting `cost-latency` changes the ranking without touching any code:
+
+```yaml
+models:
+  chat:
+    strategy: cost_aware
+    deployments:
+      - {provider: n1, model: qwen3:8b, price_per_1k: 0.0004}     # amortised on-prem GPU
+      - {provider: omni, model: auto, external_ok: true, price_per_1k: 0.002}
+```
+
+**Seeing which formula ran.** `exa providers list --domain llm_routing` lists what is installed.
+The dashboard's LLMOps console has a *How the numbers are computed* section. For each domain it
+shows the provider an operator chose, or the routing default, with that provider's own
+methodology text. For `llm_cost`, `llm_cache` and `rag_quality` with nothing chosen it says
+*built-in arithmetic* and describes the caller's own math, because the registered default
+provider does not run in that case. A provider that failed to load is shown there with its error
+rather than being dropped. The section is resolved in the dashboard's own process, so it matches
+the gateway only when both read the same config directory and `EXAMLOPS_<DOMAIN>_PROVIDER` env.
+
 ## Unit economics per workload kind (ADR 0148 d4)
 
 `exa finops economics [--kind predictive|generative|agentic] [--days N]` reports one unit cost per
@@ -276,4 +341,45 @@ A number is only printed when it is supported: no rows gives `no_data`, fewer th
 `EXAMLOPS_ECONOMICS_MIN_SAMPLES` outcomes gives `insufficient_samples`, and a missing cost gives
 `not_metered`. Predictive inference has no metered USD cost, so its USD unit is blank. Agent
 per-task cost covers model calls only (`complete: false`, a **lower bound**); sandbox-seconds,
-idle-state GB-hours and hot-pool standby are not metered yet and are listed as such.
+idle-state GB-hours and hot-pool standby are not metered by the session ledger and are listed as
+such. The per-task ledger below meters them, and `economics` reports its totals beside the lower
+bound (`task_ledger`) without adding the two together.
+
+## Per-task cost ledger (ADR 0148 d4)
+
+An agent task costs:
+
+    Σ model calls + Σ tool calls + sandbox-seconds + idle-state GB-hours + hot-pool standby share
+
+`examlops.finops.task_ledger` holds all five components in one ledger (the
+`task_cost_entries` table, created on first use). A task's total is computed from its entries,
+so it always equals their sum.
+
+```bash
+exa finops task-cost record T1 --project research --component model_call --cost 0.02
+exa finops task-cost record T1 --project research --component sandbox_seconds --quantity 120 --rate 0.0001
+exa finops task-cost record T1 --project research --component idle_state_gb_hours --quantity 28 --hours 0.5 --rate 0.01
+exa finops task-cost apportion gpu-pool-a --cost 4.8 --project research --task T1=3 --task T2=1 --rule weighted --period 2026-09-25
+exa finops task-cost show T1
+```
+
+- **Owned by a project.** An entry without a project is refused. This covers standby, which is
+  never left as unowned overhead.
+- **No invented prices.** Sandbox and idle state are priced by `--rate`, or by
+  `EXAMLOPS_SANDBOX_USD_PER_SECOND` / `EXAMLOPS_IDLE_USD_PER_GB_HOUR`. With no rate the command
+  refuses; it never records 0.
+- **Declared apportioning rule.** `equal` or `weighted` (for example by GPU-seconds). The shares
+  sum exactly to the pool cost (largest remainder, in micro-dollars). The rule is recorded in
+  each entry's `method` and in a `hot_pool_standby_apportioned` audit event. There is one
+  apportioning per `(pool, --period)`. An identical re-run records nothing. A re-run with a
+  different cost or task set is refused as a whole, so it can't half-merge into the first split.
+  Use a new `--period` for a new apportioning.
+- **Idempotent writes.** `--entry-id` makes a retried metering write a no-op. The id is scoped
+  to its tenant.
+- **Totals cover every entry.** `task-cost show` sums in SQL over all of a task's entries.
+  `rows` is a bounded page, and `rows_truncated` says when it was cut.
+- **Incomplete by default.** `complete` stays `false`, and `unmetered` names the missing
+  components, until all five are metered. For a task that made no tool calls, record a
+  zero-cost `tool_call` entry.
+- Entries are telemetry and are not audited one by one (ADR 0148 d7). An apportioning is a
+  decision, so it is audited.

@@ -39,7 +39,8 @@ def set_slo(
         "prometheus",
         "--source",
         help=(
-            "c1 (gateway latency/errors) | c2 (eval quality) | c5 (drift verdicts) "
+            "c1 (gateway latency/errors) | c2 (eval quality) | c4 (agent tool/session success) "
+            "| c5 (drift verdicts) "
             "| c8 (fairness disparity) | availability (serving readiness probe) | prometheus"
         ),
     ),
@@ -48,7 +49,8 @@ def set_slo(
         "--query",
         help=(
             "SLI expression: PromQL for prometheus; `latency_ms<=800` or `errors` for c1; "
-            "`[suite:]metric` for c2; a drift kind for c5; `version:<v>` for availability"
+            "`[suite:]metric` for c2; `tool_success[:<tool>]` or `session_ok` for c4; "
+            "a drift kind for c5; `version:<v>` for availability"
         ),
     ),
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
@@ -648,3 +650,106 @@ def spec_check(
         _output.warning(f"{verdict.verdict}: " + "; ".join(verdict.reasons))
     if not verdict.passed:
         raise typer.Exit(1)
+
+
+# --- Generative benchmark results carry their conditions (ADR 0143 decision 5) --------------
+
+bench_app = typer.Typer(
+    help="Generative benchmark results, stored only with their conditions (ADR 0143 d5)",
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+app.add_typer(bench_app, name="benchmark")
+
+_BENCH_EXAMPLES = (
+    "Examples:\n\n"
+    "  exa slo benchmark record chat-llm --file bench.json\n\n"
+    "  exa slo benchmark results chat-llm\n\n"
+    'bench.json = {"conditions": {model, quantization, hardware, engine_version, dataset, '
+    'length_distribution, concurrency, slo, ttft_includes_queue_wait}, "samples": '
+    "[[ttft_ms, tpot_ms], ...]}"
+)
+
+
+@bench_app.command("record", epilog=_BENCH_EXAMPLES)
+def benchmark_record(
+    servable: str = typer.Argument(..., help="Generative servable (model) name"),
+    file: str = typer.Option(
+        ..., "--file", help="JSON file: {conditions: {...}, samples: [[ttft_ms, tpot_ms], ...]}"
+    ),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
+) -> None:
+    """Store a benchmark run; refused (exit 1) when any condition is missing."""
+    import json
+
+    from examlops.slo.benchmarks import BenchmarkRejected, record_benchmark
+
+    try:
+        with open(file, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as exc:
+        _output.error(f"cannot read benchmark file: {exc}")
+    if not isinstance(doc, dict):
+        _output.error("benchmark file must be a JSON object with 'conditions' and 'samples'")
+    actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "cli"
+    try:
+        res = record_benchmark(
+            servable, doc.get("conditions"), doc.get("samples"), tenant=tenant, actor=actor
+        )
+    except BenchmarkRejected as exc:
+        _output.error(f"benchmark rejected: {exc}")
+    if _output.json_mode:
+        _output.print_json(res)
+        return
+    state = "recorded" if res["created"] else "already recorded"
+    goodput = "-" if res["goodput"] is None else f"{res['goodput']:.3f}"
+    _output.ok(
+        f"benchmark #{res['id']} {state}: TTFT p99 {res['ttft_p99_ms']:g} ms, TPOT p99 "
+        f"{res['tpot_p99_ms']:g} ms, goodput {goodput} ({res['verdict']}, n={res['n']})"
+    )
+
+
+@bench_app.command("results", epilog=_BENCH_EXAMPLES)
+def benchmark_results(
+    servable: str = typer.Argument(None, help="Filter to one servable"),
+    limit: int = typer.Option(20, "--limit", help="Newest N results (max 500)"),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope (D6)"),
+) -> None:
+    """List stored benchmark results with the conditions they were measured under."""
+    from examlops.data.generative_benchmarks import list_results
+
+    rows = list_results(servable, tenant=tenant, limit=limit)
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    if not rows:
+        _output.info("No benchmark results — use: exa slo benchmark record <SERVABLE> --file ...")
+        return
+    _output.print_table(
+        "Generative benchmarks",
+        [
+            "ID",
+            "Servable",
+            "Engine",
+            "Hardware",
+            "Conc",
+            "TTFT p99",
+            "TPOT p99",
+            "Goodput",
+            "Verdict",
+        ],
+        [
+            [
+                str(r["id"]),
+                r["servable"],
+                str(r["conditions"].get("engine_version")),
+                str(r["conditions"].get("hardware")),
+                str(r["conditions"].get("concurrency")),
+                f"{r['ttft_p99_ms']:g}",
+                f"{r['tpot_p99_ms']:g}",
+                "-" if r["goodput"] is None else f"{r['goodput']:.3f}",
+                str(r["verdict"]),
+            ]
+            for r in rows
+        ],
+    )

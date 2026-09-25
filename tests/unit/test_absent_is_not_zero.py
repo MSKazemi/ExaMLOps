@@ -170,7 +170,15 @@ _PROMQL_WORDS = {
 #                          would fire on every site that does not deploy the gateway at all (it is
 #                          opt-in, behind a Compose profile and `gateway.enabled`), and a rule that
 #                          fires forever on a healthy platform is how alerting gets switched off.
+#   examlops_feature_view_stale
+#                          one series per registered feature view (ADR 0017), so no series is
+#                          the healthy state of a site with no views, and an `absent()` arm
+#                          would page there forever. The outage it would otherwise hide, a
+#                          failed registry read on the scrape, is `FeatureFreshnessUnreadable`
+#                          (`examlops_feature_freshness_read_errors_total`, exported from
+#                          import).
 _EXEMPT_METRICS = {
+    "examlops_feature_view_stale",
     "dataplane_catalog_up",
     "dataplane_source_up",
     "envoy_cluster_membership_healthy",
@@ -192,6 +200,8 @@ def test_every_equality_alert_can_still_see_an_absent_series():
             # inside the braces are strings, and reading them as metric names flagged every
             # target-down alert in the file.
             bare = re.sub(r"\{[^}]*\}", "", expr)
+            # Likewise a grouping clause names labels, not metrics: `max by (view) (m) == 1`.
+            bare = re.sub(r"\b(?:by|without)\s*\([^)]*\)", "", bare)
             names = set(re.findall(r"\b[a-z_][a-z0-9_:]*\b", bare)) - _PROMQL_WORDS
             # `up` is exempt: Prometheus synthesises it for every configured target, so it is
             # never missing while the target is configured. Absence there means "not scraped

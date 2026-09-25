@@ -108,3 +108,25 @@ export const useDriftEvents = (kind?: string) =>
     queryKey: ['drift-events', kind ?? 'all'],
     queryFn: () => apiFetch<DriftEvent[]>(`/api/drift/events${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
   })
+
+// Label-free performance estimates next to the realized score (ADR 0022 decision 2) —
+// `perf_estimates`, written by `exa drift estimate` / `exa drift run-advanced`. `gap` is
+// estimated − realized, null while no labels have arrived (unmeasured, not zero).
+export interface PerfEstimate {
+  id: number
+  ts: string
+  model: string
+  metric: string
+  estimated: number | null
+  realized: number | null
+  baseline: number | null
+  method: string
+  gap: number | null
+}
+
+export const usePerfEstimates = (model?: string) =>
+  useQuery<PerfEstimate[]>({
+    queryKey: ['drift-perf-estimates', model ?? 'all'],
+    queryFn: () =>
+      apiFetch<PerfEstimate[]>(`/api/drift/perf-estimates${model ? `?model=${encodeURIComponent(model)}` : ''}`),
+  })

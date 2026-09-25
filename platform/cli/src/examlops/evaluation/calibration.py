@@ -257,6 +257,12 @@ def calibrate(
     records ``replications`` as run, and :func:`eligibility_failures` refuses fewer than three.
     """
     at = at or datetime.now(UTC).isoformat(timespec="seconds")
+    # ADR 0007 decision 4: every judge call goes through the harness's temperature-0 invoker, so a
+    # seam that takes ``temperature`` is *set* to 0 and one declaring anything else is refused.
+    from examlops.evaluation import invoke_judge
+
+    def call(prompt: str) -> float:
+        return float(invoke_judge(judge_fn, prompt)[0])
 
     all_human: list[float] = []
     per_replication: list[list[float]] = [[] for _ in range(max(1, replications))]
@@ -270,11 +276,11 @@ def calibrate(
         for item in bench.items:
             all_human.append(item.human_label)
             for r in range(max(1, replications)):
-                per_replication[r].append(float(judge_fn(item.prompt)))
+                per_replication[r].append(call(item.prompt))
             if item.pair is not None:
                 a, b = item.pair
-                ab = float(judge_fn(f"{item.prompt}\n[A]\n{a}\n[B]\n{b}"))
-                ba = float(judge_fn(f"{item.prompt}\n[A]\n{b}\n[B]\n{a}"))
+                ab = call(f"{item.prompt}\n[A]\n{a}\n[B]\n{b}")
+                ba = call(f"{item.prompt}\n[A]\n{b}\n[B]\n{a}")
                 # In each presentation the *first* slot holds a different candidate; a
                 # order-blind judge picks the same candidate both times, so exactly one of
                 # the two trials is a "first position won".

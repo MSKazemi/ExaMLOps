@@ -34,7 +34,9 @@ from examlops.engines.config import Completion, supports_chat
 # charging each client its own wall-clock would count one accelerator many times over. That
 # server reports its own utilization (``VLLMServerEngine.metrics``), which is where its energy
 # belongs. An engine that is not listed simply records no carbon.
-_DEVICE: dict[str, str] = {"echo": "cpu", "vllm-inproc": "gpu", "sglang": "gpu"}
+#
+# ``sglang`` is a server client too (ADR 0016 decision 1), so it is absent for the same reason.
+_DEVICE: dict[str, str] = {"echo": "cpu", "vllm-inproc": "gpu"}
 
 
 class InstrumentedEngine:
@@ -74,6 +76,7 @@ class InstrumentedEngine:
                 span.record_exception(exc)
                 raise
             self._record(span, time.perf_counter() - started, prompt=prompt, comp=comp)
+            self._record_spec_decode(span, comp, kw)
             return comp
 
     def stream(self, prompt: str, **kw: Any) -> Iterator[str]:
@@ -108,6 +111,39 @@ class InstrumentedEngine:
             )
             genai.maybe_capture_content(span, prompt=prompt, completion=getattr(comp, "text", ""))
             self._record_carbon(span, elapsed)
+        except Exception:  # noqa: BLE001 - telemetry must never break the call it measures
+            pass
+
+    def _record_spec_decode(self, span: Any, comp: Completion, kw: dict[str, Any]) -> None:
+        """ADR 0016 decision 4: draft statistics → the span **and** the FinOps accumulator.
+
+        Only a completion that proposed draft tokens is speculative; anything else is a no-op, so
+        engines without speculative decoding pay one attribute read. Never raises.
+        """
+        try:
+            proposed = int(getattr(comp, "proposed_tokens", 0) or 0)
+            if proposed <= 0:
+                return
+            from examlops.engines import specdecode
+
+            accepted = min(max(int(getattr(comp, "accepted_tokens", 0) or 0), 0), proposed)
+            cfg = getattr(self._engine, "config", None)
+            spec = getattr(cfg, "speculative_decoding", None) or {}
+            lookahead = int(spec.get("num_speculative_tokens") or 1)
+            acceptance = accepted / proposed
+            span.set_attribute("examlops.specdecode.acceptance_rate", acceptance)
+            span.set_attribute(
+                "examlops.specdecode.speedup", specdecode.estimated_speedup(acceptance, lookahead)
+            )
+            tenant = kw.get("tenant")
+            specdecode.observe(
+                self.model,
+                proposed_tokens=proposed,
+                accepted_tokens=accepted,
+                engine=self.name,
+                tenant=tenant if isinstance(tenant, str) else None,
+                lookahead=lookahead,
+            )
         except Exception:  # noqa: BLE001 - telemetry must never break the call it measures
             pass
 
@@ -160,6 +196,7 @@ class InstrumentedChatEngine(InstrumentedEngine):
                 span.record_exception(exc)
                 raise
             self._record(span, time.perf_counter() - started, prompt=_flatten(messages), comp=comp)
+            self._record_spec_decode(span, comp, kw)
             return comp
 
     def chat_stream(self, messages: list[dict[str, Any]], **kw: Any) -> Iterator[str]:

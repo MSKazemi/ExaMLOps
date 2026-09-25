@@ -28,10 +28,39 @@ export interface EvalModel {
   passRate: number | null
 }
 
+/** One LLMOps calculation domain and the provider that computes it (ADR 0083). */
+export interface CalculationProvider {
+  domain: string
+  /** null when no provider runs: the caller's own built-in arithmetic computes the figure. */
+  provider: string | null
+  /** true = an operator chose it (env / providers.yaml); false = nobody chose. */
+  selected: boolean
+  default: string | null
+  /** 'provider' = a provider computes it; 'builtin' = the caller's own math (nothing selected). */
+  mode?: 'provider' | 'builtin'
+  ok: boolean
+  error: string | null
+  version?: string
+  methodology?: string
+  uncertainty?: number | null
+  units?: Record<string, string>
+  outputs?: string[]
+  params?: string[]
+  source?: string
+}
+
 export interface LlmopsOverview {
   endpoints?: { rows: LlmEndpoint[]; count: number }
   evals?: { models: EvalModel[]; count: number }
+  calculations?: { rows: CalculationProvider[]; count: number; available: boolean }
   _partial?: string[]
+}
+
+/** Human label for how a calculation provider was chosen. */
+export function providerOriginLabel(p: CalculationProvider): string {
+  if (!p.ok) return 'failed to load'
+  if (p.selected) return 'configured'
+  return p.mode === 'builtin' ? 'built-in' : 'default'
 }
 
 // ── pure helpers (unit-tested) ────────────────────────────────────────────────

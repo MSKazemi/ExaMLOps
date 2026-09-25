@@ -44,6 +44,10 @@ class FeatureView:
     #: Which declared feature holds an embedding (a list of floats). When set, materialization
     #: also indexes it into the ``features.<view>`` vector collection (ADR 0020 clause 4).
     embedding_feature: str | None = None
+    #: The pack definition's typed specs + fingerprint (ADR 0017 clause 2), when synced from one.
+    spec: dict[str, Any] | None = None
+    #: > 0 puts the view on the materialization schedule (ADR 0017 clause 4).
+    materialize_interval_seconds: int = 0
 
 
 @dataclass
@@ -89,6 +93,8 @@ def apply_view(view: FeatureView) -> None:
         ttl_seconds=view.ttl_seconds,
         dataset_revision=view.dataset_revision,
         embedding_feature=view.embedding_feature,
+        spec=view.spec,
+        materialize_interval_seconds=view.materialize_interval_seconds,
     )
     _declare_feature_asset(view)
 
@@ -128,6 +134,8 @@ def get_view(name: str) -> FeatureView | None:
         ttl_seconds=d.get("ttl_seconds", 0),
         dataset_revision=d.get("dataset_revision"),
         embedding_feature=d.get("embedding_feature"),
+        spec=d.get("spec"),
+        materialize_interval_seconds=int(d.get("materialize_interval_seconds") or 0),
     )
 
 
@@ -141,6 +149,8 @@ def list_views() -> list[FeatureView]:
             ttl_seconds=d.get("ttl_seconds", 0),
             dataset_revision=d.get("dataset_revision"),
             embedding_feature=d.get("embedding_feature"),
+            spec=d.get("spec"),
+            materialize_interval_seconds=int(d.get("materialize_interval_seconds") or 0),
         )
         for d in platform_db.list_feature_views()
     ]
@@ -170,16 +180,30 @@ def get_training_features(
     ``entity_rows`` = ``[{"entity_id": ..., "event_ts": ...}, ...]``. For each row the
     latest offline value **at or before** ``event_ts`` is returned — never a later one.
     """
-    out: list[dict[str, Any] | None] = []
-    for row in entity_rows:
-        vals = platform_db.get_offline_features_asof(view, row["entity_id"], row["event_ts"])
-        out.append(_project(view, vals))
-    return out
+    from examlops.data.data_assets import get_offline_features_asof_many
+
+    found = get_offline_features_asof_many(
+        view, [(str(r["entity_id"]), str(r["event_ts"])) for r in entity_rows]
+    )
+    # One registry read for the whole batch, not one per row.
+    vw = platform_db.get_feature_view(view) if any(v is not None for v in found) else None
+    feats = vw["features"] if vw else None
+    return [
+        None if v is None else ({k: v.get(k) for k in feats} if feats is not None else v)
+        for v in found
+    ]
 
 
 def get_online_features(view: str, entity_ids: list[str]) -> list[dict[str, Any] | None]:
-    """Low-latency online read for serving (R3)."""
-    return [_project(view, platform_db.get_online_feature(view, e)) for e in entity_ids]
+    """Low-latency online read for serving (R3) — through the configured online store.
+
+    With the Redis tier selected (ADR 0017 clause 1) a Redis miss or error falls back to the
+    durable table, so this never returns less than the table holds.
+    """
+    from examlops.feature_store.online import select_online_store
+
+    store = select_online_store()
+    return [_project(view, store.read(view, e)) for e in entity_ids]
 
 
 def materialize(view: str, *, start_ts: str | None = None, end_ts: str | None = None) -> int:
@@ -215,7 +239,7 @@ def index_embeddings(view: str, *, store: Any = None) -> EmbeddingIndexResult:
     neighbour. The collection is created on first use with the first valid vector's dimension and
     cosine distance; a later dimension change is refused by the store (``SchemaConflict``).
     """
-    from examlops.vector_store import CollectionNotFound, VecItem, select_store
+    from examlops.vector_store import CollectionNotFound, select_store
 
     vw = platform_db.get_feature_view(view)
     if not vw:
@@ -225,14 +249,34 @@ def index_embeddings(view: str, *, store: Any = None) -> EmbeddingIndexResult:
     result = EmbeddingIndexResult(collection=coll)
     if not feature:
         return result
-    from examlops.data.data_assets import list_online_features  # the owned per-domain module
+    from examlops.data.data_assets import iter_online_features  # the owned per-domain module
 
-    rows = list_online_features(view)
     store = store or select_store()
     try:
         dim = int(store.stats(coll, "default")["dim"])
     except CollectionNotFound:
         dim = None
+    created = False
+    for page in iter_online_features(view):  # one page of vectors in memory at a time
+        items = _index_items(view, feature, page, dim, result)
+        if not items:
+            continue
+        dim = len(items[0].vector)
+        if not created:
+            store.create_collection(coll, int(dim), "cosine", "default")
+            created = True
+        store.upsert(coll, items, "default")
+        result.indexed += len(items)
+    result.dim = dim
+    return result
+
+
+def _index_items(
+    view: str, feature: str, rows: list[dict[str, Any]], dim: int | None, result: Any
+) -> list[Any]:
+    """The indexable vectors of one page (all of ``dim`` when known); skips counted on result."""
+    from examlops.vector_store import VecItem
+
     items: list[VecItem] = []
     for row in rows:
         vec = _as_vector(row["values"].get(feature))
@@ -253,14 +297,7 @@ def index_embeddings(view: str, *, store: Any = None) -> EmbeddingIndexResult:
         items.append(
             VecItem(row["entity_id"], vec, {"view": view, "event_ts": str(row["event_ts"])})
         )
-    result.dim = dim
-    if not items:
-        return result
-    store.create_collection(coll, int(dim or 0), "cosine", "default")
-    for i in range(0, len(items), 500):  # bounded batches: one transaction per 500 vectors
-        store.upsert(coll, items[i : i + 500], "default")
-    result.indexed = len(items)
-    return result
+    return items
 
 
 def materialize_with_index(
@@ -271,18 +308,70 @@ def materialize_with_index(
     The online store is the durable fact and the vector index is derived from it, so an indexing
     failure (say, an unreachable pgvector) is reported in the result — never raised, and never
     allowed to undo a materialization that succeeded.
+
+    With a serving tier configured (Redis, ADR 0017 clause 1) the result also carries
+    ``"online"``: a :class:`~examlops.feature_store.online.MirrorResult` for the mirror write.
     """
     rows = platform_db.materialize_online(view, start_ts=start_ts, end_ts=end_ts)
     vw = platform_db.get_feature_view(view) or {}
+    mirror = _mirror_online(view, int(vw.get("ttl_seconds") or 0))
+    out: dict[str, Any] = {"rows": rows, "embeddings": None}
+    if mirror.backend != "db":
+        out["online"] = mirror
     if not vw.get("embedding_feature"):
-        return {"rows": rows, "embeddings": None}
+        return out
     try:
-        idx = index_embeddings(view)
+        out["embeddings"] = index_embeddings(view)
     except Exception as exc:  # noqa: BLE001 - reported, not raised (see docstring)
-        idx = EmbeddingIndexResult(
+        out["embeddings"] = EmbeddingIndexResult(
             collection=embedding_collection(view), error=f"{type(exc).__name__}: {exc}"
         )
-    return {"rows": rows, "embeddings": idx}
+    return out
+
+
+def _mirror_online(view: str, ttl_seconds: int) -> Any:
+    """Mirror the durable online rows into the serving tier (ADR 0017 clause 1). Never raises.
+
+    A no-op for the default durable-table store. With Redis selected, a failure is reported in
+    the result — the durable materialization already succeeded and stays.
+    """
+    from examlops.feature_store.online import MirrorResult, select_online_store
+
+    store = select_online_store()
+    if store.backend == "db":
+        return MirrorResult(backend="db")
+    total = MirrorResult(backend=store.backend)
+    try:
+        from examlops.data.data_assets import iter_online_features
+
+        # Page by page: the whole view is never held in memory at once.
+        for page in iter_online_features(view):
+            if total.error is None:
+                part = store.write(view, page, ttl_seconds=ttl_seconds)
+                total.written += part.written
+                total.invalidated += part.invalidated
+                total.error = part.error
+                continue
+            # A page after a failed one was never rewritten either: its keys would keep serving
+            # superseded values, so they are invalidated like the failed page's remainder.
+            invalidate = getattr(store, "invalidate", None)
+            if invalidate is None or not invalidate(view, page, total):
+                break
+    except Exception as exc:  # noqa: BLE001 - reported, not raised
+        total.error = f"{type(exc).__name__}: {exc}"
+    return total
+
+
+def ingest_rows(view: str, rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Append ``[{"entity_id", "event_ts", "values"}]`` to the offline store, idempotently.
+
+    An observation already recorded for the same ``(view, entity_id, event_ts)`` is skipped, so
+    re-running a training gate over the same pinned data does not duplicate the offline log.
+    Returns ``{"written", "skipped"}``. The batch is one transaction.
+    """
+    from examlops.data.data_assets import write_feature_records_once
+
+    return write_feature_records_once(view, rows)
 
 
 def similar_entities(view: str, entity_id: str, k: int = 5) -> list[Any]:
@@ -363,6 +452,7 @@ __all__ = [
     "get_view",
     "list_views",
     "ingest",
+    "ingest_rows",
     "get_training_features",
     "get_online_features",
     "materialize",

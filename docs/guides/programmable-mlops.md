@@ -117,3 +117,7 @@ Placement is the first non-finops domain to become programmable. The same mechan
 to **drift** and **promotion** scoring, plus **policy-as-code** governance and a stable Python **SDK**
 — see the design in `design/adr/0076-programmable-mlops-unified-extension-architecture.md`–`0082`. The north-star (a policy-governed
 self-driving MLOps loop on sovereign HPC) is in `design/vision/futures/`.
+
+The stable Python SDK has shipped: `import examlops`, with typed `models`/`drift`/`audit`/`hpc`
+namespaces, governed `retrain`/`approve`/`promote`, and a deprecation policy. See the
+[Python SDK guide](python-sdk.md).

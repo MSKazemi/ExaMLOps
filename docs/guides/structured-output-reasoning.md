@@ -153,6 +153,116 @@ capture_reasoning_trace("req-42", trace_text, tenant="acme", ttl_seconds=3600)
 get_reasoning_trace("req-42")   # redacted trace, or None once the TTL passes
 ```
 
+## Policy — default schemas, route defaults, budget gates (ADR 0035 clause 3)
+
+### Default schemas for platform outputs
+
+The platform ships the output shapes it produces itself, so callers name them instead of
+re-typing a JSON Schema:
+
+| Name | Shape |
+|---|---|
+| `tool_call` | `{"name": str, "arguments": object}` — one agent tool invocation |
+| `rag_answer` | `{"answer": str, "citations": [int]}` — chunk numbers the answer relies on |
+| `extraction` | `{"fields": object, "confidence"?: 0..1}` |
+| `classification` | `{"label": str, "confidence"?: 0..1, "rationale"?: str}` |
+
+```python
+comp = client.chat("qwen3", messages, response_schema="tool_call")
+comp.parsed   # {"name": ..., "arguments": {...}} — validated, extras repaired away
+```
+
+An unknown name raises `UnknownSchemaError` **before** any backend is called. A caller's own
+dict schema is still accepted and always wins.
+
+```bash
+exa gateway schema list               # built-in + site schemas, and route defaults
+exa gateway schema show rag_answer    # print one
+exa gateway schema test classification out.json   # a registered name works as SCHEMA_FILE
+```
+
+### `structured.yaml` — site schemas and per-route defaults
+
+`<config dir>/structured.yaml` (override with `EXAMLOPS_STRUCTURED_CONFIG`; the config dir is
+`EXAMLOPS_CONFIG_DIR` → `<EXAMLOPS_DATA_DIR>/config` → `~/.config/examlops`):
+
+```yaml
+version: 1
+schemas:
+  ticket:                       # a site schema; may not reuse a built-in name
+    type: object
+    properties: {severity: {type: integer}, summary: {type: string}}
+    required: [severity, summary]
+routes:                         # gateway route (logical model) or fnmatch glob
+  "support-*":
+    response_schema: ticket     # applied when the caller names no schema
+    reasoning_budget: 2000      # one more budget candidate
+  support-eu:
+    reasoning_budget: 500
+```
+
+- A route's **schema** comes from its exact entry first, then globs in file order.
+- A route's **budget** is the tightest of every matching entry, and it joins the request / key /
+  project / model / `EXAMLOPS_REASONING_BUDGET_DEFAULT` candidates — the tightest overall wins, so
+  a route default tightens but never lifts a cap. Its events and audit rows carry `source=route`.
+- The file is validated **totally** (every problem, with its key path — `exa gateway schema list`
+  prints them and exits 1). At request time an invalid file is ignored **as a whole** and a warning
+  is logged; the half that parsed is never applied. That includes its route **budgets**: while the
+  file is invalid no route cap applies, so run `exa gateway schema list` after every edit, and
+  back a cap you cannot afford to lose with a key/project/model budget or a D5 `not has_budget`
+  rule (below), which do not depend on this file.
+- With a route default schema, a plain `exa gateway chat` on that route is structured too: an
+  answer that cannot be made valid exits 1 (`StructuredOutputError`), and `-o json` carries the
+  validated object as `parsed`.
+- The file is re-read when its mtime or size changes; no restart is needed.
+
+### Budgets gated via D5 (policy-as-code)
+
+Before any backend is called, the gateway consults `policy.yaml` for the action
+`reasoning_request` with the resolved budget in the context — `model`/`route`, `tenant`,
+`project`, `key_hash`, `has_budget`, `budget_tokens` (`-1` when none), `budget_source`:
+
+```yaml
+policies:
+  - action: reasoning_request
+    when: "not has_budget"
+    effect: deny                # no unbounded thinking
+  - action: reasoning_request
+    when: "budget_tokens > 8000"
+    effect: require_approval    # there is no human inside a request: this refuses too
+```
+
+Anything but `allow` raises `ReasoningPolicyDenied` and nothing is spent. A matched rule is
+audited (`policy:reasoning_request`); with no matching rule no per-request audit row is written.
+A policy engine that **raises** denies (`decide_safe`). `when:` conditions are evaluated with
+`simpleeval`, a core dependency of `examlops`; a condition that cannot be evaluated does not
+match, and a later catch-all rule decides.
+
+A refusal propagates to library callers as-is — an unstructured `RagPipeline.query` raises
+`ReasoningPolicyDenied` rather than returning its offline placeholder answer.
+
+Changing a budget is governed too: `exa gateway reasoning set-budget` (and `--remove`) consults
+the `reasoning_budget_set` action (context `scope`, `ref`, `tenant`, `max_thinking_tokens` —
+`-1` for a removal, `op`), refuses with exit 1 on anything but `allow`, and writes a `reasoning_budget_set` /
+`reasoning_budget_removed` audit event.
+
+### Structured RAG answers
+
+`RagPipeline.query(..., structured=True)` asks for `rag_answer` (through the gateway with
+`response_schema="rag_answer"`, or validating a custom `generate_fn`'s JSON), and returns only
+the chunks the model **cited** as `citations`. A cited number outside the retrieved context, or
+a citation that is not an integer at all (possible when `jsonschema` is not installed and the
+fallback validator does not check array items), is dropped and reported in `dropped_citations`; an answer that cannot be made valid raises
+`StructuredOutputError`. The default (`structured=False`) is unchanged.
+
+### Not covered yet
+
+- **The HTTP gateway service** (`examlops.gateway.service`, ADR 0155) applies neither reasoning
+  budgets nor schemas; both are enforced by `GatewayClient` (in-process callers, `exa gateway
+  chat`, RAG).
+- **Skipper tool calls** are validated by the agent framework, not by `tool_call`.
+- **C6 SLO gating** of reasoning budgets is not wired.
+
 ## Related
 
 - **B2 / E2** — the gateway + engine that perform constrained decoding in production.

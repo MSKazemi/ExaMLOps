@@ -240,20 +240,26 @@ def chat(
     client = GatewayClient(
         build_default_router(), virtual_key=key, cache_lookup=cache_lookup, cache_store=cache_store
     )
+    from examlops.structured import StructuredOutputError
+
     try:
         comp = client.chat(model, [{"role": "user", "content": message}])
-    except GatewayError as exc:
+    except (GatewayError, StructuredOutputError) as exc:
+        # StructuredOutputError is not a GatewayError: a route default schema in structured.yaml
+        # (ADR 0035 clause 3) can make this plain request a structured one, and an answer that
+        # cannot be made valid must be a clean refusal, not a traceback.
         _output.error(f"{type(exc).__name__}: {exc}")
         return
     if _output.json_mode:
-        _output.print_json(
-            {
-                "text": comp.text,
-                "backend": comp.backend,
-                "cost_usd": comp.cost_usd,
-                "cached": comp.cached,
-            }
-        )
+        payload: dict[str, object] = {
+            "text": comp.text,
+            "backend": comp.backend,
+            "cost_usd": comp.cost_usd,
+            "cached": comp.cached,
+        }
+        if comp.parsed is not None:
+            payload["parsed"] = comp.parsed
+        _output.print_json(payload)
         return
     tag = " (cached)" if comp.cached else ""
     _output.ok(f"[{comp.backend}] {comp.text}  (cost ${comp.cost_usd:.6f}){tag}")
@@ -271,7 +277,10 @@ app.add_typer(reasoning_app, name="reasoning")
 
 @schema_app.command("test")
 def schema_test(
-    schema_file: str = typer.Argument(..., help="Path to a JSON Schema file"),
+    schema_file: str = typer.Argument(
+        ...,
+        help="Path to a JSON Schema file, or a registered schema name (exa gateway schema list)",
+    ),
     object_file: str = typer.Argument(..., help="Path to a JSON object to validate"),
     repair: bool = typer.Option(True, "--repair/--no-repair", help="Attempt repair on invalid"),
 ) -> None:
@@ -279,9 +288,16 @@ def schema_test(
     import json as _json
 
     from examlops.structured import repair_object, validate_object
+    from examlops.structured.policy import UnknownSchemaError, get_schema
 
-    with open(schema_file) as fh:
-        schema = _json.load(fh)
+    if os.path.isfile(schema_file):
+        with open(schema_file) as fh:
+            schema = _json.load(fh)
+    else:
+        try:
+            schema = get_schema(schema_file)
+        except UnknownSchemaError as exc:
+            _output.error(f"{exc} — and no file named {schema_file!r}", exit_code=2)
     with open(object_file) as fh:
         obj = _json.load(fh)
     errors = validate_object(obj, schema)
@@ -296,6 +312,62 @@ def schema_test(
             return
     _output.error(f"Invalid: {'; '.join(errors)}")
     raise typer.Exit(1)
+
+
+@schema_app.command("list")
+def schema_list() -> None:
+    """Registered output schemas + per-route defaults from structured.yaml (ADR 0035 cl. 3)."""
+    from examlops.structured.policy import (
+        StructuredConfigError,
+        config_path,
+        list_schemas,
+        load_config,
+    )
+
+    try:
+        cfg = load_config()
+    except StructuredConfigError as exc:
+        _output.error(str(exc))
+    schemas = list_schemas(cfg)
+    routes = [{"route": r, **spec} for r, spec in sorted(cfg.routes.items())]
+    if _output.json_mode:
+        _output.print_json({"config": str(config_path()), "schemas": schemas, "routes": routes})
+        return
+    _output.print_table(
+        "Output schemas",
+        ["name", "source", "description"],
+        [[r["name"], r["source"], r["description"]] for r in schemas],
+    )
+    if routes:
+        _output.print_table(
+            f"Route defaults ({config_path()})",
+            ["route", "response_schema", "reasoning_budget"],
+            [
+                [r["route"], r.get("response_schema", "-"), r.get("reasoning_budget", "-")]
+                for r in routes
+            ],
+        )
+    else:
+        _output.info(f"No route defaults ({config_path()} absent or empty).")
+
+
+@schema_app.command("show")
+def schema_show(
+    name: str = typer.Argument(..., help="Schema name (see exa gateway schema list)"),
+) -> None:
+    """Print one registered output schema as JSON."""
+    import json as _json
+
+    from examlops.structured.policy import UnknownSchemaError, get_schema
+
+    try:
+        schema = get_schema(name)
+    except UnknownSchemaError as exc:
+        _output.error(str(exc), exit_code=2)
+    if _output.json_mode:
+        _output.print_json(schema)
+        return
+    _output.info(_json.dumps(schema, indent=2))
 
 
 @reasoning_app.command("account")
@@ -388,10 +460,28 @@ def reasoning_set_budget(
         _output.error("Pass exactly one of --model, --project, --key-hash.")
         raise typer.Exit(2)
     scope, ref = chosen[0]
+    # ADR 0035 clause 3: a budget change is a governed mutation - D5 decides, and it is audited.
+    from examlops.structured.policy import budget_change_decision
+
+    decision = budget_change_decision(
+        scope, ref, tenant=tenant, max_thinking_tokens=max_thinking, remove=remove
+    )
+    if not decision.allowed:
+        _output.error(f"Refused by policy ({decision.effect}): {decision.reason}")
     if remove:
         result = "removed" if store.remove(scope, ref, tenant) else "not_found"
     else:
         result = store.put(scope, ref, max_thinking, tenant)
+    from examlops.data.audit import audit_best_effort
+
+    audit_best_effort(
+        "exa-gateway",
+        _actor(),
+        "reasoning_budget_removed" if remove else "reasoning_budget_set",
+        f"{scope}:{ref}",
+        {"max_thinking_tokens": None if remove else max_thinking, "result": result},
+        tenant=tenant,
+    )
     if _output.json_mode:
         _output.print_json(
             {"scope": scope, "ref": ref, "tenant": tenant, "max": max_thinking, "result": result}

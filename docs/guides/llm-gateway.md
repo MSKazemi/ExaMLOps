@@ -84,7 +84,8 @@ upper bound on a fixed-window limiter, not a promise of exactly that wait).
    served as a single-chunk synthetic SSE stream. A hit skips dispatch entirely and is not billed.
    `x-examlops-cache: hit|miss` reports it (a streaming hit also gets `x-examlops-provider: cache`).
 5. **Routing** (`GatewayCore`) — `priority` (default), `weighted`, `least_inflight`,
-   `lowest_latency`, or `cost_aware` (locality-based: local/site free, external non-zero — see
+   `lowest_latency`, or `cost_aware` (a deployment's `price_per_1k` when declared, else
+   locality: local/site free, external non-zero; scored by the `llm_routing` provider — see
    `docs/guides/model-gateway.md`'s routing section for the strategy semantics, shared code).
    Locality is filtered before every attempt: a caller's `examlops.allowed_localities` hint can
    only **narrow** the operator's own allow-list, never widen it.
@@ -237,8 +238,11 @@ spans, only the metrics above.
 - **OpenAI-compatible upstream providers** (a real router, LiteLLM, OpenRouter, a remote vLLM) are
   not built — only the native Ollama adapter exists today (ADR 0152). `gateway.yaml`'s `type` field
   only accepts `ollama`.
-- **`cost_aware` routing** ranks by locality only (local/site free, external a flat marker cost) —
-  there is no per-deployment price in `gateway.yaml` yet for finer-grained cost-based routing.
+- **`cost_aware` routing** uses a deployment's `price_per_1k` from `gateway.yaml` when one is
+  declared, and falls back to locality otherwise (local/site free, external a flat marker cost).
+  The price is a static figure the operator declares. Nothing pulls a live price list from an
+  upstream provider. See [ADR 0083's LLMOps calculations](finops-providers.md#llmops-calculations-token-cost-cache-savings-routing-rag-quality-adr-0083),
+  which also covers the `cost-latency` scorer.
 - **Helm chart / release image matrix** for this service are not built; it runs via Compose only.
 
 ## See also

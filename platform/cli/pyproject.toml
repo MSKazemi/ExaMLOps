@@ -72,6 +72,12 @@ dependencies = [
 mcp = [
     "fastmcp>=3.4",
 ]
+# Agent-observability consumers over OTLP/HTTP (ADR 0021 decision 2 — Langfuse ingests OTLP over
+# HTTP only). Lazily imported by examlops.telemetry.otlp_http; without it a stdlib exporter using
+# the already-installed OTLP protobuf encoder does the same job.
+agentops = [
+    "opentelemetry-exporter-otlp-proto-http>=1.44.0",
+]
 # Statistical A/B analysis (`exa serve ab analyze`). Lazily imported by
 # examlops.analysis.ab_stats; the rest of the CLI works without it.
 analysis = [
@@ -97,6 +103,12 @@ oidc = [
 backup = [
     "boto3>=1.43.88",
 ]
+# Keyless Sigstore signing of audit checkpoints (ADR 0028 decision 3, EXAMLOPS_AUDIT_TRANSPARENCY=
+# sigstore). Lazily imported by examlops.audit_transparency; the Rekor backend (a dedicated ECDSA
+# key + plain HTTPS) and every other audit path work without it.
+audit-sigstore = [
+    "sigstore>=4.5",
+]
 # In-process vLLM engine (`engine.mode: inproc`) for offline batch scoring on a GPU host.
 # NOT needed to *serve*: the production path (VLLMServerEngine, ADR 0107) talks HTTP to a
 # `vllm serve` process, so the GPU dependency lives in that process, not in the CLI.
@@ -104,9 +116,18 @@ backup = [
 serving-vllm = [
     "vllm>=0.28.0",
 ]
-# SGLang engine (RadixAttention, structured output). GPU host only; lazily imported.
+# SGLang runtime (RadixAttention, structured output) for the GPU host that runs
+# `python -m sglang.launch_server`. NOT needed by the client: SGLangServerEngine talks HTTP
+# to that server (ADR 0016 decision 1), so nothing in examlops imports sglang.
 serving-sglang = [
     "sglang>=0.4",
+]
+# Fine-tuning (ADR 0044): `exa finetune --train` needs torch; `--backend peft` adapts the model
+# with Hugging Face PEFT (peft pulls transformers/accelerate itself). Both are imported lazily by
+# examlops.finetuning — `exa` starts without them, and the built-in torch-lora backend needs no peft.
+finetune = [
+    "torch>=2.13",
+    "peft>=0.21",
 ]
 # Postgres datastore engine (EXAMLOPS_DB_BACKEND=postgres, enterprise-readiness item 0.1).
 # psycopg is imported only by examlops.storage.pg, which is reached only when that env var
@@ -117,6 +138,19 @@ postgres = [
     # `get_db()` opens one per call. Optional on purpose: without it examlops.storage.pg opens an
     # unpooled connection per call — slower, still correct.
     "psycopg-pool>=3.3",
+]
+# Advanced drift detectors (ADR 0022): River ADWIN/DDM + Evidently for concept drift. Lazily
+# imported by examlops.drift_advanced.adapters; every detector has a pure-Python fallback, so
+# `exa drift concept|estimate|profile|run-advanced` work without this extra. Two libraries the ADR
+# names are deliberately NOT here, because they cannot share one resolution with the rest of this
+# package: nannyml 0.13.1 (Python < 3.13 only; its s3fs dependency brings fsspec/botocore bounds
+# that the `dataplane` and `backup` extras exclude, so the workspace lock has no solution) and
+# whylogs 1.6.4 (references numpy.unicode_, removed in NumPy 2). Their adapters run when installed in a separate environment. Note evidently 0.7.23
+# declares plotly<6, so the workspace lock resolves plotly 5.24.x (only copulas, via `synth`,
+# uses plotly, and accepts it) — that bound is evidently's, not ours.
+drift-advanced = [
+    "river>=0.26.1",
+    "evidently>=0.7.23",
 ]
 # Fairness & subgroup monitoring (ADR 0025). Fairlearn's MetricFrame computes the slice metrics
 # when installed; without it a pure-Python path computes the same numbers (held to parity by
@@ -134,6 +168,12 @@ fairness = [
 guardrails-presidio = [
     "presidio-analyzer>=2.2",
 ]
+# There is deliberately no `guardrails-llmguard` extra (ADR 0026 clause 3): llm-guard 0.3.16
+# (latest, 2026-09-25) pins transformers==4.51.3, while this workspace needs transformers>=5 (vllm,
+# sentence-transformers>=6), so `uv lock` cannot resolve both. The `llm_guard` check in
+# examlops.guardrails.policy imports it lazily and is tested against a faithful fake; install
+# `llm-guard` in a separate guardrail image (Python <3.13). Absent, a policy naming the check
+# reports it unavailable (enforce blocks, monitor records). Add the extra when llm-guard lifts the pin.
 # pgvector vector store (EXAMLOPS_VECTOR_BACKEND=pgvector, ADR 0020). Same driver as the
 # `postgres` extra, named separately because the two are independent choices: the vector store can
 # run on pgvector while platform state stays on SQLite, and the reverse.
@@ -154,10 +194,23 @@ qdrant = [
 coordination = [
     "redis>=8.1.0",
 ]
+# Feature-store Redis online store (ADR 0017 clause 1): EXAMLOPS_FEATURE_ONLINE_STORE=redis puts a
+# Redis serving tier in front of the durable platform.db table. Lazily imported by
+# examlops.feature_store.online; without it the feature store degrades to the table.
+features-online = [
+    "redis>=8.1.0",
+]
 # Event backbone (ADR 0124): NATS JetStream publisher + durable consumers. Lazily imported;
 # the default `log` publisher needs nothing.
 events = [
     "nats-py>=2.15",
+]
+# Sigstore keyless model signing + keyless-signed SLSA provenance (ADR 0013, examlops.supplychain
+# .keyless): Fulcio certificates and the Rekor transparency log. Lazily imported and only reached
+# when EXAMLOPS_SIGNING_SCHEME=sigstore (or when verifying a `sigstore-v1` row); Ed25519/HMAC
+# signing and verification need nothing beyond `cryptography`.
+supplychain = [
+    "sigstore>=4.5",
 ]
 # Synthetic data generation (`exa data synth`, Next-Gen 40 · A7, ADR 0042). SDV is lazily
 # imported by examlops.synth.generators; without it a pure-python Gaussian-copula fallback
@@ -206,6 +259,50 @@ dataplane-service = [
 dataplane = [
     "examlops[dataplane-sql,dataplane-files,dataplane-kafka,dataplane-service]",
 ]
+# Continuous-evaluation engines (ADR 0007 decision 1). Both lazily imported by
+# examlops.evaluation.engines; without them the native evaluators, the pure-python Ragas-formula
+# fallbacks and the gateway rubric judges keep `exa eval run`/`exa eval online` working. Their
+# telemetry is switched off before import — eval content never leaves the cluster.
+# There is deliberately no `eval-deepeval` extra: deepeval 4.2.6 (latest, 2026-09-25) pins
+# click<8.4 while this package needs click>=8.5, so `uv lock` cannot resolve the two together.
+# The DeepEval wrapper is written and tested against a faithful fake and activates when deepeval is
+# importable (e.g. a separate evaluator image); add the extra when deepeval lifts the click cap.
+# Likewise no `ragas` pin: ragas 0.4.3 needs `datasets`, whose every release caps fsspec<=2026.6,
+# and the `dataplane` extras need fsspec>=2026.7 — one workspace lock cannot hold both. Ragas's
+# non-LLM text metrics are thin wrappers over rapidfuzz and rouge-score, so this extra installs
+# those two directly and examlops computes the same numbers Ragas would; an interpreter that has
+# ragas itself (a separate evaluator image) uses Ragas's own classes instead.
+eval-metrics = [
+    "rapidfuzz>=3.14.6",
+    "rouge-score>=0.1.2",
+]
+# RAG (ADR 0019). All three are lazily imported; without them `exa rag` chunks natively, scores
+# retrieval with the built-in id-set metrics, and the serving endpoint fails to import with a
+# ModuleNotFoundError naming fastapi.
+# LlamaIndex's SentenceSplitter as the ingest chunker (`--framework llamaindex|auto`). The floor
+# is 0.12.42, not the current 0.14.x, for a compatibility reason: llama-index-core>=0.13 requires
+# setuptools>=80.9 and the workspace caps setuptools <80 for vllm (root pyproject), so any higher
+# floor makes `uv lock` unsatisfiable. A standalone `pip install 'examlops[rag-llamaindex]'` still
+# gets the latest release; the chunker is verified against both 0.12.42 and 0.14.25.
+rag-llamaindex = [
+    "llama-index-core>=0.12.42",
+]
+# Ragas' non-LLM IDBasedContextPrecision/Recall behind the C2 evaluators (`exa rag eval`). No judge
+# model is called. langchain-community is capped below 0.4 for a compatibility reason, not by
+# choice: ragas 0.4.3 (current) imports `langchain_community.chat_models.vertexai`, which 0.4.x
+# removed, so `import ragas` fails outright against the latest langchain-community (verified
+# 2026-09-25). Drop the cap when a ragas release stops importing it.
+rag-eval = [
+    "ragas>=0.4.3",
+    "langchain-community>=0.3.31,<0.4",
+]
+# The RAG serving endpoint (serving/rag_pipeline/app.py). Same fastapi cap as
+# `dataplane-service`, for the same workspace-lock reason.
+rag-service = [
+    "fastapi>=0.136.3,<0.137",
+    "uvicorn[standard]>=0.52.4",
+    "prometheus-client>=0.20",
+]
 
 [project.scripts]
 exa = "examlops.cli.main:app"
@@ -227,4 +324,18 @@ examlops = [
     "events/event-contract.json",
     # ADR 0142 d4: the pinned KServe CRD schemas every KServe render is validated against.
     "serving/substrates/kserve_crds/*/*",
+    # ADR 0015 d1: the pinned KubeRay RayService schema every KubeRay render is validated against.
+    "serving/substrates/kuberay_crds/*/*",
+    # ADR 0078: PEP 561 marker — SDK consumers get the typed public surface under mypy/pyright.
+    "py.typed",
+]
+
+[tool.uv]
+# `rag-eval` cannot share an environment with the dataplane file connector: ragas 0.4.3 requires
+# `datasets`, whose newest release (5.0.x) caps fsspec at <=2026.6, while `dataplane-files`
+# floors fsspec at 2026.7. Declaring the conflict lets the workspace lock both (in separate
+# forks) instead of making `uv lock` unsatisfiable; install `rag-eval` in its own environment.
+conflicts = [
+    [{ extra = "rag-eval" }, { extra = "dataplane-files" }],
+    [{ extra = "rag-eval" }, { extra = "dataplane" }],
 ]

@@ -57,17 +57,33 @@ export interface ProjectConnectionView {
   hasSecret: boolean
 }
 
+/** Where a pipeline surface's values came from (ADR 0092): the live service, or the registry cache. */
+export type PipelineSource = 'live' | 'registry'
+
 export interface PrefectPipeline {
   deployments: string[]
   schedule: string | null
   lastRunAt: string | null
   status: string
+  // Live hydration (ADR 0092) — optional: older backends and registry-only reads omit them.
+  source?: PipelineSource
+  workPool?: string | null
+  lastRunState?: string | null
+  lastRunDeployment?: string | null
+  storagePrefix?: string | null
+  liveError?: string | null
 }
 
 export interface RayServePipeline {
   models: string[]
   traffic: Record<string, Record<string, number>>
   status: string
+  source?: PipelineSource
+  served?: string[]
+  unserved?: string[]
+  aliases?: Record<string, string[]>
+  health?: Record<string, string>
+  liveError?: string | null
 }
 
 export interface ProjectPipelines {
@@ -92,6 +108,14 @@ export interface ProjectDetail {
   storage?: ProjectStorage | null
   connections?: ProjectConnectionView[]
   pipelines?: ProjectPipelines
+  // Sections the BFF could not load this time (ADR 0093 — `bff.aggregate` partial tolerance)
+  _partial?: string[]
+}
+
+/** Human label for the sections a partial anatomy is missing, or null when complete. Pure. */
+export function partialNotice(d: Pick<ProjectDetail, '_partial'>): string | null {
+  const parts = d._partial ?? []
+  return parts.length ? `Some sections could not be loaded: ${parts.join(', ')}` : null
 }
 
 /** Storage usage as a percentage of quota (0 when no quota). Pure. */

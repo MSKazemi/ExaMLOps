@@ -48,8 +48,9 @@ slos:
 
 SLOs are **versioned** (re-applying bumps the version) and **per-tenant** (D6). SLI
 sources map to the other Next-Gen tracks: `c1` (latency/cost/error), `c2` (eval
-quality), `c5` (drift verdicts), `c8` (fairness disparity), `availability`, or raw
-`prometheus`.
+quality), `c4` (agent tool-call / session success — see
+[AgentOps](agentops.md#agent-slos-error-budgets-and-burn-rate-alerts)), `c5` (drift verdicts),
+`c8` (fairness disparity), `availability`, or raw `prometheus`.
 
 ## Feeding the SLI
 
@@ -66,7 +67,7 @@ the ingesters used to record their whole window as a new sample on every run. A 
 therefore counted the same events once per day, and a fresh outage was diluted by recounting a
 good month: 120 real calls read as 620, and the SLI read 0.948 against a true 0.817.
 
-The event sources (`c1`, `c2`, `c5`) now record a watermark with each sample and count only
+The event sources (`c1`, `c2`, `c4`, `c5`) now record a watermark with each sample and count only
 events past it. Run `exa slo ingest` as often as you like: a run with nothing new records nothing
 and reports `up to date`. The first ingest of a `c2` spec starts from the newest result rather
 than the whole history. `c8` is different: it measures the current state (how many declared
@@ -206,8 +207,16 @@ budget that refills is a rolling-window artefact, not a decision anyone made.
 ## Publishing the SLIs Prometheus cannot see
 
 `exa slo generate` emits burn-rate **alert** rules that range over a Prometheus series. For an SLI
-the platform ingests itself — `c1`, `c2`, `c5`, `c8` — that series does not exist unless you publish it,
-so those alerts can never fire:
+the platform ingests itself — `c1`, `c2`, `c4`, `c5`, `c8`, `availability` — that series does not
+exist unless you publish it, so those alerts can never fire. For those sources the generated rules
+record the SLI from `examlops_slo_sli{model,slo,tenant}`, and each burn-rate alert takes its short-
+and long-window error ratio from the `examlops_slo_good_total` / `examlops_slo_events_total`
+counters (`1 - increase(good[5m]) / increase(events[5m])`): the SLI gauge is the ratio over the
+SLO's whole window and cannot show a burn that started an hour ago. All three are series this
+command publishes; the
+spec's own `--query` (`errors`, `pass_rate`, `tool_success` …) tells the ingester what to count and
+is not PromQL, so it never reaches the rules. Only a `prometheus` spec's query is used as PromQL.
+Publish the series with:
 
 ```bash
 exa slo export-metrics --out /var/lib/node_exporter/textfile/examlops.prom
@@ -217,8 +226,8 @@ exa slo export-metrics --out /var/lib/node_exporter/textfile/examlops.prom
 Run it on a timer (cron, a systemd timer, a Prefect schedule) — it is a pure read, so re-running
 it costs a query and rewrites one file.
 
-It publishes `examlops_slo_sli`, `_target`, `_budget_remaining`, `_burn_rate`, `_samples` and
-`_measured`, plus vector-store latency and item gauges.
+It publishes `examlops_slo_sli`, `_target`, `_budget_remaining`, `_burn_rate`, `_samples`,
+`_measured` and the `_good_total` / `_events_total` counters, plus vector-store latency and item gauges.
 
 **An unmeasured SLO exports `measured=0` and no SLI at all.** Its placeholder 1.0 would put a
 perfect ratio on a dashboard for something nobody has measured — and a burn-rate alert cannot fire
@@ -399,6 +408,31 @@ stores the verdict in the alias-move evidence; an agent with no agentic spec is 
 
 Limits: the kind of a servable is what its spec declares, so an armed gate refuses a model with no
 spec of any kind rather than guessing its kind; the paired-SLO evaluator is unchanged.
+
+## Benchmark results carry their conditions (ADR 0143 decision 5)
+
+A TTFT, TPOT or goodput number is stored only together with the conditions it was measured under:
+
+```bash
+exa slo pair-set chat-llm interactive --ttft-ms 300 --tpot-ms 40
+exa slo benchmark record chat-llm --file bench.json
+exa slo benchmark results chat-llm
+```
+
+`bench.json` holds `{"conditions": {...}, "samples": [[ttft_ms, tpot_ms], ...]}`. The write is
+refused, and exits 1, unless the conditions state all of the following:
+
+- `model`, `quantization`, `hardware`, `engine_version`
+- `dataset`, `length_distribution`, a positive `concurrency`
+- `slo`, which must name a pair already declared for the servable
+- `ttft_includes_queue_wait`
+
+A sample may also be `{ttft_ms, tpot_ms, queue_wait_ms}`. When the run says TTFT excludes queue
+wait, the queue wait is added, so every stored TTFT on a queued (HPC) substrate is the one the
+user saw (ADR 0143 d6). Malformed samples are counted as `rejected`. With fewer than
+`EXAMLOPS_SLO_PAIR_MIN_SAMPLES` valid samples the verdict is `no_verdict`, never `met`.
+Recording the same run twice stores it once. Each new result writes one
+`slo_benchmark_recorded` audit event, and results are listed per tenant.
 
 ## Graceful degradation
 

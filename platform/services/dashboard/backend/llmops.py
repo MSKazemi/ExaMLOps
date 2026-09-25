@@ -113,3 +113,23 @@ def eval_summary(db_path: str) -> dict[str, Any]:
         return {"models": models, "count": len(models)}
     finally:
         conn.close()
+
+
+# ── calculation methodology (ADR 0083) ────────────────────────────────────────
+
+
+def calculation_providers() -> dict[str, Any]:
+    """Which provider computes each LLMOps figure, with its ``ProviderMeta`` (ADR 0083).
+
+    One row per domain (``llm_cost`` / ``llm_cache`` / ``llm_routing`` / ``rag_quality``), resolved
+    exactly as the platform paths resolve it (``EXAMLOPS_<DOMAIN>_PROVIDER`` → ``providers.yaml``
+    → registered default), so the console shows the formula that actually ran instead of a
+    hardcoded methodology string. Without the ``examlops`` library (a slim image) the section is
+    empty and ``available`` is false — degraded, never a 500 (F10 R6).
+    """
+    try:
+        from examlops.llmops_providers import describe_active_providers
+    except ImportError:
+        return {"rows": [], "count": 0, "available": False}
+    rows = describe_active_providers()
+    return {"rows": rows, "count": len(rows), "available": True}

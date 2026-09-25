@@ -40,25 +40,12 @@ ROUTE_POLICY: dict[tuple[str, str], tuple[str, str]] = {
         "exempt",
         "Same handler as /api/changes (CI change-notification intake, records a pending row).",
     ),
-    ("POST", "/approve/{model_id}"): (
-        "exempt",
-        "OPEN GAP: `exa approvals approve` has no policy gate, so there is no CLI-equivalent "
-        "action to reuse. The dashboard's human-facing approve/reject routes are gated "
-        "(`approval_approve` / `approval_reject`); a direct control-plane call is governed by "
-        "its scoped `approve` credential only.",
-    ),
-    ("POST", "/reject/{model_id}"): (
-        "exempt",
-        "OPEN GAP: as /approve — no CLI-equivalent gate exists; the dashboard route is gated.",
-    ),
-    ("POST", "/approvals/{model_id}/approve"): (
-        "exempt",
-        "OPEN GAP: as /approve — no CLI-equivalent gate exists; the dashboard route is gated.",
-    ),
-    ("POST", "/approvals/{model_id}/reject"): (
-        "exempt",
-        "OPEN GAP: as /reject — no CLI-equivalent gate exists; the dashboard route is gated.",
-    ),
+    # `exa approvals approve|reject` decide as these actions (examlops.cli._policy_hook), and the
+    # dashboard's approve/reject routes use the same names: one rule governs all three doors.
+    ("POST", "/approve/{model_id}"): ("gated", "approval_approve"),
+    ("POST", "/reject/{model_id}"): ("gated", "approval_reject"),
+    ("POST", "/approvals/{model_id}/approve"): ("gated", "approval_approve"),
+    ("POST", "/approvals/{model_id}/reject"): ("gated", "approval_reject"),
     ("DELETE", "/approvals/{approval_id}"): (
         "exempt",
         "Retracts a stale pending approval row (kept, marked retracted); resolves nothing and "
@@ -69,19 +56,11 @@ ROUTE_POLICY: dict[tuple[str, str], tuple[str, str]] = {
         "Cancels a queued command the caller already submitted; the submission (retrain) was "
         "the gated decision and a cancel only ever reduces what runs.",
     ),
-    ("POST", "/modelzoo/sync"): (
-        "exempt",
-        "Admin-scope operational sync of the modelzoo poller; no CLI-equivalent policy gate.",
-    ),
-    ("PUT", "/modelzoo/config"): (
-        "exempt",
-        "Admin-scope poller configuration; no CLI-equivalent policy gate.",
-    ),
-    ("POST", "/admin/reload"): (
-        "exempt",
-        "Admin-scope registry/config reload; changes nothing a caller could not already request "
-        "through a gated action.",
-    ),
+    # The actions `exa modelzoo sync`, `exa modelzoo config-set` and `exa production reload`
+    # decide as — every mutating `exa` command consults policy (examlops.cli._policy_hook).
+    ("POST", "/modelzoo/sync"): ("gated", "modelzoo_sync"),
+    ("PUT", "/modelzoo/config"): ("gated", "modelzoo_config_set"),
+    ("POST", "/admin/reload"): ("gated", "production_reload"),
 }
 
 
@@ -119,3 +98,21 @@ def enforce_retrain(req: Any, context: Any, request: Request) -> None:
         tenant=context.tenant,
         request=request,
     )
+
+
+def enforce_approval(
+    action: str, model_id: str, reason: str | None, context: Any, request: Request
+) -> None:
+    """``approval_approve`` / ``approval_reject`` — the keys the CLI and the dashboard supply."""
+    enforce(
+        action,
+        {"model": model_id, "target": model_id, "reason": reason},
+        principal=context.principal,
+        tenant=context.tenant,
+        request=request,
+    )
+
+
+def enforce_admin(action: str, extra: dict[str, Any], context: Any, request: Request) -> None:
+    """An admin-scope operational route, gated under its CLI command's action name."""
+    enforce(action, extra, principal=context.principal, tenant=context.tenant, request=request)

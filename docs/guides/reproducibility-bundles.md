@@ -12,21 +12,38 @@ model version, so that months later you can answer two questions with evidence:
 
 ## What the manifest captures (R1)
 
-| Input | Captured as |
-|---|---|
-| Code | `git rev-parse HEAD` commit SHA |
-| Dataset | A1 dataset revision id (`<name>@<rev>`) |
-| Features | A3 feature-view versions |
-| Environment | `uv.lock` SHA-256, the installed package set (`name==version`), Python version, container image digest |
-| Code state | `code_dirty` — whether tracked files differed from the commit (`null` = unknown) |
-| Dataset source | for a dataplane snapshot, the source key (`dataset_source`) |
-| Hyperparameters | recorded key/values |
-| Compute | scheduler resources + hardware (phase 23) |
-| Determinism | RNG seeds |
-| Provenance | A2 lineage run id |
+| Input | Captured as | Filled by |
+|---|---|---|
+| Code | `git rev-parse HEAD` commit SHA | collected |
+| All code repos | `code_commits` — the platform checkout **and** the upstream model library (`EXAMLOPS_MODELZOO_DIR`, default `./modelzoo`), each with commit + dirty flag; a library that is not a git checkout is recorded by its distribution version with `commit: null` | collected |
+| Dataset | A1 dataset revision id (`<name>@<rev>`) | pipeline / `--revision` |
+| Features | A3 feature views, pinned by the SHA-256 of their definition (the store keeps no version counter) | `--feature-view` / `EXAMLOPS_FEATURE_VIEWS` |
+| Environment | `uv.lock` SHA-256, the installed package set (`name==version`), Python version, container image digest | collected; digest from `EXAMLOPS_IMAGE_DIGEST` or `--image-digest` |
+| Code state | `code_dirty` — whether tracked files differed from the commit (`null` = unknown) | collected |
+| Dataset source | for a dataplane snapshot, the source key (`dataset_source`) | pipeline |
+| Hyperparameters | recorded key/values | `--hyperparams` |
+| Compute | `resources` — the scheduler-neutral request as submitted (`EXAMLOPS_HPC_*` keys), the scheduler and the job id; `hardware` — arch, OS, CPUs, memory, GPUs from `nvidia-smi` | pipeline / `--resources --scheduler`; hardware collected |
+| Determinism | RNG seeds | `EXAMLOPS_SEED` / `--seed` |
+| Provenance | A2 lineage run id | pipeline (found from the MLflow run) / `--lineage-run-id` |
+| Supply chain | `bom` — hash of the version's D3 AI-BOM; generated from the recorded package set when the version has none, an existing BOM is linked, never overwritten | collected |
 
 The manifest is hashed canonically and **signed** with the D3 HMAC key; the build is
 audited (D4) and the manifest is versioned.
+
+What a collector could not observe is recorded as such, never guessed: a host without
+`nvidia-smi` is `gpu_probe: "unavailable"` (not "no GPUs"), a bundle built at promotion records
+`hardware.captured: false` (the promoting host did not train the model), so does a pipeline
+bundle whose training ran as a Slurm or Flux job (the compute node the scheduler chose is not
+the host that built the bundle; the job id is kept), the mock scheduler —
+which trains inline — records an empty request, and a malformed `EXAMLOPS_IMAGE_DIGEST` is not
+recorded at all.
+
+`EXAMLOPS_IMAGE_DIGEST` is read by the bundle; an image cannot know its own digest at build
+time, so the deployment that runs the image has to pass it in (Compose/Helm). The shipped
+Compose file and chart do not set it yet — until they do, a pipeline-built bundle records
+`image_digest: null` unless the operator exports the variable. A bundle whose hardware is not
+captured (promotion, a Slurm/Flux job) does not read it either: that process's image is not the
+one that trained.
 
 ## Honesty about determinism (R4)
 
@@ -54,6 +71,17 @@ exa reproduce build JPCP 17 \
 Set `EXAMLOPS_SIGNING_KEY` (or store the `model-signing/key` secret) so the bundle is
 signed; otherwise you'll see an `unsigned` warning.
 
+Add what only the operator knows:
+
+```bash
+exa reproduce build JPCP 17 --feature-view jobs \
+    --resources '{"nodes": 1, "gpus": 2, "partition": "gpu"}' --scheduler flux \
+    --lineage-run-id <A2-run-id>
+```
+
+An unknown `--feature-view` refuses the build (exit 1) — a bundle must not claim to pin a view
+that does not exist.
+
 ## Reproduce & metric-verify
 
 ```bash
@@ -78,10 +106,10 @@ first failure stops the run (exit 1) and later steps show `not_run`:
 
 | # | Step | What is actually done | Fails when |
 |---|---|---|---|
-| 1 | `code` | detached `git worktree` at the bundle's commit (`--repo`, default `.`) | no commit recorded, commit not in the repo (never falls back to `HEAD`) |
-| 2 | `dataset` | pinned revision must be recorded; with `--data-path` the local data is hashed against it | revision unrecorded, or data hash differs. Without `--data-path` (or with `--dummy`) content is **not** verified and the step says `skipped` |
+| 1 | `code` | detached `git worktree` at the bundle's commit (`--repo`, default `.`), **and a second one of the model library at its recorded commit**, which training then imports | no commit recorded, commit not in the repo (never falls back to `HEAD`), recorded library commit in no known checkout, or a dirty library without `--allow-dirty-code` |
+| 2 | `dataset` | pinned revision must be recorded; a lakeFS revision's commit must exist in lakeFS; with `--data-path` the local data is hashed against it; **with `--restore-dataset DIR` the revision is put back** (below) | revision unrecorded, lakeFS commit gone/unconfirmable, data hash differs, restore failed. Without `--data-path` (or with `--dummy`) content is **not** verified and the step says `skipped` |
 | 3 | `env` | recorded `uv.lock`/`requirements.txt` sha256 vs the file in the checkout; the recorded package set vs this interpreter, **or — with `--rebuild-env` — installed into a fresh venv that step 4 then runs on**; the recorded container image digest against the local Docker runtime | hash or a package differs, a recorded package cannot be resolved, the rebuilt Python's `major.minor` differs, or the recorded image is absent/mismatched. `--allow-env-drift` continues and reports `drift_allowed` |
-| 4 | `train` | the pipeline training flow runs in a subprocess **inside the worktree**, pinned to the dataset revision and recorded seed (`EXAMLOPS_SEED`), mock scheduler unless set | non-zero exit, timeout, or no `EXAMLOPS_REPRO_METRICS=<json>` line |
+| 4 | `train` | the pipeline training flow runs in a subprocess **inside the worktree**, pinned to the dataset revision and recorded seed (`EXAMLOPS_SEED`), with the **recorded resources re-requested** as `EXAMLOPS_HPC_*`; scheduler per `--scheduler` (mock unless set) | non-zero exit, timeout, no `EXAMLOPS_REPRO_METRICS=<json>` line, or `--scheduler recorded` on a bundle that recorded none |
 | 5 | `compare` | produced vs recorded metrics, relative tolerance `--rtol` (default: the bundle's, else 0.05) | any recorded metric missing, non-finite or out of tolerance; a bundle with no recorded metrics |
 
 ```bash
@@ -91,7 +119,39 @@ exa reproduce run JPCP 17 --execute --data-path ./data/PM100 --json
 exa reproduce run JPCP 17 --execute --train-cmd "python train.py"
 # put the recorded environment back, and train on it — not on the caller's interpreter:
 exa reproduce run JPCP 17 --execute --rebuild-env --dummy
+# put the pinned dataset back, and train on the scheduler that ran the original:
+exa reproduce run JPCP 17 --execute --restore-dataset ./restored --scheduler recorded
 ```
+
+### `--restore-dataset`: putting the data back
+
+| Revision kind | What `--restore-dataset DIR` does |
+|---|---|
+| dataplane snapshot | materialises the snapshot into `DIR/<revision>/` — the revision id must hash back from the manifest and every part is checksum-verified (the training-time check) |
+| lakeFS commit (`lakefs://<repository>/<commit>`) | confirms the commit exists, lists every object at it (paged) and downloads each into `DIR`, checking its size and — when lakeFS reports a plain MD5 ETag — its MD5 |
+| content hash | **refused**: a content revision records a hash, not a source, so there is nothing to restore from; `--data-path` verifies local data against it instead |
+
+`DIR` must be empty (or absent) — a restore never mixes with other data — and on any failure
+what was written is removed, so a half-restored directory never looks like the pinned
+revision. The restored path reaches the training subprocess as `EXAMLOPS_REPRO_DATA_DIR`
+(a custom `--train-cmd` reads it; the default pipeline flow reads its own backend, pinned to
+the same revision). A lakeFS restore is bounded (100 000 objects, 50 GiB by default), refuses
+object paths that would escape `DIR`, and authenticates with
+`EXAMLOPS_LAKEFS_ACCESS_KEY_ID` / `EXAMLOPS_LAKEFS_SECRET_ACCESS_KEY` (HTTP basic) against
+`EXAMLOPS_LAKEFS_ENDPOINT`; credentials never appear in a message.
+
+### `--scheduler`: re-running with the recorded resources
+
+The bundle's `resources.requested` is always exported to the training subprocess as
+`EXAMLOPS_HPC_*`, so a rebuild on a real scheduler asks for what the original asked for; when a
+request was recorded, the caller's own `EXAMLOPS_HPC_*` and legacy `EXAMLOPS_SLURM_*` resource
+variables are cleared first, so nothing the original did not ask for joins it. Where
+it runs: `--scheduler recorded` uses the bundle's scheduler, `mock`/`slurm`/`flux` name one,
+and no option keeps the caller's `EXAMLOPS_HPC_SCHEDULER` (mock unless set). The scheduler and
+the re-requested variables are in the `train` step detail and in `--json` (`scheduler`,
+`resources`). Hardware differences from the record (architecture, GPU models) are reported in
+the `env` step detail and never fail it — metrics are compared within a tolerance precisely
+because the hardware may differ.
 
 ### Dataset and environment checks (what "verified" means)
 
@@ -136,7 +196,7 @@ What it will not do:
 
 ### Container image digest
 
-When a bundle recorded an `image_digest` (today only when an operator passed `--image-digest` to
+When a bundle recorded an `image_digest` (from `EXAMLOPS_IMAGE_DIGEST`, or from `--image-digest` on
 `exa reproduce build`), `--execute` asks the local Docker runtime about it — read-only
 (`docker version`, `docker image inspect`); nothing is pulled, built, run or removed. The answer
 uses the platform's resolution vocabulary and is reported in `--json` as
@@ -172,12 +232,13 @@ touched (`EXAMLOPS_REPRO_MLFLOW_URI` overrides). It needs no Prefect/MLflow serv
 opt-in test `test_live_default_path_end_to_end` (`make reproduce-live`, `EXAMLOPS_REPRO_LIVE=1`, ~30 s) runs bundle →
 `--execute --dummy` end to end on this repo; it is not in the default suite because it trains a model.
 
-Limits, stated plainly: lakeFS refs are not restored or verified (only the recorded revision is
-checked); the upstream modelzoo version is
-not captured (a rebuild uses the modelzoo on disk); scheduler resources are not re-requested; a
-rebuild trains on the mock scheduler unless `EXAMLOPS_SLURM_MODE` is set; seeds only take effect
-where the code reads `EXAMLOPS_SEED` (the pipeline flow and custom trainers); results are compared
-within tolerance, never bit-exact.
+Limits, stated plainly: a rebuild trains on the mock scheduler unless `--scheduler` (or
+`EXAMLOPS_HPC_SCHEDULER`/`EXAMLOPS_SLURM_MODE`) says otherwise — the recorded resources are
+exported either way, but only a real scheduler honours them; the default pipeline flow reads
+its own dataset backend, not the `--restore-dataset` copy; a model library recorded only by
+distribution version (not a git checkout) is rebuilt with the library on disk, and the step
+says so; seeds only take effect where the code reads `EXAMLOPS_SEED` (the pipeline flow and
+custom trainers); results are compared within tolerance, never bit-exact.
 
 ## Verify a bundle hasn't rotted (CI gate)
 
@@ -193,11 +254,28 @@ exa reproduce verify JPCP 18
 `verify` **exits 1** when a bundle is non-reproducible, so it drops straight into a CI job
 that fails the build if a promoted model can no longer be reproduced.
 
+`verify` re-checks every recorded input: the platform commit **and the model-library commit**
+(looked up in `EXAMLOPS_MODELZOO_DIR` when set, else the recorded path), the dataset revision
+(a dataplane snapshot against its manifest, a **lakeFS commit against lakeFS**), the lockfile,
+the package set, each **feature view's definition hash**, the **A2 lineage run**, and the
+**AI-BOM hash** — a BOM regenerated after the bundle is rot, not a pass.
+
 ## Governance (R6)
 
 `technical_evidence(model, version)` shapes a bundle into the structure consumed by **D1**
-EU-AI-Act technical documentation and **D2** control evidence — a promoted model carries a
-signed, verifiable record of exactly how it was produced.
+EU-AI-Act technical documentation and **D2** control evidence, and both call it:
+
+- `exa compliance technical-file <model>` has a **Reproducibility (Annex IV §2)** section
+  built from the model's newest bundle, *re-verified* — a bundle whose inputs have rotted is
+  shown with its problems and counted as an evidence gap. `repro_bundles` sits outside the
+  audit hash chain, so a verified section is still marked *not tamper-evident*; the bundle's
+  own signature is what vouches for it.
+- `exa governance report` gains control **MEASURE-2.1** (catalogue 1.1.0), satisfied only by a
+  bundle that still verifies.
+
+Bundles are looked up by the model id they were built under, then its lower-cased form
+(training builds them under the MLflow id, `jpcp`; compliance systems are usually registered
+under the registry name, `JPCP`).
 
 ## Related
 

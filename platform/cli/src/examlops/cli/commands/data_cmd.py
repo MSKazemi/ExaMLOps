@@ -15,6 +15,7 @@ from typing import Any
 import typer
 
 from examlops.cli import _output
+from examlops.cli._model_authz import guard_dataset
 from examlops.data import init_db
 from examlops.data.audit import write_audit_event
 from examlops.data.data_assets import (
@@ -81,6 +82,7 @@ def snapshot(
     ),
 ) -> None:
     """Resolve the current dataset state to a revision and record it (spec R8)."""
+    guard_dataset(dataset, "editor")  # ADR 0014 d4: records into this project's dataset
     init_db()
     versioning = _load_versioning()
     rev = versioning.resolve_revision(backend, dataset, data_path=path)
@@ -126,6 +128,7 @@ def list_revisions(
     backend: str | None = typer.Option(None, "--backend", "-b", help="Filter by backend"),
 ) -> None:
     """List recorded revisions newest-first, with linked runs (spec R9)."""
+    guard_dataset(dataset, "viewer")  # ADR 0014 d4
     init_db()
     rows = get_dataset_revisions(dataset, backend)
     if _output.json_mode:
@@ -166,6 +169,7 @@ def diff(
     rev_b: str = typer.Argument(..., metavar="REV_B", help="Comparison revision id"),
 ) -> None:
     """Report row-count / schema / size deltas between two revisions (spec R10)."""
+    guard_dataset(dataset, "viewer")  # ADR 0014 d4
     init_db()
     a = _require_rev(dataset, rev_a)
     b = _require_rev(dataset, rev_b)
@@ -212,6 +216,7 @@ def checkout(
     ),
 ) -> None:
     """Materialise / verify the exact pinned data, or exit non-zero (spec R11)."""
+    guard_dataset(dataset, "viewer")  # ADR 0014 d4
     init_db()
     row = _require_rev(dataset, revision_id)
     if row["kind"] == "lakefs":
@@ -250,6 +255,7 @@ def validate(
     without it the same checks run on pandas alone and reach the same verdict. The output says
     which engine judged. EXAMLOPS_CONTRACT_ENGINE=python forces the pandas-only engine.
     """
+    guard_dataset(dataset, "editor")  # ADR 0014 d4: records a quality check on this dataset
     init_db()
     repo_root = Path(__file__).resolve().parents[6]
     _mz = os.environ.get("EXAMLOPS_MODELZOO_DIR") or str(repo_root / "modelzoo")

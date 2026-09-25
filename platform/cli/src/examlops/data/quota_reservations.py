@@ -28,7 +28,9 @@ from examlops.platform_db import _db_path, _immediate_write, get_db, init_db, wr
 
 __all__ = [
     "admission_running_counts",
+    "bind_and_commit",
     "commit",
+    "committed_job_holders",
     "expire_due",
     "get",
     "held_by_holder",
@@ -163,6 +165,47 @@ def commit(reservation_id: str, *, now: float | None = None) -> bool:
             return bool(cur.rowcount == 1)
 
     return write_retry(_do)
+
+
+def bind_and_commit(reservation_id: str, holder: str, *, now: float | None = None) -> bool:
+    """reserved -> committed *and* hand the row to ``holder``, in one statement.
+
+    Used when the holder's identity only exists after admission — a scheduler job id is known once
+    ``submit_job`` returns. Rebinding and committing together means there is no instant at which
+    the row is committed (so no longer TTL-swept) but still owned by a holder nothing will ever
+    release. False when the row is not an unexpired ``reserved`` reservation.
+    """
+    ts = time.time() if now is None else now
+
+    def _do() -> bool:
+        init_db()
+        with _immediate_write("quota_reservations") as conn:
+            cur = conn.execute(
+                "UPDATE quota_reservations SET state = 'committed', holder = ?, resolved_at = ? "
+                "WHERE id = ? AND state = 'reserved' AND expires_at > ?",
+                (holder, ts, reservation_id, ts),
+            )
+            return bool(cur.rowcount == 1)
+
+    return write_retry(_do)
+
+
+def committed_job_holders() -> list[str]:
+    """Distinct ``hpc:<scheduler>:<job id>`` holders of ``committed`` rows, oldest first.
+
+    Deliberately unbounded: a committed job reservation exists only while its job is believed to
+    be alive, so this is bounded by the number of live jobs — and a LIMIT here would make a
+    reconciler re-check the same oldest (still running) jobs forever while the rest leak.
+    """
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT holder, MIN(created_at) AS first FROM quota_reservations "
+            "WHERE state = 'committed' AND holder LIKE ? "
+            "GROUP BY holder ORDER BY first, holder",
+            ("hpc:%",),
+        ).fetchall()
+    return [str(r["holder"]) for r in rows]
 
 
 def release(reservation_id: str, *, reason: str | None = None, now: float | None = None) -> bool:

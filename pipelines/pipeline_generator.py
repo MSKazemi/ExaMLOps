@@ -555,6 +555,20 @@ def register_model_from_yaml(yaml_cfg: ModelYAMLConfig) -> None:
     )
 
 
+#: Models registered from a per-model YAML that is *not* in the pack (``--model-yaml``, e.g. a
+#: YAML lowered from a pipeline-as-code IR, ADR 0080). A real-HPC job stages this file to the
+#: compute node, which re-loads only the pack and would not otherwise know the model.
+_EXTRA_MODEL_YAMLS: dict[str, Path] = {}
+
+
+def register_extra_model_yaml(path: Path) -> str:
+    """Register the model a non-pack YAML defines and remember the file for HPC staging."""
+    yaml_cfg = load_model_yaml(path)
+    register_model_from_yaml(yaml_cfg)
+    _EXTRA_MODEL_YAMLS[yaml_cfg.name] = Path(path).resolve()
+    return yaml_cfg.name
+
+
 # ── Auto-register at import time ───────────────────────────────────────────────
 
 auto_register_all()
@@ -734,8 +748,38 @@ def _hpc_scheduler_name() -> str:
     )
 
 
+def _placement_resource_defaults(model_name: str) -> dict[str, str]:
+    """The submission defaults a model YAML's ``placement:`` section states (ADR 0080).
+
+    The section is the train step's ask: it picks the cluster (``--cluster auto``) *and* is what
+    the job requests from that cluster's scheduler — otherwise a job placed for its 2 GPUs would
+    be submitted asking for none. Explicit ``EXAMLOPS_HPC_*``/``EXAMLOPS_SLURM_*`` env still wins
+    (see :func:`_hpc_resources`). An invalid section raises instead of being silently ignored.
+    """
+    entry = MODEL_REGISTRY.get(model_name)
+    yaml_cfg = getattr(entry[1], "_yaml", None) if entry else None
+    block = getattr(yaml_cfg, "placement", None) or {}
+    if not block:
+        return {}
+    from examlops.pipeline_dsl.placement import validate_placement_block  # noqa: PLC0415
+
+    problems = validate_placement_block(block)
+    if problems:
+        raise ValueError(f"{model_name}: invalid placement section: {'; '.join(problems)}")
+    out: dict[str, str] = {}
+    if block.get("gpus"):
+        out["gpus"] = str(block["gpus"])
+    if block.get("cpus"):
+        out["cpus_per_task"] = str(block["cpus"])
+    if "nodes" in block:
+        out["nodes"] = str(block["nodes"])
+    return out
+
+
 def _hpc_resources(model_name: str, dataset_cls_name: str) -> dict:
-    """Scheduler-neutral resource dict. EXAMLOPS_HPC_* wins; EXAMLOPS_SLURM_* is the fallback."""
+    """Scheduler-neutral resource dict. EXAMLOPS_HPC_* wins, then EXAMLOPS_SLURM_*, then the
+    model YAML's ``placement:`` ask (ADR 0080), then the built-in defaults."""
+    placed = _placement_resource_defaults(model_name)
 
     def pick(*names: str, default: str | None = None) -> str | None:
         for name in names:
@@ -750,14 +794,67 @@ def _hpc_resources(model_name: str, dataset_cls_name: str) -> dict:
         "account": os.getenv("EXAMLOPS_HPC_ACCOUNT"),
         "constraint": os.getenv("EXAMLOPS_HPC_CONSTRAINT"),
         "time": pick("EXAMLOPS_HPC_TIME", "EXAMLOPS_SLURM_TIME", default="2:00:00"),
-        "nodes": pick("EXAMLOPS_HPC_NODES", "EXAMLOPS_SLURM_NODES", default="1"),
+        "nodes": pick(
+            "EXAMLOPS_HPC_NODES", "EXAMLOPS_SLURM_NODES", default=placed.get("nodes", "1")
+        ),
         "ntasks": os.getenv("EXAMLOPS_HPC_NTASKS", "1"),
-        "cpus_per_task": pick("EXAMLOPS_HPC_CPUS", "EXAMLOPS_SLURM_CPUS", default="4"),
+        "cpus_per_task": pick(
+            "EXAMLOPS_HPC_CPUS", "EXAMLOPS_SLURM_CPUS", default=placed.get("cpus_per_task", "4")
+        ),
         "mem": pick("EXAMLOPS_HPC_MEM", "EXAMLOPS_SLURM_MEM", default="16G"),
-        "gpus": os.getenv("EXAMLOPS_HPC_GPUS"),
+        "gpus": pick("EXAMLOPS_HPC_GPUS", default=placed.get("gpus")),
         "job_name": f"examlops_{model_name.lower()}_{dataset_cls_name.lower()}",
     }
     return {k: v for k, v in raw.items() if v is not None}
+
+
+def _apply_gpu_sharing(scheduler: str, resources: dict):
+    """Map a fractional/MIG GPU ask onto the scheduler's resources (ADR 0030 decision 3).
+
+    Returns ``(resources, mapping)``. With no ``EXAMLOPS_HPC_GPU_FRACTION`` /
+    ``EXAMLOPS_HPC_MIG_PROFILE`` in the env this is a no-op that imports nothing, so the whole-GPU
+    path is byte-identical to before. A malformed ask raises — a run must not silently take a
+    different GPU shape than the one it was given. An unsupported mechanism falls back to a whole
+    GPU and the warning is printed, never swallowed.
+    """
+    if not (os.getenv("EXAMLOPS_HPC_GPU_FRACTION") or os.getenv("EXAMLOPS_HPC_MIG_PROFILE")):
+        return resources, None
+    from examlops.gpu_sharing.scheduler_map import (  # noqa: PLC0415
+        ask_from_env,
+        caps_from_env,
+        map_to_scheduler,
+    )
+
+    ask = ask_from_env()
+    if ask is None:
+        return resources, None
+    gpus = _int_or_none(resources.get("gpus")) or 1
+    mapping = map_to_scheduler(scheduler, resources, ask, caps_from_env(), gpus=gpus)
+    for warning in mapping.warnings:
+        print(f"[gpu-sharing] WARNING: {warning}")
+    print(
+        f"[gpu-sharing] {mapping.choice.mechanism} ({mapping.choice.isolation}) — "
+        f"{mapping.choice.allocated_fraction:.3f} GPU per device: {mapping.choice.note}"
+    )
+    return mapping.resources, mapping
+
+
+def _record_gpu_allocation_safe(model: str, job_id: str, scheduler: str, mapping) -> None:
+    """Best-effort link of the job to its GPU allocation, for fractional accounting (decision 5)."""
+    if mapping is None:
+        return
+    try:
+        from examlops.gpu_sharing import record_allocation  # noqa: PLC0415
+
+        record_allocation(
+            model,
+            mapping.choice,
+            tenant=os.getenv("EXAMLOPS_PROJECT") or "default",
+            job_id=job_id,
+            scheduler=scheduler,
+        )
+    except Exception as exc:  # noqa: BLE001 - accounting must never fail a submitted job
+        print(f"[gpu-sharing] record_allocation skipped: {exc}")
 
 
 def _int_or_none(value) -> int | None:
@@ -822,8 +919,12 @@ def _hpc_train_command(
     backend_name: str | None,
     remote_model: str,
     mlflow_uri: str,
+    model_yaml: str | None = None,
 ) -> str:
     """The ``slurm_train_script.py`` invocation a real-HPC job runs (ADR 0130 §8).
+
+    ``model_yaml`` is the node-side path of a staged per-model YAML for a model that is not in
+    the pack (ADR 0080 decision 3); the script registers it before resolving the model.
 
     A dataplane run forwards its pin — ``--backend dataplane --dataset-revision <rev>`` — so the
     compute node trains on the exact snapshot the gate validated and the MLflow run is tagged with.
@@ -847,6 +948,8 @@ def _hpc_train_command(
         flags += f" --backend dataplane --dataset-revision {shlex.quote(pin.revision)}"
     elif backend_name:
         flags += f" --backend {shlex.quote(backend_name)}"
+    if model_yaml:
+        flags += f" --model-yaml {shlex.quote(model_yaml)}"
     return (
         f"{shlex.quote(remote_python)} {shlex.quote(remote_repo)}/pipelines/slurm_train_script.py \\\n"
         f"  --model {shlex.quote(model_name)} \\\n"
@@ -912,6 +1015,13 @@ def slurm_submit_task(
 
     local_job_dir = Path(adapter.working_dir) / run_uuid
     local_job_dir.mkdir(parents=True, exist_ok=True)
+    # ADR 0080 decision 3: a model registered from a non-pack YAML (`run --ir`) travels with its
+    # job — staged through the adapter's own transport, so SSH and shared-FS clusters both work.
+    remote_yaml: str | None = None
+    extra_yaml = _EXTRA_MODEL_YAMLS.get(model_name)
+    if extra_yaml is not None:
+        remote_yaml = f"{remote_dir}/model.yaml"
+        adapter.executor.put(str(extra_yaml), remote_yaml)
     bash_script = local_job_dir / "run.sh"
     bash_script.write_text(
         "#!/bin/bash\n"
@@ -923,15 +1033,18 @@ def slurm_submit_task(
             backend_name=backend_name,
             remote_model=remote_model,
             mlflow_uri=mlflow_uri,
+            model_yaml=remote_yaml,
         )
     )
     bash_script.chmod(0o755)
 
     resources = _hpc_resources(model_name, dataset_cls_name)
+    resources, gpu_mapping = _apply_gpu_sharing(scheduler, resources)
     job_id = adapter.submit_job(
         script_path=str(bash_script), resources=resources, remote_dir=remote_dir
     )
     _record_hpc_job_safe(job_id, scheduler, model_name, dataset_cls_name, resources)
+    _record_gpu_allocation_safe(model_name, job_id, scheduler, gpu_mapping)
     print(f"[slurm_submit] {scheduler} job_id={job_id}  remote_dir={remote_dir}")
     return job_id, remote_model
 
@@ -1199,6 +1312,12 @@ def log_mlflow_task(
             mlflow.set_tag("hpc_job_id", job_id)
             mlflow.set_tag("hpc_scheduler", scheduler or "")
             mlflow.set_tag("slurm_job_id", job_id)  # back-compat
+        # ADR 0157 Phase 4: the exact hardware-profile version this run was sized by
+        # (`name@vN`, exported by `exa pipeline run --hardware-profile`), so "which version of
+        # that profile did this run use" is answerable from the run itself.
+        hardware_profile = os.getenv("EXAMLOPS_HARDWARE_PROFILE", "").strip()
+        if hardware_profile:
+            mlflow.set_tag("hardware_profile", hardware_profile)
         # Source-level model version (the demo "staleness knob"). Logged so
         # `exa models diff <id> <v1> <v2>` and the MLflow UI can show which
         # source revision produced each registered version. Models without a
@@ -1251,7 +1370,18 @@ def log_mlflow_task(
             print(f"[pipeline] MLflow registration skipped: {exc}")
 
     if registration.get("version"):
-        _sign_registered(registered_model_name, str(registration["version"]))
+        _signature = _sign_registered(registered_model_name, str(registration["version"]))
+        _record_release_evidence(
+            registered_model_name,
+            str(registration["version"]),
+            _signature,
+            run_id=registration.get("run_id"),
+            dataset=dataset_name,
+            backend=backend_name,
+            framework=getattr(adapter, "flavour", None),
+            job_id=job_id,
+            scheduler=scheduler,
+        )
     _emit_training_lineage(
         registered_model_name,
         dataset_name,
@@ -1265,7 +1395,7 @@ def log_mlflow_task(
     return registration
 
 
-def _sign_registered(model: str, version: str) -> None:
+def _sign_registered(model: str, version: str) -> Any:
     """Sign the version just registered — the bytes the serving plane will download (P4.10).
 
     ``EXAMLOPS_SIGN_AT_REGISTRATION``: ``auto`` (default) signs whenever a signing key is
@@ -1276,28 +1406,67 @@ def _sign_registered(model: str, version: str) -> None:
     """
     policy = os.getenv("EXAMLOPS_SIGN_AT_REGISTRATION", "auto").strip().lower()
     if policy == "off":
-        return
+        return None
     try:
         from examlops import supplychain  # noqa: PLC0415
     except Exception as exc:  # noqa: BLE001 - a worker image without the platform package
         if policy == "required":
             raise RuntimeError(f"cannot sign {model} v{version}: {exc}") from exc
-        return
+        return None
     if supplychain.signing_configured() is None:
         if policy == "required":
             raise RuntimeError(
                 f"cannot sign {model} v{version}: no signing key "
                 "(EXAMLOPS_SIGNING_PRIVATE_KEY_FILE or secret model-signing/ed25519-private)"
             )
-        return
+        return None
     try:
         sig = supplychain.sign_registered_version(model, version, actor="pipeline")
     except Exception as exc:  # noqa: BLE001 - reported, and fatal only when required
         if policy == "required":
             raise
         print(f"[pipeline] Could not sign {model} v{version}: {exc}")
-        return
+        return None
     print(f"[pipeline] Signed {model} v{version} ({sig.algo}, {sig.digest[:23]})")
+    return sig
+
+
+def _record_release_evidence(model: str, version: str, signature: Any, **build: Any) -> None:
+    """Record the AI-BOM and SLSA provenance of the version just registered (ADR 0013 cl. 2–3).
+
+    ``EXAMLOPS_PROVENANCE_AT_REGISTRATION``: ``auto`` (default) records them whenever signing
+    produced a manifest digest — the digest the evidence is bound to, so no second artifact
+    download is needed — and skips otherwise; ``required`` always records them (downloading the
+    registered artifacts when signing did not) and fails the run when it cannot; ``off`` never.
+    """
+    policy = os.getenv("EXAMLOPS_PROVENANCE_AT_REGISTRATION", "auto").strip().lower()
+    if policy == "off":
+        return
+    digest = None
+    if signature is not None and getattr(signature, "algo", "") in ("ed25519-v2", "sigstore-v1"):
+        digest = signature.digest
+    if digest is None and policy != "required":
+        return
+    try:
+        from examlops.supplychain import release  # noqa: PLC0415
+        from examlops.supplychain.provenance import BuildContext  # noqa: PLC0415
+
+        ctx = BuildContext.from_env(**build)
+        if digest is not None:
+            result = release.record_evidence_for_digest(
+                model, version, digest, ctx=ctx, actor="pipeline"
+            )
+        else:
+            result = release.attest_registered_version(model, version, ctx=ctx, actor="pipeline")
+    except Exception as exc:  # noqa: BLE001 - reported, and fatal only when required
+        if policy == "required":
+            raise RuntimeError(f"cannot record provenance for {model} v{version}: {exc}") from exc
+        print(f"[pipeline] Could not record provenance for {model} v{version}: {exc}")
+        return
+    print(
+        f"[pipeline] Recorded AI-BOM + SLSA provenance for {model} v{version} "
+        f"({result.provenance_algo})"
+    )
 
 
 def _emit_training_lineage(
@@ -1373,18 +1542,28 @@ def _auto_repro_bundle(
     *,
     seed: int | None,
     is_dummy: bool,
+    job_id: str | None = None,
+    scheduler: str | None = None,
 ) -> None:
     """ADR 0038 cl. 4: build the reproducibility bundle for a registered version. Fail-open.
 
     Off unless ``EXAMLOPS_REPRO_AUTO_BUNDLE`` is truthy, so the default run is untouched. When
     armed, nothing here can fail the run: ``auto_bundle`` swallows, counts and audits every error,
     and the surrounding ``try`` covers the dataset lookup that precedes it.
+
+    ADR 0038 cl. 1: the bundle records the scheduler request this run submitted (none under the
+    mock scheduler, which trains inline), the job id, and the A2 lineage run emitted at
+    registration (found from the MLflow run id); hardware is collected by ``build_bundle``.
     """
     try:
         from examlops.reproducibility import auto  # noqa: PLC0415
+        from examlops.reproducibility.capture import capture_resources  # noqa: PLC0415
 
         if not auto.enabled() or not registration.get("version"):
             return
+        sched = scheduler or _hpc_scheduler_name()
+        requested = None if sched == "mock" else _hpc_resources(model_name, dataset)
+        resources = capture_resources(requested, scheduler=sched, job_id=job_id)
         model_id = _lineage_model_id(model_name)
         pin = None if is_dummy else _run_pin(model_name, dataset, backend_name)
         revision: str | None = None
@@ -1413,6 +1592,8 @@ def _auto_repro_bundle(
                 "backend": backend_name,
                 "dummy": bool(is_dummy),
             },
+            resources=resources,
+            mlflow_run_id=registration.get("run_id"),
         )
     except Exception as exc:  # noqa: BLE001 - never fail a completed training run
         print(f"[pipeline] reproducibility bundle skipped: {exc}")
@@ -1868,12 +2049,48 @@ def _dataplane_binding(model_name: str | None, dataset_name: str) -> Any:
         return None
 
 
+def _feature_view_binding(model_name: str | None, dataset_name: str) -> str | None:
+    """The model YAML's ``datasets[].feature_view`` for (model, dataset), else ``None``."""
+    if not model_name or model_name not in MODEL_REGISTRY:
+        return None
+    yaml_cfg = getattr(MODEL_REGISTRY[model_name][1], "_yaml", None)
+    if yaml_cfg is None:
+        return None
+    try:
+        return getattr(yaml_cfg.dataset(dataset_name), "feature_view", None) or None
+    except Exception:  # noqa: BLE001 - no entry for this dataset: nothing is bound
+        return None
+
+
+def _feature_gate(
+    model_name: str, dataset_name: str, backend_name: str | None, is_dummy: bool
+) -> dict:
+    """ADR 0017 clause 2: validate the pinned training data against its bound feature view.
+
+    Reads through the data-contract gate's loader, so both gates see the data this run trains
+    on — but only the first ``EXAMLOPS_FEATURE_GATE_MAX_ROWS`` rows of it, which is all the gate
+    checks: loading a whole multi-file dataset into the orchestrator to look at 1000 rows is an
+    out-of-memory risk, not a check. Raises ``FeatureViewViolation`` in ``enforce`` mode.
+    """
+    from pipelines.feature_gate import _max_rows, feature_view_gate  # noqa: PLC0415
+
+    return feature_view_gate(
+        dataset_name,
+        view_name=_feature_view_binding(model_name, dataset_name),
+        is_dummy=is_dummy,
+        load_inputs=lambda: _contract_inputs(
+            dataset_name, backend_name, model_name=model_name, max_rows=_max_rows()
+        ),
+    )
+
+
 def _contract_inputs(
     dataset_name: str,
     backend_name: str | None,
     *,
     model_name: str | None = None,
     table: str | None = None,
+    max_rows: int | None = None,
 ) -> tuple[list[tuple[str, Any]] | None, str]:
     """What the gate validates: ``([(table, load), …], source)``, or ``(None, reason)`` to skip.
 
@@ -1886,7 +2103,8 @@ def _contract_inputs(
     read through ``examlops.dataplane.pull.read_contract_sample`` and so bounded by
     ``EXAMLOPS_DATAPLANE_CONTRACT_MAX_ROWS``. A named table the snapshot lacks is validated as
     empty, which fails its checks: a contract for a table the run does not have is not a skip.
-    Any other run validates the A1-resolved local copy as one frame (``_contract_dataframe``).
+    Any other run validates the A1-resolved local copy as one frame (``_contract_dataframe``),
+    cut to its first ``max_rows`` rows when given (read incrementally, never whole).
     """
     import functools  # noqa: PLC0415
     from types import SimpleNamespace  # noqa: PLC0415
@@ -1913,14 +2131,16 @@ def _contract_inputs(
             parts = sorted(directory.glob("*.parquet")) if directory.is_dir() else []
             inputs.append((name, functools.partial(read_contract_sample, parts)))
         return inputs, str(pin.local_dir)
-    df, source = _contract_dataframe(dataset_name, backend_name)
+    df, source = _contract_dataframe(dataset_name, backend_name, max_rows=max_rows)
     if df is None:
         return None, source
     whole = SimpleNamespace(frame=df, rows=len(df), total_rows=len(df), sampled=False)
     return [("", lambda: whole)], source
 
 
-def _contract_dataframe(dataset_name: str, backend_name: str | None) -> tuple[Any, str]:
+def _contract_dataframe(
+    dataset_name: str, backend_name: str | None, *, max_rows: int | None = None
+) -> tuple[Any, str]:
     """The A1-resolved dataset as one DataFrame, or ``(None, reason)`` — the non-dataplane gate.
 
     Resolves through the same A1 revision resolver that pins the run, so the gate validates
@@ -1937,7 +2157,32 @@ def _contract_dataframe(dataset_name: str, backend_name: str | None) -> tuple[An
         return None, f"no parquet files under {uri}"
     import pandas as pd  # noqa: PLC0415
 
-    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True), uri
+    if max_rows is None:
+        return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True), uri
+    return _head_of_parquet(files, max_rows), uri
+
+
+def _head_of_parquet(files: list[Any], max_rows: int) -> Any:
+    """The first ``max_rows`` rows across ``files`` in order, read batch by batch (bounded)."""
+    import pandas as pd  # noqa: PLC0415
+    import pyarrow as pa  # noqa: PLC0415
+    import pyarrow.parquet as pq  # noqa: PLC0415
+
+    frames: list[Any] = []
+    need = max(1, int(max_rows))
+    for f in files:
+        # Per file, like the unbounded path's pd.concat: files may differ slightly in schema.
+        batches = []
+        for batch in pq.ParquetFile(f).iter_batches(batch_size=min(need, 65_536)):
+            batches.append(batch.slice(0, need))
+            need -= min(need, batch.num_rows)
+            if need == 0:
+                break
+        if batches:
+            frames.append(pa.Table.from_batches(batches).to_pandas())
+        if need == 0:
+            break
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def _record_contract_result(dataset_name: str, result: Any) -> None:
@@ -2008,6 +2253,8 @@ def training_flow(
         dataset_cls_name, backend_name, is_dummy=is_dummy, model_name=model_name
     )
     print(f"[contract] {gate}")
+    fgate = _feature_gate(model_name, dataset_cls_name, backend_name, is_dummy)
+    print(f"[feature-gate] {fgate}")
     job_id, artifact_hint = slurm_submit_task(
         model_init, loader, model_name, dataset_cls_name, is_dummy, backend_name=backend_name
     )
@@ -2026,6 +2273,9 @@ def training_flow(
         backend_name=backend_name,
         is_dummy=is_dummy,
     )
+    from pipelines.feature_gate import tag_run  # noqa: PLC0415
+
+    tag_run(registration.get("run_id"), fgate)
     status = promote_task(model_name, registration, metrics)
     _auto_repro_bundle(
         model_name,
@@ -2035,6 +2285,8 @@ def training_flow(
         backend_name,
         seed=applied_seed,
         is_dummy=is_dummy,
+        job_id=job_id,
+        scheduler=_hpc_scheduler_name(),
     )
 
     return {
@@ -2145,7 +2397,7 @@ if __name__ == "__main__":
         env_path = _REPO_ROOT / "pipelines" / "envs" / f"{args.env}.yaml"
     apply_yaml_registry(args.registry, env_path)
     if args.model_yaml:
-        register_model_from_yaml(load_model_yaml(Path(args.model_yaml)))
+        register_extra_model_yaml(Path(args.model_yaml))
 
     # ── Run / list ─────────────────────────────────────────────────────────────
     if args.list:

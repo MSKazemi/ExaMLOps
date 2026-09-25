@@ -31,6 +31,14 @@ _HELP: dict[str, tuple[str, str]] = {
     ),
     "examlops_slo_burn_rate": ("gauge", "Observed error over allowed error"),
     "examlops_slo_samples": ("gauge", "Samples the SLI was computed from"),
+    "examlops_slo_good_total": (
+        "counter",
+        "Good SLI events ever recorded for a declared SLO (rate() over it gives the burn window)",
+    ),
+    "examlops_slo_events_total": (
+        "counter",
+        "SLI events ever recorded for a declared SLO (the denominator of the burn-window ratio)",
+    ),
     "examlops_slo_measured": (
         "gauge",
         "1 when the SLO has samples, 0 when it has none — an unmeasured SLO is not a healthy one",
@@ -67,6 +75,22 @@ _HELP: dict[str, tuple[str, str]] = {
     "examlops_agent_session_duration_seconds": (
         "histogram",
         "Wall-clock duration of ended agent sessions",
+    ),
+    # Continuous evaluation (ADR 0007 decision 3). Labels: suite, model, alias, metric — each a
+    # configured name, never a run id, so a series is one metric of one suite, not one run.
+    "examlops_eval_score": ("gauge", "Latest recorded score of an evaluation suite metric"),
+    "examlops_eval_score_lower": (
+        "gauge",
+        "Lower bound of the latest score's Wilson interval (proportions only)",
+    ),
+    "examlops_eval_score_upper": (
+        "gauge",
+        "Upper bound of the latest score's Wilson interval (proportions only)",
+    ),
+    "examlops_eval_sample_size": ("gauge", "Items the latest score was computed over"),
+    "examlops_eval_last_run_timestamp_seconds": (
+        "gauge",
+        "Unix time the latest score was recorded — alert on staleness, not only on value",
     ),
 }
 
@@ -120,7 +144,7 @@ def slo_samples(model: str | None = None, tenant: str = "default") -> list[tuple
     put a perfect ratio on a dashboard for something nobody has measured, and a burn-rate alert
     cannot fire on a perfect ratio — the same trap the control plane's `/metrics` was fixed for.
     """
-    from examlops.data.governance import list_slo_specs
+    from examlops.data.governance import list_slo_specs, slo_sample_totals
     from examlops.slo import slo_status
 
     models = [model] if model else sorted({str(s["model"]) for s in list_slo_specs(tenant=tenant)})
@@ -131,6 +155,12 @@ def slo_samples(model: str | None = None, tenant: str = "default") -> list[tuple
             out.append(("examlops_slo_target", labels, status.target))
             out.append(("examlops_slo_measured", labels, 1.0 if status.measured else 0.0))
             out.append(("examlops_slo_samples", labels, float(status.n)))
+            # The counters burn-rate alerts range over (ADR 0023): a burn rate is the error
+            # ratio over the last 5m/1h/…, which only `increase()` over a counter can give —
+            # the SLI gauge is the ratio over the SLO's whole window.
+            good_all, total_all = slo_sample_totals(status.model, status.name, tenant=status.tenant)
+            out.append(("examlops_slo_good_total", labels, good_all))
+            out.append(("examlops_slo_events_total", labels, total_all))
             if status.measured:
                 out.append(("examlops_slo_sli", labels, status.sli))
                 out.append(("examlops_slo_budget_remaining", labels, status.budget_remaining))
@@ -237,6 +267,47 @@ def agent_samples() -> list[tuple]:
     return out
 
 
+def _epoch(ts: Any) -> float | None:
+    from datetime import UTC, datetime
+
+    try:
+        return datetime.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC).timestamp()
+    except ValueError:
+        return None
+
+
+def eval_samples(model: str | None = None, tenant: str = "default") -> list[tuple]:
+    """Latest score per (suite, model, alias, metric) — ADR 0007 decision 3's Prometheus export.
+
+    The **latest** row, like the vector gauges: ``eval_suite_results`` is append-only and a mean
+    over history would hide a regression. The record time is exported too, so a suite that stopped
+    running is visible as stale rather than frozen at its last healthy value.
+    """
+    from examlops.data.evaluation import latest_eval_scores
+
+    out: list[tuple] = []
+    # Model and tenant are filtered in SQL, before the series bound (never after it).
+    for row in latest_eval_scores(model=model, tenant=tenant):
+        labels = {
+            "tenant": row.get("tenant") or tenant,
+            "suite": row["suite"],
+            "model": row["model"],
+            "alias": row["alias"] or "",
+            "metric": row["metric"],
+        }
+        out.append(("examlops_eval_score", labels, float(row["score"])))
+        if row.get("score_lo") is not None and row.get("score_hi") is not None:
+            out.append(("examlops_eval_score_lower", labels, float(row["score_lo"])))
+            out.append(("examlops_eval_score_upper", labels, float(row["score_hi"])))
+        out.append(("examlops_eval_sample_size", labels, float(row["sample_size"] or 0)))
+        at = _epoch(row.get("ts"))
+        if at is not None:
+            out.append(("examlops_eval_last_run_timestamp_seconds", labels, at))
+    # Group by family so each family's HELP/TYPE precedes all its samples exactly once.
+    order = {name: i for i, name in enumerate(_HELP)}
+    return sorted(out, key=lambda s: order.get(s[0], len(order)))
+
+
 def export(model: str | None = None, tenant: str = "default") -> str:
     """Everything the platform can publish, as one Prometheus text-format document.
 
@@ -249,6 +320,7 @@ def export(model: str | None = None, tenant: str = "default") -> str:
         lambda: slo_samples(model, tenant),
         lambda: vector_samples(tenant),
         agent_samples,
+        lambda: eval_samples(model, tenant),
     ):
         try:
             samples.extend(collect())

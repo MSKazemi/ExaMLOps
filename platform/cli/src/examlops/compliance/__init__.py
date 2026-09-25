@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from examlops import data as platform_db
+from examlops.compliance import security_evidence as _sec
 
 DISCLAIMER = (
     "DISCLAIMER: This document assembles compliance evidence from platform metadata. "
@@ -152,6 +153,7 @@ FRAMEWORK: list[dict[str, str]] = [
     {"control": "monitoring", "article": "Annex IV §8", "evidence": "drift+slo"},
     {"control": "record_keeping", "article": "Art. 12", "evidence": "audit_trail"},
     {"control": "changes", "article": "Annex IV §6", "evidence": "change_log"},
+    {"control": "reproducibility", "article": "Annex IV §2", "evidence": "repro_bundle"},
 ]
 
 
@@ -359,6 +361,41 @@ def _ev_changes(model: str, tenant: str) -> tuple[bool, str]:
     return False, "No change-log / audited changes found (D4)."
 
 
+def _ev_reproducibility(model: str, tenant: str) -> tuple[bool, str]:
+    """ADR 0038 clause 4: the newest reproducibility bundle, re-verified, as D1/D2 evidence.
+
+    Evidence counts as present only when the bundle still verifies: a bundle whose commit,
+    dataset, lockfile, BOM or lineage has rotted is reported with its problems and flagged as a
+    gap — an Annex-IV file must not cite a record that no longer reproduces anything.
+    """
+    try:
+        from examlops.data.data_assets import list_repro_bundles
+        from examlops.reproducibility import technical_evidence
+
+        # Bundles are keyed by the MLflow model id (lower-case); systems by their registry name.
+        rows = list_repro_bundles(model) or (
+            list_repro_bundles(model.lower()) if model.lower() != model else []
+        )
+        if not rows:
+            return False, "No reproducibility bundle found (A8: exa reproduce build)."
+        latest = rows[0]
+        ev = technical_evidence(latest["model"], str(latest["version"]))
+        head = (
+            f"Reproducibility bundle v{ev.get('bundle_version')} for "
+            f"{latest['model']}/{latest['version']} (manifest {str(ev['manifest_hash'])[:16]}…, "
+            f"{'signed' if ev['signed'] else 'UNSIGNED'}); code "
+            + ", ".join(f"{k}={str(v)[:12]}" for k, v in (ev.get("code_commits") or {}).items())
+            + f"; dataset revision {ev.get('dataset_revision') or 'n/a'}; "
+            f"AI-BOM {str(ev.get('bom_sha256') or 'none')[:16]}; "
+            f"inputs {', '.join(ev['captured_inputs'])}."
+        )
+        if not ev["reproducible"]:
+            return False, head + " NON-reproducible: " + "; ".join(ev.get("problems") or [])
+        return True, head + " All referenced inputs verified (within tolerance, not bit-exact)."
+    except Exception as exc:  # noqa: BLE001 - a failed check is not evidence
+        return False, f"Reproducibility bundle could not be verified: {exc}"
+
+
 _COLLECTORS = {
     "system_description": _ev_model_card,
     "development_process": _ev_lineage,
@@ -370,6 +407,14 @@ _COLLECTORS = {
     "monitoring": _ev_monitoring,
     "record_keeping": _ev_record_keeping,
     "changes": _ev_changes,
+    # ADR 0027 decision 3: D6 authorization, D7 secrets and Green-AI evidence. NIST-only — the
+    # Annex-IV file walks `FRAMEWORK`, which does not name these keys.
+    "access_documented": _sec.ev_access_documented,
+    "access_enforced": _sec.ev_access_enforced,
+    "secrets_managed": _sec.ev_secrets_managed,
+    "secrets_rotation": _sec.ev_secrets_rotation,
+    "environmental_impact": _sec.ev_environmental_impact,
+    "reproducibility": _ev_reproducibility,
 }
 
 

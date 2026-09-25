@@ -66,6 +66,10 @@ task_type: regression
 @pytest.fixture(autouse=True)
 def _tmp_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "test.db"))
+    # `_hardware_profile_ask` exports EXAMLOPS_HARDWARE_PROFILE in-process (Phase 4); setenv
+    # first so teardown restores it to absent instead of leaking it into the next test.
+    monkeypatch.setenv("EXAMLOPS_HARDWARE_PROFILE", "")
+    monkeypatch.delenv("EXAMLOPS_HARDWARE_PROFILE")
     init_db()
     yield
 

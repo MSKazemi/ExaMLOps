@@ -1,8 +1,8 @@
-import { Bot, FlaskConical } from 'lucide-react'
+import { Bot, Calculator, FlaskConical } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { StatusPill } from '@/components/ui/status-pill'
-import { useLlmops, passRateLabel, evalTone, type EvalModel } from '@/lib/llmops'
+import { useLlmops, passRateLabel, evalTone, providerOriginLabel, type EvalModel } from '@/lib/llmops'
 
 function EvalCard({ e }: { e: EvalModel }) {
   return (
@@ -32,6 +32,7 @@ export function Llmops() {
   const { data, isLoading, error } = useLlmops()
   const endpoints = data?.endpoints
   const evals = data?.evals
+  const calculations = data?.calculations
   const partial = data?._partial ?? []
 
   return (
@@ -116,6 +117,35 @@ export function Llmops() {
               <EmptyState title="No eval runs yet" description="Run an eval suite to see scores." />
             )}
           </section>
+
+          {calculations && calculations.available && calculations.rows.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest flex items-center gap-1.5">
+                <Calculator className="size-3.5" /> How the numbers are computed
+              </h2>
+              <div className="space-y-2">
+                {calculations.rows.map((p) => (
+                  <div key={p.domain} className="rounded-lg border border-border p-3 space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium">
+                        {p.domain}{' '}
+                        <span className="text-xs text-muted-foreground font-mono">
+                          · {p.provider ?? 'built-in arithmetic'}
+                          {p.version ? ` v${p.version}` : ''}
+                        </span>
+                      </span>
+                      <StatusPill
+                        status={p.ok ? (p.selected ? 'ok' : 'unknown') : 'critical'}
+                        label={providerOriginLabel(p)}
+                        showIcon={false}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">{p.ok ? p.methodology : p.error}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           <p className="text-xs text-muted-foreground border-l-2 border-border pl-3">
             Prompt studio, gateway routing, semantic cache, RAG-ops, and vector-DB views are not yet

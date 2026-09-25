@@ -79,3 +79,37 @@ def test_graph_default_unchanged_when_flag_off(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "AGENT_USE_MCP_TOOLS", False)
     g = graph.build_graph(model="llama3.1:8b")
     assert g is not None
+
+
+# ── ADR 0081 rule 3: dry run + host-side confirmation ────────────────────────
+
+
+class _MutSpec(_Spec):
+    mutating = True
+
+
+def test_a_dry_run_skips_the_interrupt_because_it_changes_nothing():
+    seen = {}
+
+    def write_tool(model: str, dry_run: bool = False, confirm: bool = False) -> dict:
+        """A mutating tool."""
+        seen.update(model=model, dry_run=dry_run)
+        return {"ok": True, "dry_run": dry_run}
+
+    t = _wrap(_MutSpec(write_tool))
+    # Outside a LangGraph run `interrupt()` raises, so reaching the tool proves it was skipped.
+    assert json.loads(t.invoke({"model": "JPCP", "dry_run": True})) == {"ok": True, "dry_run": True}
+    assert seen == {"model": "JPCP", "dry_run": True}
+
+
+def test_after_a_yes_the_call_runs_as_human_confirmed():
+    from skipper.tools.mcp_bridge import _run_confirmed
+
+    from examlops.mcp import write_safety
+
+    def write_tool(**kwargs):
+        return {"confirmed": write_safety._CONFIRMED.get(), "kwargs": kwargs}
+
+    out = _run_confirmed(write_tool, (), {"model": "JPCP"})
+    assert out == {"confirmed": True, "kwargs": {"model": "JPCP"}}
+    assert write_safety._CONFIRMED.get() is False  # does not leak past the call

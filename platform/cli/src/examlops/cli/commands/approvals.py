@@ -7,7 +7,7 @@ import typer
 from examlops import control_plane_api
 from examlops.cli import _client, _output
 from examlops.cli._config import load_config
-from examlops.cli._provenance import audit_details, reason_option
+from examlops.cli._provenance import reason_option
 from examlops.data import init_db
 from examlops.data.audit import audit_best_effort
 
@@ -84,32 +84,41 @@ def approve(
         else:
             _output.info(f"Dry run — would approve {model} and schedule training (nothing fired).")
         return
+    from examlops import policy
+    from examlops.sdk import models as sdk_models
+    from examlops.sdk.errors import PolicyDeniedError, SDKError
+
+    # Peek at the `model_approve` decision (unaudited — the SDK call below records it once) so
+    # the prompt can say a rule requires approval and default to NO, as `exa retrain` does.
+    # Without this a require_approval rule was satisfied by a default-yes Enter on a prompt that
+    # never mentioned it. The context is the SDK's own, so a `when:` condition decides alike.
+    peek = policy.decide_safe(
+        "model_approve",
+        {"model": model, "actor": sdk_models._actor()},
+        default_effect=policy.DENY,
+        audit=False,
+    )
+    approval_note = " [policy requires approval]" if peek.requires_approval else ""
     if not _output.confirm(
-        f"Approve [bold]{model}[/bold] and schedule training now?", default=True
+        f"Approve [bold]{model}[/bold] and schedule training now?{approval_note}",
+        default=not peek.requires_approval,
     ):
         _output.warning("Aborted — nothing approved.")
         raise typer.Exit(0)
-    cfg = load_config()
+    # One path with the SDK (ADR 0078 clause 2): `examlops.models.approve()` consults the
+    # `model_approve` policy rule (no rule ⇒ allow, unaudited), calls the control plane and writes
+    # the `model_approved` audit event. The human answered a prompt that named a
+    # require_approval rule, so the approval is given here, as it is for `exa retrain`.
     with _output.spinner(f"Approving {model} and scheduling training…"):
         try:
-            result = control_plane_api.approve(
-                model, base=cfg.control_plane_url, token=cfg.control_plane_token
+            outcome = sdk_models.approve(
+                model, confirm=True, approved=True, reason=reason, source="cli"
             )
-        except _client.ClientError as e:
+        except PolicyDeniedError as e:
+            _output.error(str(e), hint="See your policy.yaml or run: exa policy list")
+        except SDKError as e:
             _output.error(f"Failed to approve {model}: {e}")
-            return
-    actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
-    try:
-        init_db()
-    except Exception:  # noqa: BLE001 - `audit_best_effort` reports the write it then cannot make
-        pass
-    audit_best_effort(
-        "cli",
-        actor,
-        "model_approved",
-        model,
-        audit_details({"flow_run_id": result.get("flow_run_id")}, reason),
-    )
+    result = outcome.raw
     _output.ok(f"Approved {model}")
     _output.print_record(
         {

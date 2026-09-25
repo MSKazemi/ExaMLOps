@@ -10,9 +10,18 @@ from __future__ import annotations
 import ipaddress
 from typing import Any
 
+from examlops.mcp.http_auth import McpAuthConfigError
 from examlops.mcp.prompts import iter_prompts
 from examlops.mcp.resources import iter_resources
 from examlops.mcp.tools import iter_tools
+
+__all__ = [
+    "FastMCPNotInstalled",
+    "McpAuthConfigError",
+    "UnsafeMCPBind",
+    "build_server",
+    "serve",
+]
 
 
 class FastMCPNotInstalled(RuntimeError):
@@ -144,12 +153,30 @@ def serve(
     if transport == "stdio":
         server = build_server(include_writes=include_writes)
         server.run(transport="stdio")
-    else:
-        if not _is_loopback(host):
-            raise UnsafeMCPBind(
-                "MCP HTTP has no built-in authentication and may bind only to loopback. "
-                "Keep --host 127.0.0.1 and place an authenticated TLS reverse proxy in front "
-                "for remote access."
-            )
-        server = build_server(include_writes=include_writes)
-        server.run(transport="http", host=host, port=port)
+        return
+    from examlops.mcp.http_auth import McpHttpGuard, load_settings
+
+    settings = load_settings(host)  # McpAuthConfigError: incomplete/unsafe oauth config
+    if not _is_loopback(host) and not settings.oauth:
+        raise UnsafeMCPBind(
+            "MCP HTTP without authentication may bind only to loopback. Keep --host 127.0.0.1, "
+            "or enable the OAuth 2.1 resource server (EXAMLOPS_MCP_AUTH=oauth, "
+            "EXAMLOPS_MCP_RESOURCE, an ADR 0120 trust file) and terminate TLS in front of it."
+        )
+    server = build_server(include_writes=include_writes)
+    # Origin validation always; bearer + audience + per-tool scopes when oauth (ADR 0082 layer 3).
+    _run_http(McpHttpGuard(_http_app(server), settings), host=host, port=port)
+
+
+def _http_app(server: Any) -> Any:
+    """FastMCP's Streamable-HTTP ASGI app (``FastMCP.http_app``, FastMCP >= 2.3)."""
+    factory = getattr(server, "http_app", None)
+    if factory is None:  # pragma: no cover - only on a FastMCP too old for the pinned extra
+        raise FastMCPNotInstalled()
+    return factory()
+
+
+def _run_http(app: Any, *, host: str, port: int) -> None:  # pragma: no cover - blocking server
+    import uvicorn
+
+    uvicorn.run(app, host=host, port=port, log_level="info", proxy_headers=False)

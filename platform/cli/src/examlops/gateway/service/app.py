@@ -174,6 +174,7 @@ def prepare_messages(
     tenant: str,
     guard: Any,
     prompt_ref: str | None,
+    route: str | None = None,
 ) -> list[dict[str, Any]]:
     """Guard-scan the caller's own messages, then prepend a registry prompt template if named.
 
@@ -183,7 +184,7 @@ def prepare_messages(
     scanning and prompt lookup are both synchronous, occasionally-blocking calls).
     """
     if guard is not None:
-        messages = _guard_messages(guard, messages, tenant)
+        messages = _guard_messages(guard, messages, tenant, route=route)
     if prompt_ref:
         try:
             template, _name, _version = resolve_prompt_ref(prompt_ref)
@@ -704,7 +705,7 @@ def create_app(
             hints = body.examlops or (body.extra_body or {}).get("examlops") or {}
             guard = state.guardrail_for(tenant)
             messages = await asyncio.to_thread(
-                prepare_messages, body.messages, tenant, guard, hints.get("prompt_ref")
+                prepare_messages, body.messages, tenant, guard, hints.get("prompt_ref"), body.model
             )
             req, allowed = build_request(body, rt, messages)
             budget = request.headers.get("x-examlops-budget-ms")

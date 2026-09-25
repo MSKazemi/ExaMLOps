@@ -16,7 +16,7 @@ def test_public_surface_exports():
 
 def test_version_and_api_version():
     assert isinstance(examlops.__version__, str) and examlops.__version__
-    assert examlops.api_version() == "0.1"
+    assert examlops.api_version() == "0.2"
 
 
 def test_status_returns_typed_object_when_unreachable(monkeypatch):

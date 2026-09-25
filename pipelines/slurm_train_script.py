@@ -51,6 +51,13 @@ def parse_args() -> argparse.Namespace:
         dest="dataset_revision",
         help="Pinned dataplane revision (set by the submitting flow)",
     )
+    p.add_argument(
+        "--model-yaml",
+        default=None,
+        dest="model_yaml",
+        help="Per-model YAML staged with the job for a model that is not in the pack "
+        "(a pipeline-as-code IR, ADR 0080); registered before the model is resolved",
+    )
     return p.parse_args()
 
 
@@ -72,6 +79,22 @@ def main() -> None:
 
     # Import pipeline registry (triggers auto-discovery)
     from pipelines.pipeline_generator import MODEL_REGISTRY, _resolve_dataset_cls  # noqa: PLC0415
+
+    if args.model_yaml:
+        from pipelines.pipeline_generator import register_extra_model_yaml  # noqa: PLC0415
+
+        staged = Path(args.model_yaml)
+        if not staged.is_file():
+            print(f"[slurm_train] ERROR: staged model YAML not found: {staged}", file=sys.stderr)
+            sys.exit(1)
+        registered = register_extra_model_yaml(staged)
+        if registered != args.model:
+            print(
+                f"[slurm_train] ERROR: staged YAML defines {registered!r}, job asked for "
+                f"{args.model!r}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     if args.model not in MODEL_REGISTRY:
         print(

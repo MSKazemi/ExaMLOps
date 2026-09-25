@@ -17,7 +17,9 @@ must agree. Divergence = tampering, in whichever store was altered.
   (:func:`anchor_failures`), logged at ERROR and the entry degrades to a local fallback file
   (``EXAMLOPS_AUDIT_WORM_FALLBACK_PATH``); the caller is told it degraded, never that it anchored.
 
-A Rekor transparency-log target is **not built** (no Sigstore client exists in the tree).
+A third, independent target is a **transparency log** (Rekor, or keyless Sigstore):
+:func:`checkpoint_and_anchor` also logs each new checkpoint there when
+``EXAMLOPS_AUDIT_TRANSPARENCY``/``EXAMLOPS_AUDIT_REKOR_URL`` is set (:mod:`examlops.audit_transparency`).
 When the variable is unset, anchoring is a no-op (the DB chain still stands).
 """
 
@@ -311,14 +313,20 @@ def checkpoint_and_anchor(
         }
         if skip_if_unchanged:
             v = verify_worm()
-            # A checkpoint that sits only in the local fallback (warning) is not anchored yet.
-            if v["ok"] and not v.get("warning"):
+            # A checkpoint that sits only in the local fallback (warning) is not anchored yet,
+            # and one that a configured transparency log has no receipt for is not logged yet.
+            if v["ok"] and not v.get("warning") and _transparency_done(cp):
                 return {"status": "unchanged", **cp}
+            kept: dict[str, Any] = {"status": "unchanged", **cp}
+            if v["ok"] and not v.get("warning"):
+                _log_transparency(cp, kept)  # WORM already has it; only the log is missing
+                return kept
     if cp is None:
         cp = sign_audit_checkpoint(_hmac_sign(head["hash"]), key_id="d3-hmac")
         if cp is None:  # the head vanished between the read and the write
             return {"status": "empty"}
     out: dict[str, Any] = {"status": "checkpointed", **cp}
+    _log_transparency(cp, out)
     try:
         res = anchor_checkpoint_ex(cp, ts=stamp)
     except Exception as exc:  # noqa: BLE001 - counted, reported, not raised: the checkpoint stands
@@ -335,6 +343,37 @@ def checkpoint_and_anchor(
     if res.get("error"):
         out["anchor_error"] = res["error"]
     return out
+
+
+def _transparency_done(cp: dict[str, Any]) -> bool:
+    """True when no transparency log is configured, or it already holds this checkpoint."""
+    from examlops import audit_transparency as at
+
+    try:
+        name = at.backend()
+    except at.TransparencyError:
+        return False
+    return name == "off" or at.get_receipt(str(cp["head_hash"]), name) is not None
+
+
+def _log_transparency(cp: dict[str, Any], out: dict[str, Any]) -> None:
+    """Log ``cp`` to the transparency log, recording the outcome in ``out``. Never raises."""
+    from examlops import audit_transparency as at
+
+    if not at.enabled():
+        return
+    try:
+        res = at.anchor_checkpoint(cp)
+    except Exception as exc:  # noqa: BLE001 - counted in audit_transparency, reported here
+        logger.error(
+            "audit checkpoint transparency-log anchor FAILED (%s: %s)", type(exc).__name__, exc
+        )
+        out["transparency_logged"] = False
+        out["transparency_error"] = f"{type(exc).__name__}: {exc}"
+        return
+    if res is not None:
+        out["transparency"] = res
+        out["transparency_logged"] = True
 
 
 def _check_chain(entries: list[dict[str, Any]]) -> str | None:

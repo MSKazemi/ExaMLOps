@@ -124,11 +124,74 @@ and the entry degrades to `EXAMLOPS_AUDIT_WORM_FALLBACK_PATH`; the command repor
 *not* durably anchored (and `--anchor` exits 1). `exa audit verify-worm` reads the S3 chain, checks
 every DB checkpoint is anchored, and warns about checkpoints that exist only in the fallback file.
 
-The periodic export is a callable, not a daemon: `examlops.audit_worm.checkpoint_and_anchor()`
-(idempotent with `skip_if_unchanged=True`) — call it from cron or any scheduler.
+### Transparency log (Rekor / Sigstore)
 
-**Not built:** a Rekor transparency-log target and Sigstore signing (no Sigstore client exists in
-the tree; checkpoints are HMAC-signed with the D7-managed key).
+The WORM store proves the platform's copy was not rewritten — unless whoever controls that bucket
+is the attacker. A public **transparency log** removes that last trust: once a checkpoint is in
+Rekor, anyone with the log's public key can prove the chain head existed at the log's integration
+time, and nobody can remove or back-date it. Choose a backend with `EXAMLOPS_AUDIT_TRANSPARENCY`:
+
+| Backend | Configure | What is logged |
+|---|---|---|
+| `rekor` (implied by `EXAMLOPS_AUDIT_REKOR_URL` alone) | `EXAMLOPS_AUDIT_REKOR_URL`, a dedicated **ECDSA P-256** key in `EXAMLOPS_AUDIT_TRANSPARENCY_KEY_FILE` (or the secret `audit/transparency-ecdsa-private`) | a `hashedrekord` entry over the statement `examlops-audit-checkpoint/v1\n<head_id>\n<head_hash>\n` |
+| `sigstore` | `pip install 'examlops[audit-sigstore]'` and an OIDC identity (ambient in CI, or `EXAMLOPS_AUDIT_SIGSTORE_TOKEN`) | a keyless Fulcio-certificate signature whose bundle carries the Rekor inclusion |
+
+Every new checkpoint (`exa audit checkpoint` and the scheduled job below) is logged; the receipt
+is kept in `audit_transparency_entries`, one per checkpoint, so a re-run never logs twice. The
+signature is deterministic (RFC 6979), so a retry after a lost response meets Rekor's `409` and
+follows its `Location` instead of creating a second entry. Security defaults: a non-HTTPS URL is
+refused unless it is the loopback interface, responses are capped at 1 MiB, every request has a
+timeout (`EXAMLOPS_AUDIT_REKOR_TIMEOUT`, default 10 s). A failed upload never loses the
+checkpoint: it is reported as `transparency_error`, counted, and retried by the next run.
+
+```bash
+export EXAMLOPS_AUDIT_REKOR_URL=https://rekor.sigstore.dev
+openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt > tlog.pem
+export EXAMLOPS_AUDIT_TRANSPARENCY_KEY_FILE=$PWD/tlog.pem
+exa audit checkpoint                  # signs, anchors to WORM, logs to Rekor
+exa audit verify-transparency         # re-reads each receipt from the log; exit 1 on a mismatch
+```
+
+`exa audit verify-transparency` re-fetches every recorded entry and checks that the logged head
+is still the audit chain's event at that id (a head pruned under an audited retention cut is
+exempt; a rewritten or missing one fails), that the log's copy records this checkpoint's digest,
+that it was signed by the **platform's** key — `EXAMLOPS_AUDIT_TRANSPARENCY_PUBLIC_KEY_FILE` (a
+verifier holding only the public half) or the public half of the signing key, never the key
+inside the log entry, which anyone could have uploaded — that the log index matches the receipt
+and, with `EXAMLOPS_AUDIT_REKOR_PUBLIC_KEY_FILE` set to the log's public key, the log's Signed
+Entry Timestamp. With no trusted key it fails closed. It warns about signed checkpoints newer than
+the last logged head, and says so when a `sigstore` bundle was checked for structure only (digest
+and tlog entry; the Fulcio certificate chain and signer identity are not verified yet).
+
+### The schedule
+
+The periodic half of ADR 0028 is a job, not a reminder. The **control plane** runs it in the
+background every `EXAMLOPS_AUDIT_MAINTENANCE_SECONDS` (default 3600; `0` disables); on a host
+without a control plane run `exa audit maintain` (a loop) or `exa audit maintain --once` from cron.
+One cycle:
+
+1. signs and anchors the current head (`checkpoint_and_anchor(skip_if_unchanged=True)` — a head
+   that is already signed, anchored and logged costs one read);
+2. logs it to the transparency log, when one is configured;
+3. prunes under the retention policy — **only** with `EXAMLOPS_AUDIT_PRUNE_SCHEDULED=1` and
+   `EXAMLOPS_AUDIT_RETENTION_DAYS` set, archiving to `EXAMLOPS_AUDIT_ARCHIVE_DIR` (default
+   `<EXAMLOPS_DATA_DIR>/audit-archive`) and keeping every gate the manual prune has.
+
+A cycle holds the cluster-wide coordinator lease `audit-maintenance`, so replicas and a cron job
+never overlap (`EXAMLOPS_AUDIT_MAINTENANCE_LEASE_TTL`). A missing signing key, a degraded WORM
+write, a failed upload or a refused prune makes the cycle `degraded`: it is recorded, counted in
+`examlops_audit_maintenance_errors_total` (alert `AuditMaintenanceFailing`), and the next step
+still runs. `examlops_audit_maintenance_last_success_timestamp_seconds` is the heartbeat.
+
+```bash
+exa audit maintain --dry-run          # what the next cycle would do; changes nothing
+exa audit maintain --once             # one cycle; exit 1 if degraded (cron form)
+exa audit maintenance-runs            # the last cycles and which step failed
+```
+
+The cycle writes no audit event for its own checkpoint (one per cycle would move the head every
+time, so "unchanged" would never happen); the checkpoint row, WORM entry and transparency receipt
+are the record. A scheduled prune is audited as `audit_pruned`, like a manual one.
 
 ## Archival export & retention
 

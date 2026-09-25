@@ -6,6 +6,7 @@ import typer
 
 from examlops.cli import _output
 from examlops.cli.commands.carbon_policy_cmd import app as carbon_policy_app
+from examlops.cli.commands.task_cost_cmd import app as task_cost_app
 from examlops.data import init_db
 from examlops.data.audit import write_audit_event
 from examlops.data.finops import get_carbon_records, write_carbon_record
@@ -51,6 +52,7 @@ app.add_typer(carbon_app, name="carbon")
 app.add_typer(cost_app, name="cost")
 # Carbon-aware placement must beat the simple baselines before it may place (ADR 0112 R-ec/R-ed).
 carbon_app.add_typer(carbon_policy_app, name="policy")
+app.add_typer(task_cost_app, name="task-cost")  # ADR 0148 d4
 
 _EX_BUDGET_SET = (
     "Examples:\n\n"
@@ -539,4 +541,84 @@ def economics_cmd(
         "Unit economics by kind",
         ["Kind", "Unit", "N", "Cost USD", "USD / unit", "Complete"],
         rows,
+    )
+
+
+_EX_SPECDECODE = (
+    "Examples:\n\n"
+    "  exa finops specdecode\n\n"
+    "  exa finops specdecode --model qwen-7b --days 7\n\n"
+    "  exa --json finops specdecode --tenant team-a\n\n"
+    "Speedup is the Leviathan et al. (2023) expected tokens per target forward pass - an upper\n"
+    "bound that ignores the draft model's own cost. Server engines report acceptance from their\n"
+    "own counters: see 'exa serve llm status <model>'."
+)
+
+
+@app.command("specdecode", epilog=_EX_SPECDECODE)
+def specdecode_cmd(
+    model: str | None = typer.Option(None, "--model", "-m", help="Only this model"),
+    tenant: str | None = typer.Option(None, "--tenant", help="Only this tenant"),
+    days: float | None = typer.Option(None, "--days", help="Only the last N days (default: all)"),
+    limit: int = typer.Option(100, "--limit", "-n", help="Max rows (capped at 500)"),
+) -> None:
+    """Speculative-decoding acceptance rate + estimated speedup per model (ADR 0016 d4)."""
+    from examlops.data.specdecode import specdecode_summary
+    from examlops.engines.specdecode import estimated_speedup
+
+    try:
+        rows = specdecode_summary(model=model, tenant=tenant, days=days, limit=limit)
+    except ValueError as exc:
+        _output.error(str(exc), exit_code=2)
+    out = []
+    for r in rows:
+        proposed = int(r["proposed_tokens"] or 0)
+        accepted = int(r["accepted_tokens"] or 0)
+        acceptance = (accepted / proposed) if proposed else 0.0
+        out.append(
+            {
+                "model": r["model"],
+                "tenant": r["tenant"],
+                "engine": r["engine"],
+                "lookahead": int(r["lookahead"]),
+                "calls": int(r["calls"] or 0),
+                "proposed_tokens": proposed,
+                "accepted_tokens": accepted,
+                "acceptance_rate": acceptance,
+                "estimated_speedup": estimated_speedup(acceptance, int(r["lookahead"])),
+                "first_ts": r["first_ts"],
+                "last_ts": r["last_ts"],
+            }
+        )
+    if _output.json_mode:
+        _output.print_json(out)
+        return
+    if not out:
+        _output.ok("No speculative-decoding activity recorded (is speculative_decoding enabled?)")
+        return
+    _output.print_table(
+        "Speculative decoding (estimated speedup is an upper bound)",
+        [
+            "Model",
+            "Tenant",
+            "Engine",
+            "Lookahead",
+            "Calls",
+            "Accepted/Proposed",
+            "Acceptance",
+            "Speedup <=",
+        ],
+        [
+            [
+                o["model"],
+                o["tenant"],
+                o["engine"],
+                str(o["lookahead"]),
+                str(o["calls"]),
+                f"{o['accepted_tokens']}/{o['proposed_tokens']}",
+                f"{o['acceptance_rate']:.1%}",
+                f"{o['estimated_speedup']:.2f}x",
+            ]
+            for o in out
+        ],
     )

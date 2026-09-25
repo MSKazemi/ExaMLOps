@@ -39,6 +39,12 @@ OPENERS = {"get_db", "connect", "_immediate_write", "begin_immediate"}
 #: already-exempted file still fails, because the number no longer matches. Every entry here would
 #: be a defect if it were hoisted.
 ALLOWED: dict[str, tuple[int, str]] = {
+    "platform/cli/src/examlops/data/data_assets.py": (
+        1,
+        "`iter_online_features` is a keyset pager whose caller does Redis / vector-store I/O "
+        "between pages: holding one connection across a `yield` would pin a pooled connection (and "
+        "a SQLite read snapshot) for the whole mirror. One open per 500-row page, not per row",
+    ),
     "platform/cli/src/examlops/lifecycle/upgrade.py": (
         1,
         "each migration gets its own transaction on purpose: one that fails must not roll back the "

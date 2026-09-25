@@ -261,6 +261,32 @@ def promotion_refusal(
     from examlops.data.evaluation import get_eval_gate
 
     target = next((n for n in names if n), "?")
+    # ADR 0016 decision 3: a quantized version must clear the mandatory quality-retention gate
+    # against its base — checked first, because "no gate configured" returns early below and
+    # must not wave a quantization through. A non-quantized version makes this a no-op.
+    try:
+        from examlops.engines.quality import quantization_quality_gate
+
+        # Judge under the name the gate is configured for: ``names`` may hold the registry name
+        # and the MLflow name, and only one of them may carry the gate. The first name used
+        # blindly would refuse a correctly gated quantization as "no gate configured".
+        qkey = next((n for n in names if n and get_eval_gate(n) is not None), target)
+        quality = quantization_quality_gate(qkey, str(candidate_version), actor=actor)
+    except Exception as exc:  # noqa: BLE001
+        reason = f"quantization quality gate could not run ({exc})"
+        _audit_refusal(source, actor, "promotion_gate_error", target, candidate_version, reason, [])
+        return reason
+    if quality is not None and not quality.passed:
+        _audit_refusal(
+            source,
+            actor,
+            "promotion_blocked_by_quantization_gate",
+            target,
+            candidate_version,
+            quality.reason,
+            quality.failing,
+        )
+        return quality.reason
     try:
         key = next((n for n in names if n and get_eval_gate(n) is not None), None)
         if key is None:

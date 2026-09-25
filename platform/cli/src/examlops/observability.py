@@ -8,7 +8,10 @@ unaffected.
 
 from __future__ import annotations
 
+import logging
 import os
+
+_log = logging.getLogger("examlops.observability")
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -67,7 +70,65 @@ def setup_tracing(service_name: str) -> bool:
 
     resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", service_name)})
     provider = TracerProvider(resource=resource, sampler=_build_sampler())
-    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4317")
-    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+    if otlp_protocol() == "http/protobuf":
+        from examlops.telemetry.otlp_http import build_http_exporter, parse_headers
+
+        primary = build_http_exporter(
+            _http_traces_endpoint(), headers=parse_headers(_otlp_headers()), name="otlp"
+        )
+    else:
+        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4317")
+        primary = OTLPSpanExporter(endpoint=endpoint)
+    provider.add_span_processor(BatchSpanProcessor(primary))
+    # Agent-observability consumers (ADR 0021 decision 2): Langfuse / Phoenix each get their own
+    # processor *beside* the primary exporter — OTel stays the source of truth, and a consumer
+    # that is down or misconfigured never costs the primary pipeline a span.
+    try:
+        from examlops.telemetry.otlp_http import consumer_exporters
+
+        for _name, exporter in consumer_exporters():
+            provider.add_span_processor(BatchSpanProcessor(exporter))
+    except Exception as exc:  # noqa: BLE001 - a consumer must never stop a service starting
+        _log.warning("agent-observability consumers not configured: %s", exc)
     trace.set_tracer_provider(provider)
     return True
+
+
+def otlp_protocol() -> str:
+    """The primary exporter's protocol: ``grpc`` (default) or ``http/protobuf``.
+
+    Read from the standard ``OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`` / ``OTEL_EXPORTER_OTLP_PROTOCOL``.
+    ``http/json`` is not supported and falls back to gRPC with a warning — the historic default,
+    rather than a service that silently exports nothing.
+    """
+    raw = (
+        (
+            os.getenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
+            or os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL")
+            or "grpc"
+        )
+        .strip()
+        .lower()
+    )
+    if raw in ("grpc", "http/protobuf"):
+        return raw
+    _log.warning("OTLP protocol %r is not supported; exporting over grpc", raw)
+    return "grpc"
+
+
+def _otlp_headers() -> str:
+    return (
+        os.getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+        or os.getenv("OTEL_EXPORTER_OTLP_HEADERS")
+        or ""
+    )
+
+
+def _http_traces_endpoint() -> str:
+    """Per the OTel spec: the signal-specific variable is used as-is, the base one gets a path."""
+    specific = os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+    if specific:
+        return specific
+    from examlops.telemetry.otlp_http import traces_endpoint
+
+    return traces_endpoint(os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4318"))

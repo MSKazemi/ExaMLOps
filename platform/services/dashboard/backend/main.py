@@ -44,6 +44,7 @@ from routers import (
     flags,
     gateway,
     governance,
+    hardware_profiles,
     health,
     hpo,
     llmops,
@@ -282,6 +283,8 @@ app.include_router(projects.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
 app.include_router(connections.router, prefix="/api")
 app.include_router(workbenches.router, prefix="/api")
+# Hardware Profiles (ADR 0157 Phase 4): catalog, resolve, ledger + in-use, admin set/delete.
+app.include_router(hardware_profiles.router, prefix="/api")
 # CLI Console (ADR 0119): every `exa` command, run through the platform's own surface table.
 app.include_router(cli.router, prefix="/api")
 # Site feature profile (ADR 0128): which modules this centre runs.

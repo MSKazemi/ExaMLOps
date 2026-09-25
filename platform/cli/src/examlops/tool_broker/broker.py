@@ -106,6 +106,10 @@ class BrokerContext:
     #: passed to ``dataplane.safety.check_address`` (tests inject a fake resolver).
     resolver: Any = None
     now: float | None = None
+    #: Where the caller's grant set comes from. ``None`` = the live ``tool_grants`` table; the
+    #: agent runtime passes a resolver over its serving snapshot (ADR 0145 consequences: grants
+    #: reach a serving-plane gateway via the snapshot, not live control-plane reads).
+    grant_resolver: Callable[[ToolCaller], GrantSet | None] | None = None
     _cache: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def spec(self, name: str) -> Any:
@@ -258,7 +262,7 @@ def _gate(
         )
     tier = getattr(spec, "tier", "read")
     try:
-        grant_set = resolve_grant_set(caller)
+        grant_set = (ctx.grant_resolver or resolve_grant_set)(caller)
     except Exception as exc:  # noqa: BLE001 - cannot tell whether this caller is restricted
         return _Gate(
             ToolDecision("deny", "grants_unavailable", f"grant store unavailable: {exc}"),
@@ -451,7 +455,8 @@ def _credentials(
 
 def _audit_decision(
     caller: ToolCaller, tool: str, args: Mapping[str, Any], gate: _Gate, secrets: tuple[str, ...]
-) -> None:
+) -> bool:
+    """Write the decision to the evidence chain; returns whether it landed (see ``invoke``)."""
     d = gate.decision
     details: dict[str, Any] = {
         "agent": caller.agent,
@@ -470,7 +475,7 @@ def _audit_decision(
         "approved": gate.approved,
         "args": redact_args(args, secrets),
     }
-    audit_best_effort(
+    return audit_best_effort(
         _SOURCE,
         caller.on_behalf_of or caller.agent,
         f"tool_broker:{d.effect}",
@@ -503,9 +508,20 @@ def invoke(
     call_args = dict(args or {})
     gate = _gate(caller, tool, call_args, ctx, dry=False)
     secrets = tuple(gate.creds.values())
-    _audit_decision(caller, tool, call_args, gate, secrets)
+    recorded = _audit_decision(caller, tool, call_args, gate, secrets)
     if gate.blocked:
         return _envelope(gate, tool)
+    if not recorded and gate.enforced and gate.tier != "read":
+        # ADR 0145 d3: a tool WRITE is a synchronous evidence-chain action. A write whose record
+        # could not be written does not run - "who did what, for whom" must stay answerable.
+        # Reads keep failing open (counted in `dropped_audit_events`), as before.
+        return {
+            "ok": False,
+            "error": "tool broker: the evidence record for this write could not be written; "
+            "the write was not performed",
+            "code": "evidence_unavailable",
+            "broker": {"effect": "deny", "reason_code": "evidence_unavailable", "tool": tool},
+        }
     spec = ctx.spec(tool)
     if spec is None:  # monitor mode on an unknown tool: nothing to run
         return _envelope(gate, tool)

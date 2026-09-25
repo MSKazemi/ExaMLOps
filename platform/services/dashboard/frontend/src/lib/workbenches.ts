@@ -21,6 +21,9 @@ export interface WorkbenchSummary {
   createdBy: string
   /** JupyterHub Open URL when RUNNING (null when the Hub isn't wired). */
   url?: string | null
+  /** Hardware profile + the exact version this workbench was created from (ADR 0157). */
+  hardwareProfile?: string | null
+  hardwareProfileVersion?: number | null
 }
 
 export interface SetWorkbenchStatusBody {
@@ -33,6 +36,8 @@ export interface CreateWorkbenchBody {
   image?: string
   cpu?: number
   memoryGb?: number
+  /** Named hardware profile supplying cpu/memory defaults (applicable to workbench or any). */
+  hardwareProfile?: string
 }
 
 /** Launch spec returned when a workbench is started (image, mounted volume, injected env keys). */

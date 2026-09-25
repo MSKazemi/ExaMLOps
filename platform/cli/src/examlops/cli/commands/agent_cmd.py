@@ -827,3 +827,4 @@ from examlops.cli.commands import agent_version_cmd  # noqa: E402
 
 app.add_typer(agent_version_cmd.version_app, name="version")
 app.add_typer(agent_version_cmd.alias_app, name="alias")
+app.add_typer(agent_version_cmd.runtime_app, name="runtime")  # ADR 0144

@@ -56,6 +56,10 @@ def _verifier_callers() -> list[str]:
             "oidc.verify_token",
             "-e",
             "verify_access_token",
+            "-e",
+            "verify_jwt",
+            "-e",
+            "verify_for_resource",
             str(SRC / "examlops" / "mcp"),
         ],
         capture_output=True,
@@ -77,7 +81,9 @@ def _verifier_callers() -> list[str]:
         if code.strip().startswith(("#", '"', "'")):
             continue
         if re.search(
-            r"(verify_bearer|verify_token|verify_access_token)\s*\(|import[^\n]*verify_", code
+            r"(verify_bearer|verify_token|verify_access_token|verify_jwt|verify_for_resource)"
+            r"\s*\(|import[^\n]*verify_",
+            code,
         ):
             keep.append(ln)
     return keep

@@ -200,11 +200,14 @@ def test_run_ir_refuses_an_unlowerable_ir(env, tmp_path):
     gen.assert_not_called()
 
 
-def test_run_ir_refuses_a_remote_scheduler(env, monkeypatch):
+def test_run_ir_is_portable_to_a_remote_scheduler(env, monkeypatch):
+    """ADR 0080 decision 3: no longer refused — the generator stages the YAML with the job
+    (the staging itself is covered in tests/unit/test_pipeline_ir_placement.py)."""
     monkeypatch.setenv("EXAMLOPS_HPC_SCHEDULER", "slurm")
-    res, captured, _ = _run(env)
-    assert res.exit_code == 1 and "inline (mock) scheduler only" in res.output
-    assert not captured
+    res, captured, seen = _run(env)
+    assert res.exit_code == 0, res.output
+    assert "staged to the job's working directory" in " ".join(res.output.split())
+    assert len(captured) == 1 and "--model-yaml" in captured[0] and seen[0]["name"] == "JPCP"
 
 
 def test_policy_can_deny_run_ir_before_anything_runs(env):

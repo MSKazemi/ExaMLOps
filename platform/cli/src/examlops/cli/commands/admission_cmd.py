@@ -95,7 +95,9 @@ def simulate(
                 gpus_in_use_by_tenant=over.get("gpus_in_use_by_tenant", st.gpus_in_use_by_tenant),
                 total_gpus=over.get("total_gpus", st.total_gpus),
                 free_gpus=over.get("free_gpus", st.free_gpus),
-                largest_free_domain_gpus=over.get("largest_free_domain_gpus"),
+                largest_free_domain_gpus=over.get(
+                    "largest_free_domain_gpus", st.largest_free_domain_gpus
+                ),
                 capabilities=st.capabilities,
             )
         decision, meta = decide(req, state=st, policy=policy, record=False)
@@ -114,8 +116,119 @@ def simulate(
             ["verdict", decision.verdict],
             ["reason", decision.reason],
             ["ignored fields", ", ".join(meta["ignored_fields"]) or "-"],
+            *[
+                [f"gate {g['gate']}", f"{g['verdict']}: {g['reason']}"]
+                for g in meta.get("gates", [])
+            ],
         ],
     )
+
+
+@app.command("topology")
+def topology() -> None:
+    """Show the typed resource graph admission reasons over (ADR 0116): scale-up domains and their
+    free GPUs from the node inventory plus the site's declared topology file. Read-only."""
+    from examlops.admission_seam import topology as topo
+
+    try:
+        path = topo.topology_path()
+        graph = topo.current_graph()
+    except (OSError, ValueError) as exc:
+        _output.error(f"cannot build the resource graph: {exc}")
+        raise typer.Exit(1) from exc
+    out = {"topology_file": str(path) if path else None, **graph.summary()}
+    if _output.json_mode:
+        _output.print_json(out)
+        return
+    _output.print_table(
+        "Resource graph",
+        ["Kind", "Count"],
+        [[k, str(v)] for k, v in out["vertices"].items()],
+    )
+    _output.print_table(
+        "Scale-up domains"
+        + ("" if path else " (none declared: topology unknown, `required` is never promised)"),
+        ["Domain", "Nodes", "Free GPUs"],
+        [[d["id"], str(d["nodes"]), str(d["free_gpus"])] for d in out["scale_up_domains"]],
+    )
+    for problem in out["problems"]:
+        _output.warning(problem)
+
+
+@app.command("translate")
+def translate(
+    request: str = typer.Option(..., "--request", help="JobRequest JSON file to translate"),
+    backend: str = typer.Option("slurm", "--backend", help="mock | slurm | flux"),
+) -> None:
+    """Show how one JobRequest maps onto an execution backend (ADR 0116): the native resources the
+    adapter receives, and the fields that backend cannot enforce. Read-only; nothing is submitted."""
+    from pathlib import Path
+
+    from examlops.admission_seam import JobRequest, JobRequestError
+    from examlops.admission_seam import translate as tr
+
+    try:
+        req = JobRequest.from_dict(json.loads(Path(request).read_text(encoding="utf-8")))
+        out = tr.translate(req, backend)
+    except (OSError, json.JSONDecodeError, JobRequestError, ValueError) as exc:
+        _output.error(f"cannot translate: {exc}")
+        raise typer.Exit(1) from exc
+    if _output.json_mode:
+        _output.print_json(out)
+        return
+    _output.print_table(
+        f"{out['backend']} native resources",
+        ["Key", "Value"],
+        [[k, str(v)] for k, v in out["native"].items()],
+    )
+    _output.detail("  not enforced by this backend: " + ", ".join(out["not_native"]))
+
+
+@app.command("reconcile")
+def reconcile(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what would be expired/released; change nothing"
+    ),
+) -> None:
+    """Reclaim leaked quota (ADR 0116 decision 3): expire reservations whose TTL lapsed, and release
+    committed job reservations whose scheduler job has ended. A job the scheduler cannot answer
+    for keeps its quota. Run it periodically (cron / a Prefect schedule)."""
+    from examlops import scheduler_jobs
+    from examlops.admission_seam import completion
+    from examlops.admission_seam import reservations as res
+
+    adapters: dict[str, object] = {}
+
+    def _state(scheduler: str, job_id: str) -> str | None:
+        if scheduler not in adapters:
+            adapters[scheduler] = scheduler_jobs.scheduler_adapter(scheduler)
+        status = adapters[scheduler].get_job_status(job_id)  # type: ignore[attr-defined]
+        return (status or {}).get("state")
+
+    import contextlib
+    import sys
+
+    expired = res.expire(dry_run=dry_run)
+    # The adapters announce their backend on stdout; keep that out of --json output.
+    with contextlib.redirect_stdout(sys.stderr):
+        jobs = completion.reconcile_job_reservations(_state, dry_run=dry_run)
+    out = {"dry_run": dry_run, "expired": expired, **jobs}
+    if _output.json_mode:
+        _output.print_json(out)
+        return
+    verb = "would be" if dry_run else ""
+    _output.print_table(
+        "Admission reconcile" + (" (dry run)" if dry_run else ""),
+        ["What", "Count"],
+        [
+            [f"lapsed reservations {verb} expired".replace("  ", " "), str(len(expired))],
+            [f"job reservations {verb} released".replace("  ", " "), str(len(jobs["released"]))],
+            ["job reservations still running", str(len(jobs["still_running"]))],
+            ["job reservations unverified (kept)", str(len(jobs["unverified"]))],
+        ],
+    )
+    for u in jobs["unverified"]:
+        _output.warning(f"{u['holder']}: {u['error']}")
 
 
 @app.command("reservations")

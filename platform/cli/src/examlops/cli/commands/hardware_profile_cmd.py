@@ -6,8 +6,10 @@ already uses, so it lives next to the pools it can eventually be checked against
 a fourth, disconnected HPC/hardware CLI group. Resolving a profile never fabricates a
 capability it cannot confirm (ADR 0157 decision 5) — see ``exa hardware profile resolve``.
 
-This is Phase 1 only: the registry + CLI. No surface (`exa workbench create`, `exa pipeline
-run`, serving) consumes ``--hardware-profile`` yet — that is Phase 2/3.
+Consumers (Phases 2-3) — ``exa workbench create``, ``exa pipeline run``, ``exa pipeline
+distributed launch`` and a model YAML's ``resources.hardware_profile`` — record every resolution
+in an append-only ledger (Phase 4); ``in-use`` and ``history`` read it back, so a ``degraded`` or
+``unresolvable`` resolution stays visible after the command that resolved it has exited.
 """
 
 from __future__ import annotations
@@ -18,15 +20,17 @@ import typer
 
 from examlops.cli import _output
 from examlops.data.audit import write_audit_event
-from examlops.data.hardware_profiles import delete_profile
+from examlops.data.hardware_profiles import MAX_RESOLUTION_ROWS, delete_profile, list_resolutions
 from examlops.data.hardware_profiles import resolve_label as _resolve_label_row
 from examlops.hardware import ACCELERATORS
 from examlops.hardware_profiles import (
     APPLICABILITIES,
+    CONSUMERS,
     STATUS_UNRESOLVABLE,
     HardwareProfileError,
     create_profile_version,
     get_profile,
+    in_use_report,
     list_names,
     list_versions,
     resolve_profile,
@@ -338,6 +342,16 @@ def profile_delete(
         raise typer.Exit(1)
 
     what = f"version {version} of '{name}'" if version is not None else f"ALL versions of '{name}'"
+    # Phase 4: name every consumer still bound to what is about to go, before the prompt — after
+    # the delete it reports `missing`, and the operator should choose that knowingly.
+    users = [
+        e
+        for e in in_use_report()["entries"]
+        if e["name"] == name and (version is None or e["version"] == version)
+    ]
+    if users:
+        refs = ", ".join(f"{e['consumer']}:{e['consumer_ref']} (v{e['version']})" for e in users)
+        _output.warning(f"{what} is still in use by {refs} — they will report 'missing'")
     if not _output.confirm(f"Delete {what}?", auto_yes=yes):
         _output.info("Cancelled.")
         return
@@ -368,3 +382,113 @@ def profile_delete(
                 f"now dangling (never silently re-pointed); move it with "
                 f"'exa hardware profile set {name} ...' or point it at a surviving version"
             )
+
+
+_EXAMPLES_USE = (
+    "Examples:\n\n"
+    "  exa hardware profile in-use\n\n"
+    "  exa hardware profile in-use --days 1 --project research\n\n"
+    "  exa hardware profile history gpu-small --limit 20\n\n"
+    "  exa --json hardware profile history --consumer training"
+)
+
+_STATUS_STYLE = {
+    "verified": "[green]verified[/green]",
+    "unchecked": "[dim]unchecked[/dim]",
+    "degraded": "[yellow]degraded[/yellow]",
+    "unresolvable": "[red]unresolvable[/red]",
+    "missing": "[red]missing[/red]",
+}
+
+
+@app.command("in-use", epilog=_EXAMPLES_USE)
+def profile_in_use(
+    days: float = typer.Option(
+        7.0, "--days", min=0.001, help="Training/serving window: latest resolution within N days"
+    ),
+    project: str | None = typer.Option(None, "--project", "-p", help="Scope to one project"),
+) -> None:
+    """Profiles in use by running workbenches and recent training/serving, with their status.
+
+    Exits 1 when any entry is degraded, unresolvable or missing (a deleted version that is still
+    referenced) — so a CI or cron job can act on it.
+    """
+    report = in_use_report(days=days, project=project)
+    attention = report["attention"]
+    if _output.json_mode:
+        _output.print_json(report)
+        if attention:
+            raise typer.Exit(1)
+        return
+    if not report["entries"]:
+        _output.info(
+            "No hardware profile in use (no running workbench from a profile, and no "
+            f"training/serving resolution in the last {days:g} day(s))."
+        )
+        return
+    _output.print_table(
+        "Hardware profiles in use",
+        ["Consumer", "Ref", "Profile", "Status", "Cluster", "Resolved", "Reason"],
+        [
+            [
+                e["consumer"],
+                e["consumer_ref"],
+                f"{e['name']} v{e['version']}",
+                _STATUS_STYLE.get(e["status"], e["status"]),
+                e.get("target_cluster") or "—",
+                (e.get("resolved_at") or "—")[:19],
+                e["reason"],
+            ]
+            for e in report["entries"]
+        ],
+    )
+    if report.get("truncated"):
+        _output.warning(
+            "report is partial: more training/serving consumers matched than one read returns "
+            "— narrow it with --days or --project"
+        )
+    if attention:
+        _output.warning(
+            f"{len(attention)} profile use(s) need attention (degraded / unresolvable / missing)"
+        )
+        raise typer.Exit(1)
+
+
+@app.command("history", epilog=_EXAMPLES_USE)
+def profile_history(
+    name: str | None = typer.Argument(None, help="Profile name (omit: every profile)"),
+    consumer: str | None = typer.Option(
+        None, "--consumer", help="workbench|training|serving — filter to one consumer kind"
+    ),
+    project: str | None = typer.Option(None, "--project", "-p", help="Scope to one project"),
+    limit: int = typer.Option(
+        50, "--limit", "-n", min=1, max=MAX_RESOLUTION_ROWS, help="Most recent N resolutions"
+    ),
+) -> None:
+    """The append-only ledger of profile resolutions: which version, for whom, with what status."""
+    if consumer is not None and consumer not in CONSUMERS:
+        _output.error(f"--consumer must be one of {', '.join(CONSUMERS)}, got {consumer!r}")
+    rows = list_resolutions(name, consumer=consumer, project=project, limit=limit)
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    if not rows:
+        _output.info("No recorded hardware profile resolutions.")
+        return
+    _output.print_table(
+        "Hardware profile resolutions",
+        ["When", "Profile", "Consumer", "Ref", "Project", "Cluster", "Status", "Actor"],
+        [
+            [
+                (r.get("ts") or "")[:19],
+                f"{r['name']} v{r['version']}",
+                r["consumer"],
+                r["consumer_ref"],
+                r.get("project") or "—",
+                r.get("target_cluster") or "—",
+                _STATUS_STYLE.get(r["status"], r["status"]),
+                r.get("actor") or "—",
+            ]
+            for r in rows
+        ],
+    )

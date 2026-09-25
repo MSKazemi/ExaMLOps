@@ -215,6 +215,12 @@ def set_cmd(
     alias: str = typer.Argument(..., help="Staging | Canary | Production"),
     ref: str = typer.Argument(..., help="version id, or <agent>@<alias> to copy an alias"),
     reason: str | None = typer.Option(None, "--reason", help="Why (recorded in the history)"),
+    state_strategy: str | None = typer.Option(
+        None,
+        "--state-strategy",
+        help="pin | drain: required to replace Production with an incompatible or unknown "
+        "checkpoint schema (ADR 0146 d5)",
+    ),
 ) -> None:
     """Point an alias at a version. Production requires recorded evaluation evidence."""
     try:
@@ -228,7 +234,10 @@ def set_cmd(
     ):
         return
     try:
-        out = av.set_alias(agent, canon, ref, reason=reason)
+        out = av.set_alias(agent, canon, ref, reason=reason, state_strategy=state_strategy)
+    except ValueError as exc:
+        _fail("invalid_argument", str(exc))
+        return
     except av.GateRefusal as exc:
         _fail("promotion_refused", f"promotion refused: {exc}", reasons=exc.reasons)
         return
@@ -276,8 +285,17 @@ def rollback_cmd(
     agent: str = typer.Argument(..., help="Agent name"),
     alias: str = typer.Argument(..., help="Staging | Canary | Production"),
     reason: str | None = typer.Option(None, "--reason", help="Why (recorded in the history)"),
+    in_flight: str = typer.Option(
+        "continue",
+        "--in-flight",
+        help="continue | interrupt | quarantine: what the agent runtime does with sessions "
+        "still running on the rolled-back version (ADR 0146 d4)",
+    ),
 ) -> None:
     """Move an alias back to the version it held before its latest move (not re-gated)."""
+    if in_flight not in av.IN_FLIGHT_POLICIES:
+        _fail("invalid_argument", f"--in-flight must be one of {', '.join(av.IN_FLIGHT_POLICIES)}")
+        return
     try:
         canon = av.canonical_alias(alias)
     except ValueError as exc:
@@ -292,7 +310,7 @@ def rollback_cmd(
     ):
         return
     try:
-        out = av.rollback(agent, canon, reason=reason)
+        out = av.rollback(agent, canon, reason=reason, in_flight=in_flight)
     except LookupError as exc:
         _fail("nothing_to_roll_back", str(exc))
         return
@@ -300,3 +318,308 @@ def rollback_cmd(
         _output.print_json(out)
         return
     _output.ok(f"{agent}@{canon} rolled back to {out['version_id']} (was {out['previous']})")
+
+
+# -- ADR 0146 d4: session canary -----------------------------------------------------------------
+
+_EX_CANARY = (
+    "Examples:\n\n  exa agent alias canary jobdoc 10 --reason 'try v8 on new sessions'\n\n"
+    "  exa agent alias canary jobdoc 0      # stop sending new sessions to Canary"
+)
+
+
+@alias_app.command("canary", epilog=_EX_CANARY)
+def canary_cmd(
+    agent: str = typer.Argument(..., help="Agent name"),
+    percent: float = typer.Argument(..., help="Share of NEW sessions started on Canary (0-100)"),
+    reason: str | None = typer.Option(None, "--reason", help="Why (recorded in the audit log)"),
+) -> None:
+    """Start a share of the agent's new sessions on its Canary version; existing ones stay put."""
+    ctx = {"agent": agent, "to_alias": "Canary", "alias": "Canary", "canary_percent": percent}
+    if not enforce_and_confirm(
+        "agent_promote",
+        ctx,
+        what=f"routing {percent}% of new {agent} sessions to Canary",
+        prompt=f"Send {percent}% of new {agent} sessions to Canary?",
+    ):
+        return
+    try:
+        out = av.set_canary(agent, percent, reason=reason)
+    except ValueError as exc:
+        _fail("invalid_argument", str(exc))
+        return
+    except LookupError as exc:
+        _fail("not_found", str(exc))
+        return
+    if _output.json_mode:
+        _output.print_json(out)
+        return
+    _output.ok(f"{agent}: {out['canary_percent']}% of new sessions start on Canary")
+
+
+# -- ADR 0146 d5 / d6 / d2: compat, evidence pack, re-evaluation ---------------------------------
+
+_EX_COMPAT = "Examples:\n\n  exa agent version compat jobdoc@Production jobdoc@Staging"
+_EX_EVIDENCE = (
+    "Examples:\n\n  exa agent version evidence jobdoc@Production --out jobdoc-evidence.json\n\n"
+    "  exa -o json agent version evidence av-sha256:3f9a..."
+)
+_EX_REEVAL = (
+    "Examples:\n\n  exa agent version reeval --status pending\n\n"
+    "  exa agent version reeval --agent jobdoc"
+)
+_EX_REEVAL_RESOLVE = (
+    "Examples:\n\n  exa agent version reeval-resolve 12 --outcome passed\n\n"
+    "  exa agent version reeval-resolve 13 --outcome failed --reason 'tool accuracy -4pt'"
+)
+
+
+@version_app.command("compat", epilog=_EX_COMPAT)
+def compat_cmd(
+    running: str = typer.Argument(..., help="The running version (id or <agent>@<alias>)"),
+    candidate: str = typer.Argument(..., help="The candidate version (id or <agent>@<alias>)"),
+) -> None:
+    """State-compatibility verdict between two versions: compatible, incompatible or inert."""
+    from examlops.agent_versions.compat import state_compat
+
+    a, b = av.get(running), av.get(candidate)
+    missing = [r for r, row in ((running, a), (candidate, b)) if row is None]
+    if missing:
+        _fail("not_found", f"unknown agent version: {', '.join(missing)}")
+        return
+    out = state_compat(a["manifest"].get("state"), b["manifest"].get("state"))  # type: ignore[index]
+    out = {"from": a["version_id"], "to": b["version_id"], **out}  # type: ignore[index]
+    if _output.json_mode:
+        _output.print_json(out)
+        return
+    _output.ok(f"{out['outcome']}: {out['from']} -> {out['to']}")
+    for r in out["reasons"]:
+        typer.echo(f"  - {r}")
+
+
+@version_app.command("evidence", epilog=_EX_EVIDENCE)
+def evidence_cmd(
+    ref: str = typer.Argument(..., help="version id or <agent>@<alias>"),
+    out: Path | None = typer.Option(None, "--out", help="Write the evidence pack JSON here"),
+) -> None:
+    """Export a version's evidence pack: tuple, evals, judges, grants, moves, audit (read-only)."""
+    import json as _json
+
+    from examlops.agent_versions.evidence_pack import export_evidence_pack
+
+    try:
+        pack = export_evidence_pack(ref)
+    except LookupError as exc:
+        _fail("not_found", str(exc))
+        return
+    if out is not None:
+        try:
+            out.write_text(_json.dumps(pack, indent=2, sort_keys=True, default=str) + "\n")
+        except OSError as exc:
+            _fail("write_failed", f"cannot write {out}: {exc}")
+            return
+    if _output.json_mode:
+        _output.print_json(pack)
+        return
+    _output.ok(
+        f"{pack['version']['agent']} {pack['version']['version_id']}: "
+        f"{len(pack['evaluation']['results'])} eval result(s), "
+        f"{len(pack['promotions_and_rollbacks'])} move(s), {len(pack['audit']['events'])} audit "
+        f"event(s) - {pack['digest']}" + (f" -> {out}" if out else "")
+    )
+
+
+@version_app.command("reeval", epilog=_EX_REEVAL)
+def reeval_cmd(
+    agent: str | None = typer.Option(None, "--agent", "-a", help="Only this agent"),
+    status: str | None = typer.Option(None, "--status", help="pending | passed | failed"),
+    limit: int = typer.Option(100, "--limit", "-n", min=1, max=1000, help="Max entries"),
+) -> None:
+    """Re-evaluations enqueued because a model an agent follows was promoted (ADR 0146 d2)."""
+    from examlops.agent_versions.reeval import list_reevals
+
+    rows = list_reevals(agent=agent, status=status, limit=limit)
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    if not rows:
+        _output.ok("No re-evaluations")
+        return
+    _output.print_table(
+        "Agent re-evaluations",
+        ["id", "agent", "version_id", "model", "status", "blocking"],
+        [
+            [
+                str(r["id"]),
+                r["agent"],
+                r["version_id"],
+                f"{r['servable']}@{r['alias']} {r['previous_version']}->{r['model_version']}",
+                r["status"],
+                "yes" if r["blocking"] else "no",
+            ]
+            for r in rows
+        ],
+    )
+
+
+@version_app.command("reeval-resolve", epilog=_EX_REEVAL_RESOLVE)
+def reeval_resolve_cmd(
+    reeval_id: int = typer.Argument(..., help="Re-evaluation id (from `exa agent version reeval`)"),
+    outcome: str = typer.Option(..., "--outcome", help="passed | failed"),
+    reason: str | None = typer.Option(None, "--reason", help="Why (recorded in the audit log)"),
+) -> None:
+    """Close a pending re-evaluation; `passed` lifts a blocking agent's model pin."""
+    from examlops.agent_versions.reeval import resolve
+
+    try:
+        out = resolve(reeval_id, outcome, reason=reason)
+    except ValueError as exc:
+        _fail("invalid_argument", str(exc))
+        return
+    except LookupError as exc:
+        _fail("not_found", str(exc))
+        return
+    if _output.json_mode:
+        _output.print_json(out)
+        return
+    _output.ok(f"re-evaluation {reeval_id}: {outcome}")
+
+
+# -- ADR 0144: the agent runtime's control-plane side -------------------------------------------
+
+runtime_app = typer.Typer(
+    help="Agent runtime - compile its snapshot, serve it, inspect sandbox isolation (ADR 0144/0145)",
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    context_settings=_H,
+)
+
+_EX_SNAPSHOT = (
+    "Examples:\n\n  exa agent runtime snapshot --out /state/agent-snapshot.json\n\n"
+    "  exa -o json agent runtime snapshot"
+)
+_EX_SANDBOXES = (
+    "Examples:\n\n  exa agent runtime sandboxes\n\n  exa -o json agent runtime sandboxes"
+)
+
+
+@runtime_app.command("snapshot", epilog=_EX_SNAPSHOT)
+def runtime_snapshot_cmd(
+    out: Path | None = typer.Option(None, "--out", help="Write the snapshot here (atomically)"),
+) -> None:
+    """Compile the agent snapshot the runtime serves from (versions, aliases, grants, quotas)."""
+    from examlops.agent_runtime.snapshot import compile_agent_snapshot, write_snapshot
+
+    try:
+        doc = compile_agent_snapshot()
+    except ValueError as exc:
+        _fail("invalid_configuration", str(exc))
+        return
+    if out is not None:
+        try:
+            write_snapshot(doc, out)
+        except OSError as exc:
+            _fail("write_failed", f"cannot write {out}: {exc}")
+            return
+    if _output.json_mode:
+        _output.print_json(doc)
+        return
+    _output.ok(
+        f"agent snapshot {doc['generation']} ({doc['digest']}): {len(doc['agents'])} agent(s), "
+        f"{len(doc['versions'])} version(s)" + (f" -> {out}" if out else "")
+    )
+
+
+@runtime_app.command("sandboxes", epilog=_EX_SANDBOXES)
+def runtime_sandboxes_cmd() -> None:
+    """The sandbox isolation each substrate provider offers on this host (measured, not assumed)."""
+    import shutil
+
+    from examlops.agent_runtime.sandbox import ApptainerProvider, DockerProvider
+
+    rows = []
+    for provider, binary in ((DockerProvider(), "docker"), (ApptainerProvider(), "apptainer")):
+        present = shutil.which(binary) is not None
+        iso = provider.capabilities().isolation if present else "none"
+        rows.append(
+            {
+                "provider": provider.name,
+                "substrate": provider.substrate,
+                "installed": present,
+                "isolation": iso,
+            }
+        )
+    if _output.json_mode:
+        _output.print_json(rows)
+        return
+    _output.print_table(
+        "Agent sandbox providers",
+        ["provider", "substrate", "installed", "isolation"],
+        [[r["provider"], r["substrate"], str(r["installed"]), r["isolation"]] for r in rows],
+    )
+
+
+_EX_SERVE = (
+    "Examples:\n\n  exa agent runtime snapshot --out /state/agent-snapshot.json\n\n"
+    "  exa agent runtime serve --snapshot /state/agent-snapshot.json\n\n"
+    "  exa agent runtime serve --snapshot s.json --worker w1 --peer w1 --peer w2\n\n"
+    "Callers authenticate with the bearer tokens in EXAMLOPS_AGENT_RUNTIME_TOKENS "
+    '(a JSON map {"<token>": {"subject": ..., "tenant": ...}}); unset, every request is refused.'
+)
+
+
+@runtime_app.command("serve", epilog=_EX_SERVE)
+def runtime_serve_cmd(
+    snapshot: Path | None = typer.Option(
+        None,
+        "--snapshot",
+        help="Agent snapshot file to serve from and follow (default: $EXAMLOPS_AGENT_SNAPSHOT)",
+    ),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address (loopback by default)"),
+    port: int = typer.Option(18005, "--port", min=1, max=65535, help="Listen port"),
+    state_db: str | None = typer.Option(
+        None, "--state-db", help="Agent state store (default: $EXAMLOPS_AGENT_STATE_DB)"
+    ),
+    worker: str | None = typer.Option(None, "--worker", help="This worker's id (affinity)"),
+    peer: list[str] = typer.Option(
+        [], "--peer", help="Every worker id in the pool, this one included (repeatable)"
+    ),
+    interval: float = typer.Option(
+        15.0,
+        "--interval",
+        min=0.05,
+        envvar="EXAMLOPS_AGENT_RUNTIME_INTERVAL",
+        help="Seconds between snapshot/sweep/recovery passes",
+    ),
+    allow_remote: bool = typer.Option(
+        False, "--allow-remote", help="Allow binding beyond loopback (put TLS in front)"
+    ),
+) -> None:
+    """Run the agent runtime (threads/runs HTTP surface) and its maintenance loop."""
+    from examlops.agent_runtime.service import serve, snapshot_path_from_env
+
+    path = snapshot or snapshot_path_from_env()
+    if path is None:
+        _fail("no_snapshot", "give --snapshot or set EXAMLOPS_AGENT_SNAPSHOT")
+        return
+    if peer and not worker:
+        _fail("bad_peers", "--peer needs --worker (this worker's own id)")
+        return
+    if peer and worker not in peer:
+        _fail("bad_peers", f"--worker {worker!r} must be one of the --peer ids")
+        return
+    try:
+        serve(
+            host=host,
+            port=port,
+            snapshot_path=path,
+            state_db=state_db,
+            worker_id=worker,
+            peers=tuple(peer),
+            interval=interval,
+            allow_remote=allow_remote,
+        )
+    except ValueError as exc:
+        _fail("refused", str(exc))
+    except ImportError as exc:
+        _fail("missing_dependency", f"{exc} (install fastapi and uvicorn)")

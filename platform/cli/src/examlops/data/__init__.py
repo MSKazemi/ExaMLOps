@@ -47,6 +47,7 @@ __all__ = [
     "registry",
     "secrets",
     "serving",
+    "specdecode",
     "tool_grants",
 ]
 

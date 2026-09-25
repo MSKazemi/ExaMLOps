@@ -7,11 +7,13 @@ and ``B`` ever receive a gradient. ``B`` starts at zero, so an untrained adapter
 no-op — the standard LoRA initialisation, and the property that lets a test say "the adapter
 changed something" without ambiguity.
 
-Why not ``peft``/``trl``/``transformers``: the platform ships no multi-gigabyte model and runs
-its gates on CPU, so the dependency would buy nothing the gates can exercise. The rank-decomposed
-update is ~40 lines, and :data:`BACKENDS` is the seam: a ``peft`` backend implementing
-:class:`LoRABackend` slots in behind the same interface, and until one exists asking for it fails
-loudly (:class:`BackendNotAvailable`) instead of silently training something else.
+:data:`BACKENDS` is the seam. The default ``torch-lora`` backend is the rank-decomposed update
+written directly (~40 lines, no optional dependency, runs in every CPU gate). The ``peft`` backend
+(:class:`PeftBackend`) hands the same reference stack to Hugging Face PEFT
+(``peft.get_peft_model`` + ``LoraConfig``); ``peft`` is the optional ``examlops[finetune]`` extra,
+imported lazily, and without it asking for that backend fails loudly
+(:class:`BackendNotAvailable`) instead of silently training something else. ``method="full"``
+(built-in backend only) trains every weight of the stack — a full fine-tune at reference scale.
 
 The task is **synthetic and declared as such**: tokens drawn uniformly from a small vocabulary,
 labelled by a fixed random per-token coefficient vector (a teacher defined in *data* space, not in
@@ -115,45 +117,151 @@ def _module_class() -> Any:
     return _LoRALinear
 
 
+def _reference_stack(lora_cls: Any | None, *, rank: int, alpha: float, gen: Any) -> Any:
+    """The frozen-embedding + two-layer MLP reference stack.
+
+    With ``lora_cls`` the two linear layers are wrapped in the built-in LoRA module; without it
+    they are plain ``nn.Linear`` — what a full fine-tune trains, and what the PEFT backend hands to
+    ``peft.get_peft_model`` (which injects its own LoRA layers into ``fc1``/``fc2``).
+    """
+    import torch
+    from torch import nn
+
+    class _Model(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.emb = nn.Embedding(VOCAB, DIM)
+            fc1, fc2 = nn.Linear(DIM, HIDDEN), nn.Linear(HIDDEN, CLASSES)
+            self.fc1 = lora_cls(fc1, rank, alpha, gen) if lora_cls else fc1
+            self.fc2 = lora_cls(fc2, rank, alpha, gen) if lora_cls else fc2
+
+        def forward(self, x: Any) -> Any:
+            pooled = self.emb(x).mean(dim=1)
+            return self.fc2(torch.tanh(self.fc1(pooled)))
+
+    return _Model()
+
+
+def _quantise_frozen(model: Any) -> None:
+    """Round every frozen parameter through bfloat16 (the built-in ``qlora`` base)."""
+    import torch
+
+    with torch.no_grad():
+        for p in model.parameters():
+            if not p.requires_grad:
+                p.copy_(p.to(torch.bfloat16).to(p.dtype))
+
+
 class TorchLoRABackend:
-    """The built-in backend: a tiny embedding + MLP stack, adapted with real LoRA factors."""
+    """The built-in backend: a tiny embedding + MLP stack, adapted with real LoRA factors.
+
+    ``method="full"`` is the ADR 0044 clause 4 path at reference scale: the same stack with **no**
+    adapter, every parameter trainable, so the run produces a full set of weights (a normal model
+    version) rather than a delta. It is single-process; sharding it with FSDP/DeepSpeed is the
+    E6 increment and is not built here.
+    """
 
     name = "torch-lora"
 
     def build(self, *, seed: int, rank: int, alpha: float = 16.0, method: str = "lora") -> Any:
         import torch
-        from torch import nn
 
-        if method not in ("lora", "qlora"):
+        if method not in ("lora", "qlora", "full"):
             raise BackendNotAvailable(
-                f"the built-in backend trains LoRA adapters; method {method!r} is not built here"
+                f"the built-in backend trains lora/qlora adapters or a full fine-tune; "
+                f"method {method!r} is not built here"
             )
         torch.manual_seed(seed)
         gen = torch.Generator().manual_seed(seed + 7)
-        lora_cls = _module_class()
-
-        class _Model(nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.emb = nn.Embedding(VOCAB, DIM)
-                self.fc1 = lora_cls(nn.Linear(DIM, HIDDEN), rank, alpha, gen)
-                self.fc2 = lora_cls(nn.Linear(HIDDEN, CLASSES), rank, alpha, gen)
-                for p in self.emb.parameters():
-                    p.requires_grad_(False)
-
-            def forward(self, x: Any) -> Any:
-                pooled = self.emb(x).mean(dim=1)
-                return self.fc2(torch.tanh(self.fc1(pooled)))
-
-        model = _Model()
+        if method == "full":
+            model = _reference_stack(None, rank=rank, alpha=alpha, gen=gen)
+            for p in model.parameters():
+                p.requires_grad_(True)
+            return model
+        model = _reference_stack(_module_class(), rank=rank, alpha=alpha, gen=gen)
+        for p in model.emb.parameters():
+            p.requires_grad_(False)
         if method == "qlora":
             # Honest about the difference: this is the same rank decomposition over a base kept in
             # reduced precision, not bitsandbytes 4-bit NF4. It is recorded as `qlora` only because
             # the base really is quantised; `exa finetune` says so in the run record.
-            with torch.no_grad():
-                for p in model.parameters():
-                    if not p.requires_grad:
-                        p.copy_(p.to(torch.bfloat16).to(p.dtype))
+            _quantise_frozen(model)
+        return model
+
+    def adapter_state(self, model: Any) -> dict[str, Any]:
+        """The trained tensors: the LoRA factors, or — for a full fine-tune — every weight."""
+        params = dict(model.named_parameters())
+        if not any("lora_" in n for n in params):
+            return {n: p.detach().cpu().clone() for n, p in params.items()}
+        return {n: p.detach().cpu().clone() for n, p in params.items() if "lora_" in n}
+
+
+#: The layers the PEFT backend adapts on the reference stack (``LoraConfig.target_modules``).
+PEFT_TARGET_MODULES = ("fc1", "fc2")
+
+
+def peft_available() -> bool:
+    """True when ``peft`` is importable (the ``examlops[finetune]`` extra)."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("peft") is not None
+    except (ImportError, ValueError):  # pragma: no cover - defensive
+        return False
+
+
+class PeftBackend:
+    """Hugging Face PEFT behind the same seam (ADR 0044 clause 1).
+
+    Builds the reference stack with plain ``nn.Linear`` layers and lets
+    ``peft.get_peft_model(model, LoraConfig(...))`` inject PEFT's own LoRA layers into
+    :data:`PEFT_TARGET_MODULES` and freeze everything else — the library does the adaptation, not
+    this module. ``peft`` is an optional extra (``pip install 'examlops[finetune]'``) imported only
+    here; without it the backend refuses with :class:`BackendNotAvailable` rather than silently
+    training with the built-in backend. ``qlora`` is refused on this path: PEFT's QLoRA needs a
+    bitsandbytes 4-bit base on a CUDA device, and pretending otherwise would mislabel the run.
+    """
+
+    name = "peft"
+
+    def _peft(self) -> Any:
+        try:
+            import peft
+        except ImportError as exc:
+            raise BackendNotAvailable(
+                "the PEFT backend needs the `peft` package, which is not installed: "
+                "pip install 'examlops[finetune]' (or use --backend torch-lora)"
+            ) from exc
+        return peft
+
+    def build(self, *, seed: int, rank: int, alpha: float = 16.0, method: str = "lora") -> Any:
+        if method != "lora":
+            raise BackendNotAvailable(
+                f"the PEFT backend trains method 'lora' here; {method!r} needs a 4-bit "
+                "bitsandbytes base on a CUDA device (qlora) or the full-FT path (full)"
+            )
+        if rank < 1:
+            raise ValueError("LoRA rank must be >= 1")
+        peft = self._peft()
+        import torch
+
+        torch.manual_seed(seed)
+        base = _reference_stack(None, rank=rank, alpha=alpha, gen=None)
+        config = peft.LoraConfig(
+            r=rank,
+            lora_alpha=alpha,
+            lora_dropout=0.0,
+            bias="none",
+            target_modules=list(PEFT_TARGET_MODULES),
+        )
+        model = peft.get_peft_model(base, config)
+        # The embedding is not a target, so PEFT froze it along with the base linears; assert the
+        # invariant this backend promises instead of trusting it.
+        for name, p in model.named_parameters():
+            if p.requires_grad and "lora_" not in name:
+                raise BackendNotAvailable(
+                    f"peft left a non-adapter parameter trainable ({name}); refusing to train"
+                )
         return model
 
     def adapter_state(self, model: Any) -> dict[str, Any]:
@@ -162,21 +270,6 @@ class TorchLoRABackend:
             for name, p in model.named_parameters()
             if "lora_" in name
         }
-
-
-class PeftBackend:
-    """Placeholder for a Hugging Face PEFT backend — not built, and it says so."""
-
-    name = "peft"
-
-    def build(self, **_: Any) -> Any:
-        raise BackendNotAvailable(
-            "the PEFT backend is not implemented: `peft`/`transformers` are in no manifest here "
-            "and no real base checkpoint ships with the platform. Use --backend torch-lora."
-        )
-
-    def adapter_state(self, model: Any) -> dict[str, Any]:  # pragma: no cover - unreachable
-        raise BackendNotAvailable("the PEFT backend is not implemented")
 
 
 BACKENDS: dict[str, Any] = {"torch-lora": TorchLoRABackend(), "peft": PeftBackend()}
@@ -219,10 +312,12 @@ __all__ = [
     "VOCAB",
     "BackendNotAvailable",
     "LoRABackend",
+    "PEFT_TARGET_MODULES",
     "PeftBackend",
     "TorchLoRABackend",
     "adapter_sha256",
     "get_backend",
     "make_batch",
+    "peft_available",
     "trainable_parameters",
 ]

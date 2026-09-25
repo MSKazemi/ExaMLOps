@@ -128,11 +128,20 @@ def auto_bundle(
     run_spec: dict[str, Any] | None = None,
     skip_if_exists: bool = False,
     force: bool = False,
+    resources: dict[str, Any] | None = None,
+    lineage_run_id: str | None = None,
+    mlflow_run_id: str | None = None,
 ) -> Any:
     """Build a bundle when armed; return it, or ``None`` (off / nothing to bundle / failed).
 
     Never raises. ``force`` builds even when the env switch is off (used by tests and by an
     explicit operator call); ``skip_if_exists`` makes promotion idempotent.
+
+    ADR 0038 clause 1: ``resources`` is the scheduler request as submitted
+    (:func:`examlops.reproducibility.capture.capture_resources`); the A2 lineage run is found
+    from ``mlflow_run_id`` when not given. At promotion, and for a job a real scheduler (slurm,
+    flux) placed on a compute node, the host building the bundle is not the one that trained,
+    so hardware is recorded as *not captured* rather than as this host's.
     """
     if not (force or enabled()):
         return None
@@ -145,9 +154,33 @@ def auto_bundle(
 
         if skip_if_exists and platform_db.get_repro_bundle(model, ver):
             return None
+        if lineage_run_id is None and mlflow_run_id:
+            from examlops.data.events import lineage_run_for_mlflow_run
+
+            found = lineage_run_for_mlflow_run(mlflow_run_id)
+            lineage_run_id = str(found["run_id"]) if found else None
+        hardware: dict[str, Any] | None = None
+        sched = str((resources or {}).get("scheduler") or "").strip().lower()
+        if trigger == "promote":
+            hardware = {
+                "captured": False,
+                "reason": "bundle built at promotion; the training host is not this one",
+            }
+        elif sched and sched != "mock":
+            # The job ran on a compute node the scheduler chose; this process only submitted
+            # it. Probing *this* host would record the submitter's hardware as the training
+            # hardware, and `--execute` would then compare a rebuild against the wrong machine.
+            hardware = {
+                "captured": False,
+                "reason": f"training ran as a {sched} job on a node this host does not probe",
+                "job_id": (resources or {}).get("job_id"),
+            }
         return build_bundle(
             model,
             ver,
+            resources=resources,
+            lineage_run_id=lineage_run_id,
+            hardware=hardware,
             dataset_name=dataset_name,
             dataset_revision=dataset_revision or None,
             dataset_source=dataset_source,

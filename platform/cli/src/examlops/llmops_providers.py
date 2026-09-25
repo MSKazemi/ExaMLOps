@@ -7,9 +7,10 @@ Registers **four LLMOps calculation domains** on the existing provider registry 
 * ``llm_routing`` — per-candidate routing score (default: ``least-cost``).
 * ``rag_quality`` — RAG retrieval quality metrics (default: ``retrieval-lite``).
 
-Pre-emptive: no live B-track backend uses these yet. When B2–B4/B8 land, each calls
-``get_provider("<domain>")`` and never hard-codes a formula — exactly the discipline that made
-``cost``/``carbon`` swappable from their first commit (ADR 0077 §3).
+Every domain has a live call site through the façades below (gateway cost, cache stats,
+``cost_aware`` routing, RAG quality); each resolves ``--provider`` → ``EXAMLOPS_<DOMAIN>_PROVIDER``
+→ the ``<domain>:`` block of ``providers.yaml`` (legacy fallback: ``finops.yaml``) and never
+hard-codes a formula (ADR 0077 §3). :func:`describe_active_providers` feeds the F10 console.
 
 Importing this module registers all four domains as a side effect.
 """
@@ -146,8 +147,8 @@ class LeastCostRoutingProvider(Provider):
     Returns ``{"score": −cost_usd}`` for a healthy candidate, ``−inf`` if unhealthy.
     The caller maximizes scores, so the cheapest reachable route is selected.
 
-    A ``cost-latency`` variant (``−(cost_usd + latency_ms × latency_weight)``) ships as
-    an expression example in providers.yaml; it demonstrates that the *formula*, not just
+    The built-in ``cost-latency`` variant (:class:`CostLatencyRoutingProvider`,
+    ``−(cost_usd + latency_ms × latency_weight)``) demonstrates that the *formula*, not just
     the coefficients, is swappable.
     """
 
@@ -159,7 +160,7 @@ class LeastCostRoutingProvider(Provider):
             methodology=(
                 "score = −cost_usd if healthy else −inf. "
                 "Caller maximizes: selects cheapest reachable route. "
-                "Override with a cost-latency formula: −(cost_usd + latency_ms × weight)."
+                "Swap for the built-in cost-latency formula: −(cost_usd + latency_ms × weight)."
             ),
             outputs=("score",),
             params=("cost_usd", "latency_ms", "quality", "healthy"),
@@ -171,6 +172,45 @@ class LeastCostRoutingProvider(Provider):
             return {"score": _NEG_INF}
         cost = _f(inputs, "cost_usd", 0.0)
         return {"score": -cost}
+
+
+_DEFAULT_LATENCY_WEIGHT = 0.001  # USD-equivalent per millisecond of TTFT (override via config)
+
+
+class CostLatencyRoutingProvider(Provider):
+    """Routing scorer that trades cost against latency (ADR 0083, the ``cost-latency`` variant).
+
+    ``score = −(cost_usd + latency_ms × latency_weight)`` for a healthy candidate, ``−inf`` if not.
+    ``latency_weight`` converts milliseconds into the same unit as ``cost_usd`` (default
+    ``0.001`` — one second of time-to-first-token weighs as much as one dollar); set it in the
+    ``llm_routing`` block of ``providers.yaml``. It exists to prove the ADR's claim that the
+    *formula*, not just its coefficients, is swappable: selecting it changes which term decides a
+    route, with no core-code change. A negative weight is refused (it would reward slowness).
+    """
+
+    name = "cost-latency"
+    version = "1.0"
+
+    def metadata(self) -> ProviderMeta:
+        return ProviderMeta(
+            methodology=(
+                "score = −(cost_usd + latency_ms × latency_weight) if healthy else −inf. "
+                "Caller maximizes: cheapest-and-fastest reachable route wins. "
+                f"latency_weight defaults to {_DEFAULT_LATENCY_WEIGHT} (USD per ms)."
+            ),
+            outputs=("score",),
+            params=("cost_usd", "latency_ms", "latency_weight", "healthy"),
+        )
+
+    def compute(self, inputs: Mapping[str, Any]) -> dict[str, Any]:
+        if not inputs.get("healthy", True):
+            return {"score": _NEG_INF}
+        weight = _f(inputs, "latency_weight", _DEFAULT_LATENCY_WEIGHT)
+        if weight < 0:
+            raise ValueError(f"latency_weight must be >= 0, got {weight}")
+        cost = _f(inputs, "cost_usd", 0.0)
+        latency = max(0.0, _f(inputs, "latency_ms", 0.0))
+        return {"score": -(cost + latency * weight)}
 
 
 # ── rag_quality ───────────────────────────────────────────────────────────────
@@ -222,6 +262,140 @@ class RetrievalLiteQualityProvider(Provider):
         }
 
 
+# ── config resolution shared by every façade (ADR 0083 "Config home") ─────────────────────────
+
+#: The four LLMOps domains, in the order the dashboard and ``describe_active_providers`` list them.
+LLMOPS_DOMAINS: tuple[str, ...] = (_DOMAIN_COST, _DOMAIN_CACHE, _DOMAIN_ROUTING, _DOMAIN_RAG)
+
+
+def domain_config(domain: str) -> dict[str, Any]:
+    """The config block for one LLMOps domain.
+
+    ADR 0083 puts these blocks in ``providers.yaml`` (one flat ``<domain>:`` block, the home
+    ADR 0077 gave every non-finops domain). The first façades read ``finops.yaml``'s
+    ``finops: <domain>:`` block instead, so a site that followed them keeps working: that block is
+    the fallback, consulted only when ``providers.yaml`` has none. A malformed or unreadable file
+    degrades to ``{}`` (the registered default) — a calculation never stops over config.
+    """
+    from .providers.loader import load_domain_config
+
+    try:
+        block = load_domain_config(domain, group=domain)
+    except Exception:
+        logger.warning("%s: providers.yaml block failed to load; ignoring it", domain)
+        block = {}
+    if block:
+        return block
+    try:
+        return load_domain_config(domain)  # legacy finops.yaml home
+    except Exception as exc:
+        logger.warning("%s: legacy finops.yaml block failed to load; ignoring it: %s", domain, exc)
+        return {}
+
+
+def selected_provider_name(
+    domain: str, *, override: str | None = None, block: Mapping[str, Any] | None = None
+) -> str | None:
+    """The operator's explicit choice: ``--provider`` → ``EXAMLOPS_<DOMAIN>_PROVIDER`` → config.
+
+    ``None`` means nobody chose — each façade decides what that means (most keep the caller's own
+    legacy math; routing uses the registered default).
+    """
+    import os as _os
+
+    cfg = block if block is not None else domain_config(domain)
+    name = override or _os.getenv(f"EXAMLOPS_{domain.upper()}_PROVIDER") or cfg.get("provider")
+    return str(name) if name else None
+
+
+#: What runs when an operator selects NO provider for an opt-in domain. The ``llm_cost``,
+#: ``llm_cache`` and ``rag_quality`` façades return ``None`` on "nothing selected" and the caller
+#: keeps its own arithmetic, so the registered default provider does not run there. Showing the
+#: default's methodology for them would put a formula on screen that never computed the figure.
+#: ``llm_routing`` is absent on purpose: its registered default always runs.
+_CALLER_METHODOLOGY: dict[str, str] = {
+    _DOMAIN_COST: (
+        "No llm_cost provider selected: the gateway prices a call from its built-in per-model "
+        "rate table (examlops.telemetry.genai.estimate_cost): prompt/1000 × rate_in + "
+        "completion/1000 × rate_out. Self-hosted models in the table cost 0; an unknown model "
+        "uses a conservative default rate."
+    ),
+    _DOMAIN_CACHE: (
+        "No llm_cache provider selected: hit_rate = hits / total calls, and cost saved is the "
+        "sum of the per-event cost_saved recorded in cache_events."
+    ),
+    _DOMAIN_RAG: (
+        "No rag_quality provider selected: set-membership precision (relevant retrieved / "
+        "retrieved) and recall (relevant retrieved / relevant)."
+    ),
+}
+
+
+def describe_active_providers() -> list[dict[str, Any]]:
+    """What computes each LLMOps figure, and how — for the F10 console (ADR 0083).
+
+    One row per domain. When an operator selected a provider, or for ``llm_routing`` (whose
+    registered default always runs), the row carries that provider's name, version and full
+    :class:`ProviderMeta` (``mode: "provider"``). For the opt-in domains with nothing selected the
+    caller's own arithmetic runs, not the registered default, so the row says exactly that
+    (``mode: "builtin"``, ``provider: None``, the caller's methodology): the text on screen is the
+    formula that ran. A provider that fails to resolve is reported with ``ok: False`` and its
+    error — never dropped, never a crash (the ADR 0076 discoverability invariant).
+
+    Resolution happens in the calling process: an ``EXAMLOPS_<DOMAIN>_PROVIDER`` override is that
+    process's env, so a dashboard reports the gateway's choice only when both see the same config
+    directory and env.
+    """
+    from .providers import default_provider_name, get_provider
+
+    rows: list[dict[str, Any]] = []
+    for domain in LLMOPS_DOMAINS:
+        block = domain_config(domain)
+        chosen = selected_provider_name(domain, block=block)
+        default = default_provider_name(domain)
+        name = chosen or default
+        row: dict[str, Any] = {
+            "domain": domain,
+            "provider": name,
+            "selected": chosen is not None,
+            "default": default,
+            "mode": "provider",
+            "ok": True,
+            "error": None,
+        }
+        if chosen is None and domain in _CALLER_METHODOLOGY:
+            row.update(
+                provider=None,
+                mode="builtin",
+                version="",
+                methodology=_CALLER_METHODOLOGY[domain],
+                uncertainty=None,
+                units={},
+                outputs=[],
+                params=[],
+                source="",
+            )
+            rows.append(row)
+            continue
+        try:
+            prov = get_provider(domain, name=name, config=block)
+            meta = prov.metadata()
+            row.update(
+                provider=getattr(prov, "name", name),
+                version=getattr(prov, "version", ""),
+                methodology=meta.methodology,
+                uncertainty=meta.uncertainty,
+                units=dict(meta.units),
+                outputs=list(meta.outputs),
+                params=list(meta.params),
+                source=meta.source,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, never raised
+            row.update(ok=False, error=f"{type(exc).__name__}: {exc}")
+        rows.append(row)
+    return rows
+
+
 # ── gateway façade (ADR 0107 / R-A10) ─────────────────────────────────────────
 
 
@@ -249,16 +423,10 @@ def cache_savings_via_provider(
     something else with it (weight recent calls differently, apply a different distribution
     assumption, …), which is the whole point of the formula being swappable.
     """
-    import os as _os
-
     from .providers import get_provider
-    from .providers.loader import load_domain_config
 
-    try:
-        block = load_domain_config(_DOMAIN_CACHE)
-    except Exception:
-        block = {}
-    name = provider or _os.getenv("EXAMLOPS_LLM_CACHE_PROVIDER") or block.get("provider")
+    block = domain_config(_DOMAIN_CACHE)
+    name = selected_provider_name(_DOMAIN_CACHE, override=provider, block=block)
     if not name:
         return None  # no explicit selection — caller keeps its own aggregate
     try:
@@ -301,26 +469,22 @@ def route_score_via_provider(
     is the `cost_aware` strategy's entire job, so there is no legacy caller-side formula to defer to.
     A broken plugin degrades to ``0.0`` (no preference) rather than breaking routing.
     """
-    import os as _os
-
     from .providers import get_provider
-    from .providers.loader import load_domain_config
 
-    try:
-        block = load_domain_config(_DOMAIN_ROUTING)
-    except Exception:
-        logger.warning("llm_routing config block failed to load; using registry defaults only")
-        block = {}
-    name = provider or _os.getenv("EXAMLOPS_LLM_ROUTING_PROVIDER") or block.get("provider")
+    block = domain_config(_DOMAIN_ROUTING)
+    name = selected_provider_name(_DOMAIN_ROUTING, override=provider, block=block)
     try:
         prov = get_provider(_DOMAIN_ROUTING, name=name, config=block)
         out = prov.compute(
             {
+                # Config coefficients first, runtime observations last: a block key named like
+                # an input (``cost_usd``, ``healthy``, ``latency_ms``) must never replace what the
+                # gateway measured for this deployment, or every candidate would score the same.
+                **{k: v for k, v in block.items() if k != "provider"},
                 "cost_usd": cost_usd,
                 "healthy": healthy,
                 "latency_ms": latency_ms if latency_ms is not None else 0.0,
                 "quality": quality if quality is not None else 0.0,
-                **{k: v for k, v in block.items() if k != "provider"},
             }
         )
         score = out.get("score")
@@ -345,16 +509,10 @@ def rag_quality_via_provider(
     ``None`` means: the caller keeps its own set-membership precision/recall math — today's exact
     behaviour, unchanged, following the same rule as the other facades in this module.
     """
-    import os as _os
-
     from .providers import get_provider
-    from .providers.loader import load_domain_config
 
-    try:
-        block = load_domain_config(_DOMAIN_RAG)
-    except Exception:
-        block = {}
-    name = provider or _os.getenv("EXAMLOPS_RAG_QUALITY_PROVIDER") or block.get("provider")
+    block = domain_config(_DOMAIN_RAG)
+    name = selected_provider_name(_DOMAIN_RAG, override=provider, block=block)
     if not name:
         return None
     try:
@@ -402,16 +560,10 @@ def estimate_llm_cost_via_provider(
     the same "default is byte-identical to the legacy path" rule the carbon and cost
     providers follow (ADR 0074/0083).
     """
-    import os as _os
-
     from .providers import get_provider
-    from .providers.loader import load_domain_config
 
-    try:
-        block = load_domain_config(_DOMAIN_COST)
-    except Exception:
-        block = {}
-    name = provider or _os.getenv("EXAMLOPS_LLM_COST_PROVIDER") or block.get("provider")
+    block = domain_config(_DOMAIN_COST)
+    name = selected_provider_name(_DOMAIN_COST, override=provider, block=block)
     if not name:
         return None  # no explicit selection — caller keeps its own estimate
     try:
@@ -428,7 +580,9 @@ def estimate_llm_cost_via_provider(
         cost = out.get("cost_usd")
         return float(cost) if cost is not None else None
     except Exception:
-        # A bad plugin/config must never break a generation — degrade to the caller's path.
+        # A bad plugin/config must never break a generation — degrade to the caller's path, but
+        # audibly: a silent fallback is indistinguishable from "no provider configured".
+        logger.warning("llm_cost provider %r failed; the caller's own estimate is used", name)
         return None
 
 
@@ -440,6 +594,7 @@ def register_builtins() -> None:
     register_provider(_DOMAIN_COST, "token-rate", TokenRateCostProvider, default=True)
     register_provider(_DOMAIN_CACHE, "hit-savings", HitSavingsCacheProvider, default=True)
     register_provider(_DOMAIN_ROUTING, "least-cost", LeastCostRoutingProvider, default=True)
+    register_provider(_DOMAIN_ROUTING, "cost-latency", CostLatencyRoutingProvider)
     register_provider(_DOMAIN_RAG, "retrieval-lite", RetrievalLiteQualityProvider, default=True)
 
 

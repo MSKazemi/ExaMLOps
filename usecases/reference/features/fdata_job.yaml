@@ -1,0 +1,22 @@
+# Feature view: the per-job F-DATA embedding (ADR 0017 clauses 2 and 5).
+#
+# The ONE definition of the features the FData-trained models (JPCP, MACK, MCBound) consume.
+# Training's feature gate validates the pinned training set against it, and serving's
+# FeatureTransformer transforms every inference request with it — the same `transform_row`,
+# the same dimension, so the two cannot drift. `exa feature sync` mirrors it into the registry.
+name: fdata_job_features
+description: 384-dim F-DATA job embedding consumed by the FData-trained models.
+entity: job
+entity_key: job_id          # inference-request field naming the entity
+entity_column: jid          # the F-DATA parquet column naming the same entity
+timestamp_field: adt        # dataset column giving each row's event time (point-in-time key)
+source: FDataDataset
+serving: true               # the view FeatureTransformer applies by default
+embedding_feature: embedding
+ttl_seconds: 86400          # online values older than a day are reported stale
+materialize_interval_seconds: 3600
+features:
+  - name: embedding
+    dtype: vector
+    dim: 384
+    required: true

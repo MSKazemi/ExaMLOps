@@ -1,7 +1,7 @@
 """Next-Gen 40 · E6 — distributed & fault-tolerant training (ADR 0032).
 
-Multi-GPU/multi-node training (FSDP / DeepSpeed ZeRO) launched through the phase-23
-scheduler abstraction, with **automatic sharded checkpoint/resume** on failure/preemption
+Multi-GPU/multi-node training (DDP / FSDP2; DeepSpeed ZeRO and Megatron through a model
+entrypoint) launched through the phase-23 scheduler abstraction, with **automatic sharded checkpoint/resume** on failure/preemption
 and full lineage/cost linkage.
 
 - ``launch_distributed`` builds a torchrun/elastic rendezvous from the scheduler node list
@@ -13,7 +13,10 @@ and full lineage/cost linkage.
   **refuses a corrupt** checkpoint (GWT-3/GWT-5).
 - Failures and resumes are audited (D4); per-run cost feeds ``exa models cost`` (R7).
 
-Pure-Python and fully testable — no GPU, torch, or scheduler required to launch (mock),
+The executing paths: ``launch.supervise`` (local torchrun), ``scheduled.supervise_scheduled``
+(mock/Slurm/Flux submission with scheduler resubmit), ``durable`` (NFS/MinIO checkpoint mirror) and
+``strategy`` (the model YAML's ``distributed:`` block + preflight). This module's helpers are the
+bookkeeping layer; pure-Python and fully testable — no GPU, torch, or scheduler required to launch (mock),
 checkpoint, verify integrity, or resume.
 """
 
@@ -26,7 +29,7 @@ from typing import Any
 
 from examlops import data as platform_db
 
-STRATEGIES = ("fsdp", "zero", "megatron")
+STRATEGIES = ("fsdp", "zero", "megatron", "ddp")
 
 
 @dataclass
@@ -38,9 +41,24 @@ class LaunchSpec:
     strategy: str
     rdzv_endpoint: str
     nproc_per_node: int
+    entrypoint: str | None = None
 
     def torchrun_command(self) -> list[str]:
-        """The real torchrun/elastic command this spec would launch (R1)."""
+        """The torchrun/elastic command this spec would launch (R1).
+
+        The program is the model's ``distributed.entrypoint`` module (``-m``) when its YAML names
+        one, else the shipped reference script — never a placeholder. ``exa pipeline distributed
+        run`` / ``exa pipeline run --distributed`` are what actually submit it.
+        """
+        from pathlib import Path
+
+        from examlops.distributed import train_ddp
+
+        program = (
+            ["-m", self.entrypoint]
+            if self.entrypoint
+            else [str(Path(train_ddp.__file__).resolve())]
+        )
         return [
             "torchrun",
             f"--nnodes={self.nodes}",
@@ -48,7 +66,7 @@ class LaunchSpec:
             "--rdzv_backend=c10d",
             f"--rdzv_endpoint={self.rdzv_endpoint}",
             f"--rdzv_id={self.run_id}",
-            "train.py",
+            *program,
             f"--strategy={self.strategy}",
         ]
 
@@ -86,7 +104,7 @@ def _rendezvous_endpoint(node_list: list[str] | None) -> str:
 def launch_distributed(
     model: str,
     nodes: int,
-    strategy: str = "fsdp",
+    strategy: str | None = "fsdp",
     *,
     run_id: str | None = None,
     gpus_per_node: int = 1,
@@ -95,7 +113,20 @@ def launch_distributed(
     checkpoint_every: str | None = None,
     actor: str | None = None,
 ) -> RunHandle:
-    """Launch (or plan) a distributed training run (R1/R2/GWT-1/GWT-4)."""
+    """Record (plan) a distributed training run (R1/R2/GWT-1/GWT-4).
+
+    ``strategy=None`` takes the model YAML's ``distributed.strategy`` (default ``fsdp``) — the
+    per-model selection ADR 0032 decision 1 asks for.
+    """
+    from examlops.distributed.strategy import yaml_block
+
+    try:
+        block = yaml_block(model) or {}  # a malformed block raises ValueError: shown to the user
+    except (OSError, ImportError):  # an unreadable pack must not stop an explicit launch
+        block = {}
+    entrypoint = block.get("entrypoint")
+    if strategy is None:
+        strategy = str(block.get("strategy", "fsdp"))
     if strategy not in STRATEGIES:
         raise ValueError(f"strategy must be one of {STRATEGIES}, got {strategy!r}")
     rid = run_id or f"dist-{model}-{nodes}x{gpus_per_node}-{strategy}"
@@ -107,6 +138,7 @@ def launch_distributed(
         strategy=strategy,
         rdzv_endpoint=_rendezvous_endpoint(node_list),
         nproc_per_node=gpus_per_node,
+        entrypoint=entrypoint,
     )
     platform_db.create_distributed_run(
         rid,

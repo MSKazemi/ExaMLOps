@@ -44,11 +44,14 @@ __all__ = [
     "apply_plan",
     "approval_active",
     "approve_plan",
+    "current_mode",
     "get_plan",
+    "hitl_required",
     "list_plans",
     "plan_change",
     "plan_gated",
     "plannable_tools",
+    "preview_change",
     "probing",
 ]
 
@@ -98,6 +101,40 @@ def _err(message: str, code: str, **extra: Any) -> dict[str, Any]:
 def approval_active() -> bool:
     """True inside an :func:`apply_plan` whose human approval token verified."""
     return _APPROVED.get()
+
+
+def current_mode() -> str | None:
+    """``"plan"`` while probing, ``"apply"`` inside :func:`apply_plan`, else ``None`` (direct)."""
+    return _MODE.get()
+
+
+_DEFAULT_HITL_TIERS = frozenset({"B", "C"})
+
+
+def hitl_tiers() -> frozenset[str]:
+    """Tiers whose agent-applied plans need a human approval token (ADR 0082 layer 4).
+
+    ``EXAMLOPS_MCP_HITL_TIERS`` (``A,B,C`` subset, or ``none``); anything malformed keeps the
+    default ``B,C`` — a typo must never switch the human gate off.
+    """
+    raw = os.getenv("EXAMLOPS_MCP_HITL_TIERS")
+    if raw is None or not raw.strip():
+        return _DEFAULT_HITL_TIERS
+    if raw.strip().lower() == "none":
+        return frozenset()
+    tiers = frozenset(t.strip().upper() for t in raw.split(",") if t.strip())
+    return tiers if tiers and tiers <= {"A", "B", "C"} else _DEFAULT_HITL_TIERS
+
+
+def hitl_required(spec: Any) -> bool:
+    """True when an *agent* principal needs a human approval for this tool's plan.
+
+    High-impact tools (promotion rules, cluster approval, retrain, membership — tier B; tier C is
+    refused to agents outright) are not left to the agent's own judgement even when policy allows
+    them: the plan lists ``human_approval`` and :func:`apply_plan` refuses without a token a human
+    minted with :func:`approve_plan`.
+    """
+    return _principal_kind() == "agent" and getattr(spec, "tier", "read") in hitl_tiers()
 
 
 @contextmanager
@@ -345,10 +382,14 @@ def _snapshot(tool: str, args: dict[str, Any]) -> dict[str, Any]:
 
 def _normalise(spec: Any, args: dict[str, Any]) -> dict[str, Any]:
     sig = inspect.signature(spec.fn)
-    given = {k: v for k, v in (args or {}).items() if k != "idempotency_key"}
+    given = {k: v for k, v in (args or {}).items() if k not in _CONTROL_ARGS}
     bound = sig.bind(**given)
     bound.apply_defaults()
-    return {k: v for k, v in bound.arguments.items() if k != "idempotency_key"}
+    return {k: v for k, v in bound.arguments.items() if k not in _CONTROL_ARGS}
+
+
+#: How a call runs, never what it changes — never part of a plan (hash, args, intent).
+_CONTROL_ARGS = frozenset({"idempotency_key", "dry_run", "confirm"})
 
 
 def _probe(spec: Any, args: dict[str, Any]) -> dict[str, Any] | None:
@@ -402,7 +443,7 @@ def plan_change(tool: str, args: dict[str, Any] | None = None) -> dict[str, Any]
     plan_hash = compute_hash(tool, norm, preconditions)
     now = time.time()
     expires_at = now + ttl_seconds()
-    required = ["human_approval"] if gate["requires_approval"] else []
+    required = ["human_approval"] if gate["requires_approval"] or hitl_required(spec) else []
     doc = {
         "plan_hash": plan_hash,
         "tool": tool,
@@ -429,6 +470,71 @@ def plan_change(tool: str, args: dict[str, Any] | None = None) -> dict[str, Any]
     if outcome != "existing":
         _audit("plan_created", plan_hash, {"tool": tool, "args": norm, "outcome": outcome})
     return {"ok": True, "plan": doc}
+
+
+# ── dry run (ADR 0081 rule 3) ─────────────────────────────────────────────────
+
+
+def preview_change(tool: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+    """What one mutating call *would* do — computed like a plan, but stored and changed nowhere.
+
+    Backs every mutating tool's ``dry_run=true``. Returns the intended change, blast radius, the
+    current state it depends on, the policy decision it would meet and the consent it would need
+    (``needs_confirmation`` for a human's direct call, ``required_approvals`` for an agent's plan).
+    A policy denial is reported *in* the preview (``would_succeed: false``), not as an error: the
+    caller asked what would happen, and "policy would refuse it" is the answer.
+    """
+    plannable = plannable_tools()
+    spec = plannable.get(tool)
+    if spec is None:
+        return _err(
+            f"{tool!r} is not a mutating tool", "not_plannable", plannable=sorted(plannable)
+        )
+    try:
+        norm = _normalise(spec, dict(args or {}))
+    except TypeError as exc:
+        return _err(f"invalid arguments for {tool}: {exc}", "invalid_args")
+    gate = _probe(spec, norm)
+    if gate is None:
+        return _err(f"{tool} did not reach its policy gate; cannot preview it", "plan_unavailable")
+    try:
+        preconditions: dict[str, Any] | None = _snapshot(tool, norm)
+        snapshot_error = None
+    except Exception as exc:  # noqa: BLE001 - a preview reports what it could not read
+        preconditions, snapshot_error = None, str(exc)
+    from examlops.mcp.write_safety import auto_confirm_enabled, needs_confirmation
+
+    agent = _principal_kind() == "agent"
+    if gate["unavailable"]:
+        policy = {
+            "effect": "unavailable",
+            "reason": "policy unavailable; the write would be refused",
+        }
+    elif gate["denied"]:
+        policy = {"effect": "deny", "reason": gate["reason"]}
+    elif gate["requires_approval"]:
+        policy = {"effect": "require_approval", "reason": gate["reason"]}
+    else:
+        policy = {"effect": "allow", "reason": gate["reason"]}
+    required = ["human_approval"] if gate["requires_approval"] or hitl_required(spec) else []
+    preview = {
+        "tool": tool,
+        "args": norm,
+        "intended_change": _INTENT[tool](norm),
+        "current_state": preconditions,
+        "blast_radius": {**_BLAST[tool], "tier": spec.tier, "destructive": spec.destructive},
+        "policy": {"action_kind": gate["action_kind"], **policy},
+        "principal_kind": "agent" if agent else "human",
+        "needs_confirmation": (
+            not agent and needs_confirmation(spec.tier) and not auto_confirm_enabled()
+        ),
+        "required_approvals": required,
+        "agent_may_apply": not (agent and spec.tier == "C"),
+        "would_succeed": policy["effect"] == "allow" and snapshot_error is None,
+    }
+    if snapshot_error is not None:
+        preview["current_state_error"] = snapshot_error
+    return {"ok": True, "dry_run": True, "changed": False, "preview": preview}
 
 
 # ── approve (human only) ──────────────────────────────────────────────────────
@@ -491,6 +597,9 @@ def apply_plan(plan_hash: str, approval_token: str | None = None) -> dict[str, A
     spec = plannable_tools().get(tool)
     if spec is None:
         return _refuse(plan_hash, "not_plannable", f"{tool!r} is no longer a plannable tool")
+    if spec.tier == "C" and _principal_kind() == "agent":
+        # A human may plan a tier-C change; an agent must never be the one to execute it.
+        return _refuse(plan_hash, "tier_c_human_only", f"{tool} is tier C (human-only)")
 
     # Policy is re-evaluated now — it may have changed since the plan was written.
     gate = _probe(spec, args)
@@ -499,7 +608,7 @@ def apply_plan(plan_hash: str, approval_token: str | None = None) -> dict[str, A
     if gate["denied"]:
         return _refuse(plan_hash, "policy_denied", f"policy now denies {tool}: {gate['reason']}")
     approved = False
-    if gate["requires_approval"] or plan.get("required_approvals"):
+    if gate["requires_approval"] or plan.get("required_approvals") or hitl_required(spec):
         if not approval_token:
             return _refuse(plan_hash, "approval_required", "this plan needs a human approval_token")
         stored = row.get("approval_hash") or ""

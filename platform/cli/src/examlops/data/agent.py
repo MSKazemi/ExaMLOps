@@ -16,6 +16,7 @@ from examlops.platform_db import get_db, init_db, install_write_retry  # noqa: F
 __all__ = [
     "get_agent_session_trace",
     "agent_metrics_rollup",
+    "agent_sli",
     "list_agent_sessions",
     "record_agent_session",
     "record_agent_tool_call",
@@ -121,6 +122,15 @@ def record_agent_session(
                 ended,
             ),
         )
+        if ended:
+            # The session row is keyed by the conversation thread and overwritten every turn;
+            # this append-only log keeps each turn's outcome for the ``session_ok`` SLI (C6).
+            # Same transaction as the upsert, so an ingest never sees one without the other.
+            conn.execute(
+                """INSERT INTO agent_turn_outcomes (session_id, tenant, agent, status, tool_calls)
+                   VALUES (?,?,?,?,?)""",
+                (session_id, tenant, agent, status, tool_calls),
+            )
 
 
 def record_agent_tool_call(
@@ -265,3 +275,70 @@ def agent_metrics_rollup() -> dict[str, Any]:
 
 
 install_write_retry(__name__)
+
+
+#: The C6 SLI objectives an agent can be held to (ADR 0021 decision 4 → ADR 0023).
+AGENT_SLI_OBJECTIVES = ("tool_success", "session_ok")
+
+#: The table each objective's watermark is an id of — ``tool_success`` counts tool calls,
+#: ``session_ok`` counts ended turns. The SLO ingester stamps its watermark with this name.
+AGENT_SLI_EVENT_TABLE = {"tool_success": "agent_tool_calls", "session_ok": "agent_turn_outcomes"}
+
+
+def agent_sli(
+    agent: str,
+    *,
+    tenant: str,
+    since: str,
+    settle_before: str,
+    objective: str = "tool_success",
+    tool: str | None = None,
+    after_id: int = 0,
+) -> tuple[int, int, int]:
+    """``(good, total, last_id)`` for an agent SLI, counting only events past ``after_id``.
+
+    * ``tool_success`` — good = tool calls that succeeded, total = tool calls (optionally one
+      ``tool``). The watermark is an ``agent_tool_calls.id``. A turn writes its tool calls
+      *before* its summary row, so an ingest that ran between the two would advance past calls
+      it could not yet attribute to an agent and lose them for good. Counting therefore stops
+      below the first call whose session has not been flushed yet — unless that call is older
+      than ``settle_before``, in which case its session is treated as abandoned (a crashed turn)
+      rather than allowed to freeze the SLI forever.
+    * ``session_ok`` — good = ended turns whose outcome was ``ok`` (no critical anomaly, not
+      all-error), total = ended turns, including turns that made no tool call. Read from the
+      append-only ``agent_turn_outcomes`` log, whose id is the watermark: ``agent_sessions`` is
+      keyed by the conversation thread and overwritten each turn, so counting it made the SLI
+      depend on how often it was ingested and erased every earlier turn's anomaly.
+
+    Both the agent and the tenant are filtered in SQL.
+    """
+    if objective not in AGENT_SLI_OBJECTIVES:
+        raise ValueError(f"objective must be one of {AGENT_SLI_OBJECTIVES} (got {objective!r})")
+    init_db()
+    with get_db() as conn:
+        if objective == "session_ok":
+            row = conn.execute(
+                "SELECT SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END), COUNT(*), MAX(id) "
+                "FROM agent_turn_outcomes "
+                "WHERE agent = ? AND tenant = ? AND id > ? AND ts >= ?",
+                (agent, tenant, after_id, since),
+            ).fetchone()
+            return int(row[0] or 0), int(row[1] or 0), int(row[2] or after_id)
+        pending = conn.execute(
+            """SELECT MIN(tc.id) FROM agent_tool_calls tc
+               LEFT JOIN agent_sessions s ON s.session_id = tc.session_id
+               WHERE tc.id > ? AND tc.tenant = ? AND tc.ts >= ?
+                 AND (s.session_id IS NULL OR s.ended_at IS NULL)""",
+            (after_id, tenant, settle_before),
+        ).fetchone()
+        bound = int(pending[0]) if pending and pending[0] is not None else None
+        bound_sql, bound_arg = (" AND tc.id < ?", (bound,)) if bound is not None else ("", ())
+        tool_sql, tool_arg = (" AND tc.tool = ?", (tool,)) if tool else ("", ())
+        row = conn.execute(
+            "SELECT SUM(tc.ok), COUNT(*), MAX(tc.id) FROM agent_tool_calls tc "
+            "JOIN agent_sessions s ON s.session_id = tc.session_id "
+            "WHERE s.agent = ? AND s.tenant = ? AND tc.tenant = ? AND s.ended_at IS NOT NULL "
+            "AND tc.id > ? AND tc.ts >= ?" + bound_sql + tool_sql,
+            (agent, tenant, tenant, after_id, since, *bound_arg, *tool_arg),
+        ).fetchone()
+    return int(row[0] or 0), int(row[1] or 0), int(row[2] or after_id)

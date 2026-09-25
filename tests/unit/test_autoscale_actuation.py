@@ -210,10 +210,16 @@ def test_keda_scaledobject_maps_the_policy():
     assert doc["metadata"]["namespace"] == "ml"
 
 
-@pytest.mark.parametrize("metric", ["queue_depth", "gpu_util"])
-def test_metrics_without_a_source_are_refused(metric):
+def test_metrics_without_a_source_are_refused(monkeypatch):
+    monkeypatch.delenv("EXAMLOPS_AUTOSCALE_GPU_UTIL_QUERY", raising=False)
     with pytest.raises(ManifestError, match="no per-model series"):
-        render_keda_scaledobject("JPCP", AutoscalePolicy(target_metric=metric))
+        render_keda_scaledobject("JPCP", AutoscalePolicy(target_metric="gpu_util"))
+
+
+def test_queue_depth_renders_the_little_law_trigger():
+    doc = render_keda_scaledobject("JPCP", AutoscalePolicy(target_metric="queue_depth"))
+    q = doc["spec"]["triggers"][0]["metadata"]["query"]
+    assert q == 'sum(rate(examlops_predict_latency_seconds_sum{model_name=~"(?i)^JPCP$"}[1m]))'
 
 
 def test_knative_overlay_and_its_limits():
@@ -275,6 +281,6 @@ def test_cli_manifest_and_status_show_the_yaml_policy(_env):
     assert '"source": "yaml"' in r.output
     r = CliRunner().invoke(exa_app, ["serve", "autoscale", "manifest", "GHOST"])
     assert r.exit_code == 1
-    set_policy("JPCP", target_metric="queue_depth")
+    set_policy("JPCP", target_metric="gpu_util")  # no source without an operator template
     r = CliRunner().invoke(exa_app, ["serve", "autoscale", "manifest", "JPCP"])
     assert r.exit_code == 2

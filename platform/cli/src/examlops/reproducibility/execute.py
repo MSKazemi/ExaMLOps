@@ -55,14 +55,18 @@ from examlops.reproducibility import (
     _rel_diff,
     compare_packages,
     describe_package_drift,
+    lakefs,
     verify_dataplane_snapshot,
 )
+from examlops.reproducibility import capture as cap
 from examlops.reproducibility.image import STATUS_UNCHECKED as IMG_UNCHECKED
 from examlops.reproducibility.image import verify_image_digest
 from examlops.reproducibility.rebuild import rebuild_environment
 
 METRICS_MARKER = "EXAMLOPS_REPRO_METRICS="
 STEPS = ("code", "dataset", "env", "train", "compare")
+#: Schedulers a rebuild may run on (``--scheduler``; ``recorded`` resolves to one of these).
+SCHEDULERS = ("mock", "slurm", "flux")
 DEFAULT_RTOL = float(cast("float", DEFAULT_TOLERANCE["rel"]))
 
 #: Explicit interpreter override, and the name under which the interpreter that was actually
@@ -142,6 +146,13 @@ class ExecuteResult:
     worktree: str | None = None
     bit_exact: bool = False
     env: EnvOutcome = field(default_factory=EnvOutcome)
+    #: Where step 2 restored the pinned dataset (``--restore-dataset``), else ``None``.
+    dataset_dir: str | None = None
+    #: Checkout of the recorded model-library commit the training step runs against, if any.
+    modelzoo_worktree: str | None = None
+    #: Scheduler the training step ran on and the resources it re-requested.
+    scheduler: str = "mock"
+    resources: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -182,13 +193,124 @@ def _step_code(
     return StepResult("code", "ok", f"detached worktree {wt} at {sha[:12]}{note}")
 
 
-def _step_dataset(manifest: dict[str, Any], data_path: str | None, dummy: bool) -> StepResult:
+def _modelzoo_candidates(repo: Path, recorded: str | None) -> list[Path]:
+    out: list[Path] = []
+    env_dir = (os.getenv(cap.ENV_MODELZOO_DIR) or "").strip()
+    for cand in (env_dir, str(repo / "modelzoo"), recorded or ""):
+        if cand and Path(cand) not in out:
+            out.append(Path(cand))
+    return out
+
+
+def _checkout_modelzoo(
+    manifest: dict[str, Any], repo: Path, wt: Path, *, allow_dirty: bool = False
+) -> tuple[bool, str, Path | None, Path | None]:
+    """Check the recorded model-library commit out next to the platform worktree.
+
+    ``(ok, detail, worktree, source checkout)``. A bundle that recorded a library commit must be rebuilt against that
+    commit: when no known checkout has it the ``code`` step fails rather than training against
+    whatever library is on disk. A bundle that recorded only a distribution version (or nothing)
+    is reported as such and uses the library on disk — stated, not hidden.
+    """
+    mz = (manifest.get("code_commits") or {}).get("modelzoo") or {}
+    sha = mz.get("commit")
+    if not sha:
+        if mz.get("distribution_version"):
+            return (
+                True,
+                (
+                    f"; modelzoo recorded as distribution {mz['distribution_version']} (no commit) — "
+                    "the library on disk is used"
+                ),
+                None,
+                None,
+            )
+        return (
+            True,
+            "; bundle records no modelzoo commit — the library on disk is used",
+            None,
+            None,
+        )
+    if mz.get("dirty") and not allow_dirty:
+        return (
+            False,
+            (
+                "modelzoo was dirty when the bundle was built: its recorded commit does NOT contain "
+                "the library code that ran (--allow-dirty-code to rebuild the commit anyway)"
+            ),
+            None,
+            None,
+        )
+    for cand in _modelzoo_candidates(repo, mz.get("path")):
+        if not cand.is_dir() or _git(cand, "cat-file", "-e", f"{sha}^{{commit}}").returncode:
+            continue
+        added = _git(cand, "worktree", "add", "--detach", str(wt), sha)
+        if added.returncode != 0:
+            msg = f"modelzoo worktree add failed: {added.stderr.strip()[:200]}"
+            return False, msg, None, None
+        if _git(wt, "rev-parse", "HEAD").stdout.strip() != sha:
+            return False, f"modelzoo worktree is not at {sha[:12]}", wt, cand
+        return True, f"; modelzoo {sha[:12]} checked out from {cand}", wt, cand
+    return (
+        False,
+        (
+            f"modelzoo commit {sha[:12]} is not available in any known checkout "
+            f"({cap.ENV_MODELZOO_DIR}, <repo>/modelzoo, the recorded path)"
+        ),
+        None,
+        None,
+    )
+
+
+def _restore_dataplane(source_key: str, revision: str, dest: Path) -> tuple[str | None, str]:
+    """Materialise a dataplane snapshot into ``dest`` (checksum-verified); ``(why, path)``."""
+    try:
+        from examlops.dataplane import materialize, resolve, store_from_env
+        from examlops.dataplane.types import DataplaneError
+
+        st = store_from_env()
+        try:
+            out = materialize(st, resolve(st, source_key, revision), dest)
+        except DataplaneError as exc:
+            return f"snapshot {source_key}@{revision[:16]} does not verify: {exc}", ""
+    except Exception as exc:  # noqa: BLE001 - an unreachable store is a failure, not a pass
+        return f"cannot restore snapshot {source_key}@{revision[:16]}: {exc}", ""
+    return None, str(out)
+
+
+def _dest_is_empty(dest: Path) -> bool:
+    return not dest.exists() or (dest.is_dir() and not any(dest.iterdir()))
+
+
+def _step_dataset(
+    manifest: dict[str, Any],
+    data_path: str | None,
+    dummy: bool,
+    restore_to: Path | None = None,
+) -> StepResult:
+    """Verify — and with ``restore_to``, restore — the pinned dataset revision.
+
+    Restorable sources: a dataplane snapshot (materialised + checksum-verified) and a lakeFS
+    commit (every object downloaded + size/MD5-checked). A content revision records a hash, not
+    a source, so it cannot be restored: asking for it fails and says so.
+    """
     name, rev = manifest.get("dataset_name"), manifest.get("dataset_revision")
     if not rev:
         return StepResult("dataset", "skipped", "bundle pins no dataset revision")
     if not name:
         return StepResult("dataset", "failed", "bundle pins a revision but no dataset name")
+    if restore_to is not None and not _dest_is_empty(restore_to):
+        return StepResult(
+            "dataset", "failed", f"--restore-dataset {restore_to} is not an empty directory"
+        )
     plane = _dataplane_source(manifest)
+    if plane and restore_to is not None:
+        why, where = _restore_dataplane(plane, str(rev), restore_to)
+        if why:
+            return StepResult("dataset", "failed", why)
+        return StepResult(
+            "dataset", "ok", f"dataplane snapshot {plane}@{str(rev)[:16]} restored to {where}"
+        )
     if plane:
         # A dataplane snapshot is verified against its manifest + part checksums — the same
         # check training runs. Done even under --dummy: the bundle pins the snapshot, and an
@@ -199,8 +321,35 @@ def _step_dataset(manifest: dict[str, Any], data_path: str | None, dummy: bool) 
         return StepResult(
             "dataset", "ok", f"dataplane snapshot {plane}@{str(rev)[:16]} verified against manifest"
         )
-    if platform_db.get_dataset_revision(name, rev) is None:
+    row = platform_db.get_dataset_revision(name, rev)
+    if row is None:
         return StepResult("dataset", "failed", f"revision {rev[:16]} of {name} is not recorded")
+    if row.get("kind") == "lakefs":
+        parsed = lakefs.parse_uri(row.get("uri"))
+        if parsed is None or parsed[1] != rev:
+            return StepResult(
+                "dataset", "failed", f"lakeFS revision {rev[:16]} has no matching lakefs:// uri"
+            )
+        if restore_to is not None:
+            got = lakefs.restore(parsed[0], parsed[1], restore_to)
+            return StepResult("dataset", "ok" if got.ok else "failed", got.detail)
+        why = lakefs.verify_commit(parsed[0], parsed[1])
+        if why:
+            return StepResult("dataset", "failed", why)
+        if not data_path:
+            return StepResult(
+                "dataset",
+                "ok",
+                f"lakeFS commit {parsed[0]}@{rev[:16]} exists (not downloaded; "
+                "--restore-dataset to restore it)",
+            )
+    elif restore_to is not None:
+        return StepResult(
+            "dataset",
+            "failed",
+            f"revision {rev[:16]} is a {row.get('kind') or 'content'} revision: it records a "
+            "hash, not a source, so it cannot be restored (--data-path verifies local data)",
+        )
     if not data_path:
         if dummy:
             return StepResult("dataset", "skipped", "--dummy: training uses synthetic data")
@@ -281,6 +430,15 @@ def _step_env(
     else:
         note += " (package set not captured — package-level check not possible)"
 
+    rec_hw = manifest.get("hardware") or {}
+    if rec_hw:
+        hw_diff = cap.describe_hardware_difference(rec_hw, cap.capture_hardware())
+        # Reported, never failed on: results are compared within a tolerance precisely because
+        # the hardware may differ (ADR 0038 "Alternatives": no bit-exact claim). Silent when it
+        # matches, so the detail of an unchanged host stays what it always was.
+        if hw_diff:
+            note += f"; hardware differs from the record ({hw_diff})"
+
     digest = verify_image_digest(env.get("image_digest"))
     out.image_status, out.image_detail = digest.status, digest.detail
     if digest.status != IMG_UNCHECKED:
@@ -309,9 +467,53 @@ def _run_train(
     scratch: Path | None = None,
     repo: Path | None = None,
     env_out: EnvOutcome | None = None,
+    scheduler: str | None = None,
+    dataset_dir: str | None = None,
+    modelzoo_dir: Path | None = None,
+    placement: dict[str, Any] | None = None,
 ) -> tuple[StepResult, dict[str, float]]:
     built = env_out or EnvOutcome()
     env = dict(os.environ)
+    # The recorded scheduler-neutral request is exported as EXAMLOPS_HPC_*, so a rebuild on a
+    # real scheduler asks for exactly what the original run asked for (ADR 0038 cl. 2).
+    rec_res = manifest.get("resources") or {}
+    res_env = cap.resource_env(rec_res)
+    if res_env:
+        # The recorded request is complete: every key the original run left unset was None,
+        # not "whatever the caller's shell says". Without this, an EXAMLOPS_HPC_GPUS=8 (or a
+        # legacy EXAMLOPS_SLURM_* fallback) in the operator's environment silently joins the
+        # "recorded" request and the rebuild asks for resources the original never did.
+        for var in cap.resource_env_vars():
+            env.pop(var, None)
+    env.update(res_env)
+    if scheduler == "recorded":
+        scheduler = rec_res.get("scheduler") or None
+        if not scheduler:
+            return StepResult("train", "failed", "bundle records no scheduler to re-use"), {}
+    if scheduler:
+        scheduler = scheduler.strip().lower()
+        if scheduler not in SCHEDULERS:
+            # An unknown name must not be exported and then reported as "the scheduler training
+            # ran on": the pipeline would fail or fall back, and the result would name a lie.
+            return (
+                StepResult(
+                    "train",
+                    "failed",
+                    f"unknown scheduler {scheduler!r} (expected one of {', '.join(SCHEDULERS)})",
+                ),
+                {},
+            )
+        env["EXAMLOPS_HPC_SCHEDULER"] = scheduler
+    ran_on = env.get("EXAMLOPS_HPC_SCHEDULER") or (
+        "slurm" if env.get("EXAMLOPS_SLURM_MODE", "mock").strip().lower() == "slurm" else "mock"
+    )
+    if placement is not None:
+        placement["scheduler"] = ran_on
+        placement["resources"] = dict(res_env)
+    if dataset_dir:
+        env["EXAMLOPS_REPRO_DATA_DIR"] = dataset_dir
+    if modelzoo_dir is not None:
+        env[cap.ENV_MODELZOO_DIR] = str(modelzoo_dir)
     extra = os.pathsep.join([str(wt), str(wt / "platform" / "cli" / "src")])
     env["PYTHONPATH"] = extra + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     # The interpreter the reproduction actually runs on — the one `res.env.python` reports. With
@@ -352,8 +554,9 @@ def _run_train(
         ]
         _isolate_default_run(env, scratch)
         # The upstream model library is not part of the public tree, so a checkout of the bundle's
-        # commit may not carry it: use the caller's (EXAMLOPS_MODELZOO_DIR wins). NOT captured in
-        # the bundle — a rebuild uses whatever modelzoo version is on disk.
+        # commit may not carry it. When the bundle recorded a library commit, the `code` step
+        # checked that commit out and `modelzoo_dir` already points at it; only a bundle that
+        # recorded none falls back to the caller's library (EXAMLOPS_MODELZOO_DIR wins).
         if not env.get("EXAMLOPS_MODELZOO_DIR") and not (wt / "modelzoo").is_dir():
             if repo is not None and (repo / "modelzoo").is_dir():
                 env["EXAMLOPS_MODELZOO_DIR"] = str(repo / "modelzoo")
@@ -365,6 +568,9 @@ def _run_train(
         tail = (done.stderr or done.stdout).strip().splitlines()[-1:] or [""]
         return StepResult("train", "failed", f"exit {done.returncode}: {tail[0][:200]}"), {}
     where = f" on {built.python}" if built.rebuilt else ""
+    where += f"; scheduler {ran_on}" + (
+        f", re-requested {len(res_env)} recorded resource(s)" if res_env else ""
+    )
     lines = [ln for ln in done.stdout.splitlines() if ln.startswith(METRICS_MARKER)]
     if not lines:
         return StepResult("train", "failed", f"training printed no '{METRICS_MARKER}' line"), {}
@@ -433,6 +639,8 @@ def execute_reproduction(
     rebuild_env: bool = False,
     venv_dir: str | Path | None = None,
     rebuild_env_args: list[str] | None = None,
+    restore_dataset: str | Path | None = None,
+    scheduler: str | None = None,
 ) -> ExecuteResult:
     """Run the five steps; stop at the first failure (later steps ``not_run``).
 
@@ -441,6 +649,11 @@ def execute_reproduction(
     caller can inspect — by default it lives in the same throw-away directory as the worktree
     and is removed with it. ``rebuild_env_args`` is passed through to ``uv pip install`` and is
     not reachable from the CLI; the test suite uses it to rebuild from a local wheelhouse.
+    ``restore_dataset`` restores the pinned dataset (dataplane snapshot or lakeFS commit) into
+    that empty directory and hands it to training as ``EXAMLOPS_REPRO_DATA_DIR``. ``scheduler``
+    selects where training runs: ``None`` keeps the caller's configuration (mock unless set),
+    ``"recorded"`` re-uses the bundle's scheduler, anything else names one; the recorded
+    resources are re-requested in every case.
     """
     res = ExecuteResult(model, str(version))
 
@@ -471,6 +684,7 @@ def execute_reproduction(
 
     tmp = Path(tempfile.mkdtemp(prefix="exa-repro-"))
     wt = tmp / "worktree"
+    placement: dict[str, Any] = {}
     repo_p = Path(repo).resolve()
     try:
         code = _step_code(
@@ -480,11 +694,27 @@ def execute_reproduction(
             dirty=manifest.get("code_dirty"),
             allow_dirty=allow_dirty_code,
         )
+        if not code.failed:
+            mz_ok, mz_detail, mz_path, mz_src = _checkout_modelzoo(
+                manifest, repo_p, tmp / "modelzoo", allow_dirty=allow_dirty_code
+            )
+            if mz_src is not None:
+                placement["modelzoo_source"] = str(mz_src)
+            code = (
+                StepResult("code", "ok", code.detail + mz_detail)
+                if mz_ok
+                else StepResult("code", "failed", mz_detail)
+            )
+            res.modelzoo_worktree = str(mz_path) if mz_path is not None else None
         if not record(code):
             return finish()
         res.worktree = str(wt) if keep_worktree else None
-        if not record(_step_dataset(manifest, data_path, dummy)):
+        restore_to = Path(restore_dataset).resolve() if restore_dataset else None
+        ds_step = _step_dataset(manifest, data_path, dummy, restore_to)
+        if not record(ds_step):
             return finish()
+        if restore_to is not None and ds_step.status == "ok":
+            res.dataset_dir = str(restore_to)
         env_step, res.env = _step_env(
             manifest,
             wt,
@@ -505,7 +735,13 @@ def execute_reproduction(
             scratch=tmp,
             repo=repo_p,
             env_out=res.env,
+            scheduler=scheduler,
+            dataset_dir=res.dataset_dir,
+            modelzoo_dir=Path(res.modelzoo_worktree) if res.modelzoo_worktree else None,
+            placement=placement,
         )
+        res.scheduler = str(placement.get("scheduler") or res.scheduler)
+        res.resources = dict(placement.get("resources") or {})
         if not record(step):
             return finish()
         res.produced_metrics = produced
@@ -513,6 +749,14 @@ def execute_reproduction(
         return finish()
     finally:
         if not keep_worktree:
+            if res.modelzoo_worktree and placement.get("modelzoo_source"):
+                _git(
+                    Path(placement["modelzoo_source"]),
+                    "worktree",
+                    "remove",
+                    "--force",
+                    res.modelzoo_worktree,
+                )
             _git(repo_p, "worktree", "remove", "--force", str(wt))
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -530,6 +774,8 @@ def _audit(res: ExecuteResult) -> None:
             "steps": {s.step: s.status for s in res.steps},
             "env_rebuilt": res.env.rebuilt,
             "image_digest": res.env.image_status,
+            "scheduler": res.scheduler,
+            "dataset_restored": res.dataset_dir is not None,
         },
     )
 

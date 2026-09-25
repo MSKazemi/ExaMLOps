@@ -45,11 +45,17 @@ def _wrap(spec: Any) -> StructuredTool:
 
         @functools.wraps(fn)
         def _call(*args: Any, **kwargs: Any) -> str:
+            if kwargs.get("dry_run"):
+                # A dry run (ADR 0081 rule 3) changes nothing, so it needs no human decision.
+                return json.dumps(fn(*args, **kwargs), default=str)
+            # The model cannot confirm for itself: its own `confirm` is dropped, and the tool's
+            # confirmation gate is satisfied only by the human's answer to the interrupt below.
+            kwargs.pop("confirm", None)
             summary = f"{spec.name}({', '.join(f'{k}={v!r}' for k, v in kwargs.items())})"
             decision = interrupt({"action": spec.name, "args": kwargs, "summary": summary})
             if not _is_affirmative(decision):
                 return json.dumps({"ok": False, "cancelled": True, "action": spec.name})
-            return json.dumps(fn(*args, **kwargs), default=str)
+            return json.dumps(_run_confirmed(fn, args, kwargs), default=str)
     else:
 
         @functools.wraps(fn)
@@ -57,6 +63,16 @@ def _wrap(spec: Any) -> StructuredTool:
             return json.dumps(fn(*args, **kwargs), default=str)
 
     return StructuredTool.from_function(_call, name=spec.name, description=spec.description)
+
+
+def _run_confirmed(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    """Run ``fn`` marked as human-confirmed (the interrupt answered yes), when supported."""
+    try:
+        from examlops.mcp.write_safety import confirmed
+    except ImportError:  # an examlops without write safety: nothing to satisfy
+        return fn(*args, **kwargs)
+    with confirmed():
+        return fn(*args, **kwargs)
 
 
 def mcp_tools(include_writes: bool | None = None) -> list[StructuredTool]:

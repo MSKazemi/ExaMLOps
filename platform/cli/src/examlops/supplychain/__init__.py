@@ -63,7 +63,22 @@ class SigningKeyMissing(RuntimeError):
 
 ED25519 = "ed25519-v2"
 HMAC = "hmac-sha256"
+SIGSTORE = "sigstore-v1"  # keyless (Fulcio certificate + Rekor log entry), see .keyless
 _STATEMENT = "examlops-model-signature/v2"
+SCHEME_ENV = "EXAMLOPS_SIGNING_SCHEME"
+_SCHEMES = ("auto", "sigstore")
+
+
+def signing_scheme() -> str:
+    """``auto`` (Ed25519 when a private key is configured, else legacy HMAC) or ``sigstore``.
+
+    An unrecognised value raises rather than silently picking a scheme: a typo must not quietly
+    downgrade keyless signing to a shared-secret MAC.
+    """
+    scheme = os.getenv(SCHEME_ENV, "auto").strip().lower() or "auto"
+    if scheme not in _SCHEMES:
+        raise SigningKeyMissing(f"unknown {SCHEME_ENV}={scheme!r} (expected one of {_SCHEMES})")
+    return scheme
 
 
 @dataclass(frozen=True)
@@ -287,6 +302,10 @@ def sign_model(
     from examlops.data.registry import store_model_signature
 
     paths = [Path(p) for p in artifact_paths]
+    if signing_scheme() == "sigstore":
+        keyless_sig = _sign_keyless(model, version, paths, actor=actor, root=root)
+        if keyless_sig is not None:
+            return keyless_sig
     private = _load_private_key()
     if private is not None:
         digest = manifest_digest(paths, root=root)
@@ -302,8 +321,49 @@ def sign_model(
     return Signature(model, version, digest, HMAC, sig)
 
 
+def _sign_keyless(
+    model: str, version: str, paths: list[Path], *, actor: str | None, root: Path | None
+) -> Signature | None:
+    """Sigstore keyless signature, or None to fall back to the configured Ed25519 key.
+
+    The fallback is the ADR's "D7-managed key for offline HPC": when Fulcio/Rekor cannot be
+    reached, or no OIDC identity exists, a site with an Ed25519 key still signs — and the fallback
+    is audited, never silent. With no key to fall back to, signing fails.
+    """
+    from examlops.supplychain import keyless  # noqa: PLC0415
+
+    digest = manifest_digest(paths, root=root)
+    try:
+        bundle, identity = keyless.sign_blob(statement(model, version, digest))
+    except Exception as exc:  # noqa: BLE001 - KeylessUnavailable, or Fulcio/Rekor unreachable
+        if _load_private_key() is None:
+            raise SigningKeyMissing(
+                f"keyless signing failed ({type(exc).__name__}: {exc}) and no Ed25519 fallback "
+                "key is configured"
+            ) from exc
+        logger.warning("keyless signing of %s@%s failed (%s); using Ed25519", model, version, exc)
+        _audit("model_sign_keyless_fallback", model, version, actor, {"reason": str(exc)[:300]})
+        return None
+    from examlops.data.registry import store_model_signature
+
+    store_model_signature(
+        model, version, digest, bundle, algo=SIGSTORE, cert=identity, signed_by=actor
+    )
+    _audit("model_signed", model, version, actor, {"digest": digest[:23], "signer": identity})
+    return Signature(model, version, digest, SIGSTORE, bundle)
+
+
 def signing_configured() -> str | None:
-    """The scheme ``sign_model`` would use now (``ed25519-v2`` / ``hmac-sha256``), or None."""
+    """The scheme ``sign_model`` would use now (``sigstore-v1`` / ``ed25519-v2`` /
+    ``hmac-sha256``), or None."""
+    try:
+        if signing_scheme() == "sigstore":
+            from examlops.supplychain import keyless  # noqa: PLC0415
+
+            if keyless.available():
+                return SIGSTORE
+    except SigningKeyMissing:
+        return None
     try:
         if _load_private_key() is not None:
             return ED25519
@@ -347,6 +407,14 @@ def verify_record(
     ``untrusted-key`` and ``unknown-algorithm``."""
     paths = [Path(p) for p in artifact_paths]
     algo = record.get("algo") or HMAC
+    if algo == SIGSTORE:
+        current = manifest_digest(paths, root=root)
+        if current != record["digest"]:
+            return VerifyResult(False, "tampered: artifact digest changed", current)
+        from examlops.supplychain import keyless  # noqa: PLC0415
+
+        verdict = keyless.verify_blob(statement(model, version, current), record["signature"])
+        return VerifyResult(verdict.ok, verdict.reason, current)
     if algo == ED25519:
         current = manifest_digest(paths, root=root)
         if current != record["digest"]:
@@ -461,6 +529,63 @@ def _verify_before_load(
     return mode != "enforce", False  # warn may still load; enforce refuses
 
 
+def ed25519_sign_bytes(data: bytes) -> tuple[str, str] | None:
+    """``(base64 signature, key id)`` over ``data`` with the configured private key, or None."""
+    private = _load_private_key()
+    if private is None:
+        return None
+    return base64.b64encode(private.sign(data)).decode(), key_id(private.public_key())
+
+
+def verify_record_signature(record: dict, model: str, version: str) -> VerifyResult:
+    """Check that a signature row is a valid signature over **its own recorded digest**.
+
+    No artifact bytes are read: whether the bytes still match the digest is verify-before-load's
+    job. This answers the release gate's narrower question — is the row a real signature by a
+    trusted signer, or merely a row? A row forged or edited in the datastore fails here.
+    Only manifest-digest schemes (``ed25519-v2`` / ``sigstore-v1``) qualify; a legacy HMAC row
+    is a shared-secret MAC over a different digest, so it is reported as ``legacy-hmac``.
+    """
+    algo = record.get("algo") or HMAC
+    digest = str(record.get("digest") or "")
+    if algo == SIGSTORE:
+        from examlops.supplychain import keyless  # noqa: PLC0415
+
+        verdict = keyless.verify_blob(
+            statement(model, version, digest), str(record.get("signature") or "")
+        )
+        return VerifyResult(verdict.ok, verdict.reason, digest)
+    if algo == ED25519:
+        reason = ed25519_verify_bytes(
+            statement(model, version, digest),
+            str(record.get("signature") or ""),
+            str(record.get("cert") or ""),
+        )
+        return VerifyResult(reason == "verified", reason, digest)
+    if algo == HMAC:
+        return VerifyResult(
+            False,
+            "legacy-hmac: a shared-secret MAC, not bound to the manifest digest — re-sign with "
+            "Ed25519 or Sigstore",
+            digest,
+        )
+    return VerifyResult(False, f"unknown-algorithm: {algo!r}", digest)
+
+
+def ed25519_verify_bytes(data: bytes, signature_b64: str, kid: str) -> str:
+    """``verified`` / ``untrusted-key: …`` / ``bad-signature`` for an Ed25519 signature."""
+    public = trusted_public_keys().get(kid or "")
+    if public is None:
+        return f"untrusted-key: {kid!r}"
+    from cryptography.exceptions import InvalidSignature
+
+    try:
+        public.verify(base64.b64decode(signature_b64), data)  # type: ignore[attr-defined]
+    except (InvalidSignature, ValueError):
+        return "bad-signature"
+    return "verified"
+
+
 def generate_ai_bom(
     model: str,
     version: str,
@@ -470,11 +595,23 @@ def generate_ai_bom(
     framework: str | None = None,
     eval_summary: dict | None = None,
     dependencies: list[str] | None = None,
+    artifact_digest: str | None = None,
 ) -> dict:
-    """Emit a CycloneDX-style AI-BOM for a model version (spec R3/R4)."""
+    """Emit a CycloneDX-style AI-BOM for a model version (spec R3/R4).
+
+    ``artifact_digest`` (the manifest digest the signature covers) binds the BOM to the exact
+    bytes: ``examlops.supplychain.release`` refuses a BOM whose digest disagrees with the
+    version's signature record (ADR 0013 clause 4, BOM integrity)."""
     from examlops.data.registry import store_model_bom
 
     deps = dependencies or _key_dependency_versions()
+    properties = [
+        {"name": "examlops:framework", "value": framework or "unknown"},
+        {"name": "examlops:dataset_revision", "value": dataset_revision or "unknown"},
+        {"name": "examlops:eval", "value": str(eval_summary or {})},
+    ]
+    if artifact_digest:
+        properties.append({"name": "examlops:artifact_digest", "value": artifact_digest})
     bom = {
         "bomFormat": "CycloneDX",
         "specVersion": "1.6",
@@ -493,11 +630,7 @@ def generate_ai_bom(
                 for d in deps
             ],
         ],
-        "properties": [
-            {"name": "examlops:framework", "value": framework or "unknown"},
-            {"name": "examlops:dataset_revision", "value": dataset_revision or "unknown"},
-            {"name": "examlops:eval", "value": str(eval_summary or {})},
-        ],
+        "properties": properties,
     }
     store_model_bom(model, version, bom)
     return bom

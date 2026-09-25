@@ -130,15 +130,19 @@ def _with_model(cfg: FgaConfig, body: dict[str, Any]) -> dict[str, Any]:
 
 def check(cfg: FgaConfig, subject: str, relation: str, obj: str) -> bool:
     """Ask OpenFGA. Raises :class:`OpenFgaError` on any failure; never returns a guess."""
-    fobj, _ = fga_object(obj)
-    doc = _post(
-        cfg,
-        "check",
-        _with_model(
-            cfg,
-            {"tuple_key": {"user": fga_user(subject), "relation": relation, "object": fobj}},
-        ),
-    )
+    fobj, parent = fga_object(obj)
+    body: dict[str, Any] = {
+        "tuple_key": {"user": fga_user(subject), "relation": relation, "object": fobj}
+    }
+    if parent:
+        # The child -> project link is structural (it is spelled in the object string itself), so
+        # it is asserted per check as a contextual tuple. Otherwise a child nobody ever granted on
+        # directly - `project:acme/model:JPCP` when only `project:acme` holds grants - has no stored
+        # `parent` tuple, and a project editor would be denied on the project's own model.
+        body["contextual_tuples"] = {
+            "tuple_keys": [{"user": parent, "relation": "parent", "object": fobj}]
+        }
+    doc = _post(cfg, "check", _with_model(cfg, body))
     allowed = doc.get("allowed")
     if not isinstance(allowed, bool):
         raise OpenFgaError("OpenFGA check response has no boolean 'allowed'")

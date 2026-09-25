@@ -299,7 +299,7 @@ def test_a_missing_river_degrades_to_the_builtin_and_says_so(monkeypatch):
 
 
 def test_an_unknown_detector_falls_back_with_a_reason():
-    name, _fn, reason = da.resolve_concept_detector("evidently")
+    name, _fn, reason = da.resolve_concept_detector("no-such-detector")
     assert name == "builtin" and "unknown detector" in reason
 
 

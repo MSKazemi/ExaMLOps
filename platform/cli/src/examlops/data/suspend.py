@@ -12,7 +12,16 @@ from typing import Any
 
 from examlops.platform_db import _immediate_write, get_db, init_db, write_retry
 
-__all__ = ["get", "init_db", "list_snapshots", "mark", "put", "recorded_restores"]
+__all__ = [
+    "count_by_status",
+    "get",
+    "init_db",
+    "list_snapshots",
+    "mark",
+    "put",
+    "recent_restores",
+    "recorded_restores",
+]
 
 _COLS = (
     "snapshot_id, ts, backend, subject_kind, subject_id, tenant, status, pointer, state_bytes, "
@@ -102,11 +111,20 @@ def get(snapshot_id: str) -> dict[str, Any] | None:
 
 
 def list_snapshots(
-    subject_id: str | None = None, status: str | None = None, limit: int = 50
+    subject_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    *,
+    tenant: str | None = None,
 ) -> list[dict[str, Any]]:
+    """Newest first. ``tenant`` filters in SQL, before the ``LIMIT``, never after it."""
+
     def _do() -> list[dict[str, Any]]:
         init_db()
         where, args = [], []
+        if tenant:
+            where.append("tenant=?")
+            args.append(tenant)
         if subject_id:
             where.append("subject_id=?")
             args.append(subject_id)
@@ -137,5 +155,42 @@ def recorded_restores(backend: str) -> list[dict[str, Any]]:
                     (backend,),
                 )
             ]
+
+    return write_retry(_do)
+
+
+def recent_restores(backend: str, limit: int = 20) -> list[dict[str, Any]]:
+    """The newest recorded restores of ``backend`` with their timing split (ADR 0109 dec. 6)."""
+
+    def _do() -> list[dict[str, Any]]:
+        init_db()
+        with get_db() as conn:
+            return [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT snapshot_id, resumed_at, state_bytes, state_transfer_s, "
+                    "communicator_rebuild_s FROM suspend_snapshots "
+                    "WHERE backend=? AND status='resumed' AND state_transfer_s IS NOT NULL "
+                    "ORDER BY resumed_at DESC, snapshot_id LIMIT ?",
+                    (backend, max(1, min(int(limit), 1000))),
+                )
+            ]
+
+    return write_retry(_do)
+
+
+def count_by_status(tenant: str | None = None) -> dict[str, int]:
+    """``{status: n}`` over every snapshot (optionally one tenant's)."""
+
+    def _do() -> dict[str, int]:
+        init_db()
+        sql = "SELECT status, COUNT(*) AS n FROM suspend_snapshots"
+        args: list[Any] = []
+        if tenant:
+            sql += " WHERE tenant=?"
+            args.append(tenant)
+        sql += " GROUP BY status"
+        with get_db() as conn:
+            return {str(r["status"]): int(r["n"]) for r in conn.execute(sql, args)}
 
     return write_retry(_do)

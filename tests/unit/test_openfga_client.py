@@ -28,14 +28,15 @@ class FakeFga:
         self.mode = "ok"  # ok | slow | 500 | garbage | badshape
         self.delay = 0.0
 
-    def _rank_on(self, user: str, obj: str) -> int:
+    def _rank_on(self, user: str, obj: str, extra: frozenset = frozenset()) -> int:
+        tuples = self.tuples | extra  # stored + the request's contextual tuples
         best = max(
-            (_RANK[r] for (u, r, o) in self.tuples if u == user and o == obj and r in _RANK),
+            (_RANK[r] for (u, r, o) in tuples if u == user and o == obj and r in _RANK),
             default=0,
         )
-        for u, r, o in self.tuples:
+        for u, r, o in tuples:
             if r == "parent" and o == obj:  # `u` is the parent object
-                best = max(best, self._rank_on(user, u))
+                best = max(best, self._rank_on(user, u, extra))
         return best
 
     def handler(self):
@@ -61,7 +62,12 @@ class FakeFga:
                     k = body["tuple_key"]
                     if outer.mode == "badshape":
                         return self._send(200, {"allowed": "yes"})
-                    ok = outer._rank_on(k["user"], k["object"]) >= _RANK.get(k["relation"], 99)
+                    ctx = frozenset(
+                        (t["user"], t["relation"], t["object"])
+                        for t in (body.get("contextual_tuples") or {}).get("tuple_keys", [])
+                    )
+                    rank = outer._rank_on(k["user"], k["object"], ctx)
+                    ok = rank >= _RANK.get(k["relation"], 99)
                     return self._send(200, {"allowed": ok})
                 if self.path == f"/stores/{STORE}/write":
                     for kind in ("writes", "deletes"):
@@ -130,6 +136,29 @@ def test_child_object_maps_to_a_parent_tuple_and_inherits(server):
     assert authz.check("alice", "editor", "project:acme/model:JPCP")  # inherited from the project
     assert authz.check("bob", "viewer", "project:acme/model:JPCP")
     assert not authz.check("bob", "editor", "project:acme/model:JPCP")
+
+
+def test_a_project_grant_reaches_a_child_nobody_granted_on_directly(server):
+    """No `parent` tuple is stored for `model:acme~JPCP` (no grant was ever made on it); the check
+    asserts the structural link contextually, so the project editor still reaches its own model,
+    and a stranger still does not."""
+    authz.grant("alice", "editor", "project:acme")
+    assert not any(o == "model:acme~JPCP" for (_, _, o) in server.tuples)
+    assert authz.check("alice", "editor", "project:acme/model:JPCP")
+    assert authz.check("alice", "viewer", "project:acme/dataset:FData")
+    assert not authz.check("alice", "owner", "project:acme/model:JPCP")
+    assert not authz.check("mallory", "viewer", "project:acme/model:JPCP")
+    body = server.requests[-1][2]
+    assert body["contextual_tuples"]["tuple_keys"] == [
+        {"user": "project:acme", "relation": "parent", "object": "model:acme~JPCP"}
+    ]
+    # Nothing was written by a check.
+    assert not any(o == "model:acme~JPCP" for (_, _, o) in server.tuples)
+
+
+def test_a_root_object_check_sends_no_contextual_tuples(server):
+    authz.check("alice", "viewer", "project:acme")
+    assert "contextual_tuples" not in server.requests[-1][2]
 
 
 def test_check_consults_openfga_not_the_native_table(server):

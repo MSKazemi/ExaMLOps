@@ -777,6 +777,26 @@ def run_cycle(
             from examlops.policy_engine.gates import consult as _consult_gate
             from examlops.slo.specs import promotion_decision
 
+            # ADR 0013 — the armed `supply_chain` gate (signature, or `require: [signature, bom,
+            # provenance]`). `exa pipeline promote` refuses a version without the evidence; the
+            # autopilot promotes the same alias on its own road, so it must refuse it too.
+            from examlops.supplychain.release import promotion_decision as _supply_decision
+
+            supply_decision = _consult_gate(
+                "supply_chain", lambda o: _supply_decision(model, _staging_version(model), o)
+            )
+            if supply_decision is not None and not supply_decision.allow:
+                reason = "; ".join(supply_decision.reasons)
+                blocks.append({"model": model, "gate": "autopilot_promote", "reason": reason})
+                audit_best_effort(
+                    "autopilot",
+                    actor,
+                    "autopilot_promote_blocked",
+                    model,
+                    {"gate": "autopilot_promote", "supply_chain_gate": True, "reason": reason},
+                )
+                continue
+
             slo_decision = _consult_gate("slo", lambda _o: promotion_decision(model))
             if slo_decision is not None and not slo_decision.allow:
                 reason = "; ".join(slo_decision.reasons)

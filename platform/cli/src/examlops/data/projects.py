@@ -316,10 +316,11 @@ def get_project_for_model(model: str) -> str | None:
     return row["project"] if row else None
 
 
-def get_project_full(name: str) -> dict[str, Any] | None:
+def get_project_full(name: str, *, live: Any = None) -> dict[str, Any] | None:
     """Full project anatomy for ``exa project show`` and the dashboard detail endpoint.
 
-    Returns None for an unknown project (ADR 0086 R5).
+    Returns None for an unknown project (ADR 0086 R5). ``live`` is passed to
+    :func:`get_project_pipelines` (ADR 0092 live hydration).
     """
     project = get_project(name)
     if not project:
@@ -342,7 +343,7 @@ def get_project_full(name: str) -> dict[str, Any] | None:
     except Exception:
         connections = []
     try:
-        pipelines = get_project_pipelines(name)
+        pipelines = get_project_pipelines(name, live=live)
     except Exception:
         pipelines = {"prefect": None, "rayserve": None}
 
@@ -358,14 +359,39 @@ def get_project_full(name: str) -> dict[str, Any] | None:
     }
 
 
-def get_project_pipelines(project: str) -> dict[str, Any]:
+def get_project_pipelines(project: str, *, live: Any = None) -> dict[str, Any]:
     """Return the project's two pipeline surfaces (aggregation over existing state + registry).
 
-    Fail-open: if a live source is unavailable the registry row is used; an empty project yields
-    both surfaces as None (never an error). The Prefect surface's members are the project's models
-    (their per-model deployments); the Ray Serve surface's members are the same models with their
-    traffic split from ``traffic_rules``.
+    ``live`` is an ``examlops.project_pipelines.LiveSources`` naming the Prefect API / Ray Serve
+    URLs to hydrate from (ADR 0092 decision 1); ``None`` uses the sources the environment names
+    explicitly (``PREFECT_API_URL`` / ``RAY_SERVE_URL``) and contacts nothing when it names none.
+
+    Fail-open: if a live source is unavailable the registry row is used (``source: "registry"``);
+    an empty project yields both surfaces as None (never an error). Without a live source the
+    Prefect surface's members are the project's models (their per-model deployments) and the Ray
+    Serve surface's members are the same models with their traffic split from ``traffic_rules``.
     """
+    base = _registry_pipelines(project)
+    try:
+        from examlops import project_pipelines as _live
+
+        src = live if live is not None else _live.sources_from_env()
+        if not src.enabled:
+            return base
+        return _live.hydrate(project, list_project_models(project), base, src)
+    except Exception as exc:  # noqa: BLE001 — live hydration is an overlay; the registry view stands
+        # hydrate() itself never raises, so reaching here is a bug (import error, bad ``live``):
+        # keep the page up, but leave a trace instead of silently serving the registry forever.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "project_pipelines: live overlay skipped for %s: %s", project, exc
+        )
+        return base
+
+
+def _registry_pipelines(project: str) -> dict[str, Any]:
+    """The registry/membership-only view of both surfaces (the fail-open floor)."""
     init_db()
     models = list_project_models(project)
     with get_db() as conn:
@@ -386,7 +412,15 @@ def get_project_pipelines(project: str) -> dict[str, Any]:
             "schedule": (prefect_reg or {}).get("schedule"),
             "last_run_at": (prefect_reg or {}).get("last_run_at"),
             "status": (prefect_reg or {}).get("status", "unknown"),
+            "source": "registry",
         }
+        try:
+            store = get_project_storage(project)
+        except Exception:  # noqa: BLE001 — storage is decoration on this surface; fail-open
+            store = None
+        if store:
+            # ADR 0091 §3: the training surface's artifact destination is the project prefix.
+            prefect["storage_prefix"] = f"s3://{store['bucket']}/{store['prefix']}"
 
     rayserve = None
     if models or rayserve_reg:
@@ -399,6 +433,7 @@ def get_project_pipelines(project: str) -> dict[str, Any]:
             "models": models,
             "traffic": traffic,
             "status": (rayserve_reg or {}).get("status", "unknown"),
+            "source": "registry",
         }
 
     return {"prefect": prefect, "rayserve": rayserve}

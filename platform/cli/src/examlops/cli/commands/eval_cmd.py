@@ -145,6 +145,7 @@ def _load_items(path: str):
                 reference=d.get("reference"),
                 prompt=d.get("prompt"),
                 metadata=d.get("metadata", {}),
+                contexts=[str(c) for c in d["contexts"]] if d.get("contexts") else None,
             )
         )
     return items
@@ -160,9 +161,19 @@ def run(
     sample: int | None = typer.Option(None, "--sample", help="Sample N items by request_hash"),
     dataset_revision: str | None = typer.Option(None, "--dataset-revision", help="A1 revision"),
     run_id: str | None = typer.Option(None, "--run-id", help="Idempotency key (default: derived)"),
+    evaluator: list[str] = typer.Option(
+        [],
+        "--evaluator",
+        "-e",
+        help="Evaluator spec (repeatable; default exact_match + json_valid) — see `exa eval evaluators`",
+    ),
+    judge_model: str | None = typer.Option(
+        None, "--judge-model", help="Gateway model that answers judge:/deepeval: specs (temp 0)"
+    ),
 ) -> None:
-    """Run a deterministic eval suite over items and persist scores (exit != 0 on error only)."""
+    """Run an eval suite over items and persist scores (exit != 0 on error only)."""
     from examlops.evaluation import ExactMatch, JSONValid, Suite, run_suite, sample_by_request_hash
+    from examlops.evaluation.engines import EvaluatorUnavailable, UnknownEvaluator, make_evaluator
 
     try:
         eval_items = _load_items(items)
@@ -173,7 +184,15 @@ def run(
         eval_items = sample_by_request_hash(eval_items, sample)
     rid = run_id or f"{suite}:{model}:{version or 'candidate'}:{len(eval_items)}"
 
-    suite_obj = Suite(suite, [ExactMatch(), JSONValid()])
+    try:
+        evaluators = (
+            [make_evaluator(spec, judge_model=judge_model) for spec in evaluator]
+            if evaluator
+            else [ExactMatch(), JSONValid()]
+        )
+    except (UnknownEvaluator, EvaluatorUnavailable) as exc:
+        _output.error(str(exc), exit_code=2)
+    suite_obj = Suite(suite, evaluators)
     result = run_suite(
         suite_obj,
         eval_items,
@@ -1258,3 +1277,269 @@ def safety(
         f"Agent safety — {counts['held']} held · {counts['declined']} declined · "
         f"{counts['executed']} executed"
     )
+
+
+# ── ADR 0007 d1 — evaluator engines ───────────────────────────────────────────────────────
+
+
+@app.command("evaluators")
+def evaluators_cmd() -> None:
+    """List evaluator specs and which engine (native / Ragas / DeepEval / gateway) runs each."""
+    from examlops.evaluation.engines import available_engines, describe
+
+    rows = describe()
+    if _output.json_mode:
+        _output.print_json({"engines": available_engines(), "evaluators": rows})
+        return
+    _output.print_table(
+        "Evaluators (use with --evaluator / exa eval online enable)",
+        ["Spec", "Engine", "Available", "Needs judge"],
+        [
+            [r["spec"], r["engine"], "yes" if r["available"] else "no", "yes" if r["judge"] else ""]
+            for r in rows
+        ],
+    )
+    missing = [e for e, ok in available_engines().items() if not ok]
+    if missing:
+        _output.hint(
+            "Optional engines not installed: "
+            + ", ".join(missing)
+            + " — `pip install 'examlops[eval-metrics]'` gives Ragas's text-metric libraries;"
+            + " see docs/guides/evaluation.md for Ragas/DeepEval themselves"
+        )
+
+
+# ── ADR 0007 d2/d3 — scheduled online evaluation over live traffic ────────────────────────
+
+online_app = typer.Typer(
+    help="Scheduled online evaluation of sampled live traffic (ADR 0007)",
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+app.add_typer(online_app, name="online")
+
+_EXAMPLES_ONLINE_ENABLE = (
+    "Examples:\n\n"
+    "  exa eval online enable JPCP --suite live-accuracy -e abs_error -e numeric_match:0.5\n\n"
+    "  exa eval online enable chat-llm --suite live-quality --source tempo "
+    "-e judge:relevancy -e json_valid --judge-model llama3.1:8b --sample 25"
+)
+
+
+@online_app.command("enable", epilog=_EXAMPLES_ONLINE_ENABLE)
+def online_enable(
+    model: str = typer.Argument(..., help="Model whose live traffic is evaluated"),
+    suite: str = typer.Option(..., "--suite", help="Suite name the results are recorded under"),
+    evaluator: list[str] = typer.Option(
+        ..., "--evaluator", "-e", help="Evaluator spec (repeatable) — see `exa eval evaluators`"
+    ),
+    source: str = typer.Option(
+        "predictions", "--source", help="Traffic source: predictions (platform_db) | tempo (spans)"
+    ),
+    alias: str = typer.Option("Production", "--alias", help="Alias the traffic is recorded as"),
+    sample: int = typer.Option(50, "--sample", help="Items scored per window (by request_hash)"),
+    window: int = typer.Option(3600, "--window", help="Seconds of traffic per evaluation window"),
+    judge_model: str | None = typer.Option(
+        None, "--judge-model", help="Gateway model for judge:/deepeval: specs (temperature 0)"
+    ),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
+) -> None:
+    """Schedule online evaluation for a model (validated now, run by `exa eval online run`)."""
+    from examlops.data.audit import audit_best_effort
+    from examlops.data.evaluation import set_online_eval
+    from examlops.evaluation.engines import EvaluatorUnavailable, UnknownEvaluator, parse_specs
+    from examlops.evaluation.online import MAX_SAMPLE, MIN_WINDOW_S, build_suite
+    from examlops.evaluation.traffic import SOURCES, TrafficSourceError, safe_name
+
+    specs = parse_specs(evaluator)
+    if source not in SOURCES:
+        _output.error(f"--source must be one of {', '.join(SOURCES)}", exit_code=2)
+    if source == "predictions" and tenant != "default":
+        _output.error(
+            "the predictions source has no tenant column; use --source tempo for a tenant",
+            exit_code=2,
+        )
+    if not 1 <= sample <= MAX_SAMPLE:
+        _output.error(f"--sample must be between 1 and {MAX_SAMPLE}", exit_code=2)
+    if window < MIN_WINDOW_S:
+        _output.error(f"--window must be at least {MIN_WINDOW_S} seconds", exit_code=2)
+    cfg = {"suite": suite, "evaluators": specs, "judge_model": judge_model}
+    try:
+        for name, what in ((model, "model"), (tenant, "tenant"), (alias, "alias")):
+            safe_name(name, what)
+        build_suite(cfg)  # every spec must resolve now, not fail silently in a scheduled cycle
+    except (UnknownEvaluator, EvaluatorUnavailable, TrafficSourceError, ValueError) as exc:
+        _output.error(str(exc), exit_code=2)
+    set_online_eval(
+        model,
+        suite=suite,
+        evaluators=specs,
+        source=source,
+        alias=alias,
+        sample_size=sample,
+        window_s=window,
+        judge_model=judge_model,
+        tenant=tenant,
+        updated_by=_actor(),
+    )
+    audit_best_effort(
+        "exa-eval",
+        _actor(),
+        "eval_online_enabled",
+        model,
+        {
+            "suite": suite,
+            "evaluators": specs,
+            "source": source,
+            "alias": alias,
+            "sample": sample,
+            "window_s": window,
+            "judge_model": judge_model,
+        },
+        tenant=tenant,
+    )
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "model": model,
+                "tenant": tenant,
+                "suite": suite,
+                "evaluators": specs,
+                "source": source,
+                "alias": alias,
+                "sample": sample,
+                "window_s": window,
+                "judge_model": judge_model,
+                "enabled": True,
+            }
+        )
+        return
+    _output.ok(
+        f"Online eval scheduled for {model}: suite '{suite}', {len(specs)} evaluator(s), "
+        f"{sample} item(s) per {window}s window from {source}"
+    )
+    _output.hint("Run it: EXAMLOPS_EVAL_ONLINE_ENABLED=1 exa eval online run --once")
+
+
+@online_app.command("disable")
+def online_disable(
+    model: str = typer.Argument(..., help="Model name"),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
+) -> None:
+    """Stop scheduling a model's online evaluation (config and recorded results are kept)."""
+    from examlops.data.audit import audit_best_effort
+    from examlops.data.evaluation import disable_online_eval
+
+    found = disable_online_eval(model, tenant=tenant, updated_by=_actor())
+    if not found:
+        _output.error(f"No online eval configured for {model} (tenant {tenant})")
+    audit_best_effort("exa-eval", _actor(), "eval_online_disabled", model, {}, tenant=tenant)
+    if _output.json_mode:
+        _output.print_json({"model": model, "tenant": tenant, "enabled": False})
+        return
+    _output.ok(f"Online eval disabled for {model}")
+
+
+@online_app.command("status")
+def online_status(
+    tenant: str | None = typer.Option(None, "--tenant", help="Only this tenant (default: all)"),
+) -> None:
+    """Show every online-eval schedule and the outcome of its latest window."""
+    from examlops.data.evaluation import list_online_evals
+    from examlops.evaluation.online import is_enabled
+
+    rows = list_online_evals(tenant=tenant)
+    if _output.json_mode:
+        _output.print_json({"schedulerEnabled": is_enabled(), "schedules": rows})
+        return
+    _output.print_table(
+        "Online evaluation",
+        ["Model", "Tenant", "Suite", "Source", "Evaluators", "Sample/window", "On", "Last"],
+        [
+            [
+                r["model"],
+                r["tenant"],
+                r["suite"],
+                r["source"],
+                ", ".join(r["evaluators"]),
+                f"{r['sample_size']}/{r['window_s']}s",
+                "yes" if r["enabled"] else "no",
+                f"{r.get('last_status') or '—'} {r.get('last_run_at') or ''}".strip(),
+            ]
+            for r in rows
+        ],
+    )
+    if not is_enabled():
+        _output.hint("The scheduler kill-switch is off — set EXAMLOPS_EVAL_ONLINE_ENABLED=1")
+
+
+_EXAMPLES_ONLINE_RUN = (
+    "Examples:\n\n"
+    "  exa eval online run --once --dry-run          # preview one cycle; writes nothing\n\n"
+    "  EXAMLOPS_EVAL_ONLINE_ENABLED=1 exa eval online run --once\n\n"
+    "  EXAMLOPS_EVAL_ONLINE_ENABLED=1 exa eval online run --interval 300   # loop\n\n"
+    "  exa --json eval online run --once --dry-run --model JPCP"
+)
+
+
+@online_app.command("run", epilog=_EXAMPLES_ONLINE_RUN)
+def online_run(
+    once: bool = typer.Option(False, "--once", help="Run one cycle and exit (default: loop)"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview: pull and score, write nothing, take no lease"
+    ),
+    model: str | None = typer.Option(None, "--model", help="Only this model"),
+    tenant: str | None = typer.Option(None, "--tenant", help="Only this tenant"),
+    interval: int = typer.Option(0, "--interval", help="Seconds between cycles (0 = env/300)"),
+) -> None:
+    """Evaluate each scheduled model's sampled live traffic (ADR 0007 decision 3).
+
+    A real cycle needs `EXAMLOPS_EVAL_ONLINE_ENABLED=1` (default off), takes a distributed lease so
+    only one scheduler acts, scores each window once, persists to the eval store (which the C3 gate
+    and `exa slo export-metrics` read) and is audited. With `EXAMLOPS_EVAL_METRICS_TEXTFILE` set it
+    also rewrites that node_exporter textfile after each cycle.
+    """
+    from examlops.evaluation.online import CycleReport, OnlineEvalScheduler, interval_s
+
+    sched = OnlineEvalScheduler(dry_run=dry_run, models=[model] if model else None, tenant=tenant)
+
+    def show(rep: CycleReport) -> None:
+        if _output.json_mode:
+            _output.print_json(rep.to_dict())
+            return
+        mode = "dry run" if rep.dry_run else "run"
+        if not rep.ran:
+            _output.warning(f"online eval ({mode}): not run - {rep.note}")
+            return
+        counts = ", ".join(f"{k}={v}" for k, v in rep.to_dict()["counts"].items() if v)
+        _output.info(f"online eval ({mode}): {counts or 'no enabled schedules'}")
+        if rep.runs:
+            _output.print_table(
+                "Online evaluation",
+                ["Model", "Suite", "Outcome", "Scores", "Note"],
+                [
+                    [
+                        r.model,
+                        r.suite,
+                        r.outcome,
+                        ", ".join(f"{m}={v:.4g}" for m, v in r.scores.items()) or "—",
+                        r.note,
+                    ]
+                    for r in rep.runs
+                ],
+            )
+        if rep.note:
+            _output.warning(rep.note)
+
+    if once:
+        rep = sched.run_cycle()
+        show(rep)
+        if not rep.ran or rep.count("failed"):
+            raise typer.Exit(1)
+        return
+    if _output.json_mode:
+        _output.error("--json needs --once (a loop prints one document per cycle)", exit_code=2)
+    try:
+        sched.run_forever(interval=interval or interval_s(), on_cycle=show)
+    except KeyboardInterrupt:
+        _output.info("online eval scheduler stopped.")

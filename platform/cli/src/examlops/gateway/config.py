@@ -67,6 +67,7 @@ class DeploymentCfg(_Model):
     weight: float = Field(1.0, gt=0)
     priority: int = 0
     external_ok: bool | None = None  # inherits the provider's
+    price_per_1k: float | None = Field(None, ge=0)  # USD/1k tokens, for `cost_aware` (ADR 0083)
 
 
 class ModelCfg(_Model):
@@ -320,6 +321,7 @@ async def build_runtime(
             max_concurrency=prov.max_concurrency,
             max_queue=prov.max_queue,
             queue_timeout_s=prov.queue_timeout_s,
+            price_per_1k=dcfg.price_per_1k,
         )
 
     routes = [

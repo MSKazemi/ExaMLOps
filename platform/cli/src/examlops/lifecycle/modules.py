@@ -232,7 +232,7 @@ CATALOG: tuple[Module, ...] = (
         "portability, the fleet twin and federated training.",
         cli=("hpc", "fleet", "hardware", "federated"),
         dashboard_flags=("facilityConsole",),
-        dashboard_api=("/v1/facility",),
+        dashboard_api=("/v1/facility", "/v1/hardware-profiles"),
         env_switches=("EXAMLOPS_HPC_SCHEDULER", "EXAMLOPS_SLURM_MODE"),
         dashboard_pages=("/operate/facility",),
         mcp_tags=("hpc", "fleet"),

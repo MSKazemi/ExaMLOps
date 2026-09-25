@@ -150,6 +150,8 @@ gates:
   supply_chain: enforce            # unsigned artifact -> deny (verify-before-load, promote)
   budget: monitor                  # over-budget GPU-hours in `exa pipeline run --project`
   model_card: {mode: enforce, floor: 0.9}   # completeness floor at `exa pipeline promote`
+  datasheet: {mode: enforce, floor: 1.0}    # training data documented (ADR 0079 d6)
+  residency: enforce               # train only where the data may be processed (D6)
 ```
 
 or `EXAMLOPS_POLICY_GATES=supply_chain=enforce,budget=monitor` (wins over the file). Where they run:
@@ -159,29 +161,90 @@ or `EXAMLOPS_POLICY_GATES=supply_chain=enforce,budget=monitor` (wins over the fi
 | `supply_chain` | `supplychain.verify_before_load` (Ray Serve load path, `exa models verify`) and `exa pipeline promote` (a version with no signature on record) | load refused / exit 1; `--mode warn` cannot loosen an enforced gate |
 | `budget` | `exa pipeline run` for `--project` (or the model's project): consumption in the budget's period + the request against the project's GPU-hour budget | exit 1 before anything launches |
 | `model_card` | `exa pipeline promote` | exit 1 below the floor (default 0.8); an unmeasurable card counts as 0 |
+| `datasheet` | `exa pipeline promote` — every dataset the model's YAML (active pack) declares | exit 1 when a dataset has no datasheet or one below the floor (default 1.0: every required question answered); a model that declares no dataset is refused |
+| `residency` | `exa pipeline run --cluster <name\|auto>` | exit 1 before the run is targeted when a dataset's datasheet restricts `distribution.residency` and the cluster's `region:` (in `clusters.yaml`) is not in the list or not declared; with `auto` under `enforce`, non-compliant clusters are removed from placement's candidates (under `monitor` placement is untouched and the would-deny is audited). The datasets checked are `--dataset`, else the model YAML's, else — a run with no `--model` trains every model — every dataset the pack declares; a set that cannot be determined (missing/unreadable model YAML, or a `--registry` without `--dataset`) is refused |
 
 Only the GPU-hour dimension of a budget is gated; the USD budget is still only reported by
 `exa finops budget status`.
 
-## More gated mutations (ADR 0079 decision 2)
+## Every mutating `exa` command decides (ADR 0079 decision 2)
 
-Same contract as `manual_promote`/`cluster_approve` — no rule means no change and no audit row; `deny`
-exits 1 naming the rule; `require_approval` adds a default-no confirmation:
+A policy rule can govern **any** mutating `exa` command, not only the ones that grew a gate of
+their own. The root CLI group wraps every leaf command (`examlops.cli._policy_hook`): a command
+whose surface tier is `admin`, `destructive` or `cli_only` — and any third-party plugin command —
+consults `policy.decide` *before its body runs*. **Gated is the default**, so a command added
+tomorrow is governed the day it ships; nobody has to remember to call a gate.
+
+The action name is the command path with spaces and hyphens as underscores: `exa project grant`
+decides as `project_grant`, `exa secrets set` as `secrets_set`, `exa serve traffic` as
+`serve_traffic`, `exa models rollback run` as `models_rollback_run`. Where another door already
+has a name, the CLI reuses it: `exa approvals approve` / `reject` decide as `approval_approve` /
+`approval_reject`, the names the dashboard and the control plane use.
+
+The decision input carries the command's scalar parameters by name (`relation`, `obj`, `name`, …),
+the shared vocabulary (`model` from `model`/`model_id`/`model_name`; `project`, `cluster`,
+`dataset`, `version`, `tenant`), `target` (the first string argument), and — last, so a parameter
+cannot impersonate them — `command`, `tier`, `actor`, `principal_kind` and `via: cli`. Parameters
+whose names look like credentials or payloads (`value`, `secret`, `token`, `password`, `api_key`,
+`content`, `body`, …) never enter the context, so they never reach the audit log; neither does a
+parameter whose own help opens by naming a credential (`exa gateway chat --key` — "Virtual key to
+authenticate with") or that hides its input. The context is bounded (32 keys, 256 characters a
+value).
+
+```yaml
+policies:
+  - name: owners-need-four-eyes
+    action: project_grant
+    when: "relation == 'owner'"
+    effect: require_approval
+  - name: no-agent-secret-writes
+    action: secrets_set
+    when: "principal_kind == 'agent'"
+    effect: deny
+  - name: traffic-freeze
+    action: serve_traffic
+    effect: deny
+    mode: monitor            # observe first
+```
+
+Contract — the same as every other gate: no rule → the command is byte-identical and writes no
+audit row; `deny` → exit 1 naming the rule, the body never runs; `require_approval` → a default-no
+confirmation (a human may answer it or pass the global `--yes` — `-o json` alone is an output
+format, not consent, and is refused; an agent principal is refused with `plan_required`; a
+declined approval exits 1 and changes nothing) and the approved command runs with the approval
+acknowledged, so a control plane that decides the same action again sees it — the approval is
+audited as `policy_approval:<action>` (`approved_by`, and `consent: prompt|--yes`), as the HTTP
+doors record theirs;
+`mode: monitor` → audited, never blocks; an engine failure → deny, audited as
+`policy_unavailable:<action>`. `--dry-run` is never gated: a preview changes nothing.
+
+Commands whose body already decides under an established name are left to do so, so one rule is
+not evaluated twice:
 
 | Action | Command |
 |---|---|
-| `connect_cluster` | `exa hpc connect` (a deny stops it before the host is probed; `require_approval` is already the outcome: the cluster lands PENDING) |
-| `cluster_reject` | `exa hpc reject` |
+| `retrain` | `exa retrain` |
+| `manual_promote` | `exa pipeline promote` |
+| `connect_cluster` / `cluster_approve` / `cluster_reject` | `exa hpc connect` / `approve` / `reject` |
 | `model_sign` | `exa models sign` |
 | `secret_rotate` | `exa secrets rotate` |
-| `project_delete`, `project_archive` | `exa project delete` / `archive` (folded into the existing prompt; a human's own `--yes` still answers it) |
-| `project_remove_member` | `exa project remove-member` |
+| `project_delete` / `project_archive` / `project_remove_member` | `exa project delete` / `archive` / `remove-member` |
+| `agent_promote` | `exa agent alias set` / `rollback` |
+| `tool_grant_change` | `exa broker grant set` / `remove` |
+| `genai_app_promote` | `exa genai-app promote` |
+| `pipeline_compile` | `exa pipeline compile` |
+| `autopilot_trigger` / `autopilot_promote` | `exa autopilot run` / `follow` (per model, inside the cycle) |
 
-Deliberately **not** gated: read-only commands; `exa models verify` (a check — its verify-required
-form is the `supply_chain` gate); `exa project add-member`/`assign`/`set-quota` (additive, reversible);
-`exa project grant`/`revoke` and `exa secrets set/rewrap` (own RBAC/KEK domains, D6/2.3); MCP
-tools other than through the agent write gate; and the dashboard's own write routes, which enforce
-capabilities at the BFF but do not yet call `policy.decide`.
+Exempt, each with its reason in `_policy_hook.EXEMPT`: sensitive *reads* at admin tier (`exa audit
+export`, `exa secrets list`, `exa backup verify`, …), changes to the operator's own client
+configuration (`exa config set/unset/use`, `exa project use`), the operator's own session
+(`exa auth login/logout/token`) and hosts of an agent surface (`exa chat`, `exa mcp serve`), whose
+every write is its own `agent_write` decision. `read`-tier commands are not mutations.
+
+`tests/unit/test_policy_cli_hook.py` is the forcing guard: it fails when a table names a command
+that no longer exists, when a self-gated command's source never calls the policy layer, when two
+commands would derive one action name, or when any leaf of the live tree resolved through the root
+group is missing the hook.
 
 ## Pluggable engines: `exa.providers.policy`
 
@@ -202,11 +265,37 @@ YAML rules directly via `policy.decide`; a third-party engine governs the engine
 unit suite runs them when an `opa` binary is on `PATH` and otherwise only validates the bundle's
 structure (no new dependency).
 
-## Datasheet lint
+## Datasheets (ADR 0079 decision 6)
 
 `exa cards lint <dataset> --revision <rev>` exits 1 when the dataset card (Croissant record) fails the
-spec check or carries undocumented fields, an unpinned version or no provenance revision. It covers
-what the artifact carries; the full Gebru et al. datasheet questionnaire is not modelled.
+spec check or carries undocumented fields, an unpinned version or no provenance revision.
+
+The card carries what the platform can derive from data. What only a person can answer — the
+Gebru et al. *Datasheets for Datasets* questionnaire (arXiv:1803.09010) — is a file the operator
+authors and reviews like code, `<dataset>.yaml` in `EXAMLOPS_DATASHEETS_DIR`, else in the active
+use-case pack's `datasheets/`, else in `<config dir>/datasheets/`. The seven sections are modelled
+(motivation, composition, collection process, preprocessing, uses, distribution, maintenance) with
+the principal questions of each as required keys (`examlops.cards.datasheet.SECTIONS`); an answer
+that is missing, empty or a placeholder (`TODO`, `TBD`, `not provided`, …) is unanswered.
+
+```bash
+exa cards lint MyDataset --template > usecases/<pack>/datasheets/MyDataset.yaml   # skeleton
+exa cards lint MyDataset --revision <rev> --datasheet    # card + questionnaire; exit 1 on a gap
+```
+
+A policy can then **require** documented data before promotion: arm the `datasheet` gate (table
+above). The same file may restrict where the data may be processed —
+`distribution.residency: [eu]` — which the `residency` gate enforces against the `region:` a
+cluster declares in `clusters.yaml`:
+
+```yaml
+# clusters.yaml
+clusters:
+  hpc-eu:
+    scheduler: slurm
+    host: login.example.org
+    region: eu
+```
 
 ## Dry-run explainability
 
@@ -293,8 +382,12 @@ policies:
 (with the reason: authentication/session, read-only-by-POST, documentation content, a proxy whose
 target gates, the CLI console whose subprocess already enforces policy). A test walks the live
 app and fails on a mutating route that is in neither column, so a new mutation cannot ship without
-someone deciding. Open gaps are recorded in the table itself: the control plane's own
-`/approve` / `/reject` have no CLI-equivalent gate and are exempt (the dashboard routes are gated).
+someone deciding. The control plane's `/approve` / `/reject` (and their `/v1/approvals/...`
+twins) decide as `approval_approve` / `approval_reject`, `/modelzoo/sync` as `modelzoo_sync`,
+`PUT /modelzoo/config` as `modelzoo_config_set` and `/admin/reload` as `production_reload` — the
+names `exa approvals approve|reject`, `exa modelzoo sync|config-set` and `exa production reload`
+decide under — so one rule governs the terminal, the dashboard and a direct API call. The
+dashboard's approve/reject routes forward an admin's `X-Policy-Approved` to the control plane.
 
 ## Auditing (R7)
 

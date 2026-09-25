@@ -65,6 +65,22 @@ def _with_platform_service_auth(service: str, url: str, kwargs: dict) -> dict:
     return {**kwargs, "headers": headers}
 
 
+def _with_trace_context(kwargs: dict) -> dict:
+    """W3C ``traceparent`` on every outbound call (ADR 0148 d1); unchanged when there is none."""
+    try:
+        from examlops.telemetry.propagation import current_context, valid_traceparent
+    except ImportError:
+        return kwargs
+    ctx = current_context()
+    headers = dict(kwargs.get("headers") or {})
+    if not ctx or any(
+        k.lower() == "traceparent" and valid_traceparent(v) for k, v in headers.items()
+    ):
+        return kwargs
+    headers.update(ctx)
+    return {**kwargs, "headers": headers}
+
+
 def serving_admin_headers() -> dict[str, str]:
     """Headers for Ray Serve's admin routes (reload, traffic-rule push); empty when unset."""
     token = config.RAY_SERVE_ADMIN_TOKEN
@@ -81,6 +97,7 @@ def request_json(service: str, method: str, url: str, *, retries: int = 2, **kwa
     """
     kwargs = _with_control_plane_auth(service, url, kwargs)
     kwargs = _with_platform_service_auth(service, url, kwargs)
+    kwargs = _with_trace_context(kwargs)
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:

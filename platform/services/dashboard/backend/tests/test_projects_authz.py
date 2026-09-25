@@ -157,3 +157,26 @@ async def test_creator_registration_for_federated_principals(client, tenant):
 
     assert authz.check("acme-idc:alice", "owner", "project:fresh")
     assert guard.register_creator("legacy:admin", "fresh2") is False  # legacy sessions: no grant
+
+
+async def test_attaching_a_model_needs_editor_where_it_lives_now(client, tenant):
+    """Membership is the authorization key: editing the target project cannot claim a model."""
+    from examlops.authz import guard
+    from examlops.data.projects import assign_model_to_project, create_project
+
+    h = await _login(client, ADMIN_PW)
+    await _mk(client, h, "research")
+    _grant("legacy:admin", "editor", "research")
+    create_project("acme")
+    assign_model_to_project("acme", "JPCP")
+    r = await client.post(
+        "/api/v1/projects/research/resources", json={"kind": "model", "ref": "JPCP"}, headers=h
+    )
+    assert r.status_code == 403, r.text
+    assert guard.model_projects("JPCP") == ["acme"]
+    # An unassigned model is `default`'s, where legacy:admin is owner: it may move it.
+    r = await client.post(
+        "/api/v1/projects/research/resources", json={"kind": "model", "ref": "FREE"}, headers=h
+    )
+    assert r.status_code == 200, r.text
+    assert guard.model_projects("FREE") == ["research"]

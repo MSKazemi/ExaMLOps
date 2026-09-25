@@ -165,7 +165,7 @@ def test_a_corrupt_checkpoint_is_skipped_not_loaded(tmp_path, capsys):
     [
         ["--steps", "0"],
         ["--steps", "10", "--rank", "0"],
-        ["--steps", "10", "--backend", "peft"],
+        ["--steps", "10", "--backend", "made-up"],
     ],
 )
 def test_a_configuration_error_is_fatal_not_retryable(tmp_path, capsys, args):
@@ -190,8 +190,9 @@ def test_a_transient_failure_exits_recoverable(tmp_path, capsys, monkeypatch):
     assert rc2 == cf.EXIT_OK and m2["status"] == "complete"
 
 
-def test_the_peft_backend_refuses_instead_of_pretending(tmp_path):
-    with pytest.raises(lora.BackendNotAvailable, match="not implemented"):
+def test_the_peft_backend_refuses_instead_of_pretending(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "peft", None)  # the optional extra is not installed
+    with pytest.raises(lora.BackendNotAvailable, match="not installed"):
         lora.get_backend("peft").build(seed=1, rank=4, alpha=16.0, method="lora")
     with pytest.raises(lora.BackendNotAvailable, match="unknown"):
         lora.get_backend("made-up")
@@ -380,7 +381,7 @@ def test_a_failed_run_registers_nothing(tmp_path):
         adapter_id="never",
         run_dir=tmp_path / "bad",
         steps=10,
-        backend="peft",
+        backend="made-up",
         max_attempts=1,
         seed=SEED,
     )
@@ -498,7 +499,7 @@ def test_a_lost_audit_on_a_failed_finetune_is_counted_too(tmp_path, monkeypatch)
         adapter_id="never-audited",
         run_dir=tmp_path / "bad",
         steps=10,
-        backend="peft",  # not available: the script exits FATAL
+        backend="made-up",  # not available: the script exits FATAL
         max_attempts=1,
         seed=SEED,
     )

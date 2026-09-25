@@ -31,7 +31,18 @@ from typing import Any
 _CRD_ROOT = Path(__file__).parent / "kserve_crds"
 _GROUP = "serving.kserve.io"
 # Kind → the CRD version rendered and pinned (the storage version of each at the pin).
-_KINDS = {"InferenceService": "v1beta1", "LLMInferenceService": "v1alpha2"}
+# ClusterStorageContainer (v1alpha1) is the cluster-scoped object the verify-before-load storage
+# initializer is registered as (ADR 0142 d3, spec-usar-1 R-SUB-20).
+_KINDS = {
+    "InferenceService": "v1beta1",
+    "LLMInferenceService": "v1alpha2",
+    "ClusterStorageContainer": "v1alpha1",
+}
+# KubeRay (ADR 0015 d1): the dense multi-model Ray path on Kubernetes. Pinned separately — a
+# different project with its own release cadence — but validated by the same structural walker.
+_KUBERAY_ROOT = Path(__file__).parent / "kuberay_crds"
+_KUBERAY_GROUP = "ray.io"
+_KUBERAY_KINDS = {"RayService": "v1"}
 
 # DNS-1035 label: what KServe requires of a service name (it becomes a Service/host name).
 _NAME = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
@@ -80,12 +91,27 @@ def pin_window_error(pin: Pin, today: date) -> str | None:
 
 
 def pinned_kinds() -> list[tuple[str, str]]:
-    return [(kind, f"{_GROUP}/{ver}") for kind, ver in _KINDS.items()]
+    return [(kind, f"{_GROUP}/{ver}") for kind, ver in _KINDS.items()] + [
+        (kind, f"{_KUBERAY_GROUP}/{ver}") for kind, ver in _KUBERAY_KINDS.items()
+    ]
+
+
+def kuberay_pin_dir() -> Path:
+    """The one vendored KubeRay release (``kuberay_crds/<version>/``)."""
+    dirs = sorted(p for p in _KUBERAY_ROOT.iterdir() if p.is_dir())
+    if len(dirs) != 1:
+        raise RuntimeError(
+            f"exactly one pinned KubeRay version expected in {_KUBERAY_ROOT}, found {dirs}"
+        )
+    return dirs[0]
 
 
 @cache
 def load_schema(kind: str) -> dict[str, Any]:
-    path = _pin_dir() / f"{kind}.{_KINDS[kind]}.json.gz"
+    if kind in _KUBERAY_KINDS:
+        path = kuberay_pin_dir() / f"{kind}.{_KUBERAY_KINDS[kind]}.json.gz"
+    else:
+        path = _pin_dir() / f"{kind}.{_KINDS[kind]}.json.gz"
     with gzip.open(path, "rt", encoding="utf-8") as fh:
         schema: dict[str, Any] = json.load(fh)
     return schema

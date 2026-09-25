@@ -90,37 +90,25 @@ def list_models() -> dict[str, Any]:
     Reads the MLflow model registry. Model names are lowercase in the registry
     (e.g. ``jpcp``).
     """
-    from examlops.mlflow_paging import PagingError, all_items
+    # Through the SDK (ADR 0078 clause 2): the same `examlops.models.list()` the CLI renders.
+    from examlops.sdk import models as sdk_models
+    from examlops.sdk.errors import SDKError
 
-    cfg = _cfg()
-    url = f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/search"
     # An agent cannot sanity-check a short list, so a partial registry is worse here than
-    # elsewhere: "these are the models" is taken at face value.
+    # elsewhere: "these are the models" is taken at face value — `list()` raises instead.
     try:
-        models = all_items(_client.get, url, "registered_models")
-    except _client.ClientError as exc:
-        return _err(str(exc), status=getattr(exc, "status", None))
-    except PagingError as exc:
-        return _err(str(exc))
-    out = []
-    for m in models:
-        aliases = {
-            a["alias"]: a["version"]
-            for a in m.get("aliases", [])
-            if "alias" in a and "version" in a
+        models = sdk_models.list()
+    except SDKError as exc:
+        return _err(str(exc), status=exc.status)
+    out = [
+        {
+            "name": m.name,
+            "production": m.production_version,
+            "latest": m.latest_version,
+            "aliases": m.aliases,
         }
-        # MLflow serialises ``version`` as a string; compare numerically so that
-        # e.g. version "10" sorts above "9" instead of below it.
-        versions = [v["version"] for v in m.get("latest_versions", []) if "version" in v]
-        latest = max(versions, key=_version_key, default=None)
-        out.append(
-            {
-                "name": m.get("name"),
-                "production": aliases.get("Production"),
-                "latest": latest,
-                "aliases": aliases,
-            }
-        )
+        for m in models
+    ]
     return {"ok": True, "models": out, "count": len(out)}
 
 
@@ -732,6 +720,12 @@ def _agent_write_gate(action_kind: str, context: dict[str, Any]) -> dict[str, An
     """
     from examlops import policy
 
+    # ADR 0026 clause 4: the guardrail policy's per-tenant tool allow/deny list applies to every
+    # agent write, ahead of the authorization policy. Inert unless a guardrail policy file exists.
+    from examlops.guardrails.policy import tool_call_gate
+
+    if (denied := tool_call_gate(action_kind, context)) is not None:
+        return _err(denied)
     decision = policy.decide_safe(
         "agent_write", {"action_kind": action_kind, **context}, default_effect=policy.DENY
     )
@@ -881,9 +875,9 @@ def hpc_clusters() -> dict[str, Any]:
     which clusters a sysadmin has approved for training runs.
     """
     try:
-        from examlops.hpc_registry import list_clusters
+        from examlops.sdk import hpc as sdk_hpc
 
-        return {"ok": True, "clusters": list_clusters()}
+        return {"ok": True, "clusters": [c.to_dict() for c in sdk_hpc.clusters()]}
     except Exception as exc:  # noqa: BLE001
         return _err(str(exc))
 
@@ -911,15 +905,9 @@ def hpc_place(gpus: int = 0, nodes: int = 1) -> dict[str, Any]:
     not submit anything — it only advises placement.
     """
     try:
-        from examlops.hpc_placement import ResourceAsk, choose_cluster
-        from examlops.hpc_placement_providers import resolve_placement_score_fn
-        from examlops.hpc_registry import active_clusters_with_inventory
+        from examlops.sdk import hpc as sdk_hpc
 
-        result = choose_cluster(
-            ResourceAsk(gpus=gpus, nodes=nodes),
-            active_clusters_with_inventory(),
-            resolve_placement_score_fn(),
-        )
+        result = sdk_hpc.place(gpus=gpus, nodes=nodes)
         return {"ok": True, **result.to_dict()}
     except Exception as exc:  # noqa: BLE001
         return _err(str(exc))
@@ -1552,6 +1540,21 @@ def _with_plan_gate(specs: tuple[ToolSpec, ...]) -> tuple[ToolSpec, ...]:
 
 
 REGISTRY = _with_plan_gate(REGISTRY)
+
+
+def _with_write_safety(specs: tuple[ToolSpec, ...]) -> tuple[ToolSpec, ...]:
+    """Every mutating tool is dry-run-able and confirm-gated (ADR 0081 rule 3, ADR 0082 layer 4)."""
+    from examlops.mcp.write_safety import with_write_safety
+
+    return tuple(
+        replace(s, fn=with_write_safety(s.fn, name=s.name, tier=s.tier))
+        if s.mutating and s.name not in _plans.PLAN_TOOLS
+        else s
+        for s in specs
+    )
+
+
+REGISTRY = _with_write_safety(REGISTRY)
 
 
 def capabilities_catalogue(include_writes: bool | None = None) -> dict[str, Any]:

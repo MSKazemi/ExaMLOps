@@ -39,6 +39,9 @@ def dataset_card(
     out: str = typer.Option(None, "--out", help="Write the Croissant JSON to this file"),
 ) -> None:
     """Emit + validate a Croissant JSON-LD dataset card (R1/R2)."""
+    from examlops.cli._model_authz import guard_dataset
+
+    guard_dataset(dataset, "editor")  # ADR 0014 d4: persists a versioned card for this dataset
     from examlops.cards import croissant_record, validate_croissant
     from examlops.data.registry import save_dataset_card
     from examlops.usecase import dataset_schema
@@ -197,17 +200,54 @@ def lint(
     dataset: str = typer.Argument(..., help="Dataset name (e.g. FData)"),
     revision: str = typer.Option(None, "--revision", help="Dataset revision (A1); required"),
     license_: str = typer.Option("CC-BY-4.0", "--license", help="Dataset license"),
+    datasheet: bool = typer.Option(
+        False,
+        "--datasheet",
+        help="Also lint the Gebru et al. datasheet questionnaire authored for this dataset "
+        "(<pack>/datasheets/<dataset>.yaml or EXAMLOPS_DATASHEETS_DIR)",
+    ),
+    template: bool = typer.Option(
+        False, "--template", help="Print a datasheet questionnaire skeleton to fill in, and exit"
+    ),
 ) -> None:
     """Lint a dataset card (datasheet) for missing required fields; exit 1 on any finding (CI)."""
     from examlops.cards import croissant_record, lint_datasheet
     from examlops.usecase import dataset_schema
 
+    if template:
+        from examlops.cards.datasheet import DatasheetError
+        from examlops.cards.datasheet import template as _template
+
+        try:
+            text = _template(dataset)
+        except DatasheetError as exc:
+            _output.error(str(exc))
+        if _output.json_mode:
+            _output.print_json({"dataset": dataset, "template": text})
+        else:
+            typer.echo(text, nl=False)
+        return
+
     record = croissant_record(
         dataset, revision=revision, license=license_, schema=dataset_schema(dataset)
     )
     findings = lint_datasheet(record)
+    questionnaire: dict | None = None
+    if datasheet:  # ADR 0079 d6: the questionnaire a person answers, not what data can derive
+        from examlops.cards.datasheet import lint_dataset
+
+        q_findings, score, path = lint_dataset(dataset)
+        questionnaire = {
+            "path": str(path) if path else None,
+            "completeness": score,
+            "findings": q_findings,
+        }
+        findings = [*findings, *(f"datasheet: {f}" for f in q_findings)]
     if _output.json_mode:
-        _output.print_json({"dataset": dataset, "ok": not findings, "findings": findings})
+        doc = {"dataset": dataset, "ok": not findings, "findings": findings}
+        if questionnaire is not None:
+            doc["questionnaire"] = questionnaire
+        _output.print_json(doc)
     elif not findings:
         _output.ok(f"Datasheet for {dataset} passes lint.")
     else:

@@ -58,9 +58,20 @@ EVIDENCE_SOURCES: dict[str, tuple[str, ...]] = {
     "monitoring": ("drift_events", "slo_specs"),
     "record_keeping": ("audit_events",),
     "changes": ("audit_events",),
+    # ADR 0027 decision 3 (D6/D7/Green-AI). `runtime_config` is not a table: it names the
+    # reporting process's environment, which no chain or anchor can vouch for, so the section is
+    # at best *unverified* — enforcement read from an env var is a claim, not a record.
+    "access_documented": ("authz_relations",),
+    "access_enforced": ("runtime_config", "audit_events"),
+    "secrets_managed": ("runtime_config", "secrets_store"),
+    "secrets_rotation": ("secrets_store", "audit_events"),
+    "environmental_impact": ("carbon_records",),
+    "reproducibility": ("repro_bundles",),
 }
 
 _CHAIN = "audit_events"
+#: Pseudo-source: evidence read from environment configuration rather than any table.
+RUNTIME_CONFIG = "runtime_config"
 
 
 @dataclass
@@ -153,6 +164,11 @@ class IntegrityState:
                     f"{table}: {pending} row(s) newer than the last anchor (run: exa audit anchor)"
                 )
             return VERIFIED, None
+        if table == RUNTIME_CONFIG:
+            return UNVERIFIED, (
+                "read from the reporting process's environment — configuration is a claim about "
+                "this process, not a tamper-evident record"
+            )
         return UNVERIFIED, f"{table} is outside the hash chain and the telemetry anchors"
 
 

@@ -141,6 +141,70 @@ _tracer = _otel_trace.get_tracer("examlops.inference_pipeline")
 _ingress_app = FastAPI()
 
 
+# Cold-start waits run on their own bounded pool, never the loop's default executor: a burst of
+# cold requests (up to the activator's per-model waiter cap) must not occupy the threads every
+# other request needs for ``_resolve``. Created on first use, so a router with the activator off
+# never starts it.
+_activator_pool: Any = None
+_activator_pool_lock = threading.Lock()
+
+
+def _activator_executor() -> Any:
+    global _activator_pool
+    with _activator_pool_lock:
+        if _activator_pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+
+            try:
+                workers = int(os.getenv("EXAMLOPS_AUTOSCALE_ACTIVATOR_THREADS", "16") or 16)
+            except ValueError:
+                workers = 16
+            _activator_pool = ThreadPoolExecutor(
+                max_workers=min(max(workers, 1), 256), thread_name_prefix="autoscale-activator"
+            )
+        return _activator_pool
+
+
+async def _activate_if_cold(
+    model_name: str, alias: str, deadline: Deadline
+) -> dict[str, Any] | None:
+    """ADR 0031 clause 2: hold a request for a scaled-to-zero model until it is woken.
+
+    Off unless ``EXAMLOPS_AUTOSCALE_ACTIVATOR`` is truthy. Returns an error result for the caller,
+    or None to route normally. A model the activator remembers warm is answered on the loop with no
+    thread hop; otherwise the activator runs on its own pool (it may poll), and the request is
+    answered by its deadline even if that thread is stuck in a probe or an API call.
+    """
+    try:
+        from examlops.autoscale import activator as _act
+    except Exception:  # noqa: BLE001 - an image without the autoscale package routes as before
+        return None
+    if not _act.is_enabled():
+        return None
+    try:
+        act = _act.shared_activator()
+        if act.cached_warm(model_name):
+            return None
+        remaining = deadline.remaining()
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(_activator_executor(), act.ensure_warm, model_name, remaining)
+        await asyncio.wait_for(fut, timeout=max(remaining, 0.001))
+    except TimeoutError:
+        return {
+            "error": "cold_start",
+            "model_name": model_name,
+            "alias": alias,
+            "detail": f"{model_name}: not ready within the request deadline (cold start)",
+        }
+    except _act.ActivatorOverloaded as exc:
+        return {"error": "overloaded", "model_name": model_name, "alias": alias, "detail": str(exc)}
+    except _act.ActivatorError as exc:
+        return {"error": "cold_start", "model_name": model_name, "alias": alias, "detail": str(exc)}
+    except Exception:  # noqa: BLE001 - a broken activator must not take routing down with it
+        _log.exception("autoscale activator failed for %s; routing without it", model_name)
+    return None
+
+
 class ModelRouter:
     @staticmethod
     def _resolve(payload: dict[str, Any]) -> tuple[str, str]:
@@ -170,6 +234,10 @@ class ModelRouter:
         # run on this single-replica actor's event loop (the QW10 rule).
         model_name, alias = await asyncio.to_thread(self._resolve, payload)
         features = payload["features"]
+        cold = await _activate_if_cold(model_name, alias, deadline)
+        if cold is not None:
+            _router_metrics().record_request(model_name, cold["error"])
+            return cold
         with _tracer.start_as_current_span("inference_pipeline.model_router") as span:
             span.set_attribute("model_name", model_name)
             span.set_attribute("alias", alias)
@@ -379,16 +447,38 @@ class FeatureTransformer:
         self._router = router
 
     @staticmethod
-    def _transform_one(req: dict[str, Any]) -> dict[str, Any]:
+    def _legacy_features(req: dict[str, Any]) -> dict[str, Any]:
+        """The pre-ADR-0017 transform, used only when no pack feature view resolves."""
         embedding = req.get("embedding")
         if embedding is None:
             raise ValueError("embedding is required")
         if len(embedding) != 384:
             raise ValueError(f"expected 384 dims, got {len(embedding)}")
+        return {"embedding": list(embedding)}
+
+    @staticmethod
+    def _features(req: dict[str, Any]) -> dict[str, Any]:
+        """The model's feature dict, from the pack's serving feature view (ADR 0017 clause 2).
+
+        The same definition training's feature gate validates the training set against, applied
+        by the same ``transform_row`` — no second copy of the transform lives here. A request that
+        names its entity but omits the features is served the materialized online value.
+        """
+        try:
+            from examlops.feature_store.serving import resolution, serving_features
+        except Exception:  # pragma: no cover - examlops always present in the serving image
+            return FeatureTransformer._legacy_features(req)
+        res = resolution()
+        if res.view is None:
+            return FeatureTransformer._legacy_features(req)
+        return serving_features(res.view, req)
+
+    @staticmethod
+    def _transform_one(req: dict[str, Any]) -> dict[str, Any]:
+        features = FeatureTransformer._features(req)
         num_nodes = req.get("num_nodes")
         if num_nodes is None:
             raise ValueError("num_nodes is required")
-        # The deployed models are FData-trained and consume the embedding only.
         # num_nodes / user_id are carried as job metadata, not model features —
         # adding them to the feature dict produces a wrong-shaped input array.
         transformed = {
@@ -397,24 +487,35 @@ class FeatureTransformer:
             "job_id": req.get("job_id"),
             "num_nodes": int(num_nodes),
             "user_id": str(req.get("user_id", "")),
-            "features": {
-                "embedding": list(embedding),
-            },
+            "features": features,
         }
         if req.get(_BUDGET_KEY) is not None:
             transformed[_BUDGET_KEY] = req[_BUDGET_KEY]
         return transformed
+
+    @staticmethod
+    def _transform_all(reqs: list[dict[str, Any]]) -> list[dict[str, Any] | ValueError]:
+        """``_transform_one`` per request; a ``ValueError`` is returned in place, not raised."""
+        out: list[dict[str, Any] | ValueError] = []
+        for req in reqs:
+            try:
+                out.append(FeatureTransformer._transform_one(req))
+            except ValueError as exc:
+                out.append(exc)
+        return out
 
     @serve.batch(max_batch_size=32, batch_wait_timeout_s=0.05)
     async def handle_batch(self, reqs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         results: list[dict[str, Any] | None] = [None] * len(reqs)
         valid: list[tuple[int, dict[str, Any]]] = []
 
-        for i, req in enumerate(reqs):
-            try:
-                transformed = self._transform_one(req)
-            except ValueError as exc:
-                results[i] = {"error": "validation_error", "detail": str(exc)}
+        # Off the event loop: a request naming its entity reads the online store (SQLite, or
+        # Redis with a socket timeout), and a batch of those blocking the loop would stall every
+        # other request on this replica (ADR 0017 clause 2).
+        transforms = await asyncio.to_thread(self._transform_all, reqs)
+        for i, transformed in enumerate(transforms):
+            if isinstance(transformed, ValueError):
+                results[i] = {"error": "validation_error", "detail": str(transformed)}
                 continue
             # Re-stamp the budget after the batching wait, and drop what nobody is waiting for.
             deadline = Deadline.from_budget_ms(transformed.get(_BUDGET_KEY))
@@ -453,6 +554,26 @@ class FeatureTransformer:
 _REQUIRED_FIELDS = ("embedding", "num_nodes")
 
 
+def _required_fields(body: dict[str, Any]) -> tuple[str, ...]:
+    """Fields this request must carry (ADR 0017 clause 2).
+
+    With a resolvable pack serving view, the feature fields come from that view — the same
+    definition ``FeatureTransformer`` applies — and a request naming its entity needs none of
+    them (they are read from the online store). Without one, the legacy ``_REQUIRED_FIELDS``.
+    A hard-coded ``embedding`` here would refuse, with a 422, every entity-only request before
+    the transformer that serves it ever ran.
+    """
+    try:
+        from examlops.feature_store.serving import request_required_fields, resolution
+
+        view = resolution().view
+        if view is None:
+            return _REQUIRED_FIELDS
+        return ("num_nodes", *request_required_fields(view, body))
+    except Exception:  # noqa: BLE001 - resolution never raises; an import failure is legacy
+        return _REQUIRED_FIELDS
+
+
 def _embedding_dim() -> int | None:
     """Declared embedding width, or None. Never defaulted — 384 is a fact about a use case."""
     raw = os.environ.get("EXAMLOPS_INFERENCE_EMBEDDING_DIM", "").strip()
@@ -475,14 +596,46 @@ def _validate_payload(body: dict[str, Any]) -> tuple[bool, list[str]]:
         from pipelines.contracts import validate_request
     except Exception:  # noqa: BLE001 - a replica that cannot import the contract package must
         # still serve; the docstring above argues why refusing every request would be worse.
-        missing = [f"missing required field '{f}'" for f in _REQUIRED_FIELDS if f not in body]
+        missing = [f"missing required field '{f}'" for f in _required_fields(body) if f not in body]
         return (not missing, missing)
     return validate_request(
         body,
-        required=_REQUIRED_FIELDS,
+        required=_required_fields(body),
         embedding_field="embedding",
         embedding_dim=_embedding_dim(),
     )
+
+
+#: Longest a 422 waits for its rejection counter. The write goes through ``write_retry`` and the
+#: store's busy timeout, which can take seconds under lock contention — and a flood of bad requests
+#: is exactly when that happens. Past this the 422 is sent and the write finishes (or fails) alone.
+_REJECTION_RECORD_TIMEOUT_S = 0.25
+
+
+async def _record_rejection(model: Any, errors: list[str]) -> None:
+    """Count a contract rejection for the C5 data-quality profile (ADR 0022 decision 3).
+
+    Best-effort, off the event loop and bounded by ``_REJECTION_RECORD_TIMEOUT_S``: a replica whose
+    platform store is slow or unreachable must still answer the 422 promptly — losing a counter is
+    logged, never raised into the request.
+    """
+    try:
+        from examlops.data.drift import classify_rejection, record_inference_rejection
+    except Exception:  # noqa: BLE001 - no data layer in this process: nothing to count into
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                record_inference_rejection,
+                str(model) if model is not None else None,
+                classify_rejection(errors),
+            ),
+            timeout=_REJECTION_RECORD_TIMEOUT_S,
+        )
+    except TimeoutError:
+        _log.warning("inference rejection for %r not recorded within the budget", model)
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        _log.warning("inference rejection not recorded for %r: %s", model, exc)
 
 
 class InferencePipelineIngress:
@@ -543,6 +696,7 @@ class InferencePipelineIngress:
             span.set_attribute("alias", body.get("alias") or "")
             ok, errors = _validate_payload(body)
             if not ok:
+                await _record_rejection(body.get("model_name"), errors)
                 return JSONResponse(
                     {"error": "validation_error", "detail": "; ".join(errors)},
                     status_code=422,
@@ -565,6 +719,7 @@ _ERROR_STATUS = {
     "validation_error": 422,
     "model_not_found": 404,
     "overloaded": 503,
+    "cold_start": 503,  # ADR 0031: the model is scaling up from zero; Retry-After applies
     "deadline_exceeded": 504,
 }
 

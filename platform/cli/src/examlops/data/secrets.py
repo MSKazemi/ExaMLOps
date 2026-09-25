@@ -73,10 +73,17 @@ def put_secret_ciphertext(
     *,
     updated_by: str | None = None,
     key_id: str | None = None,
+    rewrap: bool = False,
 ) -> int:
     """Upsert an encrypted secret, bumping its version. Returns the new version.
 
     ``key_id`` records which KEK the ciphertext is wrapped under (2.3), so keys can rotate.
+
+    ``rewrap=True`` re-wraps an *existing* value under another KEK: the ciphertext, key id and
+    version change, but ``updated_at``/``updated_by`` keep describing the last time the secret's
+    **value** was written. A KEK rotation is not a credential rotation, and ADR 0027's
+    ``secrets_rotation`` evidence reads ``updated_at`` as the credential's age — bumping it here
+    would let ``exa secrets rewrap`` make a years-old password look freshly rotated.
     """
     init_db()
     with get_db() as conn:
@@ -84,6 +91,13 @@ def put_secret_ciphertext(
             "SELECT version FROM secrets_store WHERE path=? AND tenant=?", (path, tenant)
         ).fetchone()
         version = (int(row["version"]) + 1) if row else 1
+        if rewrap and row is not None:
+            conn.execute(
+                "UPDATE secrets_store SET ciphertext=?, key_id=?, version=? "
+                "WHERE path=? AND tenant=?",
+                (ciphertext, key_id, version, path, tenant),
+            )
+            return version
         conn.execute(
             """INSERT INTO secrets_store
                    (path, tenant, ciphertext, key_id, version, updated_by, updated_at)

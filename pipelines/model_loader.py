@@ -59,6 +59,9 @@ class DatasetEntry:
     # ADR 0130: bind this dataset entry to a dataplane source (only used with backend: dataplane).
     # Kept raw; pipelines.datasets.dataplane.DataplaneBinding validates it.
     dataplane: dict[str, Any] | None = None
+    # ADR 0017 clause 2: the pack feature view (``<pack>/features/<view>.yaml``) that is the one
+    # train/serve definition of this entry's input features. None = no feature gate.
+    feature_view: str | None = None
 
 
 @dataclass
@@ -96,6 +99,11 @@ class ModelYAMLConfig:
     # split `autoscale:` uses); at deploy time it resolves to gpu_fraction/cpu and flows into
     # ray_actor_options. Empty = no binding, and the deployment behaves exactly as before.
     resources: dict[str, Any] = field(default_factory=dict)
+    # Training placement (ADR 0080 decision 2 — the YAML is the pipeline IR): `placement:
+    # {cluster, gpus, cpus, nodes}`, the train step's scheduler-neutral ask and its target
+    # cluster. Kept raw and validated by examlops.pipeline_dsl.placement.validate_placement_block;
+    # `exa pipeline run` uses it as the default for --cluster/--gpus. Empty = no default.
+    placement: dict[str, Any] = field(default_factory=dict)
 
     def dataset(self, name: str) -> DatasetEntry:
         for ds in self.datasets:
@@ -135,6 +143,7 @@ def _parse_dataset(raw: dict) -> DatasetEntry:
         output_features=list(raw.get("output_features", [])),
         splits=splits,
         dataplane=raw.get("dataplane") or None,
+        feature_view=raw.get("feature_view") or None,
     )
 
 
@@ -161,6 +170,7 @@ def load_model_yaml(path: Path) -> ModelYAMLConfig:
         fairness=raw.get("fairness") or {},
         autoscale=raw.get("autoscale") or {},
         resources=raw.get("resources") or {},
+        placement=raw.get("placement") or {},
     )
 
 

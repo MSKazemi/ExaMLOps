@@ -78,6 +78,19 @@ class ReasoningBudgetExceeded(GatewayError):
         )
 
 
+class ReasoningPolicyDenied(GatewayError):
+    """D5 policy refused a request before any backend was called (ADR 0035 clause 3).
+
+    The ``reasoning_request`` action in ``policy.yaml`` sees the resolved reasoning budget, so a
+    site can refuse unbudgeted thinking or a budget above its ceiling. A policy denial, not a
+    backend failure: no backend is tried and nothing is spent.
+    """
+
+    def __init__(self, effect: str, rule: str | None, reason: str) -> None:
+        self.effect, self.rule = effect, rule
+        super().__init__(f"reasoning policy {effect}: {reason}")
+
+
 class MediaNotAllowed(GatewayError):
     """A multimodal content part failed validation before dispatch (R-V5).
 
@@ -359,12 +372,22 @@ def default_guardrail(tenant: str = "default"):
     mode = os.getenv("EXAMLOPS_GUARDRAIL_MODE", "monitor").strip().lower()
     if mode == "off":
         return None
+    fallback = mode if mode in ("monitor", "enforce") else "monitor"
+    try:
+        # ADR 0026 clause 3: a declarative policy file (EXAMLOPS_GUARDRAIL_POLICY, or
+        # <config dir>/guardrails.yaml) composes the checks per tenant and per route. Without one
+        # the built-in guardrail below applies, exactly as before the policy engine existed.
+        from examlops.guardrails.policy import policy_guardrail
+
+        policy_guard = policy_guardrail(tenant, fallback_mode=fallback)
+        if policy_guard is not None:
+            return policy_guard
+    except Exception:  # noqa: BLE001 - fall through to the built-in guardrail, never unscanned
+        pass
     try:
         from examlops.guardrails import DefaultGuardrail
 
-        return DefaultGuardrail(
-            mode=mode if mode in ("monitor", "enforce") else "monitor", tenant=tenant
-        )
+        return DefaultGuardrail(mode=fallback, tenant=tenant)
     except Exception:
         # A guardrail that cannot be constructed must not take the gateway down with it. The
         # boundary degrades to unscanned, which is exactly where it was before this existed.
@@ -372,7 +395,7 @@ def default_guardrail(tenant: str = "default"):
 
 
 def _guard_messages(
-    guard: Any, messages: list[dict[str, Any]], tenant: str
+    guard: Any, messages: list[dict[str, Any]], tenant: str, *, route: str | None = None
 ) -> list[dict[str, Any]]:
     """Scan each message's text; return the messages, redacted where the guardrail said so.
 
@@ -385,7 +408,9 @@ def _guard_messages(
     """
 
     def _scan(text: str) -> str:
-        res = guard.check_input(text, {"tenant": tenant})
+        # ``route`` (the requested model) selects per-route policy overrides (ADR 0026 cl. 3).
+        ctx = {"tenant": tenant, "route": route} if route else {"tenant": tenant}
+        res = guard.check_input(text, ctx)
         if res.blocked:
             raise GuardrailBlocked("request", res.findings, res.reason)
         return res.text
@@ -532,7 +557,7 @@ class GatewayClient:
         messages: list[dict[str, Any]],
         *,
         prompt_ref: str | None = None,
-        response_schema: dict[str, Any] | None = None,
+        response_schema: dict[str, Any] | str | None = None,
         max_repairs: int = 1,
         no_cache: bool = False,
         reasoning_budget: int | None = None,
@@ -547,7 +572,9 @@ class GatewayClient:
 
         ``response_schema`` (ADR 0035 clause 1) makes the response a **validated object**:
         ``Completion.parsed`` holds it, and a response that cannot be made to validate raises
-        ``StructuredOutputError`` rather than returning unchecked text.
+        ``StructuredOutputError`` rather than returning unchecked text. It may be a JSON Schema
+        or the name of a registered schema (``tool_call``, ``rag_answer``, … — clause 3); with
+        none, the route's default from ``structured.yaml`` applies.
 
         ``no_cache`` skips the semantic cache for this request in both directions (ADR 0018
         clause 3) — neither answered from it nor stored in it. It is never sent to a backend.
@@ -573,6 +600,21 @@ class GatewayClient:
             project=project,
             requested=reasoning_budget,
         )
+        # ADR 0035 clause 3: a named or route-default schema, and the D5 ``reasoning_request``
+        # gate - both before any backend is called, so neither a typo nor a refusal costs a call.
+        from examlops.structured.policy import reasoning_request_decision, resolve_response_schema
+
+        response_schema, _ = resolve_response_schema(model, response_schema)
+        decision = reasoning_request_decision(
+            model,
+            tenant=self.tenant,
+            project=project,
+            key_hash=key_hash,
+            budget_tokens=budget.max_thinking_tokens if budget is not None else None,
+            budget_source=budget.source if budget is not None else None,
+        )
+        if not decision.allowed:
+            raise ReasoningPolicyDenied(decision.effect, decision.rule, decision.reason)
 
         prompt_version: str | None = None
         template: str | None = None
@@ -587,7 +629,7 @@ class GatewayClient:
         # text, and a template that says "you are now…" must not block every request it serves.
         guard = self._guard()
         if guard is not None:
-            messages = _guard_messages(guard, messages, self.tenant)
+            messages = _guard_messages(guard, messages, self.tenant, route=model)
         if template is not None:
             # Prepend, never replace: the caller's own system message still applies.
             messages = [{"role": "system", "content": template}, *messages]

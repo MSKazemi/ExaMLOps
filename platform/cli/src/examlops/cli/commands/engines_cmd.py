@@ -119,6 +119,52 @@ def engine_validate(
     _output.ok(f"{yaml_path}: engine block valid")
 
 
+_EXAMPLES_QGATE = (
+    "Examples:\n\n"
+    "  exa models quantize-gate JPCP 17-awq\n\n"
+    "  exa --json models quantize-gate JPCP 17-awq\n\n"
+    "Needs a C3 gate (exa eval gate set) and suite scores for BOTH the base version and the\n"
+    "quantized one (exa eval run). Exits 1 when the gate refuses — usable as a CI step."
+)
+
+
+@app.command("quantize-gate", epilog=_EXAMPLES_QGATE)
+def quantize_gate(
+    model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),
+    version: str = typer.Argument(..., help="Quantized version, e.g. 17-awq"),
+) -> None:
+    """Quality-retention gate: a quantized version vs its base version (ADR 0016, C3).
+
+    Mandatory for promotion: `exa pipeline promote` and the training-flow promotion refuse a
+    quantized version that has not passed it. No configured C3 gate, or missing scores on either
+    side, is a refusal — never a pass. The verdict is recorded in gate_reports and audited.
+    """
+    from examlops.engines.quality import quantization_quality_gate
+
+    result = quantization_quality_gate(model, version, actor=_actor())
+    if result is None:
+        _output.ok(f"{model} v{version} is not a quantized version — the gate does not apply.")
+        return
+    if _output.json_mode:
+        _output.print_json(result.as_dict())
+    else:
+        _output.print_record(
+            {
+                "Verdict": "PASSED" if result.passed else "REFUSED",
+                "Base version": result.base_version,
+                "Method": result.method,
+                "Suite": result.suite or "-",
+                "Failing": ", ".join(result.failing) or "-",
+            }
+        )
+        if result.passed:
+            _output.ok(result.reason)
+        else:
+            _output.warning(result.reason)
+    if not result.passed:
+        raise typer.Exit(1)
+
+
 @app.command("parity", epilog=_EXAMPLES_PARITY)
 def parity(
     model: str = typer.Argument(..., help="Model name (e.g. JPCP)"),

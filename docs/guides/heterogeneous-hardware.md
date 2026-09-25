@@ -114,8 +114,9 @@ exa hardware decisions                      # recent placement decisions
 
 ## Hardware Profiles — named, versioned resource+runtime bundles (ADR 0157)
 
-> Phase 1 (registry + CLI) shipped 2026-09-24. Phases 2–4 (workbench/training/serving/dashboard
-> consumer wiring) are not built yet — see `design/adr/0157-hardware-profiles.md`.
+> Phase 1 (registry + CLI) shipped 2026-09-24; Phases 2–3 (workbench, training and serving
+> consumers) and Phase 4 (resolution ledger, `in-use`, `exa status`, dashboard API) shipped
+> 2026-09-25. What is still open is listed at the end of this section.
 
 Every surface that requests compute (`exa workbench create`, `exa pipeline run`, `exa pipeline
 distributed launch`) historically invented its own flags for the same underlying shape —
@@ -176,12 +177,77 @@ $ exa hardware profile delete gpu-small --version 1 --yes
 
 Omitting `--version` deletes the whole name — every version and every label.
 
-### What's not built yet
+### Using a profile (Phases 2–3)
 
-Nothing yet *consumes* a profile — no `exa workbench create --hardware-profile`, no
-`exa pipeline run --hardware-profile`, no `resources.hardware_profile` in a model YAML, and no
-dashboard surface. This is a registry + CLI slice (spec Phase 1); the consumer wiring is
-Phase 2 (workbench), Phase 3 (training/serving), and Phase 4 (dashboard).
+Every consumer takes the same `--hardware-profile <name>` and applies the same two rules: the
+profile's `applicability` must include the consumer (or `any`) — otherwise the command refuses and
+names what the profile *does* declare — and an explicitly typed flag wins over the profile field it
+overlaps (a profile is a default, not an override; the partial override is always reported).
+
+| Consumer | How | Profile fields used |
+|---|---|---|
+| Workbench | `exa workbench create nb1 --project demo --hardware-profile gpu-small` (or the *Hardware profile* select in the dashboard's *New workbench* form) | `cpu`, `memory_gb`; the row records the profile name **and the exact version** |
+| Training run | `exa pipeline run --model JPCP --cluster auto --hardware-profile gpu-small` | `gpu_count`/`cpu`/`nodes` feed the same placement ask `--gpus` feeds; the run's MLflow run is tagged `hardware_profile=gpu-small@v2` |
+| Distributed launch | `exa pipeline distributed launch JPCP --hardware-profile gpu-small` | `nodes`, `gpu_count` → `--nodes`/`--gpus-per-node` (identical `torchrun` to typing them) |
+| Serving | `resources: {hardware_profile: gpu-small}` in the model YAML | `gpu_count × gpu_fraction` → `num_gpus`, `cpu` → `num_cpus` in the replica's `ray_actor_options` |
+
+### Seeing what a profile is used for (Phase 4)
+
+A resolution that happened once, inside a command that has since exited, is invisible unless it is
+kept. So every consumer above appends its resolution — profile, exact version, target cluster,
+status, reason, unconfirmed fields, project, actor — to an append-only ledger in `platform.db`
+(`hardware_profile_resolutions`). The ledger is visibility, not a gate: the applicability check and
+the `unresolvable` refusal have already run, and a ledger write that fails is logged, never raised
+into an otherwise valid create or launch.
+
+```bash
+# Everything currently sized by a profile, with the status each got. Exits 1 if any entry
+# is degraded, unresolvable, or `missing` (a deleted version still referenced):
+exa hardware profile in-use
+exa hardware profile in-use --project research --days 1
+
+# The ledger itself — which version did that run use?
+exa hardware profile history gpu-small --consumer training --limit 20
+```
+
+"In use" means a **running** workbench created from a profile (whatever its age), plus every
+training/serving consumer whose latest resolution is within `--days` (default 7). A `--project`
+filter is applied in SQL before the row limit, so another project's traffic can never push yours
+off the page.
+
+`exa status` (when the control plane answers) adds one line when profiles are in use and none need attention, and a *Hardware
+Profiles Needing Attention* table when some do (`--json`: a `hardware_profiles` key with
+`in_use`/`counts`/`attention`, or `null` when the datastore could not be read — never an empty
+report standing in for an unreadable one). `exa hardware profile delete` names every consumer
+still bound to what it is about to remove before it asks for confirmation.
+
+### Dashboard (Phase 4)
+
+`/api/v1/hardware-profiles` calls the same `examlops.hardware_profiles` code as the CLI:
+
+| Route | Role | What |
+|---|---|---|
+| `GET /api/v1/hardware-profiles[?applicability=]` | viewer | Catalog by `active` version (`workbench` also returns `any` profiles) |
+| `GET /api/v1/hardware-profiles/{name}[?version=&label=]` | viewer | One version + every version's summary |
+| `GET /api/v1/hardware-profiles/{name}/resolve?cluster=` | viewer | Live resolution (not recorded — a look is not a use) |
+| `GET /api/v1/hardware-profiles/in-use[?days=&project=]` | viewer | The `in-use` report |
+| `GET /api/v1/hardware-profiles/history[?name=&consumer=&project=&limit=]` | viewer | The ledger (limit ≤ 1000) |
+| `POST /api/v1/hardware-profiles` | admin (`platform.manage`) | New immutable version; audited `hardware_profile_set` |
+| `DELETE /api/v1/hardware-profiles/{name}[?version=]` | admin (`platform.manage`) | Delete; reports `danglingActive` and `inUse`; audited `hardware_profile_deleted` |
+
+Both writes are also in the dashboard's policy route table (`dashboard_hardware_profiles_set` /
+`_delete`), so a `policy.yaml` rule can deny or require approval for them. The project page's
+Workbenches card shows each workbench's profile, version and latest status. The routes belong to
+the `hpc` site module, like `exa hardware`.
+
+### Still open
+
+- **Fraction/MIG end to end** — a profile's `gpu_fraction`/`mig_profile` reach Ray's
+  `num_gpus`, but the scheduler-neutral `ResourceAsk` still has no fraction or MIG field, so an
+  HPC placement asks for whole GPUs. That gap belongs to ADR 0030, which ADR 0157 deliberately
+  does not reopen.
+- **Dashboard create/delete forms for profiles themselves** — the API is there; the UI currently
+  consumes profiles (workbench form, status badges) but authoring is CLI/API only.
 
 ## Graceful degradation
 

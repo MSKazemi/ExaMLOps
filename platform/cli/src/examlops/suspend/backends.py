@@ -1,9 +1,10 @@
 """Built-in suspend backends: ``checkpoint-only`` (default, real) and ``mock`` (tests).
 
-There is deliberately **no** CRIU, ``cuda-checkpoint``, vLLM sleep/wake or peer-replication
-backend: none can be exercised here, and a backend that only claims the capability is exactly the
-failure ADR 0109 decision 2 forbids. A real one ships as an ``exa.providers.suspend_backend``
-plugin whose ``capability()`` it can defend.
+There is deliberately **no** CRIU, ``cuda-checkpoint`` or peer-replication backend: none can be
+exercised here, and a backend that only claims the capability is exactly the failure ADR 0109
+decision 2 forbids. A real one ships as an ``exa.providers.suspend_backend`` plugin whose
+``capability()`` it can defend. (Engine-delegated vLLM sleep mode is :mod:`.engine`; the
+node-local replica tier is :mod:`.tiers`.)
 """
 
 from __future__ import annotations

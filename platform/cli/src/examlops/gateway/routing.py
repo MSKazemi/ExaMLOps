@@ -62,6 +62,9 @@ class Deployment:
     max_concurrency: int | None = None
     max_queue: int = 8
     queue_timeout_s: float = 5.0
+    #: Operator-declared blended price, USD per 1k tokens (ADR 0083/0153 d2). ``None`` = unpriced:
+    #: `cost_aware` falls back to locality (local/site free, external a marker cost).
+    price_per_1k: float | None = None
 
     @property
     def key(self) -> str:
@@ -221,19 +224,23 @@ class GatewayCore:
     def _cost_score(self, dep: Deployment) -> float:
         """A deployment's `cost_aware` ranking score (ADR 0153 d2) via the ``llm_routing`` provider.
 
-        The only cost signal available at routing time — before a request's token count is known —
-        is locality: "FinOps rate, local = 0 marginal" (the ADR's own words). Every local/site
-        deployment costs nothing; every external one is charged the same non-zero marker cost, so
-        `cost_aware` prefers any local/site deployment over any external one and otherwise falls
-        back to the group's existing order (Python's stable sort preserves it on a tie). A provider
-        that wants finer-grained per-deployment pricing can already express it — that is what
-        `EXAMLOPS_LLM_ROUTING_PROVIDER`/a custom provider is for (ADR 0074/0083); this platform does
-        not yet carry a per-deployment price in `gateway.yaml` to feed one.
+        Cost signal, most specific first: the deployment's own ``price_per_1k`` from
+        `gateway.yaml` when the operator declared one (a per-1k-token price is comparable across
+        deployments before a request's token count is known); otherwise locality — "FinOps rate,
+        local = 0 marginal" (the ADR's own words): every local/site deployment costs nothing and
+        every external one is charged the same non-zero marker cost. Ties keep the group's existing
+        order (Python's stable sort). The deployment's observed TTFT EWMA is handed in as
+        ``latency_ms`` (unknown = 0, i.e. explore, as `lowest_latency` does), so selecting the
+        ``cost-latency`` provider (ADR 0083) trades price against speed with no code change.
         """
         from examlops.llmops_providers import route_score_via_provider
 
-        cost = 0.0 if dep.provider.locality in ("local", "site") else _EXTERNAL_MARKER_COST
-        return route_score_via_provider(cost_usd=cost, healthy=True)
+        if dep.price_per_1k is not None:
+            cost = dep.price_per_1k
+        else:
+            cost = 0.0 if dep.provider.locality in ("local", "site") else _EXTERNAL_MARKER_COST
+        latency = self._state(dep).ewma_ttft_ms
+        return route_score_via_provider(cost_usd=cost, healthy=True, latency_ms=latency)
 
     def _candidates(
         self, model: str, req: ChatRequest, allowed: tuple[str, ...]

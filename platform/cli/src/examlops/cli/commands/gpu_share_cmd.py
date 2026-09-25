@@ -21,6 +21,7 @@ _EXAMPLES = (
     "Examples:\n\n"
     "  exa hpc gpu-share plan JPCP --fraction 0.25 --mig 2g.10gb --mig-capable\n\n"
     "  exa hpc gpu-share plan JPCP --fraction 0.5   # no fractional support => honest fallback\n\n"
+    "  exa hpc gpu-share plan JPCP --fraction 0.25 --cluster gpu-cluster --scheduler slurm\n\n"
     "  exa hpc gpu-share pack --ask a:0.5 --ask b:0.3 --ask c:0.4 --gpus 2 --timeslice\n\n"
     "  exa hpc gpu-share accounting"
 )
@@ -36,6 +37,28 @@ def _caps(mig_capable: bool, timeslice: bool):
     )
 
 
+def _cluster_caps_and_scheduler(cluster: str):
+    """Registered cluster -> (ClusterGpuCaps, scheduler). Refuses a non-ACTIVE cluster."""
+    import json
+
+    from examlops.gpu_sharing import caps_from_capabilities
+    from examlops.hpc_registry import ClusterNotActiveError, require_active
+
+    try:
+        merged = require_active(cluster)
+    except ClusterNotActiveError as exc:
+        _output.error(str(exc))
+        raise typer.Exit(1) from exc
+    caps = merged.get("capabilities")
+    if isinstance(caps, str):
+        try:
+            caps = json.loads(caps) if caps else None
+        except ValueError:
+            caps = None
+    scheduler = str(merged.get("scheduler") or "mock")
+    return caps_from_capabilities(caps), ("mock" if scheduler == "unmanaged" else scheduler)
+
+
 @app.command("plan", epilog=_EXAMPLES)
 def plan(
     model: str = typer.Argument(..., help="Model / workload label"),
@@ -45,34 +68,60 @@ def plan(
     timeslice: bool = typer.Option(False, "--timeslice", help="Cluster supports time-slicing"),
     record: bool = typer.Option(False, "--record", help="Persist the allocation"),
     tenant: str = typer.Option("default", "--tenant", help="Tenant scope"),
+    cluster: str = typer.Option(
+        None,
+        "--cluster",
+        help="Use a registered ACTIVE cluster's declared GPU-sharing capabilities and scheduler "
+        "(overrides --mig-capable/--timeslice)",
+    ),
+    scheduler: str = typer.Option(
+        None,
+        "--scheduler",
+        help="Also show the resources this maps to on slurm|flux|mock (ADR 0030 decision 3)",
+    ),
+    gpus: int = typer.Option(1, "--gpus", help="GPU devices the ask spans (with --scheduler)"),
 ) -> None:
     """Select the best GPU-sharing mechanism for a request (honest fallback)."""
     from examlops.gpu_sharing import FractionalAsk, record_allocation, select_mechanism
+    from examlops.gpu_sharing.scheduler_map import GpuSharingError, map_to_scheduler
 
+    if cluster:
+        caps, cluster_scheduler = _cluster_caps_and_scheduler(cluster)
+        scheduler = scheduler or cluster_scheduler
+    else:
+        caps = _caps(mig_capable, timeslice)
     ask = FractionalAsk(model, fraction=fraction, mig_profile=mig)
-    choice = select_mechanism(ask, _caps(mig_capable, timeslice))
+    choice = select_mechanism(ask, caps)
+    mapping = None
+    if scheduler:
+        try:
+            mapping = map_to_scheduler(scheduler, {}, ask, caps, gpus=gpus)
+        except GpuSharingError as exc:
+            _output.error(str(exc))
+            raise typer.Exit(1) from exc
+        choice = mapping.choice  # the scheduler may only express a coarser allocation
     if record:
-        record_allocation(model, choice, tenant=tenant)
+        record_allocation(model, choice, tenant=tenant, scheduler=scheduler)
     if _output.json_mode:
-        _output.print_json(
-            {
-                "mechanism": choice.mechanism,
-                "isolation": choice.isolation,
-                "allocated_fraction": choice.allocated_fraction,
-                "requested_fraction": choice.requested_fraction,
-                "wasted_fraction": choice.wasted_fraction,
-                "note": choice.note,
-            }
-        )
+        payload = choice.as_dict()
+        if mapping is not None:
+            payload["scheduler"] = mapping.scheduler
+            payload["resources"] = mapping.resources
+            payload["warnings"] = mapping.warnings
+        _output.print_json(payload)
         return
     _output.info(
         f"{model}: {choice.mechanism} "
         f"(isolation: {choice.isolation}) — {choice.allocated_fraction:.2f} GPU"
     )
     _output.info(f"  {choice.note}")
+    if mapping is not None:
+        flags = " ".join(f"{k}={v}" for k, v in sorted(mapping.resources.items()))
+        _output.info(f"  {mapping.scheduler} resources: {flags or '(none)'}")
     if choice.wasted_fraction > 0.01:
         _output.warning(
-            f"  {choice.wasted_fraction * 100:.0f}% GPU capacity wasted by this fallback."
+            f"  {choice.wasted_fraction * 100:.0f}% GPU capacity wasted by this "
+            f"{'fallback' if choice.mechanism == 'whole' else 'allocation (rounded up)'}."
         )
 
 

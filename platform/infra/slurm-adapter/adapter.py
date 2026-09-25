@@ -57,6 +57,9 @@ _RESOURCE_FLAGS: dict[str, str] = {
     "mem": "--mem",
     "gpus": "--gpus",  # total for the job
     "gpus_per_node": "--gpus-per-node",
+    # Generic resources — how a MIG slice (gpu:<type>:<n>) or a GPU shard (shard:<k>) is asked
+    # for (ADR 0030 decision 3, built by examlops.gpu_sharing.scheduler_map).
+    "gres": "--gres",
     "constraint": "--constraint",
     "output": "--output",
     "error": "--error",

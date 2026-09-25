@@ -242,6 +242,15 @@ def alias_changed(
         "removed": removed,
         "via": via,
     }
+    if not removed:  # ADR 0146 d2: agents following this alias get re-evaluated
+        try:
+            from examlops.agent_versions.reeval import on_model_alias_changed
+
+            on_model_alias_changed(
+                model, alias, version, previous_version=previous_version, actor=actor
+            )
+        except Exception as exc:  # noqa: BLE001 - the model moved; the re-eval queue is advisory
+            logger.warning("agent re-evaluation for %s@%s not enqueued: %s", model, alias, exc)
     try:
         return publish(
             "model.alias_changed",

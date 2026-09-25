@@ -189,7 +189,7 @@ def test_lease_released_after_cycle():
 
 
 def test_absent_signal_holds_never_zero():
-    _policy("m", target_metric="queue_depth")  # no source exists for it
+    _policy("m", target_metric="gpu_util")  # no default source exists for it
     ap = FakeApplier({"m": 4})
     rep = _mk(FakeSignals(m=Signals(rps=0.0)), ap).run_cycle()
     r = rep.results[0]
@@ -286,7 +286,11 @@ def test_prometheus_signals_maps_queries_and_absent_is_none():
     s = ctl.PrometheusSignals(q).read("JPCP", AutoscalePolicy(scale_to_zero_after_s=120))
     assert s.rps == 0.0 and s.p95 is None and s.idle_confirmed is True
     assert any("examlops_predict_requests_total" in e and "(?i)^JPCP$" in e for e in seen)
-    assert s.queue_depth is None and s.gpu_util is None
+    # queue_depth is sourced (Little's law over the latency sum); gpu_util has no default source
+    # and is never queried without an operator template.
+    assert s.queue_depth == 0.0 and s.gpu_util is None
+    assert any("examlops_predict_latency_seconds_sum" in e for e in seen)
+    assert not any("GPU" in e.upper() and "UTIL" in e.upper() for e in seen)
     s2 = ctl.PrometheusSignals(lambda e: None).read("m", AutoscalePolicy(scale_to_zero_after_s=9))
     assert s2.idle_confirmed is None  # no series is not "no traffic"
 

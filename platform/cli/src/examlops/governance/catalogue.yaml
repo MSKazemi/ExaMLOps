@@ -1,10 +1,29 @@
-# NIST AI Risk Management Framework (AI RMF 1.0) control backbone + GenAI Profile.
-# Versioned catalogue (D2, ADR 0027). Each control: id, function, description, the
-# platform evidence it requires, and a crosswalk to EU AI Act (D1) + ISO/IEC 42001.
+# NIST AI Risk Management Framework (AI RMF 1.0, NIST AI 100-1) control backbone + GenAI Profile
+# (NIST AI 600-1). Versioned catalogue (D2, ADR 0027).
+#
+# Two layers:
+#   subcategories — the framework itself: all 72 AI RMF 1.0 subcategories (Govern 19, Map 18,
+#                   Measure 22, Manage 13). Titles are SHORT PARAPHRASES for navigation; the
+#                   normative text is NIST AI 100-1. `exa governance validate` checks the counts,
+#                   so a truncated or duplicated framework cannot pass CI.
+#   controls      — what THIS PLATFORM can evidence: id, function, description, the platform
+#                   evidence it requires, the subcategories it contributes to, and a crosswalk
+#                   to the EU AI Act (D1) + ISO/IEC 42001. A subcategory no control maps to is
+#                   reported as "organisational": it needs process evidence (policies, training,
+#                   stakeholder engagement) the platform does not hold — never a false pass.
+#
+# Which platform feature emits which evidence is declared per feature in features.yaml.
 #
 # This is EVIDENCE COVERAGE, not certification. `evidence` keys map to collectors in
-# examlops.compliance (shared with D1) so the two frameworks share one evidence layer.
-version: "1.0.0"
+# examlops.compliance (shared with D1) so the frameworks share one evidence layer.
+#
+# 2.0.0 (2026-09-25): + subcategories layer; + nist_subcategories per control; the RBAC control
+#   is re-anchored from GOVERN-4.1 (a safety-first-culture subcategory) to GOVERN-2.1 (roles and
+#   responsibilities) — the old id is kept as an alias — and now requires D6 authorization
+#   evidence instead of audit-trail coverage; MEASURE-2.7 adds D7 secrets evidence; MAP-2.3 adds
+#   data governance; MANAGE-4.1 adds the change log; new GOVERN-1.6 and MEASURE-2.12.
+# 2.1.0 (2026-09-25): + MEASURE-2.1 reproducibility (ADR 0038 clause 4).
+version: "2.1.0"
 framework: NIST AI RMF 1.0 (+ GenAI Profile 2024)
 controls:
   # ---- GOVERN ----
@@ -14,12 +33,19 @@ controls:
     evidence: [record_keeping]
     eu_ai_act: "Art. 12"
     iso_42001: "A.6.2"
-  - id: GOVERN-4.1
+  - id: GOVERN-1.6
     function: Govern
-    description: Roles/responsibilities and access are documented and enforced (RBAC).
-    evidence: [record_keeping]
-    eu_ai_act: "Annex IV §2(b)"
-    iso_42001: "A.5.3"
+    description: AI systems are inventoried (classified, with intended purpose, per tenant).
+    evidence: [system_description]
+    eu_ai_act: "Art. 49"
+    iso_42001: null
+  - id: GOVERN-2.1
+    aliases: [GOVERN-4.1]
+    function: Govern
+    description: Roles/responsibilities and access are documented (an accountable owner) and enforced (default-deny RBAC).
+    evidence: [access_documented, access_enforced]
+    eu_ai_act: "Art. 17(1)(m)"
+    iso_42001: "A.3.2"
   # ---- MAP ----
   - id: MAP-1.1
     function: Map
@@ -29,8 +55,8 @@ controls:
     iso_42001: "A.6.1"
   - id: MAP-2.3
     function: Map
-    description: Data provenance and lineage of the AI system are documented.
-    evidence: [development_process]
+    description: Data provenance, lineage, versioning and quality of the AI system are documented.
+    evidence: [development_process, data_governance]
     eu_ai_act: "Annex IV §2(b)"
     iso_42001: "A.7.4"
   # ---- MEASURE ----
@@ -48,27 +74,123 @@ controls:
     iso_42001: "A.7.5"
   - id: MEASURE-2.7
     function: Measure
-    description: Model integrity and provenance are verifiable (SBOM/signature).
-    evidence: [integrity]
+    description: Security and resilience are evidenced — verifiable model integrity (SBOM/signature) and managed, rotated credentials.
+    evidence: [integrity, secrets_managed, secrets_rotation]
     eu_ai_act: "Annex IV §2(e)"
     iso_42001: "A.7.4"
+  - id: MEASURE-2.12
+    function: Measure
+    description: Environmental impact (energy, carbon) of model training is assessed and documented.
+    evidence: [environmental_impact]
+    eu_ai_act: null
+    iso_42001: null
+  - id: MEASURE-2.1
+    function: Measure
+    description: >-
+      Test, evaluation and training details are documented so results can be reproduced
+      (signed reproducibility bundle whose inputs still verify, ADR 0038).
+    evidence: [reproducibility]
+    eu_ai_act: "Annex IV §2"
+    iso_42001: "A.6.2"
   # ---- MANAGE ----
   - id: MANAGE-2.2
     function: Manage
     description: Post-deployment monitoring detects drift/degradation and triggers response.
     evidence: [monitoring]
+    nist_subcategories: [MANAGE-2.2, MEASURE-2.4]
     eu_ai_act: "Annex IV §8"
     iso_42001: "A.8.3"
   - id: MANAGE-4.1
     function: Manage
-    description: Operational events are logged to an immutable, auditable trail.
-    evidence: [record_keeping]
+    description: Operational events and changes are logged to an immutable, auditable trail.
+    evidence: [record_keeping, changes]
     eu_ai_act: "Art. 12"
     iso_42001: "A.8.4"
   # ---- GenAI Profile ----
   - id: GENAI-3.2
     function: Manage
+    profile: GenAI
     description: GenAI guardrails (prompt-injection / PII / toxicity) are enforced.
     evidence: [risk_management]
+    nist_subcategories: [MANAGE-1.3]
     eu_ai_act: "Annex IV §5"
     iso_42001: "A.8.2"
+
+# All 72 AI RMF 1.0 subcategories (paraphrased titles; normative text: NIST AI 100-1).
+subcategories:
+  # GOVERN (19)
+  - {id: GOVERN-1.1, title: "Legal and regulatory requirements involving AI are understood, managed and documented"}
+  - {id: GOVERN-1.2, title: "Trustworthy-AI characteristics are integrated into organisational policies and practices"}
+  - {id: GOVERN-1.3, title: "Processes determine the needed level of risk management from the risk tolerance"}
+  - {id: GOVERN-1.4, title: "The risk management process and its outcomes are set through transparent policies and controls"}
+  - {id: GOVERN-1.5, title: "Ongoing monitoring and periodic review of the risk management process are planned"}
+  - {id: GOVERN-1.6, title: "Mechanisms are in place to inventory AI systems"}
+  - {id: GOVERN-1.7, title: "Processes exist to decommission and phase out AI systems safely"}
+  - {id: GOVERN-2.1, title: "Roles, responsibilities and lines of communication for AI risk are documented and clear"}
+  - {id: GOVERN-2.2, title: "Personnel and partners receive AI risk management training"}
+  - {id: GOVERN-2.3, title: "Executive leadership takes responsibility for decisions about AI risk"}
+  - {id: GOVERN-3.1, title: "Decision-making across the lifecycle is informed by a diverse team"}
+  - {id: GOVERN-3.2, title: "Policies define roles for human-AI configurations and oversight"}
+  - {id: GOVERN-4.1, title: "Policies foster a critical-thinking, safety-first mindset"}
+  - {id: GOVERN-4.2, title: "Teams document the risks and potential impacts of the technology and communicate them"}
+  - {id: GOVERN-4.3, title: "Practices enable AI testing, incident identification and information sharing"}
+  - {id: GOVERN-5.1, title: "Feedback from external stakeholders on impacts is collected and integrated"}
+  - {id: GOVERN-5.2, title: "Adjudicated feedback from relevant AI actors is regularly incorporated into design"}
+  - {id: GOVERN-6.1, title: "Policies address AI risks from third-party entities, including IP infringement"}
+  - {id: GOVERN-6.2, title: "Contingency processes handle failures in high-risk third-party data or AI systems"}
+  # MAP (18)
+  - {id: MAP-1.1, title: "Intended purposes, context, laws, norms and deployment settings are understood and documented"}
+  - {id: MAP-1.2, title: "Interdisciplinary AI actors and competencies establishing context are documented"}
+  - {id: MAP-1.3, title: "The organisation's mission and goals for the AI technology are documented"}
+  - {id: MAP-1.4, title: "The business value or context of use is defined or re-evaluated"}
+  - {id: MAP-1.5, title: "Organisational risk tolerances are determined and documented"}
+  - {id: MAP-1.6, title: "System requirements are elicited from relevant AI actors, with socio-technical implications"}
+  - {id: MAP-2.1, title: "The tasks and methods the AI system implements are defined"}
+  - {id: MAP-2.2, title: "The system's knowledge limits and how its output is overseen by humans are documented"}
+  - {id: MAP-2.3, title: "Scientific integrity and TEVV considerations, incl. data collection and selection, are documented"}
+  - {id: MAP-3.1, title: "Potential benefits of the intended functionality are examined and documented"}
+  - {id: MAP-3.2, title: "Potential costs, including from AI errors, are examined and documented"}
+  - {id: MAP-3.3, title: "The targeted application scope is specified and documented"}
+  - {id: MAP-3.4, title: "Operator and practitioner proficiency processes are defined and documented"}
+  - {id: MAP-3.5, title: "Human oversight processes are defined, assessed and documented"}
+  - {id: MAP-4.1, title: "Legal and technology risks of components, incl. third-party data and software, are mapped"}
+  - {id: MAP-4.2, title: "Internal risk controls for components, incl. third-party technology, are documented"}
+  - {id: MAP-5.1, title: "Likelihood and magnitude of each identified impact are documented"}
+  - {id: MAP-5.2, title: "Regular engagement with AI actors on positive, negative and unanticipated impacts is in place"}
+  # MEASURE (22)
+  - {id: MEASURE-1.1, title: "Approaches and metrics for the most significant mapped risks are selected"}
+  - {id: MEASURE-1.2, title: "Appropriateness of metrics and effectiveness of controls are regularly assessed"}
+  - {id: MEASURE-1.3, title: "Independent assessors or non-front-line experts are involved in assessments"}
+  - {id: MEASURE-2.1, title: "Test sets, metrics and TEVV tool details are documented"}
+  - {id: MEASURE-2.2, title: "Evaluations involving human subjects meet requirements and are representative"}
+  - {id: MEASURE-2.3, title: "Performance or assurance criteria are measured for deployment-like conditions"}
+  - {id: MEASURE-2.4, title: "Functionality and behaviour of the system are monitored in production"}
+  - {id: MEASURE-2.5, title: "The system is demonstrated valid and reliable; generalisation limits are documented"}
+  - {id: MEASURE-2.6, title: "The system is regularly evaluated for safety risks and can fail safely"}
+  - {id: MEASURE-2.7, title: "AI system security and resilience are evaluated and documented"}
+  - {id: MEASURE-2.8, title: "Transparency and accountability risks are examined and documented"}
+  - {id: MEASURE-2.9, title: "The model is explained, validated and documented; output is interpreted in context"}
+  - {id: MEASURE-2.10, title: "Privacy risk of the AI system is examined and documented"}
+  - {id: MEASURE-2.11, title: "Fairness and bias are evaluated and results documented"}
+  - {id: MEASURE-2.12, title: "Environmental impact and sustainability of training and management are assessed"}
+  - {id: MEASURE-2.13, title: "Effectiveness of the TEVV metrics and processes is evaluated and documented"}
+  - {id: MEASURE-3.1, title: "Existing, unanticipated and emergent risks are regularly identified and tracked"}
+  - {id: MEASURE-3.2, title: "Risk tracking is considered where measurement techniques are not yet available"}
+  - {id: MEASURE-3.3, title: "End users can report problems and appeal outcomes; feedback feeds evaluation"}
+  - {id: MEASURE-4.1, title: "Deployment-context measurement approaches are informed by domain experts"}
+  - {id: MEASURE-4.2, title: "Trustworthiness results in deployment are validated with relevant AI actors"}
+  - {id: MEASURE-4.3, title: "Measurable performance improvements or declines are identified from field data"}
+  # MANAGE (13)
+  - {id: MANAGE-1.1, title: "It is determined whether the system achieves its purpose and whether to proceed"}
+  - {id: MANAGE-1.2, title: "Treatment of documented risks is prioritised by impact, likelihood and resources"}
+  - {id: MANAGE-1.3, title: "Responses to high-priority risks are developed, planned and documented"}
+  - {id: MANAGE-1.4, title: "Negative residual risks to acquirers and end users are documented"}
+  - {id: MANAGE-2.1, title: "Resources to manage AI risks, and non-AI alternatives, are considered"}
+  - {id: MANAGE-2.2, title: "Mechanisms sustain the value of deployed AI systems"}
+  - {id: MANAGE-2.3, title: "Procedures respond to and recover from previously unknown risks"}
+  - {id: MANAGE-2.4, title: "Mechanisms supersede, disengage or deactivate systems performing inconsistently with intended use"}
+  - {id: MANAGE-3.1, title: "Risks and benefits from third-party resources are monitored and controlled"}
+  - {id: MANAGE-3.2, title: "Pre-trained models used in development are monitored"}
+  - {id: MANAGE-4.1, title: "Post-deployment monitoring plans, incl. incident response, recovery and change management, are implemented"}
+  - {id: MANAGE-4.2, title: "Continual-improvement activities are integrated into system updates"}
+  - {id: MANAGE-4.3, title: "Incidents and errors are communicated and tracked; response and recovery are documented"}

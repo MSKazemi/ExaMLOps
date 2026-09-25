@@ -37,6 +37,7 @@ from examlops.drift_advanced import (
     DriftResult,
     detect_concept_drift,
     estimate_performance,
+    estimate_signal_open,
     profile_inference,
 )
 
@@ -48,6 +49,8 @@ ENABLED_ENV = "EXAMLOPS_DRIFT_ADVANCED_ENABLED"
 COOLDOWN_ENV = "EXAMLOPS_DRIFT_ADVANCED_COOLDOWN"
 INTERVAL_ENV = "EXAMLOPS_DRIFT_ADVANCED_INTERVAL"
 LEASE_TTL_ENV = "EXAMLOPS_DRIFT_ADVANCED_LEASE_TTL"
+REJECTION_WINDOW_ENV = "EXAMLOPS_DRIFT_ADVANCED_REJECTION_WINDOW"
+DEFAULT_REJECTION_WINDOW_S = 3600
 DEFAULT_COOLDOWN_S = 3600
 DEFAULT_INTERVAL_S = 300
 DEFAULT_LEASE_TTL_S = 600
@@ -77,6 +80,11 @@ def interval_s() -> int:
 
 def lease_ttl_s() -> int:
     return _env_int(LEASE_TTL_ENV, DEFAULT_LEASE_TTL_S)
+
+
+def rejection_window_s() -> int:
+    """Lookback (seconds) over which A5 contract rejections are folded into a quality profile."""
+    return _env_int(REJECTION_WINDOW_ENV, DEFAULT_REJECTION_WINDOW_S)
 
 
 @dataclass
@@ -203,9 +211,18 @@ class AdvancedDriftScheduler:
                 self._audit("drift_advanced_skipped", "*", {"reason": report.note})
                 return report
         try:
-            from examlops.data.drift import prediction_models
+            from examlops.data.drift import prediction_models, rejection_models
 
-            models = self.only if self.only else prediction_models()
+            # A model whose every request was refused has no predictions, and is the one whose
+            # data quality most needs a verdict — so the rejection log widens the sweep.
+            # Rejections are keyed case-insensitively; keep the predictions' spelling of a name.
+            if self.only:
+                models = self.only
+            else:
+                by_key = {m.lower(): m for m in prediction_models()}
+                for m in rejection_models(since_s=rejection_window_s()):
+                    by_key.setdefault(m.lower(), m)
+                models = sorted(by_key.values())
             for model in models:
                 for kind, run in (
                     ("concept", self._concept),
@@ -247,16 +264,20 @@ class AdvancedDriftScheduler:
         severity: str,
         score: float | None,
         write: Callable[[], None],
+        *,
+        label: str | None = None,
     ) -> Check:
+        """Dedupe on the stored ``kind``; report the check as ``label`` (default: ``kind``)."""
+        shown = label or kind
         record, why = _should_record(
             model, kind, metric, severity, cooldown=cooldown_s(), now=self.clock()
         )
         if not record:
-            return Check(model, kind, severity, DEDUPED, why, score)
+            return Check(model, shown, severity, DEDUPED, why, score)
         if not self.dry_run:
             write()
         note = f"would record: {why}" if self.dry_run else why
-        return Check(model, kind, severity, RECORDED, note, score)
+        return Check(model, shown, severity, RECORDED, note, score)
 
     def _concept(self, model: str) -> Check:
         res: DriftResult = detect_concept_drift(model, window=self.window, persist=False)
@@ -279,8 +300,14 @@ class AdvancedDriftScheduler:
         res = estimate_performance(model, baseline=baseline, persist=False)
         if res["estimated"] is None:
             return Check(model, "estimate", None, SKIPPED, "no predictions")
-        severity = "WARN" if res["warn"] else "OK"
+        # WARN = an estimated drop; CRITICAL = that drop confirmed by realized labels (ADR 0022
+        # decision 4) — the only estimate `exa drift trigger` will act on.
+        severity = res["severity"]
         drop = (baseline - res["estimated"]) if baseline is not None else 0.0
+        # A recovery after a WARN/CRITICAL estimate must be written as an OK event, and at once:
+        # estimates only record non-OK events, so without it the last CRITICAL stays the newest
+        # estimated-performance signal and `exa drift trigger` keeps retraining a healthy model.
+        recovered = severity == "OK" and estimate_signal_open(model)
 
         def write() -> None:
             from examlops.data.drift import record_drift_event
@@ -293,23 +320,23 @@ class AdvancedDriftScheduler:
                 baseline=baseline,
                 method=res["method"],
             )
-            if severity == "WARN":  # warn only, never a forced retrain (C5 R4)
+            if severity != "OK" or recovered:
                 record_drift_event(
                     model,
                     "concept",
-                    severity="WARN",
+                    severity=severity,
                     score=drop,
                     metric=res["metric"],
-                    detail={
-                        "estimated": res["estimated"],
-                        "baseline": baseline,
-                        "label_free": True,
-                        "warn_drop": PERF_WARN_DROP,
-                    },
+                    detail={**res["event_detail"], "warn_drop": PERF_WARN_DROP},
                 )
 
         # An OK estimate is still stored (the estimated-vs-realized trend needs the points) but
         # only a WARN is a drift *event*, so the dedupe key is the concept/metric pair.
+        if recovered:
+            if not self.dry_run:
+                write()
+            note = "would record: recovered" if self.dry_run else "recovered"
+            return Check(model, "estimate", "OK", RECORDED, note, res["estimated"])
         if severity == "OK":
             latest = _parse_ts(prior[0]["ts"]) if prior else None
             if latest is not None and self.clock() - latest < cooldown_s():
@@ -317,18 +344,23 @@ class AdvancedDriftScheduler:
             if not self.dry_run:
                 write()
             return Check(model, "estimate", "OK", RECORDED, "estimate stored", res["estimated"])
-        return self._decide(model, "concept", res["metric"], severity, drop, write)
+        return self._decide(
+            model, "concept", res["metric"], severity, drop, write, label="estimate"
+        )
 
     def _quality(self, model: str) -> Check:
-        from examlops.data.drift import recent_prediction_features
+        from examlops.data.drift import count_inference_rejections, recent_prediction_features
 
         batch = recent_prediction_features(model, 200)
-        if not batch:
+        # A5: requests the ingress refused against the contract in the lookback window count as
+        # fully-null inputs — otherwise a model whose traffic is mostly refused looks healthy.
+        bad = count_inference_rejections(model, since_s=rejection_window_s())
+        if not batch and not bad:
             return Check(model, "data_quality", None, SKIPPED, "no recorded inputs")
-        prof = profile_inference(model, batch, persist=False)
+        prof = profile_inference(model, batch, bad_payloads=bad, persist=False)
 
         def write() -> None:
-            profile_inference(model, batch)
+            profile_inference(model, batch, bad_payloads=bad)
 
         return self._decide(model, "data_quality", None, prof.severity, prof.null_fraction, write)
 
@@ -340,4 +372,5 @@ __all__ = [
     "cooldown_s",
     "interval_s",
     "is_enabled",
+    "rejection_window_s",
 ]

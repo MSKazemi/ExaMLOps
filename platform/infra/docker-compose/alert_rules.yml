@@ -409,6 +409,48 @@ groups:
           summary: "The control plane cannot evaluate prediction drift"
           description: "Drift evaluations keep failing, so no drift.status_changed or alert.drift event is sent. The control-plane log says why."
 
+      # Scheduled audit maintenance (ADR 0028) runs every EXAMLOPS_AUDIT_MAINTENANCE_SECONDS
+      # (3600): signing the chain head, the WORM anchor, the transparency log and the retention
+      # prune. One failed step is a blip; two within three hours means the periodic export stopped.
+      - alert: AuditMaintenanceFailing
+        expr: sum(increase(examlops_audit_maintenance_errors_total[3h])) > 1
+        labels:
+          severity: warning
+          service: control-plane
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#auditmaintenancefailing"
+          summary: "Scheduled audit-trail maintenance keeps failing"
+          description: "Audit checkpoints are not being signed, anchored off-platform or transparency-logged on schedule. `exa audit maintenance-runs` shows which step fails and why."
+
+      # ADR 0017 clause 4: a feature view past its TTL (or never materialized while it declares a
+      # TTL or schedule) means serving's online lookup returns old values or nothing. Published
+      # per view from the registry on every scrape, so a control-plane restart cannot hide it.
+      - alert: FeatureViewStale
+        expr: max by (view) (examlops_feature_view_stale{job="control_plane"}) == 1
+        for: 30m
+        labels:
+          severity: warning
+          service: control-plane
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#featureviewstale"
+          summary: "Feature view {{ $labels.view }} is stale"
+          description: "The online store for {{ $labels.view }} is past its TTL or was never materialized. `exa feature status` shows its age and schedule; `exa feature materialize-due` runs what is due."
+
+      # FeatureViewStale can only fire on series the scrape publishes. A failed freshness read keeps
+      # the last values, and a process that never read them publishes none, so the failed read is
+      # alerted on directly. An absent() arm on the stale gauge would instead fire forever on every
+      # site that registers no feature view.
+      - alert: FeatureFreshnessUnreadable
+        expr: increase(examlops_feature_freshness_read_errors_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: control-plane
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/control-plane/#featurefreshnessunreadable"
+          summary: "Control plane cannot read feature-view freshness during scrapes"
+          description: "The feature-view freshness gauges are stale or missing, so FeatureViewStale cannot be trusted. The control-plane log says why."
+
       - alert: ControlPlaneCommandDead
         expr: sum(increase(control_plane_command_outcomes_total{outcome="dead"}[15m])) > 0
         labels:

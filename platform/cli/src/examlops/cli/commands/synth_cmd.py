@@ -155,6 +155,10 @@ def generate(
     ),
 ) -> None:
     """Generate, gate, and record a provenance-flagged synthetic dataset (spec R1–R4)."""
+    from examlops.cli._model_authz import guard_dataset
+
+    # ADR 0014 d4: records revisions and a synthetic_datasets row under this dataset.
+    guard_dataset(dataset, "editor")
     _require_synth()
     init_db()
     if rows <= 0:

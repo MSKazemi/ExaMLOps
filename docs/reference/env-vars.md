@@ -95,12 +95,15 @@ the usual cause of "it works from the CLI but not in the dashboard".
 | `EXAMLOPS_CATALOG_TEMPLATE_DIR` | unset (the active pack, then `<config dir>/catalog`) | Explicit override of where `exa catalog pull` resolves a recipe entry's relative `model_yaml_template` (ADR 0158). A recipe template is pack content, so by default it is looked up inside the active use-case pack and then in the site's own `<config dir>/catalog`; set this to try a template out before committing it to a pack. Never resolved against a repository checkout. |
 | `EXAMLOPS_AGENT_DIR` | derived from the repo | Where the Skipper package lives for explicit `exa agent memory … --local` recovery. Normal memory administration uses `AGENT_URL`. |
 | `EXAMLOPS_PROJECTS_BUCKET` | `examlops-projects` | MinIO bucket holding per-project `artifacts/`, `datasets/`, `cache/`. |
+| `EXAMLOPS_PROJECT_PIPELINES_LIVE` | `1` (on) | Kill switch for live hydration of a project's two pipeline surfaces (ADR 0092 d1, `examlops.project_pipelines`): `0`/`false`/`no`/`off` ⇒ never contact Prefect or Ray Serve, show the `project_pipelines` registry only. Even when on, nothing is contacted unless a URL is given or `PREFECT_API_URL` / `RAY_SERVE_URL` is set. |
+| `EXAMLOPS_PROJECT_PIPELINES_TIMEOUT` | `2.0` | Per-request timeout (seconds, clamped to 0.1–30) for that live hydration. A slow or unreachable source leaves the surface as the registry built it, with `live_error`. |
 
 ### Governance & secrets
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_SECRETS_KEYS` | unset | Secrets KEK keyring, `key_id:fernet_key,…`. |
+| `EXAMLOPS_GOVERNANCE_SECRET_MAX_AGE_DAYS` | `90` | Rotation window for the `secrets_rotation` evidence in `exa governance report` (ADR 0027): a stored secret whose value was last written longer ago is a gap. Bounded 1–3650; a malformed or out-of-range value falls back to 90. A KEK `exa secrets rewrap` does not reset the age. |
 | `EXAMLOPS_SECRETS_ACTIVE_KEY` | first key | Which key new writes are encrypted with. Rotate online with `exa secrets rewrap`; `DASHBOARD_SECRET_KEY` is a decrypt-only legacy fallback. |
 | `EXAMLOPS_ACTOR` | `$USER` | Actor stamped into every audit event. Set it in CI and in scripts, or the log records whichever account the runner happens to use. |
 | `EXAMLOPS_PRINCIPAL_KIND` | `human` | Set to `agent` by an agent runtime for the `exa` processes it drives. An agent is never auto-confirmed: with `-o json` or `--yes` a command that asks for confirmation is refused with `plan_required` instead of proceeding. Any other value (or unset) means a human, whose scripts behave as before. |
@@ -128,6 +131,22 @@ the usual cause of "it works from the CLI but not in the dashboard".
 | `EXAMLOPS_AUTOSCALE_LEASE_TTL` | `120` | TTL (s) of the controller lease (`autoscale-controller` lock) so only one controller acts; a crashed holder's lease expires. |
 | `EXAMLOPS_AUTOSCALE_INTERVAL` | `30` | Seconds between cycles when the controller loops (no `--once`). |
 | `EXAMLOPS_AUTOSCALE_PROBE_TIMEOUT` | `5` | Seconds the controller waits for Prometheus per signal query; a source that cannot answer holds the model. |
+| `EXAMLOPS_AUTOSCALE_QUEUE_DEPTH_QUERY` | unset (Little's-law default) | PromQL template overriding the `queue_depth` signal; must contain `{model}` or `{k8s_name}` and be ≤ 2000 chars, else the model is held as *signal source down*. |
+| `EXAMLOPS_AUTOSCALE_GPU_UTIL_QUERY` | unset (no source) | PromQL template for the `gpu_util` signal (the site's GPU exporter); same rules as above. Unset ⇒ a `gpu_util` policy holds as *signal absent*. |
+| `EXAMLOPS_AUTOSCALE_GPU_CAPACITY` | unset (unbounded) | Total GPUs the autoscaler and the cold-start activator may commit (Σ replicas × `gpu_fraction`); a scale-up beyond it is refused and audited. Unparsable or ≤ 0 ⇒ 0 (fail closed). |
+| `EXAMLOPS_AUTOSCALE_ACTIVATOR` | unset (off) | Truthy ⇒ the inference router holds a request for a scaled-to-zero model until the activator wakes it (ADR 0031 clause 2). |
+| `EXAMLOPS_AUTOSCALE_APPLIER` | `desired` | Applier the router's activator uses: `desired` / `k8s` / `record`. |
+| `EXAMLOPS_AUTOSCALE_ACTIVATOR_MAX_WAITERS` | `64` | Requests that may wait behind one model's cold start; the next is answered `503 overloaded`. |
+| `EXAMLOPS_AUTOSCALE_ACTIVATOR_TTL` | `5` | Seconds a model is remembered warm (no applier call on the hot path) and a failed wake is backed off. |
+| `EXAMLOPS_AUTOSCALE_ACTIVATOR_THREADS` | `16` | Size of the router's dedicated cold-start pool (1–256), kept apart from the event loop's default executor. |
+| `EXAMLOPS_AUTOSCALE_READY_URL` | `RAY_SERVE_URL` | Base URL of the OIP readiness route `GET …/v2/models/<m>/ready` the activator polls when the applier cannot count ready pods. |
+| `EXAMLOPS_AUTOSCALE_NAMESPACE` | service-account namespace, else `default` | Namespace of the predictor Deployment the `k8s` applier scales. |
+| `EXAMLOPS_AUTOSCALE_K8S_TARGET` | `{name}-predictor` | Deployment name template for the `k8s` applier; must contain `{name}` (DNS-1123 model name). |
+| `EXAMLOPS_K8S_API` | in-cluster `https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT` | Kubernetes API for the `k8s` applier. Plain `http` only to a loopback address (`kubectl proxy`). |
+| `KUBERNETES_SERVICE_PORT` | `443` | In-cluster API port, read with `KUBERNETES_SERVICE_HOST` when `EXAMLOPS_K8S_API` is unset. |
+| `EXAMLOPS_K8S_TOKEN_FILE` | service-account token | Bearer token file; an `https` API with no token is refused (no anonymous calls). |
+| `EXAMLOPS_K8S_CA_FILE` | service-account `ca.crt` | CA bundle verifying the API server (system CAs if the file is absent — still verified). |
+| `EXAMLOPS_K8S_TIMEOUT` | `10` | Per-request timeout (s) for the `k8s` applier, clamped to 1–60. |
 
 ### Data versioning & fleet
 
@@ -253,6 +272,30 @@ Defaults are in the module header of `platform/services/control_plane/app.py`.
 
 ---
 
+## Agent runtime & sandboxes (ADR 0144 / 0145)
+
+See [Agent runtime](../guides/agent-runtime.md). All of these are read by `exa agent runtime serve`
+and the `examlops.agent_runtime` package.
+
+| Variable | Default | Description |
+|---|---|---|
+| `EXAMLOPS_AGENT_RUNTIME_TOKENS` | unset (every request refused) | JSON map `{token: {"subject", "tenant"}}` of bearer tokens for the runtime's HTTP surface. Each token must be at least 16 characters and not a placeholder, and must name a non-empty `subject` and `tenant`; otherwise every request is refused with 503. The caller's tenant comes from its token. |
+| `EXAMLOPS_AGENT_STATE_DB` | `<data root>/agent/agent_state.db`, else `./agent_state.db` | The agent state store (threads, runs, checkpoints, tool journal, leases, last-known-good snapshot). Refused if it resolves to `platform.db`. |
+| `EXAMLOPS_AGENT_SNAPSHOT` | unset | Path of the agent snapshot file (`exa agent runtime snapshot --out`) that the runtime follows. |
+| `EXAMLOPS_AGENT_RUNTIME_INTERVAL` | `15` | Seconds between maintenance passes (snapshot follow, session sweep, orphan recovery). |
+| `EXAMLOPS_AGENT_RUNTIME_WORKER` | `worker-1` | This runtime process's worker id: the lease holder name and the affinity key. |
+| `EXAMLOPS_AGENT_ENTRYPOINT_ALLOW` | unset (no agent code is loaded) | Comma-separated module prefixes an agent version's `code.entrypoint` may be imported from. |
+| `EXAMLOPS_AGENT_QUOTAS` | unset | JSON `{"default": {...}, "tenants": {"<tenant>": {"max_sessions": N, "sandbox_isolation": "gvisor"}}}`, compiled into the agent snapshot. |
+| `EXAMLOPS_AGENT_MAX_SESSIONS` | `100` | Default per-tenant concurrent-session quota compiled into the snapshot when `EXAMLOPS_AGENT_QUOTAS` does not set one. |
+| `EXAMLOPS_SANDBOX_TEMPLATES` | `{"python-3.12-min": "python:3.12-slim"}` | JSON map of sandbox template name → container image. |
+| `EXAMLOPS_SANDBOX_EGRESS_PROXY` | unset (egress refused) | Egress proxy URL. Required before a version that declares a `sandbox.egress` allow-list can get a sandbox. The proxy's own policy is what is enforced; the per-version list is not sent to it. |
+| `EXAMLOPS_SANDBOX_PROXY_NETWORK` | unset (`--network none`) | Docker network a sandbox with egress joins. Make it an `internal` network whose only way out is the proxy. |
+| `EXAMLOPS_SANDBOX_CPUS` / `EXAMLOPS_SANDBOX_MEMORY` | `1` / `1g` | CPU and memory limits of each Docker sandbox. |
+| `EXAMLOPS_SANDBOX_WORKDIR` | `/tmp/examlops-sbx` | Root of the per-session work directories of the Apptainer (HPC) sandbox. |
+| `EXAMLOPS_SANDBOX_NAMESPACE` | `examlops-agents` | Kubernetes namespace of the agent-sandbox `SandboxClaim`s. |
+
+---
+
 ## Local LLM serving (vLLM)
 
 `exa serve llm` starts an OpenAI-compatible vLLM server, either through Compose or on an HPC
@@ -273,6 +316,28 @@ server process — you name the weights with `--hf-model`, not by exporting them
 | `EXAMLOPS_VLLM_RAY_PORT` | `6379` | Ray head port for multi-node tensor parallelism. |
 | `EXAMLOPS_VLLM_TIMEOUT` | `120` | Seconds to wait for the server to become ready. |
 | `EXAMLOPS_VLLM_CONNECT_TIMEOUT` | `10` | Per-request connect timeout. |
+| `EXAMLOPS_SGLANG_BASE_URL` | unset | Endpoint of a running `sglang.launch_server` for `engine: sglang` models (ADR 0016). A per-model `engine.base_url` wins; the vLLM variable is never consulted. Unset ⇒ `EchoEngine` fallback with a warning, or an error under `allow_fallback=False`. |
+| `EXAMLOPS_SGLANG_API_KEY` | empty | Bearer token the SGLang server requires, when `engine.api_key_secret_ref` is not set. |
+| `EXAMLOPS_QUANTIZATION_MAX_DROP` | `0.01` | Largest drop a quantized version may show against its base version on any C3 gate metric that declares no `max_drop` of its own (ADR 0016 d3). A non-numeric or negative value falls back to the default. |
+| `EXAMLOPS_SPECDECODE_FLUSH_CALLS` | `100` | Speculative-decoding FinOps: flush a `(model, tenant, engine, lookahead)` window to `specdecode_windows` after this many calls (ADR 0016 d4). |
+| `EXAMLOPS_SPECDECODE_FLUSH_SECONDS` | `60` | …or once the window is this many seconds old (checked on every speculative call, for every window). |
+
+| `EXAMLOPS_LORA_VERIFY_MODE` | `enforce` | ADR 0143 d8: how the launch preflight treats a LoRA adapter that fails signature verification. `enforce` refuses the launch. `warn` records the failure and launches anyway. Any other value is treated as `enforce`. |
+| `EXAMLOPS_TOOL_CHOICE_POLICY` | `enforce` | ADR 0143 d9: `enforce` turns an agent tool step's `tool_choice` of `auto`, `none` or absent into `required`, and keeps a named function choice. `off` passes the caller's value through. A typo is treated as `enforce`. |
+| `EXAMLOPS_KV_ROUTING` | unset | ADR 0143 d2: opts the gateway scorer into KV-aware routing (prefix affinity plus queue and KV-cache load). Unset means round-robin with session affinity. |
+| `EXAMLOPS_KV_ROUTING_BREAK_EVEN` | `4` | The fewest replicas at which `EXAMLOPS_KV_ROUTING` takes effect. Smaller pools stay round-robin. |
+| `EXAMLOPS_CACHE_SALT_KEY` | unset | ADR 0143 d3: secret key for the per-project prefix-cache salt (HMAC). Unset, the salt is a plain digest of the project name, so anyone who knows the name can derive it. Set it on every multi-tenant deployment. |
+
+### Suspend/resume seam (ADR 0109)
+
+See the [suspend/resume guide](../guides/suspend-resume.md).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_SUSPEND_LOCAL_DIR` | unset | Root of the node-local replica tier for `tiered-training-checkpoint`. Unset ⇒ persistent-only, and the snapshot pointer says so. |
+| `EXAMLOPS_SUSPEND_LOCAL_MAX_BYTES` | `4294967296` | Size cap of the local tier (positive integer bytes). A malformed value degrades the tier to persistent-only rather than failing the snapshot. |
+| `EXAMLOPS_SUSPEND_VLLM_URL` | unset | vLLM server root for the `vllm-sleep` backend. `EXAMLOPS_VLLM_API_KEY` is sent only to this origin. |
+| `EXAMLOPS_SUSPEND_VLLM_TIMEOUT` | `60` | Per-call timeout (seconds, clamped to 1–600) for the `vllm-sleep` backend's HTTP calls. |
 
 
 ---
@@ -286,6 +351,15 @@ Variables read by the `exa` CLI's next-gen surface (MCP/A2A, `exa ask`, config c
 | `EXAMLOPS_MCP_ALLOW_WRITES` | unset (read-only) | When truthy (`1`/`true`/`yes`/`on`), `exa mcp serve` registers mutating tools (e.g. `trigger_retrain`). Equivalent to `exa mcp serve --allow-writes`. |
 | `EXAMLOPS_MCP_GENERATED_TOOLS` | unset (off) | When truthy (`1`/`true`/`yes`/`on`), `exa mcp serve` additionally registers the **generated** tool surface (ADR 0147 d1) — one MCP tool per `exa` leaf command, built from the live Click tree joined to the per-command tier table in `examlops.cli.surface`. Input schema comes from the declared parameters, `outputSchema` from the CLI's one-JSON-document contract, and the MCP annotations from the tier (`read` → `readOnlyHint`, `destructive` → `destructiveHint`, `surface.IDEMPOTENT` → `idempotentHint`). Off by default: with the flag unset the agent surface is exactly the hand-written registry. Generated names are prefixed `exa_`, so they can never collide with a hand-written workflow tool. `cli_only` commands are never generated, and mutating generated tools go through the same plan/apply gate as hand-written ones. |
 | `EXAMLOPS_MCP_GENERATED_WORKSPACE` | instance data dir `mcp-workspace/`, else `$XDG_DATA_HOME/examlops/mcp-workspace` | Directory every filesystem parameter of a **generated** tool is contained inside (the same containment `examlops.cli.surface.contain_path` gives the dashboard CLI Console): absolute paths, `~` and any `..` that climbs out are refused. Created on demand. |
+| `EXAMLOPS_MCP_CONFIRM_TIERS` | `B,C` | Tiers whose direct human MCP calls need `confirm=true` (ADR 0081 rule 3). Takes a subset of `A,B,C`, or `none`. A malformed value keeps the default. |
+| `EXAMLOPS_MCP_AUTO_CONFIRM` | unset | The explicit `--yes` for scripted MCP use. `CI` alone does not auto-confirm. |
+| `EXAMLOPS_MCP_HITL_TIERS` | `B,C` | Tiers whose agent-applied plans need a human approval token (ADR 0082 layer 4). Takes a subset of `A,B,C`, or `none`. A malformed value keeps the default. |
+| `EXAMLOPS_MCP_AUTH` | `none` | `oauth` turns the MCP HTTP transport into an OAuth 2.1 resource server (ADR 0082 layer 3). With `none`, the transport binds to loopback only. See [trust tiers](../guides/provider-security-trust-tiers.md). |
+| `EXAMLOPS_MCP_RESOURCE` | unset | The canonical `https` URI of the MCP endpoint. Required with `oauth`, and tokens must name it in `aud`. |
+| `EXAMLOPS_MCP_ALLOWED_ORIGINS` | unset | Comma-separated `Origin` allow-list for the MCP HTTP transport. Loopback origins are allowed only when the server itself binds to loopback. |
+| `EXAMLOPS_MCP_MAX_BODY_BYTES` | `1048576` | Request-body cap on the MCP HTTP transport. Larger bodies get a 413. |
+| `EXAMLOPS_MCP_ANON_DENY_AUDIT_PER_MIN` | `60` | The most unauthenticated MCP HTTP refusals audited per minute. All of them are still counted in `examlops_mcp_http_auth_total`. |
+| `EXAMLOPS_MCP_MAX_BOUND_SESSIONS` | `10000` | Size of the LRU that binds each MCP session id to the principal that opened it. |
 | `AGENT_URL` | `http://localhost:18004` | Skipper agent OpenAI-compatible bridge that `exa ask` calls. Also settable via `exa config set agent <url>`. |
 | `AGENT_API_KEY` | unset | Bearer token sent by `exa ask` when the agent bridge is token-gated. |
 | `AGENT_ALLOW_UNAUTHENTICATED` | unset | Development opt-out only. An agent bound beyond loopback (`AGENT_SERVER_HOST` other than `127.0.0.1`/`localhost`/`::1`, as in compose) with no `AGENT_API_KEY`/`AGENT_API_KEYS_JSON` refuses every request with 503; set this truthy to serve it as the anonymous `local` principal anyway. |
@@ -369,6 +443,16 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_VAULT_ADDR` / `EXAMLOPS_SECRETS_KEY` | unset | **D7** secrets — OpenBao address; else Fernet-local store keyed by `EXAMLOPS_SECRETS_KEY` (or `DASHBOARD_SECRET_KEY`). |
 | `EXAMLOPS_VAULT_ADDR` (Compose overlay) | `http://openbao:8200` | Set on `control-plane`, `dashboard`, `agent` and `dataplane` only by the opt-in `docker-compose.secrets.yml` overlay, which also passes `EXAMLOPS_VAULT_TOKEN` and `EXAMLOPS_VAULT_STRICT` through from `.env`. Without the overlay no service is told about a vault. The Helm chart sets it from `secrets.openbao.enabled`. |
 | `EXAMLOPS_VAULT_STRICT` | unset (fall back) | When truthy, a configured-but-unreachable OpenBao/Vault **fails the read** instead of silently downgrading to the local store or an environment variable. Set it wherever Vault is the system of record. |
+| `EXAMLOPS_VAULT_MOUNT` | `secret` | KV v2 mount the OpenBao/Vault backend reads and writes under (ADR 0011, `examlops.secrets`). |
+| `EXAMLOPS_VAULT_NAMESPACE` | unset | Vault Enterprise / OpenBao namespace, sent as `X-Vault-Namespace` when set. |
+| `EXAMLOPS_VAULT_TIMEOUT` | `5` | HTTP timeout (seconds) for vault calls; a non-numeric or non-positive value falls back to 5. |
+| `EXAMLOPS_SECRETS_WRITE_BACKEND` | `local` | Where `exa secrets set`/`rotate` write (ADR 0011): `local` (Fernet store in `platform_db`) · `vault` · `sops`. Any other value is refused. A write to an unreachable manager fails; it never lands somewhere else. |
+| `EXAMLOPS_SOPS_FILE` | unset (tier off) | SOPS + age encrypted document (YAML/JSON/dotenv) — the dev/CI fallback tier of ADR 0011 cl. 1, tried after vault and before the local store. A secret path `a/b` maps to the nested key `{a: {b: …}}`; each read decrypts only that key. |
+| `EXAMLOPS_SOPS_BIN` | `sops` on `$PATH` | Explicit path of the `sops` executable. |
+| `EXAMLOPS_SOPS_TIMEOUT` | `10` | Timeout (seconds) of every `sops` call; a non-numeric or non-positive value falls back to 10. |
+| `SOPS_AGE_KEY_FILE` / `SOPS_AGE_KEY` | unset | The age identity `sops` decrypts `EXAMLOPS_SOPS_FILE` with (read by `sops` itself; the platform only reports whether one is present). The encrypted file may be committed; this identity may not. |
+| `EXAMLOPS_SECRETS_INJECT` | `1` (on) | Startup injection (ADR 0011 cl. 2, `examlops.secrets.inject`): a service env value `secret://<path>` is resolved through the secrets client, `secret+file:///<path>` from a mounted file. `0`/`false`/`no`/`off` disables it — references are then **removed** unresolved and a warning is logged. A no-op when the environment holds no reference. |
+| `EXAMLOPS_SECRETS_INJECT_STRICT` | `1` (on) | An unresolvable reference aborts start-up (fail closed). `0` lets the service start with that variable removed — never left holding the literal `secret://…` string. |
 | `EXAMLOPS_SECRET_TENANTS` | unset | **D7** per-tenant secret path-prefix scoping. |
 | `EXAMLOPS_MULTITENANCY` | unset (off) | **D6** RBAC — off ⇒ every `authz.check` allows (single-tenant compat); truthy ⇒ default-deny enforcement. |
 | `RAY_SHADOW_WORKERS` | `2` | Threads for **shadow mirroring** (ADR 0024 clause 1). A pool of its own — never the prediction pool — so a shadow slower than the champion cannot take threads from the traffic it is shadowing. |
@@ -378,13 +462,26 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_REASONING_BUDGET_DEFAULT` | unset | Floor reasoning budget (max thinking tokens) for every gateway request; the tightest of this, the model, project, key and per-call budget applies. |
 | `EXAMLOPS_REASONING_TRACE_CAPTURE` | unset (off) | Capture a backend-returned reasoning trace, redacted through the ADR 0148 d2 telemetry redactor (fails closed), into `reasoning_traces`. |
 | `EXAMLOPS_REASONING_TRACE_TTL_SECONDS` | `86400` | TTL of a captured reasoning trace. |
+| `EXAMLOPS_STRUCTURED_CONFIG` | `<config dir>/structured.yaml` | Structured-output & reasoning policy file (ADR 0035 cl. 3, `examlops.structured.policy`): default schemas and reasoning defaults. Validated as a whole (`exa gateway schema list`); a file that does not validate is ignored entirely at request time, never half-applied. |
 | `EXAMLOPS_GUARDRAIL_MODE` | `monitor` | **D8** guardrails at the **gateway** boundary (ADR 0026 clause 3) — every `GatewayClient.chat` call and every non-streaming request through the standalone `llm-gateway` service's `/v1/chat/completions` (2026-09-23) is scanned on the way in and on the way out; a streaming service request is scanned on the way in only (see `LLM_GATEWAY_SEMANTIC_CACHE` below for the same streaming caveat on the cache). `monitor` (default) records findings to `guardrail_events` and changes nothing a caller can observe; `enforce` blocks injection/toxicity and redacts PII and secrets, failing closed on a scanner error; `off` skips the scan at no cost. An unrecognised value falls back to `monitor` rather than off, so a typo cannot silently disable the boundary. |
 | `EXAMLOPS_GUARDRAIL_PII_NER` | unset (off) | **D8** PII detection (ADR 0026 clause 1) — truthy enables Presidio as an **additive** NER supplement to the regex PII detectors (adds `PERSON`/`LOCATION`/`NRP`, entity types a regex cannot find; the regex detectors keep email/phone/SSN/credit-card/IBAN/IP regardless). Needs `examlops[guardrails-presidio]` and a separately-installed spaCy model; unavailable or misconfigured degrades to regex-only, logged once, never raised. |
 | `EXAMLOPS_GUARDRAIL_PRESIDIO_MODEL` | `en_core_web_lg` | The spaCy model Presidio NER loads when `EXAMLOPS_GUARDRAIL_PII_NER` is on. The small model (`en_core_web_sm`) works and is what the opt-in test suite verifies against, but is measurably less accurate — verified mistagging a person's name and a street address as `ORGANIZATION` in the same sentence a `PERSON`/`LOCATION` pair it got right moments earlier. |
+| `EXAMLOPS_GUARDRAIL_POLICY` | unset (then `<config dir>/guardrails.yaml` if it exists) | Declarative guardrail policy file (ADR 0026 cl. 3, `examlops.guardrails.policy`): ordered checks per direction, layered default → tenant → route. Validate with `exa guardrails policy validate` (or pass `--file`). |
+| `EXAMLOPS_GUARDRAIL_WORKERS` | `4` | Size of the thread pool policy checks run on (clamped to 1–32). |
 | `EXAMLOPS_SIGNING_KEY` | unset | **D3** supply-chain — the **legacy** HMAC model-signing key (else D7 secret `model-signing/key`). Used to sign only when no Ed25519 key is configured, and to verify versions signed that way. Every verifier holding it could also forge, so prefer Ed25519. |
 | `EXAMLOPS_SIGNING_PRIVATE_KEY_FILE` | unset | Ed25519 private key (PEM, `openssl genpkey -algorithm ed25519 -out signing.pem`) used by `exa models sign` and by the training pipeline at registration; else the D7 secret `model-signing/ed25519-private`. Only the signer holds it: never set it on Ray Serve. |
 | `EXAMLOPS_SIGNING_PUBLIC_KEYS` | unset | The serving plane's trust bundle: comma-separated base64 raw Ed25519 public keys (`exa models sign` prints the signer's). A signature verifies only under one of these. Keep a retiring key listed until everything it signed is re-signed. |
 | `EXAMLOPS_SIGNING_PUBLIC_KEYS_FILE` | unset | The same trust bundle as a file of one or more PEM public keys (`openssl pkey -in signing.pem -pubout`). Both sources are read. |
+| `EXAMLOPS_SIGNING_SCHEME` | `auto` | Model-signing scheme (ADR 0013): `auto` = Ed25519 when a private key is configured, else legacy HMAC; `sigstore` = keyless (Fulcio certificate + Rekor log entry, `examlops[supplychain]` extra). An unknown value is refused, never downgraded. |
+| `EXAMLOPS_SIGSTORE_IDENTITIES` | unset (nothing trusted) | Keyless verification trust list: comma-separated `<identity>\|<issuer>` pairs allowed to sign models. An entry without an issuer is dropped; with none configured a `sigstore-v1` signature verifies as `untrusted-identity`. |
+| `EXAMLOPS_SIGSTORE_IDENTITY_TOKEN` / `EXAMLOPS_SIGSTORE_IDENTITY_TOKEN_FILE` | unset (ambient CI credential) | OIDC identity token (or a file holding it) keyless signing presents to Fulcio. Unset ⇒ ambient detection (GitHub Actions, GitLab, Buildkite, GCP); there is no interactive browser flow. |
+| `EXAMLOPS_SIGSTORE_INSTANCE` | `production` | Sigstore instance: `production` or `staging`; anything else is refused. |
+| `EXAMLOPS_SIGSTORE_OFFLINE` | unset (off) | Truthy ⇒ verify against the trusted root already in the local TUF cache without refreshing it (air-gapped HPC). Signing always needs Fulcio/Rekor and is unaffected. |
+| `EXAMLOPS_PROVENANCE_AT_REGISTRATION` | `auto` | Whether the training pipeline records the AI-BOM + SLSA provenance of a version it registers (ADR 0013 cl. 2–3): `auto` = when signing produced a manifest digest (Ed25519 or Sigstore), else skip; `required` = always, downloading the artifacts if needed, and fail the run when it cannot; `off` = never. |
+| `EXAMLOPS_SOURCE_COMMIT` | unset (then `GITHUB_SHA`, then `CI_COMMIT_SHA`) | Source commit recorded in SLSA provenance (`examlops.supplychain.provenance.BuildContext.from_env`). |
+| `GITHUB_SHA` | set by GitHub Actions | Read (never set) as the provenance source commit when `EXAMLOPS_SOURCE_COMMIT` is unset. |
+| `EXAMLOPS_SOURCE_REPOSITORY` | unset | Source repository URI recorded in SLSA provenance. |
+| `EXAMLOPS_BUILDER_ID` | unset | SLSA `builder.id` recorded in provenance (e.g. the CI workflow URI). |
 | `EXAMLOPS_SIGN_AT_REGISTRATION` | `auto` | Whether the training pipeline signs each version it registers: `auto` signs when a signing key is configured, `required` fails the run when it cannot sign (so an unsigned version never reaches a serving plane that enforces), `off` never signs. |
 | `EXAMLOPS_SERVING_BACKEND` | `ray-compose` | **E1** serving backend — `ray-compose` (default) or `kserve-k8s`. |
 | `EXAMLOPS_VECTOR_BACKEND` | `sqlite` | **B5** vector store — `sqlite` (persistent fallback), `pgvector` (production default) or `qdrant` (scale-out). An unknown value is an error, never a silent fallback. |
@@ -433,6 +530,10 @@ All additive and **graceful-degrading** — unset means the local/pure-python fa
 | `EXAMLOPS_SLURM_CPUS` | `4` | CPUs per task |
 | `GPU_COST_PER_HOUR` | `2.50` | USD cost per GPU-hour used by `exa models cost --record` |
 | `CPU_COST_PER_HOUR` | `0.05` | USD cost per CPU-hour (used for Flux/CPU-only jobs in `exa models cost --record`) |
+| `EXAMLOPS_DIST_CHECKPOINT_STORE` | unset | [Distributed training](../guides/distributed-training.md) (ADR 0032) durable checkpoint store: a shared directory / `file://`, `s3://bucket/prefix` (MinIO via pyarrow), or `gs://`/`gcs://`/`hdfs://` through fsspec; any other scheme is refused. Unset ⇒ checkpoints stay in the run directory. Configured but unusable ⇒ the run fails before submission. `--checkpoint-store` overrides it. |
+| `EXAMLOPS_DIST_CHECKPOINT_S3_ENDPOINT` | unset (`MLFLOW_S3_ENDPOINT_URL`) | S3 endpoint for an `s3://` checkpoint store; credentials from `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` or pyarrow's default chain. |
+| `EXAMLOPS_DIST_MAX_WAIT_S` | `86400` | Seconds a distributed training attempt may run before the supervisor cancels the job and counts it lost (recoverable). A positive integer; anything else is refused before submission. |
+| `EXAMLOPS_DIST_RDZV_PORT` | `29500` | torch-elastic c10d rendezvous port on the allocation's first node for multi-node jobs (1024-65535). |
 
 ### HPC scheduler adapter (Phase 23)
 
@@ -452,6 +553,10 @@ The scheduler backend and its transport are independent. `EXAMLOPS_SLURM_MODE` a
 | `EXAMLOPS_HPC_WORKDIR` | see the note | Where an adapter keeps its **own** job files (logs, per-job folders), as `<it>/<kind>`. Set it on a filesystem the compute nodes can see; CI wants a temporary directory. Unset, the **mock** scheduler uses the cache directory — its historical default was a folder inside the installed package, so a mock run wrote generated scripts and pickles holding absolute local paths into the checkout. A real **slurm**/**flux** adapter keeps its relative default (`slurm_jobs` / `flux_jobs`): those paths reach `sbatch --output` and must resolve on the cluster, so the submit directory is the operator's to choose. Distinct from `EXAMLOPS_JOB_SCRIPT_DIR`, which holds the generated *scripts*. |
 | `EXAMLOPS_HPC_REMOTE_WORKDIR` | adapter working dir | Root for per-job dirs on the cluster |
 | `EXAMLOPS_HPC_GPUS` | unset | GPUs per job (`0`/unset ⇒ no GPU flag; lxp Flux has 0 enrolled) |
+| `EXAMLOPS_HPC_GPU_FRACTION` | unset (whole GPU) | Fractional GPU ask for a run (ADR 0030 d3, `examlops.gpu_sharing.scheduler_map`), e.g. `0.25`. Mapped onto MIG GRES or Slurm `shard` only where the cluster declares the mechanism; otherwise falls back to a whole GPU with a warning. Normally exported by `exa pipeline run --hardware-profile`, which clears any stale shell value first. |
+| `EXAMLOPS_HPC_MIG_PROFILE` | unset | MIG slice to request (e.g. `1g.5gb`, `3g.20gb`); set the same way as the fraction above. |
+| `EXAMLOPS_HPC_GPU_SHARING` | unset (no sharing) | JSON of the target cluster's GPU-sharing capabilities (`supports_mig`, `supports_timeslice`, `mig_profiles`, …), exported by `hpc_registry.resolve_env` from the cluster registry; invalid JSON is an error. |
+| `EXAMLOPS_HARDWARE_PROFILE` | set by `exa pipeline run --hardware-profile` | The resolved `name@vN` hardware profile a run was sized by (ADR 0157 Phase 4); the training pipeline tags it on the MLflow run as `hardware_profile`. |
 | `EXAMLOPS_HPC_ACCOUNT` | unset | Account/bank (`--account` for Slurm, `--bank` for flux-accounting) |
 | `EXAMLOPS_HPC_QOS` | unset | QoS/queue (`--qos` for Slurm, `--queue` for Flux) |
 | `EXAMLOPS_HPC_CONSTRAINT` | unset | Node constraint (`--constraint` / `--requires`) |
@@ -462,6 +567,7 @@ The scheduler backend and its transport are independent. `EXAMLOPS_SLURM_MODE` a
 | `EXAMLOPS_HPC_MEM` | `16G` (or `EXAMLOPS_SLURM_MEM`) | Memory per job. |
 | `EXAMLOPS_HPC_CPUS` | `4` (or `EXAMLOPS_SLURM_CPUS`) | CPUs per task. |
 | `EXAMLOPS_HPC_REGISTRY` | `~/.config/examlops/clusters.yaml` | HPC Fleet cluster-definition registry file (Phase 36) |
+| `EXAMLOPS_DATASHEETS_DIR` | unset (`<pack>/datasheets`, then `<config dir>/datasheets`) | Directory of dataset datasheets (`<dataset>.yaml`/`.yml`/`.json`, ADR 0079 d6). When set it is the **only** lookup location. Read by `exa cards lint --datasheet`, the `datasheet` promotion gate and the `residency` gate (`distribution.residency`). |
 | `EXAMLOPS_HPC_CLUSTER` | unset | Default fleet cluster for commands taking `--cluster` (Phase 36) |
 | `MLFLOW_TRACKING_URI` | `http://localhost:15000` | MLflow server endpoint for logging and model loading |
 | `MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD` | unset | The credential every MLflow client sends when the server requires authentication (plan P3.6): MLflow's own SDK reads them, and the platform's raw-HTTP callers (control plane, dashboard, agent, CLI) send the same Basic header through `examlops.service_auth`. Put them in `.env`; every service that loads it picks them up. |
@@ -820,6 +926,7 @@ Used by services to reach each other inside the Docker Compose network (internal
 | `MINIO_CONSOLE_URL` | `http://localhost:19001` | Internal MinIO console URL |
 | `LOKI_URL` | `http://localhost:13100` | Internal Loki URL the dashboard queries for logs |
 | `JUPYTERHUB_URL` | `http://localhost:18888` | Internal JupyterHub URL (workbench status) |
+| `LLM_GATEWAY_URL` | `http://localhost:18020` | LLM gateway service (ADR 0151) the dashboard probes for liveness (`/health`) only; deeper diagnostics are `exa gateway status\|providers`. |
 
 ---
 
@@ -839,6 +946,7 @@ Override the URLs sent to the browser when the dashboard is accessed from a remo
 | `PUBLIC_MINIO_CONSOLE_URL` | `http://localhost:19001` | Clickable MinIO console URL |
 | `PUBLIC_LOKI_URL` | `http://localhost:13100` | Clickable Loki URL |
 | `PUBLIC_JUPYTERHUB_URL` | `http://localhost:18888` | Clickable JupyterHub URL |
+| `PUBLIC_LLM_GATEWAY_URL` | `http://localhost:18020` | Clickable LLM gateway URL |
 | `PUBLIC_DASHBOARD_URL` | `http://localhost:18099` | The dashboard's own browser-facing base, used in links it emits |
 | `GRAFANA_LOKI_EXPLORE_URL` | `http://localhost:13000/explore` | Grafana *Explore* deep link the log views point at |
 
@@ -957,6 +1065,14 @@ OpenTelemetry distributed tracing, exported to Grafana Tempo. Off by default; en
 | `OTEL_SERVICE_NAME` | per service | Span service name (`control-plane` / `dashboard` / `ray-serving`) |
 | `OTEL_TRACES_SAMPLER` | `parentbased_traceidratio` | Sampler. The parent-based default keeps a trace whole once it is sampled. |
 | `OTEL_TRACES_SAMPLER_ARG` | `0.05` | Sampled fraction. Bounded to 5% deliberately: an unsampled tracer on a busy inference path costs more than the traces are worth. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | `grpc` | Primary exporter protocol: `grpc` or `http/protobuf` (the traces-specific one wins). `http/json` is unsupported and falls back to gRPC with a warning. With `http/protobuf` the default endpoint is `http://tempo:4318` and `/v1/traces` is appended to the base endpoint. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset | Full OTLP/HTTP traces URL, used as-is (no path appended). |
+| `OTEL_EXPORTER_OTLP_HEADERS` / `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | unset | `key=value,…` headers for the OTLP/HTTP primary exporter. |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` / `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` | `10000` | Per-request OTLP/HTTP timeout in **milliseconds**, clamped to 0.5–60 s. |
+| `EXAMLOPS_OTEL_CONSUMERS` | unset (none) | Agent-observability consumers (ADR 0021): comma list of `langfuse`, `phoenix`. Each gets its own span processor beside the primary exporter; a misconfigured one is logged and skipped. See [AgentOps](../guides/agentops.md). |
+| `EXAMLOPS_OTEL_ALLOW_INSECURE` | unset | `1` allows a consumer credential over plain HTTP to a non-loopback host (dev only). Otherwise such a consumer is refused. |
+| `LANGFUSE_HOST` (or `LANGFUSE_BASE_URL`) / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | unset | Langfuse consumer: traces go to `<host>/api/public/otel/v1/traces` with Basic `pk:sk`. No default host — nothing is sent to a SaaS you did not name. |
+| `PHOENIX_COLLECTOR_ENDPOINT` / `PHOENIX_API_KEY` | unset | Arize Phoenix consumer: `<endpoint>/v1/traces`, optional bearer key. |
 
 The control plane and dashboard are auto-instrumented via the `opentelemetry-instrument` launcher
 (no app code changes); the Ray Serve inference pipeline uses the `examlops.observability` helper.
@@ -1035,8 +1151,28 @@ Unset ⇒ the carbon provider uses its static coefficient rather than a live gri
 | `EXAMLOPS_KSERVE_GATEWAY_URL` | unset | Gateway the generated KServe endpoint is reachable on; recorded on the endpoint. |
 | `EXAMLOPS_KSERVE_NAMESPACE` | `examlops` | The KServe substrate's real, live apply (ADR 0142 d6, `examlops.serving.substrates.kubectl_client`) — the namespace every `InferenceService`/`LLMInferenceService` is applied to, read from and deleted from. Explicit rather than the kubeconfig context's ambient default, since the rendered manifests carry no `metadata.namespace` on purpose (render stays pure). Per-project namespace isolation is a separate, not-yet-decided design question; every project shares this one namespace for now. |
 | `EXAMLOPS_KSERVE_FIELD_MANAGER` | `examlops` | The `--field-manager` Server-Side Apply uses for KServe objects (ADR 0142 d6) — the identity that shows up in `metadata.managedFields`, distinguishing exa's own applies from anything else (a human `kubectl apply`, another controller) that later touches the same object. |
+| `EXAMLOPS_KSERVE_DELIVERY` | `server-side-apply` | How the KServe substrate delivers a servable (ADR 0142 d6, R-SUB-25): `server-side-apply` or `gitops` (write a GitOps tree instead of applying). Anything else is refused. |
+| `EXAMLOPS_KSERVE_GITOPS_DIR` | unset | Directory the `gitops` delivery writes manifests into; required when `EXAMLOPS_KSERVE_DELIVERY=gitops`. |
+| `EXAMLOPS_KSERVE_VERIFIER_IMAGE` | unset | Image of the platform's verified storage initializer (ADR 0142 d3, `examlops.supplychain.pod_verifier`) that downloads then verifies model bytes inside a KServe pod. Default for `exa serve verifier-manifest --image`; without it a render that must verify is refused. |
+| `EXAMLOPS_KSERVE_STORAGE_CONTAINER` | `examlops-verified-storage` | Name of the `ClusterStorageContainer` carrying that verifier. |
+| `EXAMLOPS_KSERVE_TRUST_CONFIGMAP` | `examlops-signing-trust` | ConfigMap holding the Ed25519 trust bundle mounted into the verifier. |
+| `EXAMLOPS_VERIFY_MODE` / `EXAMLOPS_VERIFY_MODEL` / `EXAMLOPS_VERIFY_VERSION` / `EXAMLOPS_VERIFY_RECORD` | set on the rendered pod | Inputs of the in-pod verifier, set by the platform's KServe render (downward API from pod annotations, or literal env on an `LLMInferenceService`), not by an operator: mode `off`\|`warn`\|`enforce` (empty ⇒ not a platform servable, passed through), the model and version the signature binds, and the public signature record JSON. `enforce` exits non-zero — stopping the pod — on a failed or unanswerable verification. |
+| `EXAMLOPS_KUBERAY_IMAGE` | unset | Pinned ray-serving image for the KubeRay `RayService` render (ADR 0015 d1): default for `exa serve kuberay-manifest --image` and the `kuberay-k8s` serving backend, which refuses to render without it. |
 | `EXAMLOPS_MLFLOW_ARTIFACTS_DESTINATION` | unset | The MLflow tracking server's `--artifacts-destination` (e.g. `s3://mlflow-artifacts`). A KServe manifest must point at storage a pod can read, so a version whose artifacts are reported as `mlflow-artifacts:/…` is mapped onto this location; unset ⇒ such a version is refused and you pass `--artifact-uri` instead. |
 | `FEATURE_STORE_DIR` | `.feature_store` beside the platform datastore | On-disk feature store root. |
+| `EXAMLOPS_FEATURES_DIR` | `<pack>/features` | [Feature store](../guides/feature-store.md) (ADR 0017): directory of the use-case pack's feature-view definitions (`*.yaml`), read by the training feature gate, serving's `FeatureTransformer` and `exa feature sync`. |
+| `EXAMLOPS_FEATURE_GATE` | `enforce` | Training feature gate: `enforce` fails a run whose data violates its bound feature view, `warn` records and continues, `off` skips. |
+| `EXAMLOPS_FEATURE_GATE_MAX_ROWS` | `1000` | Rows per table the training feature gate reads and validates. Only these rows are loaded, never the whole dataset. |
+| `EXAMLOPS_FEATURE_GATE_INGEST` | `1` | `0` validates training data without writing it to the offline store, which also skips the point-in-time check. |
+| `EXAMLOPS_SERVING_FEATURE_VIEW` | unset (the view marked `serving: true`) | The feature view serving's `FeatureTransformer` applies to every request. |
+| `EXAMLOPS_SERVING_FEATURE_TTL` | `60` | Seconds serving caches the resolved feature-view definition before re-reading the file. |
+| `EXAMLOPS_SERVING_ONLINE_FEATURES` | `1` | `0` stops serving from filling a request that names its entity but omits its features from the online store. |
+| `EXAMLOPS_FEATURE_ONLINE_STORE` | `db` | Online store: `db` (the durable `online_features` table) or `redis` (a Redis serving tier in front of it; needs `examlops[features-online]`). Anything unusable degrades to `db` and `exa feature status` says why. |
+| `EXAMLOPS_FEATURE_REDIS_URL` | unset (falls back to `EXAMLOPS_REDIS_URL`) | Redis URL of the feature online store. |
+| `EXAMLOPS_FEATURE_REDIS_PREFIX` | `examlops:features` | Key prefix of the feature online store in Redis. |
+| `EXAMLOPS_FEATURE_REDIS_TIMEOUT` | `0.5` | Socket and connect timeout (s) of each Redis call; on timeout a read falls back to the durable table. |
+| `EXAMLOPS_FEATURE_MATERIALIZE_MAX_VIEWS` | `50` | Most feature views one scheduled materialization cycle runs; the rest wait for the next tick. |
+| `CONTROL_PLANE_FEATURE_MATERIALIZE_SECONDS` | `300` | How often the control plane checks for feature views whose materialization interval has elapsed. `0` disables the scheduler. |
 | `MLFLOW_SQLITE_DB` | `./mlflow.db` | MLflow's own SQLite file, when it is not on Postgres — the backup sqlite tier looks for it here. |
 | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | `minioadmin` | MinIO credentials. Compose passes these to JupyterHub as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. **Change both before exposing the stack.** |
 | `DASHBOARD_TOKEN` | unset | Dashboard API token used by CLI/agent callers, stored as a CLI config field. |
@@ -1088,6 +1224,8 @@ EXAMLOPS_SLURM_MODE=mock
 | Variable | Default | Purpose |
 |---|---|---|
 | `EXAMLOPS_ECONOMICS_MIN_SAMPLES` | `5` | Fewest outcomes (predictions / gateway calls / ended agent sessions) a per-kind unit cost in `exa finops economics` (ADR 0148 d4) may rest on; fewer states `insufficient_samples`, never a number. |
+| `EXAMLOPS_SANDBOX_USD_PER_SECOND` | unset | Price of one sandbox-second in the per-task cost ledger (`exa finops task-cost record --component sandbox_seconds`, ADR 0148 d4) when `--rate` is not given. Unset, the write is refused rather than recorded as 0. |
+| `EXAMLOPS_IDLE_USD_PER_GB_HOUR` | unset | Price of one idle-state GB-hour in the per-task cost ledger when `--rate` is not given. Unset, the write is refused rather than recorded as 0. |
 
 Docker Compose picks up `.env` automatically. The pipeline and services also read it when running outside Docker.
 
@@ -1120,6 +1258,17 @@ environment:
 | `EXAMLOPS_AUDIT_WORM_S3_RETAIN_DAYS` | `365` | Object Lock retain-until horizon, in days, for each anchor object. |
 | `EXAMLOPS_AUDIT_WORM_S3_ENDPOINT` / `EXAMLOPS_AUDIT_WORM_S3_ACCESS_KEY` / `EXAMLOPS_AUDIT_WORM_S3_SECRET_KEY` | `MLFLOW_S3_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Endpoint and credentials for the S3 anchor (boto3, `examlops[backup]`). The bucket must have been created with Object Lock enabled. |
 | `EXAMLOPS_AUDIT_WORM_FALLBACK_PATH` | `$EXAMLOPS_DATA_DIR/audit-worm-fallback.jsonl` (else `./audit-worm-fallback.jsonl`) | Local file an anchor write degrades to when the S3 write fails. The failure is counted and logged at ERROR; the checkpoint is reported as **not** durably anchored. |
+| `EXAMLOPS_AUDIT_MAINTENANCE_SECONDS` | `3600` | Interval of the scheduled audit maintenance (checkpoint + WORM anchor + transparency log + optional retention prune) the control plane runs in the background; `exa audit maintain` uses it as its loop interval. `0` disables the schedule; anything else is floored at 30 s. |
+| `EXAMLOPS_AUDIT_MAINTENANCE_LEASE_TTL` | `max(900, interval)` | TTL (seconds, floor 60) of the cluster-wide `audit-maintenance` lease, so replicas and a cron `exa audit maintain --once` never run a cycle at the same time. |
+| `EXAMLOPS_AUDIT_PRUNE_SCHEDULED` | unset (off) | `1` lets the scheduled cycle run the retention prune. Needs `EXAMLOPS_AUDIT_RETENTION_DAYS` too, otherwise the cycle reports `degraded` and deletes nothing. Every gate of `exa audit prune` still applies. |
+| `EXAMLOPS_AUDIT_ARCHIVE_DIR` | `$EXAMLOPS_DATA_DIR/audit-archive` (else `./audit-archive`) | Where a scheduled prune writes its archive before deleting anything. |
+| `EXAMLOPS_AUDIT_TRANSPARENCY` | `off` (`rekor` when `EXAMLOPS_AUDIT_REKOR_URL` is set) | Transparency-log backend for audit checkpoints: `off`, `rekor` or `sigstore` (keyless, needs `examlops[audit-sigstore]`). Any other value is an error that every anchor attempt reports. |
+| `EXAMLOPS_AUDIT_REKOR_URL` | unset | Rekor server the checkpoints are logged to (`https://…`; plain `http` only on the loopback interface). |
+| `EXAMLOPS_AUDIT_REKOR_TIMEOUT` | `10` | Per-request timeout (seconds, clamped to 1–60) for Rekor calls. |
+| `EXAMLOPS_AUDIT_TRANSPARENCY_KEY_FILE` | unset (then the secret `audit/transparency-ecdsa-private`) | PEM file of the dedicated ECDSA P-256 key that signs checkpoint statements for Rekor. Missing or not P-256 ⇒ the upload is refused. |
+| `EXAMLOPS_AUDIT_TRANSPARENCY_PUBLIC_KEY_FILE` | unset (then the public half of the signing key) | The platform's transparency public key for `exa audit verify-transparency` on a host that does not hold the private key. A Rekor receipt must be signed with this key; with neither key available verification fails closed. |
+| `EXAMLOPS_AUDIT_REKOR_PUBLIC_KEY_FILE` | unset | The Rekor log's public key; when set, `exa audit verify-transparency` also checks each entry's Signed Entry Timestamp. |
+| `EXAMLOPS_AUDIT_SIGSTORE_TOKEN` | unset (ambient credential) | OIDC identity token for keyless Sigstore signing; without it (and without an ambient CI credential) the anchor is refused. |
 | `EXAMLOPS_OPENFGA_URL` | unset | Base URL of an OpenFGA server. Unset ⇒ authorization uses the native `authz_relations` table. Set together with `EXAMLOPS_OPENFGA_STORE_ID` ⇒ every check, grant and revoke goes to OpenFGA (fail closed: timeout or error = deny). Set without a store id ⇒ native authz plus a loud ERROR log. |
 | `EXAMLOPS_OPENFGA_STORE_ID` / `EXAMLOPS_OPENFGA_MODEL_ID` | unset | OpenFGA store id (required to enable it) and optional authorization-model id (`exa`'s model is exported by `examlops.authz.openfga`). |
 | `EXAMLOPS_OPENFGA_TOKEN` | unset | Bearer token sent to OpenFGA when it is set. |
@@ -1135,6 +1284,9 @@ environment:
 | `EXAMLOPS_DRIFT_ADVANCED_COOLDOWN` | `3600` | Seconds an unchanged non-OK concept / data-quality event is not re-stated. A first event, a severity change, or an unchanged non-OK older than this is written; a repeating OK is not. |
 | `EXAMLOPS_DRIFT_ADVANCED_INTERVAL` | `300` | Seconds between sweeps when `exa drift run-advanced` runs as a loop (no `--once`). |
 | `EXAMLOPS_DRIFT_ADVANCED_LEASE_TTL` | `600` | TTL of the distributed lease that lets only one advanced-drift scheduler act; a crashed holder's lease expires after this. |
+| `EXAMLOPS_DRIFT_ADVANCED_REJECTION_WINDOW` | `3600` | Seconds of A5 contract rejections (`inference_rejections`) the data-quality detector folds in per sweep. |
+| `EXAMLOPS_DRIFT_PERF_ESTIMATOR` | `builtin` | Label-free performance estimator (ADR 0022): `builtin` (CBPE-like confidence) or `nannyml` (CBPE / DLE, `examlops[drift-advanced]`). A missing library degrades to `builtin` and records `estimator_fallback`. |
+| `EXAMLOPS_DRIFT_QUALITY_PROFILER` | `builtin` | Data-quality profiler: `builtin` (nulls/min/max/cardinality) or `whylogs`; degrades to `builtin` with `profiler_fallback`. |
 | `EXAMLOPS_DRIFT_CONCEPT_DETECTOR` | `builtin` | Concept-drift detector: `builtin` (mean-shift z-test) or `river-adwin` (River ADWIN, lazy import). A missing library or an unknown name falls back to `builtin` and records `detector_fallback` in the event. |
 
 ## Reproducibility bundles (ADR 0038)
@@ -1144,6 +1296,10 @@ environment:
 | `EXAMLOPS_REPRO_AUTO_BUNDLE` | unset (off) | When truthy (`1`/`true`/`yes`/`on`), a reproducibility bundle is built automatically at the end of a successful `training_flow` (once the version is registered) and on `exa pipeline promote` for a version that has none. Off leaves behaviour byte-identical. A bundle failure never fails the run: it is counted, logged and audited as `repro_auto_bundle_failed`. `EXAMLOPS_SEED`, when set, is applied to the process RNGs at the start of `training_flow` and recorded in the bundle. |
 | `EXAMLOPS_REPRO_MLFLOW_URI` | throw-away SQLite store | MLflow tracking URI used by the training subprocess of `exa reproduce run --execute` when no `--train-cmd` is given. Unset, the rebuild uses a temporary SQLite MLflow store and platform DB so it never registers a version in the live registry. |
 | `EXAMLOPS_REPRO_PYTHON` | this process's interpreter (`sys.executable`) | Interpreter `exa reproduce run --execute` re-runs training on, and the value of the `environment.python` field it reports. Resolution order: the `--rebuild-env` venv's interpreter, else this variable, else `sys.executable` — never a bare `python` looked up on `PATH`, which is absent on hosts that ship only `python3`. The chosen interpreter is exported under this name to the training subprocess, its bin directory leads that subprocess's `PATH`, and a `--train-cmd` whose first word is a bare `python`/`python3` is run with it, so the reported interpreter is always the one that ran. |
+| `EXAMLOPS_REPRO_DATA_DIR` | set by `--restore-dataset` | Exported by `exa reproduce run --execute --restore-dataset DIR` to the training subprocess: the directory the pinned dataset (dataplane snapshot or lakeFS commit) was restored and verified into. Only a custom `--train-cmd` reads it; the default `training_flow` loads its own backend pinned to the same revision. Not meant to be set by hand. |
+| `EXAMLOPS_IMAGE_DIGEST` | unset | The container image digest a bundle records (`[repo@]sha256:<64 hex>`; a malformed value is not recorded). An image cannot know its own digest, so the deployment must pass it in; the shipped Compose file and chart do not set it yet. Not read for a bundle whose hardware is not captured (promotion, a Slurm/Flux job), since that process's image is not the training image. |
+| `EXAMLOPS_FEATURE_VIEWS` | unset | Comma-separated A3 feature views (at most 64) a bundle pins by the SHA-256 of their definition when `--feature-view` is not given. An unregistered name refuses the build. |
+| `EXAMLOPS_LAKEFS_ACCESS_KEY_ID` / `EXAMLOPS_LAKEFS_SECRET_ACCESS_KEY` | unset | HTTP basic credentials for the lakeFS API (`EXAMLOPS_LAKEFS_ENDPOINT`), used by `exa reproduce verify` (commit check) and `exa reproduce run --execute --restore-dataset` (object download). Never logged, and dropped from any redirect to another origin. Keep them in an ignored `.env`. |
 
 ## Suspend/resume seam (ADR 0109)
 
@@ -1158,6 +1314,10 @@ environment:
 |---|---|---|
 | `EXAMLOPS_ADMISSION_DISPATCH_ENABLED` | unset (disabled) | Kill-switch for dispatching real work *through* the seam. Truthy (`1`/`true`/`yes`/`on`) makes `exa pipeline run` ask `admission_seam.policy.decide` before it executes and hold a quota reservation for the run's duration (released when the run ends, however it ends). Unset or falsy, the gate opens nothing, decides nothing and writes nothing — the run is exactly what it was before the seam existed. |
 | `EXAMLOPS_ADMISSION_POLICY` | `fair-share` | Admission policy behind `examlops.admission_seam`: `fair-share` (the pre-seam behaviour) or `baseline-over-quota`. An unknown name is refused. Read by the seam, by `exa admission simulate` and — when `EXAMLOPS_ADMISSION_DISPATCH_ENABLED` is set — by the dispatch gate; the existing queue worker does not read it. |
+| `EXAMLOPS_ADMISSION_GATES` | unset (no gates) | Comma-separated external admission gates consulted behind `admission_seam.service.decide` once the policy would admit (ADR 0116 decision 5): `policy` (ADR 0079 action `admission`; `require_approval` defers), `budget` (ADR 0089 period breach, or a request that would breach it), `carbon` (ADR 0112; defers only flexible work on a decision-grade marginal signal). Deny-overrides; a gate that cannot answer, or an unknown gate name, denies as `unverified`. Unset, `decide()` is unchanged. |
+| `EXAMLOPS_ADMISSION_CARBON_MAX_G` | unset (carbon gate abstains) | gCO2/kWh above which the `carbon` admission gate defers flexible work (`flexibility_s > 0`, deadline permitting). Must be > 0; a malformed value makes the gate deny as `unverified`. |
+| `EXAMLOPS_RESOURCE_TOPOLOGY` | unset (`<config dir>/topology.yaml` if present) | Site-declared resource topology (scale-up domains, power, fabrics, storage; YAML or JSON) that the admission resource graph joins to the `hpc_nodes` inventory. No file = topology unknown, so `scale_up_domain: required` is never promised; see `exa admission topology`. |
+| `EXAMLOPS_RESOURCE_TOPOLOGY_MAX_AGE_S` | `3600` | A node whose `hpc_nodes` row is older than this many seconds counts no free GPUs in the admission resource graph (an old `idle` is not evidence of room now). `0` disables the check. |
 | `EXAMLOPS_ADMISSION_QUOTAS` | unset | Path to a JSON file of per-tenant GPU quotas (`baseline_gpus`, `limit_gpus`, `over_quota_weight`) used by `baseline-over-quota`. A malformed file is an error. |
 | `EXAMLOPS_RESERVATION_TTL_S` | `900` | Seconds a `reserved` quota reservation holds quota before it lapses and is swept to `expired`. |
 
@@ -1215,3 +1375,37 @@ or `gates: {slo: enforce}` in `policy.yaml`. Off (the default) it is never consu
 `EXAMLOPS_SEED` (above) is the fine-tune's seed when `--seed` is not given: it fixes the base
 initialisation, the adapter initialisation, the synthetic task's teacher coefficients and every
 batch, so two runs of the same seed produce the same adapter digest and the same measured score.
+
+## Online evaluation over live traffic (ADR 0007)
+
+`exa eval online run` scores sampled live traffic on a schedule and writes `eval_suite_results`
+(the table the C3 gate reads). Same house pattern as `exa drift run-advanced`: kill-switch, lease,
+idempotent per window, audited.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_EVAL_ONLINE_ENABLED` | unset (off) | Kill-switch. A real cycle is refused (audited as `eval_online_skipped`) unless truthy; `--dry-run` scores without persisting and needs neither the switch nor the lease. |
+| `EXAMLOPS_EVAL_ONLINE_INTERVAL` | `300` | Seconds between cycles when the scheduler runs as a loop. |
+| `EXAMLOPS_EVAL_ONLINE_LEASE_TTL` | `1800` | TTL of the lease that lets only one online-eval scheduler act; a crashed holder's lease expires after this. |
+| `EXAMLOPS_EVAL_METRICS_TEXTFILE` | unset | When set, each real cycle atomically rewrites this node_exporter textfile with the eval metrics (otherwise they reach Prometheus via `exa slo export-metrics`). A write failure is noted on the report, not fatal. |
+| `EXAMLOPS_EVAL_TEMPO_URL` | unset | Grafana Tempo base URL (e.g. `http://tempo:3200`) for the `tempo` traffic source, which samples GenAI spans by TraceQL. Required for that source; must be http(s). |
+| `EXAMLOPS_EVAL_TEMPO_TIMEOUT` | `10` | HTTP timeout (seconds) of a Tempo search. |
+| `EXAMLOPS_EVAL_TEMPO_TOKEN` | unset | Bearer token sent to Tempo. |
+| `EXAMLOPS_EVAL_TEMPO_ORG` | unset | Tenant sent as `X-Scope-OrgID` to a multi-tenant Tempo. |
+
+## RAG serving endpoint & retrieval evaluation (ADR 0019)
+
+The RAG endpoint (`uvicorn serving.rag_pipeline.app:app`, `examlops[rag-service]`) is configured
+from the environment only; it also reads `EXAMLOPS_GUARDRAIL_MODE` and the vector-store and
+gateway settings above.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EXAMLOPS_RAG_TOKENS` | unset | Bearer tokens as `tenant:token,…`; tenant `*` may act for any tenant, a tenant-bound token cannot touch another tenant's knowledge base (403). Placeholder or short (<16 chars) tokens are discarded at startup. With no usable token every API call gets 503 `rag_service_unconfigured`. |
+| `EXAMLOPS_RAG_TOKEN` | unset | Shorthand for a single `*:<token>` entry. |
+| `EXAMLOPS_RAG_CONTEXT_GUARD` | `enforce` | Guardrail mode for **retrieved** (untrusted) content, per tenant: `enforce` or `monitor`. Any other value is treated as `enforce`; the built-in injection filter applies either way. |
+| `EXAMLOPS_RAG_MAX_BODY` | `8388608` (8 MiB) | Maximum request body in bytes. |
+| `EXAMLOPS_RAG_MAX_CONCURRENT` | `8` | Concurrent requests; beyond this the service answers 429. |
+| `EXAMLOPS_RAG_TIMEOUT` | `30` | Per-request deadline in seconds; exceeded ⇒ 504. |
+| `EXAMLOPS_RAG_FRAMEWORK` | `native` | Chunking framework for ingest: `native`, `llamaindex`, or `auto` (`llamaindex` when importable, else `native`). An explicit framework that is not installed fails rather than chunking differently. |
+| `EXAMLOPS_RAG_EVAL_BACKEND` | `auto` | Backend of the `context_precision`/`context_recall` evaluators in the C2 harness: `ragas` (non-LLM ID-based metrics, `rag-eval` extra), `native`, or `auto` (`ragas` when importable, else `native`). |

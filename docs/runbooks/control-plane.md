@@ -63,6 +63,67 @@ failed: …`. The usual causes:
 **Fix:** restore the store, or fix or unset the provider. The next evaluation announces any change
 it missed, because the change is measured against the last status recorded, not the last evaluation.
 
+## AuditMaintenanceFailing {#auditmaintenancefailing}
+
+**Meaning:** the scheduled audit maintenance (ADR 0028), which the control plane runs every
+`EXAMLOPS_AUDIT_MAINTENANCE_SECONDS` (3600), failed more than one step in three hours. A step is
+signing a checkpoint over the audit chain head, anchoring it to the WORM store, logging it to the
+transparency log, or the opt-in retention prune.
+
+**Impact:** the audit trail is still hash-chained and append-only, but its newest state is not
+anchored off-platform, so a rewrite of the whole database would not be detected against the anchor.
+
+**Check:** `exa audit maintenance-runs` lists each cycle and the step that failed;
+`exa --json audit maintain --dry-run` says what the next cycle would do. The usual causes:
+
+- no checkpoint signing key (`unconfigured`): set `EXAMLOPS_SIGNING_KEY` or the secret
+  `model-signing/key`;
+- the WORM store is unreachable, so the entry degraded to the local fallback file
+  (`exa audit verify-worm` warns about it);
+- the transparency log refused the upload or is unreachable (`exa audit verify-transparency`);
+- a scheduled prune was refused (`refused`): the reason names the precondition.
+
+**Fix:** restore the failing target. The next cycle signs, anchors and logs the current head,
+which covers every event before it.
+
+## FeatureViewStale {#featureviewstale}
+
+**Meaning:** a feature view's online store was last materialized longer ago than its TTL, or it
+has never been materialized although it declares a TTL or a schedule, for 30 minutes
+(`examlops_feature_view_stale{view=…} == 1`, published from the registry on every scrape).
+
+**Impact:** a request that names its entity (for example `job_id`) instead of carrying its
+features is served the last materialized value, which is now older than the view promises — or is
+refused with `validation_error` when nothing was materialized. Requests that carry their features
+are unaffected. See [Feature store](../guides/feature-store.md).
+
+**Check:**
+
+1. `exa feature status` — age, TTL, schedule interval and whether the view is due.
+2. `exa stack logs --service control-plane --tail 300 | grep -i "feature"` — the materializer logs
+   each run and each failure (`Feature view … failed to materialize: …`).
+3. `CONTROL_PLANE_FEATURE_MATERIALIZE_SECONDS` is not `0`, and the view has
+   `materialize_interval_seconds` > 0 (a view with a TTL but no schedule is only materialized by
+   hand).
+
+**Fix:** `exa feature materialize-due --view <view>` (or `exa feature materialize <view>`), then
+repair whatever made the scheduled run fail. The next scrape clears the alert.
+
+## FeatureFreshnessUnreadable {#featurefreshnessunreadable}
+
+**Meaning:** `/metrics` could not read feature-view freshness from the registry for 10 minutes
+(`examlops_feature_freshness_read_errors_total` is increasing).
+
+**Impact:** the freshness gauges keep their last values, and a control plane started during the
+failure publishes none, so `FeatureViewStale` cannot be trusted while this fires. Serving is not
+affected by the read itself.
+
+**Check:** `exa stack logs --service control-plane --tail 300 | grep "feature-freshness read
+failed"` names the error; `exa feature status` from the same host shows whether the registry
+(`platform.db`, or Postgres when `EXAMLOPS_DB_BACKEND=postgres`) answers.
+
+**Fix:** restore access to the platform datastore. The alert clears 10 minutes after reads succeed.
+
 ## ControlPlaneCommandDead {#controlplanecommanddead}
 
 **Meaning:** at least one asynchronous command (a retrain submitted through `POST /v1/retrain`)

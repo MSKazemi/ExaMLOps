@@ -203,7 +203,8 @@ def run(
     applier: str = typer.Option(
         "record",
         "--applier",
-        help="record (ledger only) | desired (write desired replicas) | ray (not built: refuses)",
+        help="record (ledger only) | desired (write desired replicas) | "
+        "k8s (patch the predictor Deployment's scale) | ray (not built: refuses)",
     ),
     interval: int = typer.Option(0, "--interval", help="Seconds between cycles (0 = env/30)"),
 ) -> None:
@@ -212,13 +213,17 @@ def run(
         AutoscaleController,
         CycleReport,
         PrometheusSignals,
+        ScaleApplyError,
         interval_s,
         make_applier,
     )
 
     try:
         chosen = make_applier(applier)
-    except ValueError as exc:
+        check = getattr(chosen, "check", None)
+        if apply and callable(check):
+            check()  # e.g. the k8s applier resolves (and refuses) its API config up front
+    except (ValueError, ScaleApplyError) as exc:
         _output.error(str(exc))
         raise typer.Exit(2) from exc
     ctl = AutoscaleController(PrometheusSignals(), chosen, dry_run=not apply)
@@ -341,7 +346,7 @@ def prefetch(
         _output.info("Nothing to prefetch (no warm pool and no zero-able model with traffic).")
         return
     _output.print_table(
-        "Prefetch plan (read-only; the weight cache / activator are not built)",
+        "Prefetch plan (read-only; the weight cache is not built)",
         ["Model", "Action", "Replicas", "RPS", "Why"],
         [
             [
@@ -354,3 +359,50 @@ def prefetch(
             for p in plan
         ],
     )
+
+
+_ACTIVATE_EXAMPLES = (
+    "Examples:\n\n"
+    "  exa serve autoscale activate JPCP                     # wake a scaled-to-zero model\n\n"
+    "  exa serve autoscale activate JPCP --applier k8s --timeout 300\n\n"
+    "  exa --json serve autoscale activate JPCP"
+)
+
+
+@app.command("activate", epilog=_ACTIVATE_EXAMPLES)
+def activate(
+    model: str = typer.Argument(..., help="Model name (needs an autoscale policy)"),
+    applier: str = typer.Option(
+        "desired", "--applier", help="desired | k8s | record — who owns the replicas"
+    ),
+    timeout: float = typer.Option(120.0, "--timeout", help="Seconds to wait for readiness"),
+) -> None:
+    """Wake a model from zero replicas and wait until it is ready; cold start is measured + audited."""
+    from examlops.autoscale.activator import Activator, ActivatorError
+    from examlops.autoscale.controller import ScaleApplyError, make_applier
+
+    if timeout <= 0 or timeout > 3600:
+        _output.error("--timeout must be in (0, 3600] seconds", exit_code=2)
+    try:
+        chosen = make_applier(applier)
+        check = getattr(chosen, "check", None)
+        if callable(check):
+            # A misconfigured k8s API must be a refusal here, not "replicas unknown — nothing to
+            # do" (exit 0) once ensure_warm reads it as an unknown replica count.
+            check()
+        act = Activator(chosen)
+    except (ValueError, ScaleApplyError) as exc:
+        _output.error(str(exc), exit_code=2)
+        return
+    try:
+        res = act.ensure_warm(model, timeout)
+    except ActivatorError as exc:
+        _output.error(str(exc), exit_code=1)
+        return
+    if _output.json_mode:
+        _output.print_json(res.to_dict())
+        return
+    if res.woke:
+        _output.ok(f"{res.model}: woke 0→{res.replicas} in {res.cold_start_s:.2f}s (cold start)")
+    else:
+        _output.info(f"{res.model}: {res.note} — nothing to do")

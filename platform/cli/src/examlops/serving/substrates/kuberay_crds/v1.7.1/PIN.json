@@ -1,0 +1,10 @@
+{
+  "project": "ray-project/kuberay",
+  "version": "v1.7.1",
+  "released": "2026-09-21",
+  "tag_object": "54f9befdc151ee46214486c4d0a9caf8890842b4",
+  "sources": {
+    "RayService.v1.json.gz": "ray-operator/config/crd/bases/ray.io_rayservices.yaml"
+  },
+  "transform": "spec.versions[name].schema.openAPIV3Schema; every 'description' key removed; JSON with sorted keys; gzip -9"
+}

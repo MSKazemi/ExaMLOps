@@ -17,11 +17,13 @@ a plain hyphenated SSN it should match, a defect in Presidio itself, not this fa
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 log = logging.getLogger("examlops.guardrails")
 
@@ -216,6 +218,63 @@ def redact_pii(text: str) -> tuple[str, list[str]]:
     return redacted, findings
 
 
+_CheckFn = TypeVar("_CheckFn", bound=Callable[..., Any])
+
+
+def _traced_check(stage: str) -> Callable[[_CheckFn], _CheckFn]:
+    """Run a guardrail check inside a GUARDRAIL span (ADR 0021 decision 1).
+
+    The span records the verdict — action, whether it blocked, and the finding *categories*
+    (``email``, ``injection`` …) — never the checked text. Tracing is fail-open: a telemetry
+    failure runs the check untraced, and the check's own result and exceptions pass through
+    unchanged, so a guardrail can never be weakened by its instrumentation.
+    """
+
+    def deco(fn: _CheckFn) -> _CheckFn:
+        @functools.wraps(fn)
+        def wrapper(self: Any, subject: str, ctx: dict | None = None) -> Any:
+            try:
+                from examlops.telemetry import genai
+
+                if not genai.tracing_enabled():
+                    return fn(self, subject, ctx)
+                cm = genai.guardrail_span(stage, tenant=self.tenant, mode=self.mode)
+                span = cm.__enter__()
+            except Exception:  # noqa: BLE001 - untraced is better than unchecked
+                return fn(self, subject, ctx)
+            try:
+                result = fn(self, subject, ctx)
+            except BaseException as exc:
+                try:
+                    cm.__exit__(type(exc), exc, exc.__traceback__)
+                except BaseException as tel_exc:  # noqa: BLE001
+                    # contextmanager re-raises the check's own exception; anything else is the
+                    # span failing to close, which must not replace the check's exception.
+                    if tel_exc is not exc:
+                        log.debug("guardrail span close failed: %s", type(tel_exc).__name__)
+                raise
+            try:
+                if isinstance(result, GuardResult):
+                    span.set_attribute("examlops.guardrail.action", result.action)
+                    span.set_attribute("examlops.guardrail.blocked", result.blocked)
+                    span.set_attribute("examlops.guardrail.findings", list(result.findings))
+                else:  # check_tool_call: a bool verdict about a named tool
+                    span.set_attribute("examlops.guardrail.tool", str(subject))
+                    span.set_attribute("examlops.guardrail.action", "allow" if result else "block")
+                    span.set_attribute("examlops.guardrail.blocked", not result)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                cm.__exit__(None, None, None)
+            except Exception as tel_exc:  # noqa: BLE001 - the verdict is already decided
+                log.debug("guardrail span close failed: %s", type(tel_exc).__name__)
+            return result
+
+        return wrapper  # type: ignore[return-value]
+
+    return deco
+
+
 @dataclass
 class DefaultGuardrail:
     """Regex/D7-backed guardrail with modes and a per-tenant tool allow-list."""
@@ -227,6 +286,7 @@ class DefaultGuardrail:
     redact_pii: bool = True
 
     # ── input ────────────────────────────────────────────────────────────────
+    @_traced_check("input")
     def check_input(self, text: str, ctx: dict | None = None) -> GuardResult:
         if self.mode == "off":
             return GuardResult("allow", text)
@@ -265,6 +325,7 @@ class DefaultGuardrail:
         return GuardResult("redact", redacted, findings, "PII/secret redacted")
 
     # ── output ───────────────────────────────────────────────────────────────
+    @_traced_check("output")
     def check_output(self, text: str, ctx: dict | None = None) -> GuardResult:
         if self.mode == "off":
             return GuardResult("allow", text)
@@ -296,6 +357,7 @@ class DefaultGuardrail:
         return GuardResult("redact", redacted, findings, "PII/secret redacted")
 
     # ── tool call ────────────────────────────────────────────────────────────
+    @_traced_check("tool")
     def check_tool_call(self, tool: str, ctx: dict | None = None) -> bool:
         if self.mode == "off" or self.allowed_tools is None:
             return True
@@ -337,6 +399,8 @@ class DefaultGuardrail:
                 f"guardrail_{action}",
                 f"{self.tenant}/{direction}",
                 {"rule": rule, "mode": self.mode},
+                # The tenant whose traffic was blocked owns the record (ADR 0026 cl. 3, per-tenant).
+                tenant=self.tenant,
             )
 
 

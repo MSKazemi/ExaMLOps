@@ -23,6 +23,12 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_DB", str(tmp_path / "test.db"))
     monkeypatch.setenv("EXAMLOPS_SIGNING_KEY", "unit-test-key")
     init_db()
+    yield
+    # Spec-decode windows accumulate in-process (ADR 0016 d4); drop this test's so they are never
+    # flushed at exit into whatever store is current then.
+    from examlops.engines import specdecode
+
+    specdecode._WINDOWS.clear()
 
 
 # ── GWT-1: engine contract ────────────────────────────────────────────────────
@@ -50,25 +56,27 @@ def test_build_engine_falls_back_to_echo():
     assert eng.name == "echo"
 
 
-# ── BL-108: sglang has no real integration, refused clearly rather than built broken ─────────
+# ── ADR 0016 d1: sglang is a server client; with no endpoint it degrades loudly ─────────────
+# (the positive path — a reachable server — is covered in test_engines_sglang_server.py)
 
 
-def test_sglang_degrades_to_echo_by_default():
+def test_sglang_without_endpoint_degrades_to_echo_by_default(monkeypatch):
+    monkeypatch.delenv("EXAMLOPS_SGLANG_BASE_URL", raising=False)
     cfg = engines.EngineConfig(engine="sglang")
-    with pytest.warns(RuntimeWarning, match="sglang.*no real integration"):
+    with pytest.warns(RuntimeWarning, match="sglang.*no endpoint is configured"):
         eng = engines.build_engine(cfg, allow_fallback=True)
-    assert eng.name == "echo"  # never a broken SGLangEngine construction
+    assert eng.name == "echo"
 
 
-def test_sglang_raises_immediately_when_the_real_engine_is_required():
+def test_sglang_without_endpoint_raises_when_the_real_engine_is_required(monkeypatch):
+    monkeypatch.delenv("EXAMLOPS_SGLANG_BASE_URL", raising=False)
     cfg = engines.EngineConfig(engine="sglang")
-    with pytest.raises(NotImplementedError, match="sglang.*no real integration"):
+    with pytest.raises(RuntimeError, match="sglang.*no endpoint is configured"):
         engines.build_engine(cfg, allow_fallback=False)
 
 
-def test_sglang_is_still_a_syntactically_valid_engine_name():
-    """The roadmap intent (ADR 0016/0143) stays representable in config; only *construction*
-    refuses it — a model YAML naming `engine: sglang` is not a config-validation error."""
+def test_sglang_is_a_valid_engine_name():
+    """A model YAML naming `engine: sglang` is not a config-validation error."""
     assert engines.validate_engine_block({"engine": "sglang"}) == []
     assert "sglang" in engines._VALID_ENGINES
 

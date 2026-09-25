@@ -23,7 +23,13 @@ from .completion import (
     on_job_terminal_state,
     release_on_completion,
 )
-from .dispatch import AdmissionRefused, admitted, request_for_pipeline_run
+from .dispatch import (
+    AdmissionRefused,
+    admitted,
+    request_for_hpc_job,
+    request_for_pipeline_run,
+    submit_admitted,
+)
 from .kueue import KueueUnsupported, render_kueue
 from .policy import (
     AdmissionPolicy,
@@ -72,6 +78,8 @@ __all__ = [
     "register_capabilities",
     "release_on_completion",
     "render_kueue",
+    "request_for_hpc_job",
     "request_for_pipeline_run",
     "select_policy",
+    "submit_admitted",
 ]

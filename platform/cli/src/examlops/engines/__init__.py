@@ -7,11 +7,11 @@ gateway (B2) are decoupled from *which* runtime executes generation.
 client of a running ``vllm serve`` process (ADR 0107). The older in-process engine, which
 drives vLLM's offline-batch ``LLM`` API, is retained as ``vllm-inproc`` for corpus scoring;
 it cannot batch across concurrent clients and exposes no ``/metrics``, so it is not the
-serving path. **SGLang** (RadixAttention, structured output) has no real integration yet — a
-roadmap item (ADR 0016/0143), not a runnable engine — so selecting it is refused clearly at
-construction time (BL-108) rather than constructing an object that only fails once something
-tries to generate with it. The **fallback** is a pure-python :class:`EchoEngine` so the
-contract is exercisable on CPU with no deps (GWT-1/GWT-A8).
+serving path. **SGLang** (RadixAttention, structured output) is integrated the same way, as a
+client of a running ``sglang.launch_server`` (:class:`~examlops.engines.sglang_server.SGLangServerEngine`,
+ADR 0016 decision 1); its launch argv comes from :func:`~examlops.engines.sglang_server.to_sglang_args`.
+The **fallback** is a pure-python :class:`EchoEngine` so the contract is exercisable on CPU with
+no deps (GWT-1/GWT-A8).
 
 Also here: the per-model ``engine`` block schema + validation (GWT-2, in :mod:`.config`), a
 ``quantize`` transformation that registers a new signed + BOM'd version (GWT-3, via D3), and
@@ -69,6 +69,11 @@ from examlops.engines.media import (
     flatten_messages,
     normalize_content,
 )
+from examlops.engines.sglang_server import (
+    SGLangServerEngine,
+    resolve_sglang_base_url,
+    to_sglang_args,
+)
 from examlops.engines.vllm_server import (
     EngineUnreachable,
     VLLMServerEngine,
@@ -88,6 +93,7 @@ __all__ = [
     "MediaRejected",
     "MediaStats",
     "MultimodalConfig",
+    "SGLangServerEngine",
     "VLLMEngine",
     "VLLMServerEngine",
     "build_engine",
@@ -98,7 +104,9 @@ __all__ = [
     "parse_prometheus_text",
     "quantize_model",
     "record_spec_decode_telemetry",
+    "resolve_sglang_base_url",
     "supports_chat",
+    "to_sglang_args",
     "to_vllm_args",
     "validate_engine_block",
 ]
@@ -226,13 +234,12 @@ _ENGINES: dict[str, Any] = {
     "vllm": VLLMServerEngine,  # `vllm` resolves to the server path by default (ADR 0107)
     "vllm-server": VLLMServerEngine,
     "vllm-inproc": VLLMEngine,
+    "sglang": SGLangServerEngine,  # server client, like vllm-server (ADR 0016 decision 1)
 }
 
 # Optional heavy dependency backing each **in-process** engine. The server engine needs
 # none — it speaks HTTP to a process that owns the GPU — so it is deliberately absent here.
-# `sglang` is intercepted in `_construct_engine` before this is ever consulted (BL-108): there
-# is no real integration to gate on dependency availability, so it is refused unconditionally
-# rather than through the "dependency missing" path every other engine here uses.
+# `sglang` is a server client too (it needs an endpoint, not a local package), so it is absent.
 _ENGINE_DEP: dict[str, str] = {"vllm-inproc": "vllm"}
 
 
@@ -313,20 +320,7 @@ def _construct_engine(
         return _build_vllm(engine, config, model_path, allow_fallback)
 
     if engine == "sglang":
-        # BL-108: no real SGLang integration exists (roadmap item, ADR 0016/0143) — refused here,
-        # at construction, rather than constructing an object that only fails on the first
-        # generate()/stream() call. `allow_fallback` still governs whether that refusal degrades
-        # to EchoEngine (the common path, e.g. through the gateway) or raises (an explicit ask
-        # for the real engine has nothing real to give).
-        message = (
-            "engine 'sglang' has no real integration yet — it is a named roadmap item "
-            "(ADR 0016/0143), not a runnable engine. Use 'vllm' (the built, tested engine), "
-            "or pass allow_fallback=True to run against EchoEngine instead."
-        )
-        if allow_fallback:
-            warnings.warn(message, RuntimeWarning, stacklevel=3)
-            return _echo_fallback(config)
-        raise NotImplementedError(message)
+        return _build_sglang(config, model_path, allow_fallback)
 
     if allow_fallback and not _dep_available(engine):
         warnings.warn(
@@ -378,6 +372,29 @@ def _build_vllm(
         )
         return _echo_fallback(config)
     return VLLMEngine(model_path or "", config)
+
+
+def _build_sglang(
+    config: EngineConfig, model_path: str | None, allow_fallback: bool
+) -> InferenceEngine:
+    """SGLang is served, never embedded: a reachable endpoint ⇒ :class:`SGLangServerEngine`.
+
+    ``engine.base_url`` beats ``EXAMLOPS_SGLANG_BASE_URL``. With neither, the same rule as the
+    vLLM server path applies — degrade loudly to :class:`EchoEngine`, or raise under
+    ``allow_fallback=False`` — and never start loading weights in this process.
+    """
+    base_url = resolve_sglang_base_url(config)
+    if base_url:
+        return SGLangServerEngine(base_url, model_path or config.hf_model_id or "", config)
+    message = (
+        "engine 'sglang' is server-mode but no endpoint is configured (engine.base_url / "
+        "EXAMLOPS_SGLANG_BASE_URL unset). Launch one with "
+        "`python -m sglang.launch_server` (see `exa serve llm args <model>`)"
+    )
+    if not allow_fallback:
+        raise RuntimeError(message)
+    warnings.warn(message + "; falling back to EchoEngine.", RuntimeWarning, stacklevel=4)
+    return _echo_fallback(config)
 
 
 def _echo_fallback(config: EngineConfig) -> EchoEngine:
@@ -465,14 +482,26 @@ def quantize_model(
 
 
 def record_spec_decode_telemetry(
-    model: str, completion: Completion, *, tenant: str | None = None
+    model: str,
+    completion: Completion,
+    *,
+    tenant: str | None = None,
+    engine: str = "unknown",
+    lookahead: int = 1,
 ) -> dict[str, float]:
-    """Emit speculative-decoding acceptance-rate + speedup to C1 telemetry + FinOps (GWT-5)."""
+    """Emit speculative-decoding acceptance-rate + speedup to C1 telemetry **and** FinOps (GWT-5).
+
+    The span carries the per-call figures; the counts are folded into the FinOps window
+    accumulator (:mod:`examlops.engines.specdecode`) that ``exa finops specdecode`` reads. The
+    speedup is the Leviathan et al. (2023) expected-tokens-per-target-pass estimate, which is
+    ``1 + acceptance`` at the default ``lookahead=1``.
+    """
+    from examlops.engines import specdecode
+
     proposed = max(completion.proposed_tokens, 0)
-    accepted = max(completion.accepted_tokens, 0)
+    accepted = min(max(completion.accepted_tokens, 0), proposed) if proposed else 0
     acceptance = (accepted / proposed) if proposed else 0.0
-    # A common first-order model: speedup ≈ 1 + acceptance_rate * draft_lookahead(≈1).
-    speedup = 1.0 + acceptance
+    speedup = specdecode.estimated_speedup(acceptance, lookahead)
     try:
         from examlops.telemetry import genai
 
@@ -483,6 +512,14 @@ def record_spec_decode_telemetry(
             span.set_attribute("examlops.specdecode.speedup", speedup)
     except Exception:
         pass
+    specdecode.observe(
+        model,
+        proposed_tokens=proposed,
+        accepted_tokens=accepted,
+        engine=engine,
+        tenant=tenant,
+        lookahead=lookahead,
+    )
     return {"acceptance_rate": acceptance, "speedup": speedup}
 
 

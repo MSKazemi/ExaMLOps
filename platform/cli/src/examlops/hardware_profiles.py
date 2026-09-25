@@ -13,7 +13,11 @@ a fourth, parallel resource vocabulary (ADR 0157 §Decision item 3).
 from __future__ import annotations
 
 import json
+import logging
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from examlops import hpc_placement
 from examlops.admission_seam.request import Resources
@@ -30,8 +34,23 @@ STATUS_VERIFIED = "verified"
 STATUS_DEGRADED = "degraded"
 STATUS_UNRESOLVABLE = "unresolvable"
 
+#: Report-only status (never a resolution result): a consumer is still bound to a profile version
+#: that has since been deleted, so nothing can say what shape it runs with (ADR 0157 Phase 4).
+STATUS_MISSING = "missing"
+
+#: Statuses an operator must look at — surfaced by ``exa status`` and the dashboard.
+ATTENTION_STATUSES = frozenset({STATUS_DEGRADED, STATUS_UNRESOLVABLE, STATUS_MISSING})
+
+#: Who resolves a profile — the three consumers ADR 0157 wires, one per applicability.
+CONSUMERS = ("workbench", "training", "serving")
+
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "APPLICABILITIES",
+    "ATTENTION_STATUSES",
+    "CONSUMERS",
+    "STATUS_MISSING",
     "STATUS_DEGRADED",
     "STATUS_UNCHECKED",
     "STATUS_UNRESOLVABLE",
@@ -41,8 +60,10 @@ __all__ = [
     "ProfileResolution",
     "create_profile_version",
     "get_profile",
+    "in_use_report",
     "list_names",
     "list_versions",
+    "record_resolution",
     "require_applicability",
     "resolve_for",
     "resolve_profile",
@@ -122,6 +143,42 @@ def _validate_applicability(applicability: tuple[str, ...]) -> None:
         raise HardwareProfileError(f"applicability {bad} not in {list(APPLICABILITIES)}")
 
 
+#: Spec §2: a profile name is a slug. It becomes a CLI argument, a URL path segment on the
+#: dashboard and an MLflow tag value (``name@vN``), so nothing outside this set is accepted.
+_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+
+
+def _validate_shape(
+    name: str,
+    gpu_count: int,
+    cpu: float,
+    memory_gb: float,
+    nodes: int,
+    mig_profile: str | None,
+) -> None:
+    """Refuse a shape no consumer could honour (spec §2 field constraints)."""
+    if not _NAME_RE.match(name or ""):
+        raise HardwareProfileError(
+            f"profile name {name!r} must be a slug: lowercase letters, digits, '-' or '_', "
+            "starting with a letter or digit, at most 63 characters"
+        )
+    if gpu_count < 0:
+        raise HardwareProfileError(f"gpu_count must be >= 0, got {gpu_count!r}")
+    if cpu < 0:
+        raise HardwareProfileError(f"cpu must be >= 0, got {cpu!r}")
+    if memory_gb < 0:
+        raise HardwareProfileError(f"memory_gb must be >= 0, got {memory_gb!r}")
+    if nodes < 1:
+        raise HardwareProfileError(f"nodes must be >= 1, got {nodes!r}")
+    if mig_profile is not None:
+        from examlops.gpu_sharing import MIG_FRACTIONS  # noqa: PLC0415 - ADR 0030 vocabulary
+
+        if mig_profile not in MIG_FRACTIONS:
+            raise HardwareProfileError(
+                f"mig_profile must be one of {sorted(MIG_FRACTIONS)}, got {mig_profile!r}"
+            )
+
+
 def create_profile_version(
     name: str,
     *,
@@ -154,6 +211,7 @@ def create_profile_version(
     _validate_applicability(applicability)
     if not (0.0 < gpu_fraction <= 1.0):
         raise HardwareProfileError(f"gpu_fraction must be in (0.0, 1.0], got {gpu_fraction!r}")
+    _validate_shape(name, gpu_count, cpu, memory_gb, nodes, mig_profile)
     version = _data.create_profile_version(
         name,
         accelerator_family=accelerator_family,
@@ -321,9 +379,19 @@ def resolve_profile(
 
 
 def to_resource_ask(resolution: ProfileResolution) -> hpc_placement.ResourceAsk:
-    """Adapt a resolution into the placement seam's ask (used by ``--cluster auto``)."""
+    """Adapt a resolution into the placement seam's ask (used by ``--cluster auto``).
+
+    Carries the profile's ``gpu_fraction``/``mig_profile`` (ADR 0030 decision 1), re-read from
+    the exact version resolved, so a fractional profile is placed — and later mapped onto the
+    scheduler — as the fraction it declares rather than as whole GPUs.
+    """
     r = resolution.resources
-    return hpc_placement.ResourceAsk(gpus=r.gpus, cpus=r.cpus, nodes=r.nodes)
+    profile = get_profile(resolution.name, version=resolution.version)
+    fraction = profile.gpu_fraction if profile is not None else 1.0
+    mig = profile.mig_profile if profile is not None else None
+    return hpc_placement.ResourceAsk(
+        gpus=r.gpus, cpus=r.cpus, nodes=r.nodes, gpu_fraction=fraction, mig_profile=mig
+    )
 
 
 def to_workload(resolution: ProfileResolution, workload_name: str) -> Workload:
@@ -400,12 +468,21 @@ def resolve_for(
     label: str = "active",
     version: int | None = None,
     target_cluster: str | None = None,
+    consumer_ref: str | None = None,
+    project: str | None = None,
+    actor: str | None = None,
 ) -> tuple[HardwareProfile, ProfileResolution]:
     """:func:`resolve_profile` with the Phase 2/3 applicability gate in front of it.
 
-    Returns the exact version that was gated together with its resolution — the resolution is
+    Returns the exact version that was checked together with its resolution — the resolution is
     taken at that pinned version, so a concurrent ``exa hardware profile set`` cannot move the
     ``active`` label between the check and the resolve.
+
+    ``consumer_ref`` (Phase 4) names the thing that is being sized — a workbench
+    (``project/name``), a training model or run id, a served model. When given, the resolution is
+    appended to the ``hardware_profile_resolutions`` ledger with ``need`` as the consumer, so the
+    status it got stays visible (``exa hardware profile in-use``, ``exa status``) after the
+    command that resolved it has exited.
     """
     profile = get_profile(name, label=label, version=version)
     if profile is None:
@@ -413,4 +490,184 @@ def resolve_for(
         raise HardwareProfileError(f"hardware profile {name!r} ({ref}) not found")
     require_applicability(profile, need)
     resolution = resolve_profile(name, version=profile.version, target_cluster=target_cluster)
+    if consumer_ref:
+        record_resolution(
+            resolution,
+            consumer=need,
+            consumer_ref=consumer_ref,
+            target_cluster=target_cluster,
+            project=project,
+            actor=actor,
+        )
     return profile, resolution
+
+
+def record_resolution(
+    resolution: ProfileResolution,
+    *,
+    consumer: str,
+    consumer_ref: str,
+    target_cluster: str | None = None,
+    project: str | None = None,
+    actor: str | None = None,
+) -> bool:
+    """Append ``resolution`` to the ledger for ``consumer``/``consumer_ref`` (ADR 0157 Phase 4).
+
+    Fail-open by design: the ledger is the *visibility* surface, not a gate — the gate is
+    :func:`require_applicability` and the ``unresolvable`` refusal, which already ran. A ledger
+    write that fails (read-only datastore, locked file) is logged as a warning and reported by the
+    ``False`` return, never raised into a workbench create or a training launch that is otherwise
+    valid. Returns ``True`` when the row was written. An unknown ``consumer`` or an empty
+    ``consumer_ref`` is a programming error and raises.
+    """
+    if consumer not in CONSUMERS:
+        raise HardwareProfileError(f"unknown consumer {consumer!r}, expected one of {CONSUMERS}")
+    if not consumer_ref or not consumer_ref.strip():
+        raise HardwareProfileError("consumer_ref must not be empty")
+    try:
+        _data.record_resolution(
+            resolution.name,
+            resolution.version,
+            consumer=consumer,
+            consumer_ref=consumer_ref.strip(),
+            status=resolution.status,
+            reason=resolution.reason,
+            unconfirmed=resolution.unconfirmed,
+            target_cluster=target_cluster,
+            project=project,
+            actor=actor,
+        )
+    except Exception as exc:  # noqa: BLE001 - visibility must never break the call it observes
+        logger.warning(
+            "hardware profile %s v%s: could not record the %s resolution for %s (%s)",
+            resolution.name,
+            resolution.version,
+            consumer,
+            consumer_ref,
+            exc,
+        )
+        return False
+    logger.info(
+        "hardware_profile_resolved name=%s version=%s consumer=%s ref=%s status=%s",
+        resolution.name,
+        resolution.version,
+        consumer,
+        consumer_ref,
+        resolution.status,
+    )
+    return True
+
+
+def _entry(
+    *,
+    consumer: str,
+    consumer_ref: str,
+    project: str | None,
+    name: str,
+    version: int,
+    row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """One in-use line: the latest ledger status, overridden by ``missing`` when the version is gone."""
+    exists = get_profile(name, version=version) is not None
+    if not exists:
+        status = STATUS_MISSING
+        reason = f"version {version} of {name!r} was deleted; this {consumer} still references it"
+    elif row is not None:
+        status, reason = row["status"], row.get("reason") or ""
+    else:
+        # Created before the ledger existed (or its write failed): nothing was ever checked.
+        status, reason = STATUS_UNCHECKED, "no recorded resolution"
+    return {
+        "consumer": consumer,
+        "consumer_ref": consumer_ref,
+        "project": project,
+        "name": name,
+        "version": version,
+        "status": status,
+        "reason": reason,
+        "unconfirmed": list((row or {}).get("unconfirmed") or []),
+        "target_cluster": (row or {}).get("target_cluster"),
+        "resolved_at": (row or {}).get("ts"),
+        "exists": exists,
+    }
+
+
+def in_use_report(
+    *,
+    days: float = 7.0,
+    project: str | None = None,
+    projects: Iterable[str | None] | None = None,
+) -> dict[str, Any]:
+    """Every profile currently in use, with the honest status it resolved to (ADR 0157 Phase 4).
+
+    "In use" is (a) every RUNNING workbench created from a profile — whatever its age — and
+    (b) every training/serving consumer whose latest ledger resolution is within ``days``. Each
+    entry carries the latest recorded status for that consumer; a version that has since been
+    deleted reports ``missing``. ``attention`` lists the ``degraded``/``unresolvable``/``missing``
+    entries — the ones ADR 0157's Consequences say must never hide behind a catalog that merely
+    stores intent. ``project`` scopes both sources to one project; ``projects`` is the tenant
+    scope (the set a caller may read; ``None`` in it admits rows recorded with no project) —
+    both are applied in SQL before any limit. ``truncated`` is ``True`` when more
+    training/serving consumers matched than one bounded read returns, so a partial report never
+    reads as a complete one.
+    """
+    if days <= 0:
+        raise HardwareProfileError(f"days must be > 0, got {days!r}")
+    from examlops.workbenches import list_workbenches  # noqa: PLC0415 - avoids an import cycle
+
+    scope = set(projects) if projects is not None else None
+    entries: list[dict[str, Any]] = []
+    for wb in list_workbenches(project=project):
+        if (wb.get("status") or "").upper() != "RUNNING" or not wb.get("hardware_profile"):
+            continue
+        if scope is not None and wb.get("project") not in scope:
+            continue
+        version = wb.get("hardware_profile_version")
+        if version is None:
+            continue
+        ref = f"{wb['project']}/{wb['name']}"
+        rows = _data.list_resolutions(
+            wb["hardware_profile"], consumer="workbench", consumer_ref=ref, limit=1
+        )
+        entries.append(
+            _entry(
+                consumer="workbench",
+                consumer_ref=ref,
+                project=wb["project"],
+                name=wb["hardware_profile"],
+                version=int(version),
+                row=rows[0] if rows else None,
+            )
+        )
+
+    truncated = False
+    for consumer in ("training", "serving"):
+        # Latest row per consumer_ref, reduced in SQL: a raw newest-N page de-duplicated here
+        # silently dropped every consumer whose latest row fell behind a busier one's rows.
+        rows, more = _data.list_latest_resolutions(
+            consumer, project=project, projects=scope, since_days=days
+        )
+        truncated = truncated or more
+        for row in rows:
+            entries.append(
+                _entry(
+                    consumer=consumer,
+                    consumer_ref=row["consumer_ref"],
+                    project=row.get("project"),
+                    name=row["name"],
+                    version=int(row["version"]),
+                    row=row,
+                )
+            )
+
+    counts: dict[str, int] = {}
+    for e in entries:
+        counts[e["status"]] = counts.get(e["status"], 0) + 1
+    return {
+        "window_days": days,
+        "project": project,
+        "entries": entries,
+        "counts": counts,
+        "attention": [e for e in entries if e["status"] in ATTENTION_STATUSES],
+        "truncated": truncated,
+    }

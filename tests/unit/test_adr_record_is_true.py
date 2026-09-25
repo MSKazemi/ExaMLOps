@@ -141,11 +141,16 @@ def test_the_flag_check_does_not_depend_on_the_interpreter(rows):
 
 
 def test_a_named_flag_that_does_not_exist_is_absent(reconciler):
-    """`exa pipeline run --distributed` is named by ADR 0032 and has never existed."""
+    """A real command with an invented flag is absent; the same command's real flag is present.
+
+    This used `exa pipeline run --distributed` (named by ADR 0032) until that flag was built,
+    which is the guard working as intended — the pair below keeps both arms honest.
+    """
     cmds = reconciler.cli_commands()
     if not cmds:  # pragma: no cover - depends on the local install
         pytest.skip("the exa CLI is not installed in this environment")
-    assert reconciler.artifact_exists("exa pipeline run --distributed", cmds) is False
+    assert reconciler.artifact_exists("exa pipeline run --no-such-flag-xyz", cmds) is False
+    assert reconciler.artifact_exists("exa pipeline run --distributed", cmds) is True
 
 
 def test_a_body_parsed_flag_still_counts_as_real(reconciler):

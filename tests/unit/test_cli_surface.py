@@ -91,7 +91,9 @@ def test_cli_only_is_the_exception_and_always_says_why():
     # unrunnable as a request/response command exactly as `mcp serve` is.
     # 14 since ADR 0123 decision 4: `drift consume-telemetry` is the same shape of long-running
     # event consumer as `autopilot follow`, for the serving-plane telemetry event instead.
-    assert len(cli_only) <= 14, (
+    # 15 since ADR 0144: `agent runtime serve` runs the agent runtime's HTTP surface and its
+    # snapshot/sweep/recovery loop - a long-running server, the same shape as `mcp serve`.
+    assert len(cli_only) <= 15, (
         f"{len(cli_only)} cli_only commands — is each one really unrunnable?"
     )
 

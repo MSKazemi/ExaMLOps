@@ -8,6 +8,10 @@ are touched) and classifies every table:
 * ``scoped``        - carries a ``tenant`` or ``project`` column: rows are partitioned directly.
 * ``model-scoped``  - keyed by ``model``; a model belongs to a project through ``project_resources``
                       / ``project_models``, so the project is reachable but one join away.
+* ``dataset-scoped`` - keyed by ``dataset``; a dataset belongs to a project through
+                      ``project_resources`` (kind ``dataset``), and the ``exa data`` revision
+                      commands enforce it (:func:`examlops.authz.guard.resource_allowed`) - an
+                      unassigned dataset is the ``default`` project's (ADR 0014 decision 5).
 * ``exempt``        - listed in :data:`EXEMPT` with a *kind* and a *reason*:
     ``global``   platform infrastructure, not tenant data (coordination locks, schema meta ...);
     ``security`` the enforcement store itself (grants, principals, audit checkpoints);
@@ -31,7 +35,7 @@ from typing import Any
 _GLOBAL = "platform infrastructure (not tenant data)"
 _SECURITY = "the authorization / integrity store itself"
 _CHILD = "reachable only through its scoped parent's id"
-_GAP = "user data keyed by name/dataset; project ownership is not recorded (known gap)"
+_GAP = "user data keyed by name; project ownership is not recorded (known gap)"
 
 EXEMPT: dict[str, tuple[str, str]] = {
     **{
@@ -66,6 +70,8 @@ EXEMPT: dict[str, tuple[str, str]] = {
             "agent_plans",
             "agent_principals",
             "audit_checkpoints",
+            "audit_maintenance_runs",
+            "audit_transparency_entries",
             "authz_relations",
             "identity_grants",
             "identity_leases",
@@ -93,11 +99,10 @@ EXEMPT: dict[str, tuple[str, str]] = {
         for t in (
             "agent_alias_history",
             "agent_aliases",
+            "agent_reeval_queue",
+            "agent_rollouts",
             "agent_versions",
             "assets",
-            "data_retention",
-            "dataset_cards",
-            "dataset_revisions",
             "feature_records",
             "feature_views",
             "federated_runs",
@@ -113,7 +118,6 @@ EXEMPT: dict[str, tuple[str, str]] = {
             "prompt_label_splits",
             "prompt_labels",
             "prompt_versions",
-            "synthetic_datasets",
             "tool_call_counters",
             "tool_grants",
             "training_checkpoints",
@@ -157,6 +161,8 @@ def classify(table: str, columns: list[str]) -> tuple[str, str]:
             return "scoped", f"column `{col}`"
     if "model" in columns:
         return "model-scoped", "via model -> project_resources"
+    if "dataset" in columns:
+        return "dataset-scoped", "via dataset -> project_resources(kind='dataset')"
     if table in EXEMPT:
         kind, reason = EXEMPT[table]
         return "exempt", f"{kind}: {reason}"
@@ -173,7 +179,7 @@ def audit_scope(schema: dict[str, list[str]] | None = None) -> dict[str, Any]:
     stale = sorted(
         t
         for t, _ in EXEMPT.items()
-        if t not in schema or any(c in schema[t] for c in (*_SCOPE_COLUMNS, "model"))
+        if t not in schema or any(c in schema[t] for c in (*_SCOPE_COLUMNS, "model", "dataset"))
     )
     by_status: dict[str, int] = {}
     for t in tables:

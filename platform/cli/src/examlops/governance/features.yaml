@@ -1,0 +1,87 @@
+# Per-feature governance declarations (D2, ADR 0027 decision 2).
+#
+# Each platform feature declares the NIST AI RMF controls it helps satisfy (`controls`, ids in
+# catalogue.yaml) and the evidence it emits (`emits`, keys of examlops.compliance._COLLECTORS),
+# plus the module that emits that evidence. `exa governance validate` (and the unit suite in CI)
+# enforce, in both directions:
+#
+#   * every `module` resolves, every `emits` key has a collector, every `controls` id exists;
+#   * a feature can only claim a control it emits at least one of the control's evidence keys for
+#     (no claiming credit for a control you provide nothing towards);
+#   * every evidence key every control requires is emitted by a feature that declares that
+#     control (no control resting on evidence nobody owns);
+#   * every collector is emitted by some feature (no orphan evidence).
+#
+# The coverage report lists, per control, the features that back it.
+version: "1.0.0"
+features:
+  - id: D1
+    name: EU AI Act risk classification & system inventory
+    module: examlops.compliance
+    emits: [system_description]
+    controls: [MAP-1.1, GOVERN-1.6]
+  - id: A2
+    name: OpenLineage lineage
+    module: examlops.lineage
+    emits: [development_process]
+    controls: [MAP-2.3]
+  - id: A1/A5
+    name: Dataset versioning & data-quality checks
+    module: examlops.data.data_assets
+    emits: [data_governance]
+    controls: [MAP-2.3]
+  - id: A8
+    name: Signed reproducibility bundles
+    module: examlops.reproducibility
+    emits: [reproducibility]
+    controls: [MEASURE-2.1]
+  - id: C2
+    name: Evaluation suites
+    module: examlops.evaluation
+    emits: [performance]
+    controls: [MEASURE-2.3]
+  - id: C8
+    name: Subgroup fairness
+    module: examlops.fairness
+    emits: [fairness]
+    controls: [MEASURE-2.11]
+  - id: C5
+    name: Drift detection
+    module: examlops.data.drift
+    emits: [monitoring, risk_management]
+    controls: [MANAGE-2.2, GENAI-3.2]
+  - id: C6
+    name: Service-level objectives
+    module: examlops.slo
+    emits: [monitoring]
+    controls: [MANAGE-2.2]
+  - id: D3
+    name: Supply-chain integrity (AI-BOM, signing)
+    module: examlops.supplychain
+    emits: [integrity]
+    controls: [MEASURE-2.7]
+  - id: D4
+    name: Hash-chained audit trail
+    module: examlops.data.audit
+    emits: [record_keeping, changes]
+    controls: [GOVERN-1.1, MANAGE-4.1]
+  - id: D6
+    name: Relationship RBAC & multi-tenancy
+    module: examlops.authz
+    emits: [access_documented, access_enforced]
+    controls: [GOVERN-2.1]
+  - id: D7
+    name: Secrets management & rotation
+    module: examlops.secrets
+    emits: [secrets_managed, secrets_rotation]
+    controls: [MEASURE-2.7]
+  - id: D8
+    name: GenAI guardrails
+    module: examlops.guardrails
+    emits: [risk_management]
+    controls: [GENAI-3.2]
+  - id: FinOps-carbon
+    name: Green-AI carbon accounting
+    module: examlops.finops.carbon
+    emits: [environmental_impact]
+    controls: [MEASURE-2.12]

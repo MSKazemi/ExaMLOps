@@ -1,5 +1,7 @@
 """Reference distributed training script — DistributedDataParallel + sharded, resumable checkpoints.
 
+``--strategy fsdp`` runs the same job under PyTorch FSDP2 (``fully_shard``) instead of DDP.
+
 Run it under ``torchrun`` (``examlops.distributed.launch`` builds the command)::
 
     torchrun --standalone --nproc-per-node=2 train_ddp.py --run-dir RUN --steps 10
@@ -8,8 +10,9 @@ What it is: a small, real DDP job (tiny MLP, synthetic regression data) that exe
 ADR 0032 decision 2 asks of the *training side* — periodic **sharded checkpoints** (each rank writes
 its own shard file, rank 0 commits a manifest with per-shard SHA-256), **resume from the newest
 checkpoint that verifies** (a corrupt or missing shard makes that step invalid and it falls back to
-the previous one), deterministic seeding, and honest exit codes. It is *not* an FSDP or DeepSpeed
-script and it trains no ExaMLOps registry model.
+the previous one), deterministic seeding, and honest exit codes. It implements DDP and FSDP2 (not
+DeepSpeed/Megatron) and trains no ExaMLOps registry model: a registry model supplies its own
+entrypoint module that honours the same argument contract (see ``examlops.distributed.strategy``).
 
 Determinism: the model is initialised from the seed on every rank; the batch for (step, rank) is
 generated from ``seed, step, rank`` alone, so there is no data-loader state to checkpoint and a
@@ -43,6 +46,9 @@ IN_DIM, HIDDEN = 16, 32
 BATCH_PER_RANK = 32
 LR, MOMENTUM = 0.005, 0.9
 STEPS_PER_EPOCH = 4
+#: Parallelism strategies this script implements. The config hash deliberately excludes the
+#: strategy: shards hold whole tensors, so a DDP checkpoint resumes under FSDP and vice versa.
+STRATEGIES = ("ddp", "fsdp")
 
 
 class FatalTrainingError(Exception):
@@ -72,16 +78,30 @@ def _batch(torch, seed: int, step: int, rank: int, device):
     return x.to(device), y.to(device)
 
 
+def _full(t):
+    """The whole tensor behind ``t``: an FSDP ``DTensor`` is gathered (a collective — every rank
+    must call this for every parameter, in the same order); a plain tensor is itself."""
+    full = getattr(t, "full_tensor", None)
+    return full() if callable(full) else t
+
+
 def _save_shard(torch, model, opt, rank: int, world: int, directory: Path) -> dict[str, Any]:
-    """This rank's slice: parameters (and momentum buffers) whose index % world == rank."""
+    """This rank's slice: parameters (and momentum buffers) whose index % world == rank.
+
+    Under FSDP every parameter is first gathered to its full shape on every rank (``_full``), so a
+    shard holds whole tensors whatever the strategy was and a checkpoint written under one strategy
+    or world size reassembles under another.
+    """
     params, mom = {}, {}
     for i, (name, p) in enumerate(model.named_parameters()):
+        whole = _full(p.detach())
+        buf = opt.state.get(p, {}).get("momentum_buffer")
+        whole_buf = _full(buf) if buf is not None else None
         if i % world != rank:
             continue
-        params[name] = p.detach().cpu().clone()
-        buf = opt.state.get(p, {}).get("momentum_buffer")
-        if buf is not None:
-            mom[name] = buf.detach().cpu().clone()
+        params[name] = whole.cpu().clone()
+        if whole_buf is not None:
+            mom[name] = whole_buf.detach().cpu().clone()
     buf_io = io.BytesIO()
     torch.save({"params": params, "momentum": mom}, buf_io)
     data = buf_io.getvalue()
@@ -109,16 +129,54 @@ def _load_checkpoint(torch, model, opt, status: cf.CheckpointStatus) -> None:
         raise RuntimeError("checkpoint parameter set does not match the model")
     with torch.no_grad():
         for name, p in named.items():
+            mesh = getattr(p, "device_mesh", None)
+            if mesh is not None:  # FSDP: re-shard the whole tensor onto this parameter's layout
+                from torch.distributed.tensor import distribute_tensor
+
+                p.copy_(distribute_tensor(params[name].to(p.device), mesh, p.placements))
+                if name in mom:
+                    opt.state[p]["momentum_buffer"] = distribute_tensor(
+                        mom[name].to(p.device), mesh, p.placements
+                    )
+                continue
             p.copy_(params[name])
             if name in mom:
                 opt.state[p]["momentum_buffer"] = mom[name].to(p.device)
 
 
 def _weights_sha(model) -> str:
+    """Digest of the full weights. Collective under FSDP: every rank must call it."""
     h = hashlib.sha256()
     for _, p in model.named_parameters():
-        h.update(p.detach().cpu().contiguous().numpy().tobytes())
+        h.update(_full(p.detach()).cpu().contiguous().numpy().tobytes())
     return h.hexdigest()
+
+
+def _wrap(torch, model, strategy: str, use_cuda: bool, local_rank: int):
+    """Apply the parallelism strategy; returns the module to call forward/backward on.
+
+    ``ddp`` — DistributedDataParallel (replicated weights, all-reduced gradients).
+    ``fsdp`` — PyTorch FSDP2 (``fully_shard``): each Linear and then the root are sharded, so a rank
+    holds 1/world of every parameter and its optimizer state (ZeRO-3-style); gradients are
+    reduce-scattered. Works on CPU/gloo and on CUDA/NCCL through the same call.
+    """
+    if strategy == "ddp":
+        from torch.nn.parallel import DistributedDataParallel as DDP
+
+        return DDP(model, device_ids=[local_rank] if use_cuda else None)
+    if strategy == "fsdp":
+        try:
+            from torch.distributed.fsdp import fully_shard
+        except ImportError as exc:  # torch < 2.6
+            raise FatalTrainingError(f"FSDP2 (fully_shard) is not available: {exc}") from exc
+        for layer in model:
+            if isinstance(layer, torch.nn.Linear):
+                fully_shard(layer)
+        fully_shard(model)
+        return model
+    raise FatalTrainingError(
+        f"strategy {strategy!r} is not implemented by this script (use ddp or fsdp)"
+    )
 
 
 def _maybe_inject_fault(run_dir: Path, step: int, rank: int) -> None:
@@ -137,7 +195,6 @@ def _maybe_inject_fault(run_dir: Path, step: int, rank: int) -> None:
 def train(args: argparse.Namespace) -> int:
     import torch
     import torch.distributed as dist
-    from torch.nn.parallel import DistributedDataParallel as DDP
 
     if args.steps <= 0 or args.checkpoint_every <= 0:
         raise FatalTrainingError("--steps and --checkpoint-every must be positive")
@@ -160,7 +217,7 @@ def train(args: argparse.Namespace) -> int:
         model = torch.nn.Sequential(
             torch.nn.Linear(IN_DIM, HIDDEN), torch.nn.Tanh(), torch.nn.Linear(HIDDEN, 1)
         ).to(device)
-        ddp = DDP(model, device_ids=[local_rank] if use_cuda else None)
+        ddp = _wrap(torch, model, args.strategy, use_cuda, local_rank)
         opt = torch.optim.SGD(ddp.parameters(), lr=LR, momentum=MOMENTUM)
         cfg_hash = cf.config_hash(_config(seed))
 
@@ -219,9 +276,11 @@ def train(args: argparse.Namespace) -> int:
                         epoch=done // STEPS_PER_EPOCH,
                     )
                 dist.barrier()
+        weights_sha = _weights_sha(model)  # collective under FSDP: every rank computes it
         if rank == 0:
             metrics = {
                 "status": "complete",
+                "strategy": args.strategy,
                 "steps": args.steps,
                 "steps_run": args.steps - start,
                 "world_size": world,
@@ -232,7 +291,7 @@ def train(args: argparse.Namespace) -> int:
                 "skipped_checkpoints": skipped_info,
                 "first_loss": first_loss,
                 "final_loss": last_loss,
-                "weights_sha256": _weights_sha(model),
+                "weights_sha256": weights_sha,
             }
             print(cf.METRICS_MARKER + json.dumps(metrics, sort_keys=True), flush=True)
         return cf.EXIT_OK
@@ -249,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--steps", type=int, default=12)
     ap.add_argument("--checkpoint-every", type=int, default=4)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--strategy", choices=STRATEGIES, default="ddp")
     args = ap.parse_args(argv)
     rank = int(os.environ.get("RANK", "0"))
     try:

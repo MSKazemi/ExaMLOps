@@ -28,6 +28,8 @@ _PANELS: list[tuple[str, list[str]]] = [
             "benchmark",
             "loadtest",
             "manifest",
+            "kuberay-manifest",
+            "verifier-manifest",
             "backend",
         ],
     ),
@@ -161,9 +163,14 @@ def traffic(
     reason: str | None = reason_option(),
 ):
     """Show or set traffic split across model aliases (must sum to 100)."""
+    from examlops.cli._model_authz import guard_model
+
+    reading = production is None and canary is None and staging is None
+    # ADR 0014 d4: showing the split needs `viewer`, setting it (even as a dry run) `editor`.
+    guard_model(model, "viewer" if reading else "editor")
     init_db()
 
-    if production is None and canary is None and staging is None:
+    if reading:
         # Named apart from the `rules` built below: one is what is stored (and may be absent),
         # the other is what this invocation is about to set. Sharing the name made every use of
         # the second one an optional-typed value, which is how ten type errors came from one
@@ -503,7 +510,7 @@ def manifest(
     import yaml
 
     from examlops.serving.substrates.resolve import RenderError, resolve_ref
-    from examlops.serving_backends import registry_to_kserve, validate_manifest
+    from examlops.serving_backends import registry_to_kserve_verified, validate_manifest
     from examlops.usecase import models_dir
 
     reg = registry_dir or os.getenv("RAY_MODELS_DIR") or str(models_dir())
@@ -525,7 +532,9 @@ def manifest(
         canary_ref = None
         if canary is not None:
             canary_ref = resolve_ref(model, alias=canary_alias, project=project)
-        m = registry_to_kserve(model_yaml, stable, canary=canary_ref, canary_pct=canary)
+        m, render_warnings = registry_to_kserve_verified(
+            model_yaml, stable, canary=canary_ref, canary_pct=canary
+        )
     except RenderError as exc:
         _output.error(f"Cannot render a manifest for {model}: {exc}")
     except Exception as exc:  # noqa: BLE001 - registry unreachable, unknown alias, …
@@ -533,6 +542,8 @@ def manifest(
     errors = validate_manifest(m)
     if errors:
         _output.error(f"Generated manifest failed validation: {errors}")
+    for note in render_warnings:  # stderr, so --json stays one document
+        _output.warning(note)
     rendered = yaml.safe_dump(m, sort_keys=False)
     if out:
         Path(out).parent.mkdir(parents=True, exist_ok=True)
@@ -546,9 +557,124 @@ def manifest(
     _output.ok(f"Generated {m['kind']} for {model}@{alias}")
 
 
+def _emit_manifest(m: dict, out: str | None, what: str) -> None:
+    import yaml
+
+    rendered = yaml.safe_dump(m, sort_keys=False)
+    if out:
+        from pathlib import Path
+
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(rendered)
+        _output.ok(f"{what} written to {out} ({m['kind']})")
+        return
+    if _output.json_mode:
+        _output.print_json(m)
+        return
+    typer.echo(rendered)
+    _output.ok(f"Generated {m['kind']} {m['metadata']['name']}")
+
+
+_EXAMPLES_KUBERAY = (
+    "Examples:\n\n"
+    "  exa serve kuberay-manifest --image ghcr.io/mskazemi/examlops-ray-serving:v0.61.0\n\n"
+    "  exa serve kuberay-manifest --image IMAGE --min-workers 2 --max-workers 8 --out ray.yaml\n\n"
+    "  exa --json serve kuberay-manifest --image IMAGE"
+)
+
+
+@app.command("kuberay-manifest", epilog=_EXAMPLES_KUBERAY)
+def kuberay_manifest(
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        help="Pinned ray-serving image (tag or digest); default EXAMLOPS_KUBERAY_IMAGE",
+    ),
+    name: str = typer.Option("examlops-serving", "--name", help="RayService name"),
+    project: str = typer.Option("default", "--project", help="examlops.io/project label"),
+    min_workers: int = typer.Option(1, "--min-workers", help="Minimum Ray worker pods"),
+    max_workers: int = typer.Option(4, "--max-workers", help="Maximum Ray worker pods (≤256)"),
+    out: str | None = typer.Option(None, "--out", help="Write manifest YAML to this file"),
+    registry_dir: str | None = typer.Option(
+        None, "--registry-dir", help="Dir of per-model YAML (default: RAY_MODELS_DIR)"
+    ),
+) -> None:
+    """Render the Ray multi-model server as a KubeRay RayService (ADR 0015 d1).
+
+    The dense multi-model path on Kubernetes: every model in the registry behind one Ray cluster,
+    the same application the Compose ray-serving service runs, checked against the pinned KubeRay
+    schema. Nothing is applied to a cluster.
+    """
+    from examlops.serving.substrates.resolve import RenderError
+    from examlops.serving_backends import registry_to_kuberay
+    from examlops.usecase import models_dir
+
+    chosen = image or os.getenv("EXAMLOPS_KUBERAY_IMAGE") or ""
+    if not chosen:
+        _output.error(
+            "No image: pass --image or set EXAMLOPS_KUBERAY_IMAGE to the pinned ray-serving image"
+        )
+    reg = registry_dir or os.getenv("RAY_MODELS_DIR") or str(models_dir())
+    try:
+        m = registry_to_kuberay(
+            reg,
+            image=chosen,
+            name=name,
+            project=project,
+            min_workers=min_workers,
+            max_workers=max_workers,
+        )
+    except RenderError as exc:
+        _output.error(f"Cannot render a RayService: {exc}")
+    _emit_manifest(m, out, "KubeRay manifest")
+
+
+_EXAMPLES_VERIFIER = (
+    "Examples:\n\n"
+    "  EXAMLOPS_KSERVE_VERIFIER_IMAGE=IMAGE exa serve verifier-manifest | kubectl apply -f -\n\n"
+    "  exa serve verifier-manifest --image IMAGE --out verified-storage.yaml"
+)
+
+
+@app.command("verifier-manifest", epilog=_EXAMPLES_VERIFIER)
+def verifier_manifest(
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        help="Verified storage-initializer image; default EXAMLOPS_KSERVE_VERIFIER_IMAGE",
+    ),
+    out: str | None = typer.Option(None, "--out", help="Write manifest YAML to this file"),
+) -> None:
+    """Render the ClusterStorageContainer that verifies model signatures in the pod (ADR 0142 d3).
+
+    Install once per cluster (it is cluster-scoped). KServe InferenceServices rendered by the
+    platform name it, so every artifact is downloaded and then checked against its D3 signature
+    before the model server starts; EXAMLOPS_SERVING_VERIFY=enforce stops the pod on a failure.
+    """
+    from examlops.serving.substrates import k8s_schema
+    from examlops.serving.substrates.resolve import RenderError
+    from examlops.serving.substrates.verifier import VerifierSpec, render_storage_container
+
+    try:
+        base = VerifierSpec.from_env()
+        spec = VerifierSpec(
+            mode=base.mode,
+            image=image or base.image,
+            storage_container=base.storage_container,
+            trust_configmap=base.trust_configmap,
+        )
+        m = render_storage_container(spec)
+    except RenderError as exc:
+        _output.error(f"Cannot render the storage container: {exc}")
+    errors = k8s_schema.validate(m)
+    if errors:
+        _output.error(f"Generated manifest failed validation: {errors}")
+    _emit_manifest(m, out, "Storage-container manifest")
+
+
 @app.command("backend")
 def backend() -> None:
-    """Show the active serving backend (ray-compose default | kserve-k8s)."""
+    """Show the active serving backend (ray-compose default | kserve-k8s | kuberay-k8s)."""
     from examlops.serving_backends import select_backend
 
     b = select_backend()

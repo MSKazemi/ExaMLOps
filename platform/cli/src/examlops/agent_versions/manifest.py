@@ -24,6 +24,7 @@ from typing import Any
 __all__ = [
     "ALIASES",
     "AUTONOMY_LEVELS",
+    "MULTITASK_STRATEGIES",
     "SCHEMA_VERSION",
     "AgentManifestError",
     "canonical_json",
@@ -39,6 +40,8 @@ SCHEMA_VERSION = 1
 ALIASES = ("Staging", "Canary", "Production")
 #: The SAE-style autonomy scale ADR 0113 adopts (arXiv:2602.04261).
 AUTONOMY_LEVELS = ("L0", "L1", "L2", "L3", "L4", "L5")
+#: What a busy thread does with a second input (ADR 0144 decision 2), enforced by the runtime.
+MULTITASK_STRATEGIES = ("reject", "enqueue", "interrupt", "rollback")
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -258,12 +261,20 @@ def _check_policy(v: Any, problems: list[str]) -> None:
     o = _obj("policy", v, problems)
     if o is None:
         return
-    _unknown("policy", o, {"contract", "autonomy", "multitask_strategy"}, problems)
+    _unknown(
+        "policy", o, {"contract", "autonomy", "multitask_strategy", "reeval_on_follow"}, problems
+    )
     if o.get("autonomy") not in AUTONOMY_LEVELS:
         problems.append(f"policy.autonomy: required, one of {', '.join(AUTONOMY_LEVELS)}")
     for k in ("contract", "multitask_strategy"):
         if k in o:
             _str(f"policy.{k}", o[k], problems)
+    if "multitask_strategy" in o and o["multitask_strategy"] not in MULTITASK_STRATEGIES:
+        problems.append(
+            f"policy.multitask_strategy: must be one of {', '.join(MULTITASK_STRATEGIES)}"
+        )
+    if "reeval_on_follow" in o and o["reeval_on_follow"] not in ("blocking", "nonblocking"):
+        problems.append("policy.reeval_on_follow: must be 'blocking' or 'nonblocking'")
 
 
 def _check_optional(doc: dict[str, Any], problems: list[str]) -> None:
@@ -275,9 +286,19 @@ def _check_optional(doc: dict[str, Any], problems: list[str]) -> None:
             else:
                 _str(f"memory.{k}", o[k], problems)
     if "state" in doc and (o := _obj("state", doc["state"], problems)) is not None:
-        _unknown("state", o, {"schema_version", "schema_hash"}, problems)
+        _unknown("state", o, {"schema_version", "schema_hash", "schema"}, problems)
         _int("state.schema_version", o.get("schema_version"), problems, minimum=0)
         _str("state.schema_hash", o.get("schema_hash"), problems, pattern=_SHA)
+        if "schema" in o:  # ADR 0146 d5: the exported schema the state-compat gate diffs
+            from examlops.agent_versions.compat import check_state_schema, state_schema_hash
+
+            bad = check_state_schema(o["schema"])
+            problems.extend(bad)
+            if not bad and o.get("schema_hash") != state_schema_hash(o["schema"]):
+                problems.append(
+                    "state.schema_hash: does not match state.schema "
+                    f"({state_schema_hash(o['schema'])})"
+                )
     if "eval" in doc and (o := _obj("eval", doc["eval"], problems)) is not None:
         _unknown("eval", o, {"suites", "non_inferiority_margin"}, problems)
         suites = o.get("suites")

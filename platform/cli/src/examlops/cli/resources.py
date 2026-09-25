@@ -241,6 +241,18 @@ RESOURCES: tuple[Resource, ...] = (
         actions=("pipeline distributed resume", "pipeline distributed checkpoint"),
         columns=("run_id", "model", "status", "nodes", "gpus_per_node", "strategy"),
     ),
+    R(
+        "suspend-snapshot",
+        "Suspend snapshots",
+        "Pinned workload state (training run, agent session, serving replica) - ADR 0109.",
+        list="pipeline distributed suspend list",
+        key="snapshot_id",
+        create="pipeline distributed suspend snapshot",
+        show="pipeline distributed suspend show",
+        delete="pipeline distributed suspend discard",
+        actions=("pipeline distributed suspend resume",),
+        columns=("snapshot_id", "backend", "subject_id", "tenant", "status"),
+    ),
     # ── Data & Features ────────────────────────────────────────────────────────────────────
     R(
         "dataset-revision",
@@ -696,6 +708,9 @@ NOT_RESOURCES: dict[str, str] = {
     "hardware portable": "A compatibility query (engine × accelerator), not a collection.",
     "finops carbon policy list": "Evaluation history read back from the audit chain — records, not "
     "managed objects; `finops carbon policy status` answers per policy.",
+    "gateway schema list": "Built-in output schemas are code and site schemas + route defaults are "
+    "one validated file (structured.yaml, ADR 0035); edited as a document, never row by row - "
+    "`exa gateway schema show` reads one.",
 }
 
 

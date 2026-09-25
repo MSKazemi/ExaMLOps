@@ -115,7 +115,26 @@ def _predictor(model_yaml: dict[str, Any], ref: ResolvedRef) -> dict[str, Any]:
     # Claim the Open Inference Protocol only where the runtime actually speaks it (R-SUB-10).
     if "v2" in RUNTIME_PROTOCOLS.get(runtime, ()):
         model["protocolVersion"] = "v2"
+    gpu = _gpu_request(model_yaml)
+    if gpu is not None:
+        model["resources"] = gpu.resources()
     return {"model": model}
+
+
+def _gpu_request(model_yaml: dict[str, Any]) -> Any:
+    """The pod's fractional GPU request (ADR 0030 decision 2), or ``None`` for no GPU request."""
+    from examlops.gpu_sharing.k8s import k8s_gpu_request
+
+    try:
+        return k8s_gpu_request(model_yaml)
+    except ValueError as exc:
+        raise RenderError(f"invalid gpu_sharing: {exc}") from exc
+
+
+def _annotate_gpu(meta: dict[str, Any], model_yaml: dict[str, Any]) -> None:
+    gpu = _gpu_request(model_yaml)
+    if gpu is not None:
+        meta["annotations"].update(gpu.annotations())
 
 
 def render_inference_service(
@@ -133,6 +152,7 @@ def render_inference_service(
     name = service_name(str(model_yaml.get("name") or ref.model))
     meta = _metadata(ref, name)
     meta["annotations"][DEPLOYMENT_MODE_ANNOTATION] = STANDARD_MODE
+    _annotate_gpu(meta, model_yaml)
     spec: dict[str, Any] = {"predictor": _predictor(model_yaml, ref)}
     if canary is not None or canary_pct is not None:
         if canary is None or canary_pct is None:
@@ -169,6 +189,9 @@ def render_llm_inference_service(model_yaml: dict[str, Any], ref: ResolvedRef) -
     args = to_vllm_args(engine)
     if args:
         main["args"] = args
+    gpu = _gpu_request(model_yaml)
+    if gpu is not None:
+        main["resources"] = gpu.resources()
     spec: dict[str, Any] = {
         "model": {"uri": ref.artifact_uri, "name": engine.served_model_name or ref.model},
         # Empty blocks select KServe's managed defaults (the v0.20.0 llmisvc samples do the same):
@@ -187,10 +210,21 @@ def render_llm_inference_service(model_yaml: dict[str, Any], ref: ResolvedRef) -
     }
     if parallelism:
         spec["parallelism"] = parallelism
+    sharded = {k: v for k, v in parallelism.items() if k in ("tensor", "pipeline")}
+    if gpu is not None and sharded:
+        # ADR 0030: a GPU share is ONE slice/device per container, while tensor/pipeline
+        # parallelism shards the engine over several GPUs — the pod could never start vLLM.
+        raise RenderError(
+            f"gpu_sharing gives the container one {gpu.mechanism} GPU share, but the engine is "
+            f"sharded over several GPUs ({', '.join(f'{k} parallel={v}' for k, v in sharded.items())}"
+            "); drop gpu_sharing or the tensor/pipeline parallelism"
+        )
+    meta = _metadata(ref, name)
+    _annotate_gpu(meta, model_yaml)
     return {
         "apiVersion": LLMISVC_API,
         "kind": "LLMInferenceService",
-        "metadata": _metadata(ref, name),
+        "metadata": meta,
         "spec": spec,
     }
 

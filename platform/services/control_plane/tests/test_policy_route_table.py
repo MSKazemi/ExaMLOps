@@ -67,6 +67,18 @@ def test_gated_routes_call_the_gate_after_the_scope_dependency():
     for name in ("trigger_retrain", "submit_retrain_v1"):
         src = inspect.getsource(getattr(cp_app, name))
         assert "_policy_gate.enforce_retrain(" in src, name
+    # Every other gated action: its handler calls the gate with that action name in its body.
+    handlers = {
+        "approval_approve": ("approve_model",),
+        "approval_reject": ("reject_model",),
+        "modelzoo_sync": ("modelzoo_sync",),
+        "modelzoo_config_set": ("update_modelzoo_config",),
+        "production_reload": ("admin_reload",),
+    }
     for key, (kind, action) in ROUTE_POLICY.items():
-        if kind == "gated":
-            assert action == "retrain"  # one gated action today; extend the assertion with new ones
+        if kind != "gated" or action == "retrain":
+            continue
+        assert action in handlers, f"{key}: add the handler of gated action {action!r} here"
+        for name in handlers[action]:
+            src = inspect.getsource(getattr(cp_app, name))
+            assert "_policy_gate.enforce_" in src and f'"{action}"' in src, (name, action)

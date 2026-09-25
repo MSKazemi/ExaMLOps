@@ -13,6 +13,7 @@ from examlops.agent_versions.manifest import (
     version_id_of,
 )
 from examlops.agent_versions.service import (
+    IN_FLIGHT_POLICIES,
     AgentVersion,
     GateRefusal,
     canonical_alias,
@@ -25,12 +26,14 @@ from examlops.agent_versions.service import (
     resolve,
     rollback,
     set_alias,
+    set_canary,
     verify_signature,
 )
 
 __all__ = [
     "ALIASES",
     "AUTONOMY_LEVELS",
+    "IN_FLIGHT_POLICIES",
     "SCHEMA_VERSION",
     "AgentManifestError",
     "AgentVersion",
@@ -49,6 +52,7 @@ __all__ = [
     "resolve",
     "rollback",
     "set_alias",
+    "set_canary",
     "tool_manifest_hash",
     "verify_signature",
     "version_id_of",

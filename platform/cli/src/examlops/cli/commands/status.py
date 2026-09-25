@@ -49,6 +49,55 @@ def _checked_address(key: str, svc: dict, cfg) -> str:
     return str(url)
 
 
+def _hardware_profile_summary() -> dict | None:
+    """Profiles in use and the status each resolved to (ADR 0157 Phase 4), or ``None``.
+
+    Read from the local platform datastore, not the control plane. ``None`` means the read
+    failed — distinct from an empty report, which means nothing is sized by a profile. A status
+    line must never turn an unreadable ledger into the silence that means "all fine".
+    """
+    try:
+        from examlops.hardware_profiles import in_use_report  # noqa: PLC0415
+
+        report = in_use_report()
+    except Exception:  # noqa: BLE001 - a status page must render with a broken datastore
+        return None
+    return {
+        "in_use": len(report["entries"]),
+        "counts": report["counts"],
+        "attention": report["attention"],
+        "truncated": report.get("truncated", False),
+    }
+
+
+def _render_hardware_profiles() -> None:
+    summary = _hardware_profile_summary()
+    if summary is None:
+        _output.warning("hardware profile usage unknown — the platform datastore could not be read")
+        return
+    if not summary["in_use"]:
+        return  # nothing sized by a profile: no line, as for any unused feature
+    attention = summary["attention"]
+    if not attention:
+        _output.ok(f"{summary['in_use']} hardware profile use(s), none degraded or unresolvable")
+        return
+    _output.print_table(
+        "Hardware Profiles Needing Attention",
+        ["Consumer", "Ref", "Profile", "Status", "Reason"],
+        [
+            [
+                e["consumer"],
+                e["consumer_ref"],
+                f"{e['name']} v{e['version']}",
+                e["status"],
+                e["reason"],
+            ]
+            for e in attention
+        ],
+    )
+    _output.warning("run: exa hardware profile in-use")
+
+
 def _render_status(cfg, watch: bool) -> None:
     from examlops import sdk
 
@@ -62,9 +111,16 @@ def _render_status(cfg, watch: bool) -> None:
             # The control plane's payload does not carry production models; the snapshot resolves
             # them from the registry. Emitting `raw` alone made `--json` and the table disagree
             # about what the command had found.
-            _output.print_json({**data, "production_models": snapshot.production_models})
+            _output.print_json(
+                {
+                    **data,
+                    "production_models": snapshot.production_models,
+                    "suspend": _suspend_report(),
+                    "hardware_profiles": _hardware_profile_summary(),
+                }
+            )
         else:
-            _output.print_json({"error": "control_plane_unreachable"})
+            _output.print_json({"error": "control_plane_unreachable", "suspend": _suspend_report()})
         return
 
     if data is None:
@@ -192,4 +248,57 @@ def _render_status(cfg, watch: bool) -> None:
             ],
         )
 
+    _render_suspend()
+
+    # ── Hardware profiles in use (ADR 0157 Phase 4) ───────────────────────────
+    _render_hardware_profiles()
+
     _output.console.print()
+
+
+def _suspend_report() -> dict:
+    """ADR 0109: the suspend seam's capability and restore timing split, read locally.
+
+    Local on purpose — it is this platform's own record (``suspend_snapshots``), not something the
+    control plane owns — and fail-open, so the seam can never take ``exa status`` down.
+    """
+    try:
+        from examlops.suspend.report import seam_report
+
+        return seam_report()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"suspend seam unavailable: {exc}"}
+
+
+def _secs(value) -> str:
+    return "—" if value is None else f"{float(value):.3f}"
+
+
+def _render_suspend() -> None:
+    report = _suspend_report()
+    if "error" in report:
+        _output.warning(str(report["error"]))
+        return
+    rows = []
+    for b in report.get("backends", []):
+        if "error" in b:
+            rows.append([b.get("backend"), "[red]error[/red]", str(b["error"])[:40], "", "", ""])
+            continue
+        cap, timing, pre = b["capability"], b.get("timing") or {}, b["preemption"]
+        name = cap["backend"] + (" *" if cap["backend"] == report.get("selected_backend") else "")
+        rows.append(
+            [
+                name,
+                cap["granularity"],
+                ",".join(cap["tiers"]) or "—",
+                "[green]yes[/green]" if pre["can_promise"] else "[yellow]no[/yellow]",
+                str(timing.get("restores", "?")),
+                f"{_secs(timing.get('state_transfer_s_median'))} / "
+                f"{_secs(timing.get('communicator_rebuild_s_median'))}",
+            ]
+        )
+    _output.print_table(
+        "Suspend/Resume Seam (ADR 0109; * = selected)",
+        ["Backend", "Granularity", "Tiers", "Preemption", "Restores", "Transfer / Rebuild s"],
+        rows,
+    )

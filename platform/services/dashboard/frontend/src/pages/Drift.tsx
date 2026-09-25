@@ -12,6 +12,7 @@ import {
   useSetInputBaseline,
   useResetInputDrift,
   useDriftEvents,
+  usePerfEstimates,
 } from '@/lib/drift'
 
 /** Shared loading placeholder for the drift tables (F3 Skeleton convention). */
@@ -427,8 +428,78 @@ function AutoRetrainTab({ onRefresh }: { onRefresh: () => void }) {
   )
 }
 
+function fmtScore(v: number | null | undefined): string {
+  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(3) : '—'
+}
+
+/** Estimated vs realized performance (ADR 0022 decision 2) — `perf_estimates`, newest first. */
+export function PerfEstimatesPanel() {
+  const { data = [], isLoading, error } = usePerfEstimates()
+  if (isLoading) return <TableSkeleton />
+  if (error)
+    return <EmptyState title="Couldn't load performance estimates" description="The performance-estimate endpoint is unreachable." />
+  if (data.length === 0)
+    return (
+      <EmptyState
+        title="No performance estimates yet"
+        description="They are written by `exa drift estimate` or `exa drift run-advanced`. An estimated drop warns; one confirmed by realized labels is CRITICAL and feeds `exa drift trigger`."
+      />
+    )
+  return (
+    <div className="overflow-x-auto rounded-xl" style={{ border: '1px solid var(--border)' }}>
+      <table className="w-full text-sm" aria-label="Estimated vs realized performance">
+        <thead>
+          <tr className="text-left text-muted-foreground">
+            <th className="px-3 py-2">Time</th>
+            <th className="px-3">Model</th>
+            <th className="px-3">Metric</th>
+            <th className="px-3">Estimated</th>
+            <th className="px-3">Realized</th>
+            <th className="px-3">Gap</th>
+            <th className="px-3">Baseline</th>
+            <th className="px-3">Method</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((e) => (
+            <tr key={e.id} style={{ borderTop: '1px solid var(--border)' }}>
+              <td className="px-3 py-2">{e.ts}</td>
+              <td className="px-3 font-mono">{e.model}</td>
+              <td className="px-3">{e.metric}</td>
+              <td className="px-3">{fmtScore(e.estimated)}</td>
+              <td className="px-3">{e.realized == null ? 'awaiting labels' : fmtScore(e.realized)}</td>
+              <td className="px-3">{fmtScore(e.gap)}</td>
+              <td className="px-3">{fmtScore(e.baseline)}</td>
+              <td className="px-3">{e.method}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 /** Concept / label-free / data-quality detections (ADR 0022) — the events `exa drift run-advanced` writes. */
 export function AdvancedDriftTab() {
+  return (
+    <div className="space-y-6">
+      <AdvancedDriftEvents />
+      <section className="space-y-2">
+        <h3 className="text-sm font-semibold">Estimated vs realized performance</h3>
+        <PerfEstimatesPanel />
+      </section>
+    </div>
+  )
+}
+
+/** A label-free estimate is written as a concept event; name it for what it is. */
+function advancedKindLabel(e: { drift_kind: string; detail: Record<string, unknown> | null }): string {
+  if (e.drift_kind === 'data_quality') return 'data quality'
+  if (e.detail?.label_free) return e.detail.confirmed_by_labels ? 'estimate (confirmed)' : 'estimate'
+  return 'concept'
+}
+
+function AdvancedDriftEvents() {
   const { data = [], isLoading, error } = useDriftEvents()
   const advanced = data.filter((e) => e.drift_kind === 'concept' || e.drift_kind === 'data_quality')
   if (isLoading) return <TableSkeleton />
@@ -458,7 +529,7 @@ export function AdvancedDriftTab() {
             <tr key={e.id} style={{ borderTop: '1px solid var(--border)' }}>
               <td className="px-3 py-2">{e.ts}</td>
               <td className="px-3 font-mono">{e.model}</td>
-              <td className="px-3">{e.drift_kind === 'data_quality' ? 'data quality' : 'concept'}</td>
+              <td className="px-3">{advancedKindLabel(e)}</td>
               <td className="px-3" style={statusStyle(e.severity)}>{e.severity}</td>
               <td className="px-3">{e.score != null ? e.score.toFixed(3) : '-'}</td>
               <td className="px-3">{e.metric ?? '-'}</td>

@@ -49,6 +49,22 @@ _MAX_UNKNOWN_POLLS = int(os.getenv("EXAMLOPS_SLURM_MAX_UNKNOWN_POLLS", "5"))
 
 # Normalized terminal states shared across all backends.
 _TERMINAL_STATES = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"}
+# Slurm's own spellings of "the job ended badly", which the Slurm adapter reports raw rather than
+# as FAILED. Without them a job that lost its node or was preempted — the failures distributed
+# training resubmits on (ADR 0032) — was polled as if still running until the 24 h wait ceiling.
+_FAILURE_END_STATES = {"NODE_FAIL", "PREEMPTED", "OUT_OF_MEMORY", "BOOT_FAIL", "DEADLINE"}
+
+
+def normalize_state(state: object) -> str:
+    """``"CANCELLED by 1234"`` → ``"CANCELLED"``: sacct appends who cancelled; the rest is noise."""
+    text = str(state or "").strip().upper()
+    return text.split()[0] if text else "UNKNOWN"
+
+
+def is_terminal(state: object) -> bool:
+    """Whether ``state`` (any backend's spelling) means the job will not run any further."""
+    key = normalize_state(state)
+    return key in _TERMINAL_STATES or key in _FAILURE_END_STATES
 
 
 class JobStatus(TypedDict):
@@ -128,7 +144,7 @@ class BasePollingAdapter:
 
             print(f"[scheduler] job {job_id} → {state}", flush=True)
 
-            if state in _TERMINAL_STATES:
+            if is_terminal(state):
                 break
             if state == "UNKNOWN":
                 unknown_streak += 1

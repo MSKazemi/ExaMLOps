@@ -127,7 +127,20 @@ def resume(snapshot_id: str, *, actor: str | None = None) -> RestoreReport:
     if row["status"] != "suspended":
         raise SuspendError(f"snapshot {snapshot_id!r} is {row['status']}, not suspended")
     who = _actor(actor)
-    report = get_backend(row["backend"]).restore(_handle(row))
+    try:
+        report = get_backend(row["backend"]).restore(_handle(row))
+    except SuspendError as exc:
+        # The backend could not decide (e.g. its engine was unreachable): the record stays
+        # ``suspended`` so the resume can be retried, and the attempt is still audited.
+        audit_best_effort(
+            _SOURCE,
+            who,
+            "suspend_resume_error",
+            row["subject_id"],
+            {"snapshot_id": snapshot_id, "backend": row["backend"], "reason": str(exc)},
+            tenant=row["tenant"],
+        )
+        raise
     if report.restored:
         store.mark(
             snapshot_id,
@@ -174,5 +187,11 @@ def status(snapshot_id: str) -> dict[str, Any] | None:
     return store.get(snapshot_id)
 
 
-def list_snapshots(subject_id: str | None = None, status: str | None = None, limit: int = 50):
-    return store.list_snapshots(subject_id, status, limit)
+def list_snapshots(
+    subject_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    *,
+    tenant: str | None = None,
+):
+    return store.list_snapshots(subject_id, status, limit, tenant=tenant)

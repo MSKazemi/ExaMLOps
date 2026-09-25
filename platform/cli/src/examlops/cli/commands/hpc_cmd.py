@@ -363,9 +363,14 @@ def connect(
 @app.command(epilog=_CONNECT_EXAMPLES)
 def clusters():
     """List registered clusters and their approval state."""
-    from examlops.hpc_registry import list_clusters
+    # A thin render over the SDK (ADR 0078 clause 2): `examlops.hpc.clusters()`.
+    from examlops.sdk import hpc as sdk_hpc
+    from examlops.sdk.errors import SDKError
 
-    rows = list_clusters()
+    try:
+        rows = [c.to_dict() for c in sdk_hpc.clusters()]
+    except SDKError as e:
+        _output.error(str(e))
     if _output.json_mode:
         _output.print_json(rows)
         return
@@ -713,13 +718,14 @@ def preflight(
 @app.command(epilog=_PLACE_EXAMPLES)
 def capacity():
     """Per-cluster GPU capacity, utilization, GPU-hours used and cost (ACTIVE clusters)."""
-    from examlops.data import init_db
-    from examlops.data.hpc import get_hpc_jobs
-    from examlops.hpc_capacity import capacity_report
-    from examlops.hpc_registry import active_clusters_with_inventory
+    # A thin render over the SDK (ADR 0078 clause 2): `examlops.hpc.capacity()`.
+    from examlops.sdk import hpc as sdk_hpc
+    from examlops.sdk.errors import SDKError
 
-    init_db()
-    rows = capacity_report(active_clusters_with_inventory(), get_hpc_jobs())
+    try:
+        rows = [c.to_dict() for c in sdk_hpc.capacity()]
+    except SDKError as e:
+        _output.error(str(e))
     if _output.json_mode:
         _output.print_json(rows)
         return

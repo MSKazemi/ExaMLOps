@@ -8,7 +8,8 @@ it" claim is something the build can check rather than something the ADR asserts
 The contract is **fail loudly, never silently lossy**. Two independent gates enforce it:
 
 1. **Partitioning.** Every top-level key of the YAML must land in exactly one of: the pipeline name,
-   a ``train`` step param, the ``datasets`` list, the ``lifecycle`` of the ``promote`` step, or the
+   a ``train`` step param, the ``datasets`` list, the ``lifecycle`` of the ``promote`` step, the
+   ``placement`` section (the train step's resources and the pipeline's target cluster), or the
    ``registry`` block the ``@pipeline`` decorator carries through (:data:`~.ir.REGISTRY_KEYS`).
    Anything else — an unknown key, an unknown dataset key, a value YAML parsed into something JSON
    cannot hold (an unquoted date is the common one) — raises :class:`NotRepresentableError` naming
@@ -30,6 +31,7 @@ from typing import Any
 
 from .ir import REGISTRY_KEYS, STEP_KINDS, IRError, _canon, build_ir, new_node
 from .lowering import lower_training
+from .placement import split_placement, validate_placement_block
 
 __all__ = [
     "NotRepresentableError",
@@ -57,13 +59,16 @@ _DATASET_ORDER: tuple[str, ...] = (
     "output_features",
     "splits",
     "dataplane",
+    "feature_view",
 )
 
 #: Top-level YAML keys this module knows how to place. Everything else is refused by name.
 #: ``name`` is the pipeline name; ``datasets``/``lifecycle`` become steps; the rest split between
 #: the ``train`` step's params and the ``@pipeline`` registry block.
 _KNOWN_TOP_LEVEL: frozenset[str] = (
-    frozenset({"name", "datasets", "lifecycle"}) | frozenset(_TRAIN_ORDER) | REGISTRY_KEYS
+    frozenset({"name", "datasets", "lifecycle", "placement"})
+    | frozenset(_TRAIN_ORDER)
+    | REGISTRY_KEYS
 )
 
 _IDENT = re.compile(r"[^0-9a-zA-Z_]+")
@@ -154,6 +159,22 @@ def _datasets(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _placement(raw: dict[str, Any]) -> tuple[str | None, dict[str, int]]:
+    """The ``placement:`` section as ``(target cluster, train-step resources)``, or refuse."""
+    if "placement" not in raw:
+        return None, {}
+    block = _require_json(raw["placement"], "'placement'")
+    problems = validate_placement_block(block)
+    if problems:
+        raise NotRepresentableError(f"'placement' is invalid: {'; '.join(problems)}")
+    if not block:
+        raise NotRepresentableError(
+            "'placement' is empty; remove the key (an empty section states nothing, and the "
+            "DSL twin would not reproduce it)"
+        )
+    return split_placement(block)
+
+
 def ir_from_model_yaml(raw: Any) -> dict[str, Any]:
     """Build the IR a ``@pipeline`` twin of ``raw`` would compile to, or raise.
 
@@ -176,7 +197,8 @@ def ir_from_model_yaml(raw: Any) -> dict[str, Any]:
         used.add(node_id)
         ds_ids.append(node_id)
         nodes.append(new_node(node_id, "dataset", entry))
-    nodes.append(new_node("train", "train", train_params))
+    target_cluster, train_resources = _placement(mapping)
+    nodes.append(new_node("train", "train", train_params, train_resources))
     edges += [{"from": d, "output": "data", "to": "train", "input": "datasets"} for d in ds_ids]
     nodes.append(new_node("evaluate", "evaluate", {}))
     edges.append({"from": "train", "output": "model", "to": "evaluate", "input": "model"})
@@ -188,7 +210,14 @@ def ir_from_model_yaml(raw: Any) -> dict[str, Any]:
         nodes.append(new_node("promote", "promote", {"lifecycle": lifecycle}))
         edges.append({"from": "evaluate", "output": "metrics", "to": "promote", "input": "metrics"})
 
-    doc = build_ir(name=name, kind="training", nodes=nodes, edges=edges, registry=registry)
+    doc = build_ir(
+        name=name,
+        kind="training",
+        nodes=nodes,
+        edges=edges,
+        registry=registry,
+        target={"cluster": target_cluster} if target_cluster else None,
+    )
     _verify_round_trip(doc, mapping)
     return doc
 
@@ -310,7 +339,10 @@ def render_pipeline_source(doc: dict[str, Any], *, source: str = "a registry YAM
         "",
     ]
 
-    decorator_args = [f"name={_flat(name)}"] + _kwargs(doc["registry"], tuple(doc["registry"]), 0)
+    decorator_args = [f"name={_flat(name)}"]
+    if (doc.get("target") or {}).get("cluster"):
+        decorator_args.append(f"cluster={_flat(doc['target']['cluster'])}")
+    decorator_args += _kwargs(doc["registry"], tuple(doc["registry"]), 0)
     lines.append("@" + _call("pipeline", decorator_args, 0, 1))
     lines.append(f"def {fn_name}():")
 
@@ -332,6 +364,8 @@ def render_pipeline_source(doc: dict[str, Any], *, source: str = "a registry YAM
     train_node = by_kind["train"][0]
     train_args = [var_of[e["from"]] for e in doc["edges"] if e["to"] == "train"]
     train_args += _kwargs(train_node["params"], _TRAIN_ORDER, 4)
+    if train_node.get("resources"):
+        train_args.append(f"resources={_literal(train_node['resources'], 8, 18)}")
     lines.append("    model = " + _call("train", train_args, 4, 12))
     lines.append("    metrics = evaluate(model)")
     if "promote" in by_kind:

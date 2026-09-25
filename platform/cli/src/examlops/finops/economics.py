@@ -116,7 +116,18 @@ def generative(since: str | None, floor: int) -> dict[str, Any]:
 def agentic(since: str | None, floor: int) -> dict[str, Any]:
     d = ledger.agentic_ledger(since)
     n = d["tasks"]
+    # ADR 0148 d4: the per-task ledger (examlops.finops.task_ledger) meters the components the
+    # session ledger cannot. Reported beside the lower bound, never silently added to it.
+    try:
+        from examlops.data.task_costs import window_totals
+
+        task_ledger: dict[str, Any] | None = window_totals(since)
+    except Exception as exc:  # noqa: BLE001 - a missing ledger leaves the lower bound as it was
+        # Never an empty-looking default: a ledger that could not be read is reported as such,
+        # so "no metered tasks" and "the ledger is broken" cannot look the same.
+        task_ledger = {"error": f"{type(exc).__name__}: {exc}"}
     return {
+        "task_ledger": task_ledger,
         "kind": "agentic",
         "unit": "task",
         "n": n,

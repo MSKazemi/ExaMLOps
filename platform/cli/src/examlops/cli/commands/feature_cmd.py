@@ -31,7 +31,10 @@ _EXAMPLES = (
     "  exa feature apply job_features --entity job --features embedding,pclass --embedding embedding\n\n"
     "  exa feature similar job_features --entity-id job-42 -k 5\n\n"
     "  exa feature get job_features --entity-id job-42\n\n"
-    "  exa feature freshness job_features"
+    "  exa feature freshness job_features\n\n"
+    "  exa feature sync\n\n"
+    "  exa feature status\n\n"
+    "  exa feature materialize-due --dry-run"
 )
 
 
@@ -48,6 +51,12 @@ def apply(
         "--embedding",
         help="Feature holding an embedding; materialize then indexes it for `exa feature similar`",
     ),
+    interval: int = typer.Option(
+        0,
+        "--interval",
+        min=0,
+        help="Scheduled re-materialization interval in seconds (0 = manual only)",
+    ),
 ) -> None:
     """Register/patch a feature view — the single train+serve definition (R1)."""
     from examlops.feature_store import FeatureView, apply_view
@@ -60,6 +69,7 @@ def apply(
         ttl_seconds=ttl,
         dataset_revision=dataset_revision,
         embedding_feature=embedding or None,
+        materialize_interval_seconds=interval,
     )
     try:
         apply_view(view)
@@ -139,6 +149,13 @@ def materialize(
 
     out = materialize_with_index(view, start_ts=start, end_ts=end)
     idx = out["embeddings"]
+    mirror = out.get("online")
+    online_error = getattr(mirror, "error", None)
+    _audit(
+        "feature_view_materialized",
+        view,
+        {"rows": out["rows"], "trigger": "manual", "online_error": online_error},
+    )
     if _output.json_mode:
         _output.print_json(
             {
@@ -154,10 +171,18 @@ def materialize(
                     "error": idx.error,
                     "skipped_reasons": idx.skipped_reasons,
                 },
+                "online": None
+                if mirror is None
+                else {"backend": mirror.backend, "written": mirror.written, "error": online_error},
             }
         )
         return
     _output.ok(f"Materialized {out['rows']} entity row(s) for {view} to the online store.")
+    if mirror is not None and online_error:
+        _output.warning(
+            f"Serving tier ({mirror.backend}) not updated: {online_error} "
+            "(the durable online store is materialized; serving falls back to it)"
+        )
     if idx is None:
         return
     if idx.error:
@@ -279,3 +304,122 @@ def similar(
         ["Entity", "Cosine similarity", "Materialized at"],
         [[h.id, f"{h.score:.4f}", str(h.metadata.get("event_ts", "—"))] for h in hits],
     )
+
+
+def _audit(action: str, target: str, details: dict) -> None:
+    from examlops.data.audit import audit_best_effort
+
+    audit_best_effort("exa-feature", None, action, target, details)
+
+
+@app.command("sync", epilog=_EXAMPLES)
+def sync(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would change; apply nothing"),
+    directory: str = typer.Option(
+        None, "--dir", help="Definitions dir (default: the active pack's features/)"
+    ),
+) -> None:
+    """Apply the use-case pack's feature-view definitions to the registry (ADR 0017)."""
+    from examlops.feature_store.definitions import sync_definitions
+
+    try:
+        result = sync_definitions(directory, dry_run=dry_run)
+    except ValueError as exc:
+        _output.error(str(exc))
+    if _output.json_mode:
+        _output.print_json(result)
+        return
+    if not result["views"]:
+        _output.info(f"No feature-view definitions under {result['directory'] or '<no pack>'}.")
+    else:
+        _output.print_table(
+            "Feature-view definitions" + (" (dry run)" if dry_run else ""),
+            ["View", "Action", "Fingerprint"],
+            [[v["name"], v["action"], v["fingerprint"][:12]] for v in result["views"]],
+        )
+    if result["orphans"]:
+        _output.warning(
+            "Registered but not declared by the pack (left untouched): "
+            + ", ".join(result["orphans"])
+        )
+
+
+@app.command("status", epilog=_EXAMPLES)
+def status() -> None:
+    """Freshness, schedule and online-store tier of every feature view (ADR 0017 clause 4)."""
+    from examlops.feature_store.online import select_online_store, selection_note
+    from examlops.feature_store.scheduler import freshness_report
+    from examlops.feature_store.serving import resolution
+
+    report = freshness_report()
+    store = select_online_store()
+    serving = resolution()
+    if _output.json_mode:
+        _output.print_json(
+            {
+                "online_store": {"backend": store.backend, "note": selection_note()},
+                "serving_view": {
+                    "view": serving.view.name if serving.view else None,
+                    "fingerprint": serving.fingerprint,
+                    "reason": serving.reason,
+                },
+                "views": [f.as_dict() for f in report],
+            }
+        )
+        return
+    _output.info(f"Online store: {store.backend} — {selection_note()}")
+    if serving.view is not None:
+        _output.info(f"Serving view: {serving.view.name} ({serving.view.fingerprint()[:12]})")
+    else:
+        _output.warning(f"Serving uses the legacy transform: {serving.reason}")
+    if not report:
+        _output.info("No feature views. Run: exa feature sync")
+        return
+    _output.print_table(
+        "Feature-view freshness",
+        ["View", "Materialized", "Age(s)", "TTL(s)", "Interval(s)", "Stale", "Due"],
+        [
+            [
+                f.view,
+                f.materialized_at or "never",
+                "—" if f.age_seconds is None else f"{f.age_seconds:.0f}",
+                str(f.ttl_seconds),
+                str(f.interval_seconds),
+                "yes" if f.stale else "no",
+                "yes" if f.due else "no",
+            ]
+            for f in report
+        ],
+    )
+
+
+@app.command("materialize-due", epilog=_EXAMPLES)
+def materialize_due(
+    dry_run: bool = typer.Option(False, "--dry-run", help="List due views; materialize nothing"),
+    view: str = typer.Option(None, "--view", help="Only this view (still only if due)"),
+) -> None:
+    """Materialize every view whose schedule interval has elapsed (ADR 0017 clause 4)."""
+    from examlops.feature_store.scheduler import run_materialization_cycle
+
+    result = run_materialization_cycle(dry_run=dry_run, view=view)
+    if _output.json_mode:
+        _output.print_json(result)
+        if result["failed"]:
+            raise typer.Exit(1)
+        return
+    if not result["due"]:
+        _output.ok("No feature view is due for materialization.")
+        return
+    if dry_run:
+        _output.info("Due: " + ", ".join(result["due"]))
+        return
+    for m in result["materialized"]:
+        _output.ok(f"Materialized {m['view']} ({m['rows']} row(s)).")
+        if m.get("online_error"):
+            _output.warning(f"  serving tier not updated: {m['online_error']}")
+    for sk in result["skipped"]:
+        _output.info(f"Skipped {sk['view']}: {sk['reason']}")
+    for f in result["failed"]:
+        _output.warning(f"Failed {f['view']}: {f['error']}")
+    if result["failed"]:
+        raise typer.Exit(1)

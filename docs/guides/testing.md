@@ -1,8 +1,8 @@
 # Testing strategy
 
-The unit suite is **8175 tests** (measured 2026-09-24; it grows steadily — re-measure with
+The unit suite is **10224 tests** (measured 2026-09-25; it grows steadily — re-measure with
 `pytest tests/unit/ --collect-only -q` rather than trusting this number for long). Across this
-machine's cores it is **3 minutes**, freshly measured the same day. The one-process
+machine's cores it was **3 minutes** at 8175 tests (measured 2026-09-24). The one-process
 figure below is not re-measured every time the count moves — it is roughly **20-25 minutes**,
 scaled from the last full serial run — but the *shape* of the finding hasn't changed: parallel is
 a 5x+ difference, long enough in one process that the gate gets skipped, and a gate that gets

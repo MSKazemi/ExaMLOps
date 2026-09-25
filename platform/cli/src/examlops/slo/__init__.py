@@ -159,7 +159,21 @@ def generate_rules(slo_spec: dict[str, Any]) -> PrometheusRules:
     tenant = slo_spec.get("tenant", "default")
     target = float(slo_spec["target"])
     window = slo_spec.get("window", "30d")
-    sli_query = slo_spec.get("sli_query") or (f'examlops:sli_ratio{{model="{model}",slo="{name}"}}')
+    source = (slo_spec.get("sli_source") or "prometheus").strip().lower()
+    if source == "prometheus":
+        sli_query = slo_spec.get("sli_query") or (
+            f'examlops:sli_ratio{{model="{model}",slo="{name}"}}'
+        )
+    else:
+        # A platform-ingested SLI (c1/c2/c4/c5/c8/availability): its ``sli_query`` selects what
+        # the ingester counts (`errors`, `tool_success`, ...) and is not PromQL. The series these
+        # rules can range over is the one `exa slo export-metrics` publishes for every ingested
+        # SLO, so the SLI ratio is recorded from that gauge. That gauge is the ratio over the
+        # SLO's *whole* window, though, so the burn-rate alerts below range over the exported
+        # good/events counters instead (see ``_ingested_error_ratio``).
+        sli_query = f'examlops_slo_sli{{model="{model}",slo="{name}",tenant="{tenant}"}}'
+    ingested = source != "prometheus"
+    selector = f'{{model="{model}",slo="{name}",tenant="{tenant}"}}'
     budget = round(1.0 - target, 6)
 
     prefix = _slug("examlops:slo", model, name)
@@ -199,10 +213,16 @@ def generate_rules(slo_spec: dict[str, Any]) -> PrometheusRules:
         # Burn-rate alert: error rate over BOTH windows exceeds factor * budget. The short window
         # makes it responsive; the long one is what stops a momentary spike from paging.
         threshold = round(factor * budget, 6)
-        expr = (
-            f"(avg_over_time({error_series}[{short_w}]) > {threshold}) "
-            f"and (avg_over_time({error_series}[{long_w}]) > {threshold})"
-        )
+        if ingested:
+            expr = (
+                f"({_ingested_error_ratio(selector, short_w)} > {threshold}) "
+                f"and ({_ingested_error_ratio(selector, long_w)} > {threshold})"
+            )
+        else:
+            expr = (
+                f"(avg_over_time({error_series}[{short_w}]) > {threshold}) "
+                f"and (avg_over_time({error_series}[{long_w}]) > {threshold})"
+            )
         alert_rules.append(
             {
                 "alert": _slug("SLO", model, name, "BurnRate", short_w),
@@ -224,6 +244,22 @@ def generate_rules(slo_spec: dict[str, Any]) -> PrometheusRules:
             recording,
             {"name": _slug("examlops_slo", model, name, "alerts"), "rules": alert_rules},
         ]
+    )
+
+
+def _ingested_error_ratio(selector: str, window: str) -> str:
+    """The error ratio over the last ``window`` for a platform-ingested SLI, as PromQL.
+
+    A burn rate is the error ratio over a *short* window. For an ingested SLI the only per-window
+    signal is the exported ``examlops_slo_good_total`` / ``examlops_slo_events_total`` counters:
+    averaging the ``examlops_slo_sli`` gauge over 5 minutes averages the ratio over the SLO's
+    whole window, so an hour at 50% errors after a clean month reads as ~1% and a fast burn could
+    only page once the whole window's error already exceeded 14.4x its budget. A window with no
+    events divides by zero, which is NaN, and NaN compares false: no events, no page.
+    """
+    return (
+        f"(1 - (increase(examlops_slo_good_total{selector}[{window}]) "
+        f"/ increase(examlops_slo_events_total{selector}[{window}])))"
     )
 
 
@@ -397,7 +433,7 @@ UNSUPPORTED_SOURCES: dict[str, str] = {}
 #: Sources with an ingester. Named so an unrecognised value is reported as a **typo** rather than
 #: as "unknown source" — `c5` was in the ADR and not in this module, and the message a user got
 #: ("unknown sli_source 'c5'") said the source did not exist rather than that it was unbuilt.
-SUPPORTED_SOURCES = ("availability", "c1", "c2", "c5", "c8", "prometheus")
+SUPPORTED_SOURCES = ("availability", "c1", "c2", "c4", "c5", "c8", "prometheus")
 
 #: How many recorded drift verdicts one c5 ingest looks back over. Bounded so a long-lived
 #: model's SLI reflects its recent behaviour rather than its whole history — an SLO is a
@@ -596,6 +632,60 @@ def _prometheus_samples(model: str, spec: dict[str, Any], tenant: str) -> tuple[
     return (ratio, 1.0)
 
 
+#: How long a tool call may wait for its session summary before the c4 ingester treats the
+#: session as abandoned (a crashed turn) instead of holding its watermark back. Seconds.
+_AGENT_SETTLE_S = 600
+
+
+def _c4_samples(model: str, spec: dict[str, Any], tenant: str) -> Increment:
+    """Good/total for an **agent** SLO from AgentOps telemetry (ADR 0021 decision 4, source c4).
+
+    ``model`` is the logical agent name (``agent_sessions.agent``, e.g. ``skipper``). The query
+    picks the objective:
+
+    * ``tool_success`` or ``tool_success:<tool>`` — share of tool calls that succeeded;
+    * ``session_ok`` — share of ended agent turns that finished ``ok``: no loop, step blow-up or
+      error burst (the anomalies the circuit breaker watches). Counted per turn from the
+      append-only ``agent_turn_outcomes`` log, not from ``agent_sessions`` (one row per thread,
+      overwritten every turn).
+
+    Event-sourced like ``c1``: each ingest counts only tool calls past the last watermark, so the
+    error budget and burn rate `exa slo status` reports, and the breach audit `record_sample`
+    writes, rest on each event exactly once. A query is required — "the agent is healthy" is not
+    one objective, and a guessed default is how an SLO ends up measuring something nobody chose.
+    """
+    from examlops.data.agent import AGENT_SLI_EVENT_TABLE, agent_sli
+
+    query = (spec.get("sli_query") or "").strip().replace(" ", "")
+    objective, _, tool = query.partition(":")
+    if objective not in ("tool_success", "session_ok") or (tool and objective != "tool_success"):
+        return f"c4 needs --query tool_success, tool_success:<tool> or session_ok (got {query!r})"
+    window = str(spec.get("window") or DEFAULT_WINDOW)
+    since = _window_start(window) or _window_start(DEFAULT_WINDOW) or ""
+    settle = (datetime.now(UTC) - timedelta(seconds=_AGENT_SETTLE_S)).strftime("%Y-%m-%d %H:%M:%S")
+    table = AGENT_SLI_EVENT_TABLE[objective]
+    mark = _after(spec, tenant, table)
+    good, total, last = agent_sli(
+        model,
+        tenant=tenant,
+        since=since,
+        settle_before=settle,
+        objective=objective,
+        tool=tool or None,
+        after_id=mark or 0,
+    )
+    if total == 0:
+        if mark is not None:
+            what = "agent tool calls" if objective == "tool_success" else "ended agent turns"
+            return _up_to_date(what, mark)
+        return (
+            f"no ended sessions of agent '{model}' in tenant '{tenant}' within {window}"
+            + (f" calling '{tool}'" if tool else "")
+            + " — is the agent recording (AGENT_INSTRUMENT_ENABLED)?"
+        )
+    return (float(good), float(total), f"{table}:{last}")
+
+
 def _c5_samples(model: str, spec: dict[str, Any], tenant: str) -> Increment:
     """Good/total for a drift SLO, from recorded drift **verdicts** (ADR 0023 clause 3, c5).
 
@@ -731,6 +821,8 @@ def ingest_slis(model: str, *, tenant: str = "default") -> list[dict[str, Any]]:
             result = _c1_samples(model, spec, tenant)
         elif source == "c2":
             result = _c2_samples(model, spec, tenant)
+        elif source == "c4":
+            result = _c4_samples(model, spec, tenant)
         elif source == "c5":
             result = _c5_samples(model, spec, tenant)
         elif source == "c8":

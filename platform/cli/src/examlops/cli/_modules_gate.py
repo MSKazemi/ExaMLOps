@@ -92,4 +92,8 @@ class ModuleGatedGroup(SuggestGroup):
         if cmd is None:
             return None
         owner = disabled_module(cmd_name)
-        return cmd if owner is None else _disabled_stub(cmd_name, owner)
+        if owner is not None:
+            return _disabled_stub(cmd_name, owner)
+        from examlops.cli._policy_hook import install  # ADR 0079 d2: every mutation decides
+
+        return install(cmd, cmd_name)

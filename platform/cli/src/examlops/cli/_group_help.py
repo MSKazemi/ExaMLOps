@@ -439,11 +439,17 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
         ("List per-tenant quotas", "exa gateway quota list"),
         ("Cap a tenant at 120 requests/min", "exa gateway quota set acme 120"),
     ],
+    "guardrails policy": [
+        ("Validate a policy file (CI gate)", "exa guardrails policy validate --file g.yaml"),
+        ("Effective policy for a tenant", "exa guardrails policy show --tenant acme"),
+    ],
     "gateway cache": [
         ("Semantic-cache hit-rate + savings", "exa gateway cache stats"),
     ],
     "gateway schema": [
         ("Validate an object against a schema", "exa gateway schema test --help"),
+        ("Registered schemas + route defaults", "exa gateway schema list"),
+        ("Print the cited-RAG-answer schema", "exa gateway schema show rag_answer"),
     ],
     "gateway reasoning": [
         ("Reasoning-vs-output token/cost split", "exa gateway reasoning stats"),
@@ -461,6 +467,7 @@ _COMMON_TASKS: dict[str, list[tuple[str, str]]] = {
             "exa hardware profile set gpu-small --accelerator-family nvidia --gpu 1",
         ),
         ("Check it against a real cluster", "exa hardware profile resolve gpu-small --cluster lxp"),
+        ("See what is sized by a profile, and how", "exa hardware profile in-use"),
     ],
     "policy bundle": [
         ("List signed policy bundles", "exa policy bundle list"),

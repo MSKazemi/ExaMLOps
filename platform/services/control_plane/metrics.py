@@ -208,6 +208,29 @@ def record_drift_status_change(status: str) -> None:
     drift_status_changes.labels(status=status).inc()
 
 
+# Scheduled audit maintenance (ADR 0028): checkpoint + WORM + transparency log + retention. The
+# error counter is unlabeled so it exports 0 from the first scrape; AuditMaintenanceFailing reads
+# it. The timestamp is the heartbeat: it moves only on a cycle that finished without a failed step.
+audit_maintenance_errors: Counter = Counter(
+    "examlops_audit_maintenance_errors_total",
+    "Audit maintenance steps that failed (checkpoint signing, WORM anchor, transparency log, prune)",
+)
+audit_maintenance_last_success: Gauge = Gauge(
+    "examlops_audit_maintenance_last_success_timestamp_seconds",
+    "Unix time of the last audit maintenance cycle that completed without a failed step",
+)
+
+
+def record_audit_maintenance(result: dict[str, Any], when: float) -> None:
+    status = result.get("status")
+    if status == "ok":
+        audit_maintenance_last_success.set(when)
+    elif status == "degraded":
+        audit_maintenance_errors.inc(max(1, len(result.get("failed_steps") or [])))
+    elif status == "error":
+        audit_maintenance_errors.inc()
+
+
 # Uses of the shared legacy token (plan P3.2). Unlabeled, so it exports 0 from the start: the
 # number to watch fall to zero before CONTROL_PLANE_LEGACY_TOKEN=off.
 legacy_token_uses: Counter = Counter(
@@ -239,6 +262,24 @@ def initialize_authentications(pairs: Iterable[tuple[str, str]]) -> None:
 
 def record_authentication(principal: str, method: str) -> None:
     authentications.labels(principal=principal, method=method).inc()
+
+
+# ADR 0014 decision 4: project-level authorization at the model routes (`cplane.project_gate`).
+# Only three outcomes (bounded cardinality); every label exported at 0 from the start so a rate
+# on `deny` or `unavailable` can alert on its first occurrence. `skipped` is not counted: with
+# EXAMLOPS_MULTITENANCY off the gate does not decide anything.
+PROJECT_AUTHZ_OUTCOMES = ("allow", "deny", "unavailable")
+project_authz_decisions: Counter = Counter(
+    "control_plane_project_authz_decisions_total",
+    "Project-level (ADR 0014) authorization decisions at the control plane's model routes",
+    ["outcome"],
+)
+for _outcome in PROJECT_AUTHZ_OUTCOMES:
+    project_authz_decisions.labels(outcome=_outcome)
+
+
+def record_project_authz(outcome: str) -> None:
+    project_authz_decisions.labels(outcome=outcome).inc()
 
 
 def set_snapshot(generation: int, when: float) -> None:
@@ -401,3 +442,75 @@ def update_age(oldest_pending_ts: str | None) -> None:
     ts = datetime.fromisoformat(oldest_pending_ts).replace(tzinfo=UTC)
     age = (datetime.now(UTC) - ts).total_seconds()
     approval_age_oldest.set(max(0.0, age))
+
+
+# ADR 0017 clause 4 — feature-store freshness monitoring. Published from the registry on every
+# scrape (never carried in memory), one series per view, so a restart cannot hide a stale view.
+# `age` is absent for a never-materialized view (there is no age to report), and `stale` is 1 for
+# it: a view nobody has materialized is serving nothing, which is the state the alert exists for.
+feature_view_age: Gauge = Gauge(
+    "examlops_feature_view_age_seconds",
+    "Seconds since the feature view was last materialized to the online store",
+    ["view"],
+)
+feature_view_stale: Gauge = Gauge(
+    "examlops_feature_view_stale",
+    "1 when the feature view is past its TTL or was never materialized, else 0",
+    ["view"],
+)
+feature_view_ttl: Gauge = Gauge(
+    "examlops_feature_view_ttl_seconds",
+    "Declared freshness TTL of the feature view (0 = no staleness alert)",
+    ["view"],
+)
+feature_materializations: Counter = Counter(
+    "examlops_feature_materializations_total",
+    "Scheduled feature-view materializations by outcome "
+    "(materialized | failed | skipped | mirror_failed)",
+    ["outcome"],
+)
+for _outcome in ("materialized", "failed", "skipped", "mirror_failed"):
+    feature_materializations.labels(outcome=_outcome)
+# A failed freshness read keeps the gauges at their last values (a fabricated 0 would read as
+# "fresh"), and a process that has never read them publishes no series at all, so FeatureViewStale
+# cannot fire. Its own counter, not the approval store's scrape-error counter: that one's alert
+# tells the operator the approval store is unreadable. Unlabelled, so it exists from import.
+feature_freshness_read_errors: Counter = Counter(
+    "examlops_feature_freshness_read_errors_total",
+    "Scrapes whose read of feature-view freshness failed, leaving the freshness gauges stale",
+)
+
+
+def set_feature_freshness(rows: Iterable[Any]) -> None:
+    """Publish ``examlops.feature_store.scheduler.freshness_report()`` onto the scrape.
+
+    Views that disappeared from the registry are removed, so a deleted view cannot keep a stale
+    series alive and page on something that no longer exists.
+    """
+    seen: set[str] = set()
+    for row in rows:
+        seen.add(row.view)
+        if row.age_seconds is not None:
+            feature_view_age.labels(view=row.view).set(float(row.age_seconds))
+        # A view with neither a TTL nor a schedule has no freshness promise to break, so it is
+        # never reported stale — otherwise a hand-applied, never-materialized view would page.
+        promised = row.ttl_seconds > 0 or row.interval_seconds > 0
+        feature_view_stale.labels(view=row.view).set(1.0 if row.stale and promised else 0.0)
+        feature_view_ttl.labels(view=row.view).set(float(row.ttl_seconds))
+    for gauge in (feature_view_age, feature_view_stale, feature_view_ttl):
+        for labels in list(gauge._metrics):  # noqa: SLF001 - prometheus_client has no public list
+            if labels[0] not in seen:
+                gauge.remove(*labels)
+
+
+def record_feature_materialization_cycle(result: dict[str, Any]) -> None:
+    # `mirror_failed` also counts under `materialized`: the durable write happened, the serving
+    # tier (Redis) did not take it.
+    for outcome in ("materialized", "failed", "skipped", "mirror_failed"):
+        count = len(result.get(outcome) or [])
+        if count:
+            feature_materializations.labels(outcome=outcome).inc(count)
+
+
+def record_feature_freshness_read_error() -> None:
+    feature_freshness_read_errors.inc()

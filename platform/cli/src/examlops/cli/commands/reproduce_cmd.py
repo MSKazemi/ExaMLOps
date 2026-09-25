@@ -28,6 +28,7 @@ _EXAMPLES = (
     "  exa reproduce run JPCP 17 --observed '{\"rmse\": 4.9}'\n\n"
     "  exa reproduce run JPCP 17 --execute --dummy --rtol 0.05\n\n"
     "  exa reproduce run JPCP 17 --execute --rebuild-env --dummy\n\n"
+    "  exa reproduce run JPCP 17 --execute --restore-dataset ./restored --scheduler recorded\n\n"
     "  exa reproduce verify JPCP 17\n\n"
     "  exa reproduce show JPCP 17\n\n"
     "  exa reproduce list"
@@ -47,24 +48,56 @@ def build(
     seed: int = typer.Option(None, "--seed", help="RNG seed to record"),
     hyperparams: str = typer.Option(None, "--hyperparams", help="JSON hyperparameters"),
     metrics: str = typer.Option(None, "--metrics", help="JSON recorded metrics"),
-    image_digest: str = typer.Option(None, "--image-digest", help="Container image digest"),
+    image_digest: str = typer.Option(
+        None, "--image-digest", help="Container image digest (default: EXAMLOPS_IMAGE_DIGEST)"
+    ),
+    feature_view: list[str] = typer.Option(
+        None,
+        "--feature-view",
+        help="A3 feature view the model trains on (repeatable); pinned by definition hash",
+    ),
+    resources: str = typer.Option(
+        None,
+        "--resources",
+        help='JSON scheduler request, e.g. \'{"nodes": 1, "gpus": 2}\' (EXAMLOPS_HPC_* keys)',
+    ),
+    scheduler: str = typer.Option(None, "--scheduler", help="Scheduler that ran the training"),
+    lineage_run_id: str = typer.Option(None, "--lineage-run-id", help="A2 lineage run id"),
 ) -> None:
-    """Capture + sign a reproducibility bundle for a model version (R1/R2)."""
+    """Capture + sign a reproducibility bundle for a model version (R1/R2).
+
+    Commits (platform + model library), hardware, the image digest and the AI-BOM are
+    collected automatically; the options add what only the operator knows.
+    """
     from examlops.reproducibility import build_bundle
+    from examlops.reproducibility.capture import UnknownFeatureViewError, capture_resources
 
     hp = json.loads(hyperparams) if hyperparams else None
     mt = json.loads(metrics) if metrics else None
-    bundle = build_bundle(
-        model,
-        version,
-        dataset_name=dataset,
-        dataset_revision=revision,
-        hyperparams=hp,
-        metrics=mt,
-        seeds={"global": seed} if seed is not None else None,
-        image_digest=image_digest,
-        actor=_actor(),
-    )
+    res = None
+    if resources or scheduler:
+        raw = json.loads(resources) if resources else {}
+        if not isinstance(raw, dict):
+            _output.error("--resources must be a JSON object.", exit_code=2)
+        res = capture_resources(raw, scheduler=scheduler)
+    try:
+        bundle = build_bundle(
+            model,
+            version,
+            dataset_name=dataset,
+            dataset_revision=revision,
+            hyperparams=hp,
+            metrics=mt,
+            seeds={"global": seed} if seed is not None else None,
+            image_digest=image_digest,
+            feature_views=list(feature_view) if feature_view else None,
+            resources=res,
+            lineage_run_id=lineage_run_id,
+            actor=_actor(),
+        )
+    except UnknownFeatureViewError as exc:
+        _output.error(f"Cannot build bundle: {exc.args[0] if exc.args else exc}", exit_code=1)
+        return
     if _output.json_mode:
         _output.print_json(
             {
@@ -134,6 +167,19 @@ def run(
     keep_worktree: bool = typer.Option(
         False, "--keep-worktree", help="[--execute] Keep the detached worktree for inspection"
     ),
+    restore_dataset: str = typer.Option(
+        None,
+        "--restore-dataset",
+        help="[--execute] Restore the pinned dataset (dataplane snapshot or lakeFS commit) into "
+        "this empty directory; training sees it as EXAMLOPS_REPRO_DATA_DIR",
+    ),
+    scheduler: str = typer.Option(
+        None,
+        "--scheduler",
+        help="[--execute] Where training runs: 'recorded' (the bundle's scheduler), 'mock', "
+        "'slurm' or 'flux'. The recorded resources are re-requested either way "
+        "(default: the caller's EXAMLOPS_HPC_SCHEDULER, else mock)",
+    ),
 ) -> None:
     """Rebuild plan + metric-match within tolerance; --execute performs the rebuild (ADR 0038)."""
     if execute:
@@ -150,6 +196,8 @@ def run(
             train_cmd=train_cmd,
             timeout=timeout,
             keep_worktree=keep_worktree,
+            restore_dataset=restore_dataset,
+            scheduler=scheduler,
         )
         return
     from examlops.reproducibility import reproduce
@@ -210,6 +258,10 @@ def _run_execute(model: str, version: str, **opts: Any) -> None:
                 "rtol": res.rtol,
                 "worktree": res.worktree,
                 "produced_metrics": res.produced_metrics,
+                "dataset_dir": res.dataset_dir,
+                "modelzoo_worktree": res.modelzoo_worktree,
+                "scheduler": res.scheduler,
+                "resources": res.resources,
                 "environment": {
                     "rebuilt": res.env.rebuilt,
                     "python": res.env.python,
@@ -231,6 +283,14 @@ def _run_execute(model: str, version: str, **opts: Any) -> None:
         f"  · interpreter: {res.env.python}"
         + (" (rebuilt from the bundle's package set)" if res.env.rebuilt else " (caller's)")
     )
+    _output.info(
+        f"  · scheduler: {res.scheduler}"
+        + (f" (re-requested {', '.join(sorted(res.resources))})" if res.resources else "")
+    )
+    if res.dataset_dir:
+        _output.info(f"  · dataset restored to {res.dataset_dir}")
+    if res.modelzoo_worktree:
+        _output.info(f"  · model library checked out at {res.modelzoo_worktree}")
     if res.env.image_status == IMG_UNVERIFIABLE:
         _output.warning(f"  · container image digest UNVERIFIABLE: {res.env.image_detail}")
     elif res.env.image_status != IMG_UNCHECKED:

@@ -7,10 +7,14 @@ who wants to record a number they obtained elsewhere writes it to a different co
 unverified and can never be mistaken for a measurement.
 
 Shape mirrors :mod:`examlops.distributed.launch`: build the argv for the shipped script, run it in
-a subprocess, classify the outcome from the script's own exit code and completion line, audit
-every attempt, and resume on a recoverable failure (the script picks up its last valid
-checkpoint). What it does **not** do: submit to Slurm/Flux, train on a GPU, or fine-tune a real
-base checkpoint — see the ADR's Status.
+a subprocess — or, with ``scheduler=True``, as a job on mock/Slurm/Flux
+(:mod:`examlops.finetuning.scheduler`) — classify the outcome from the script's own exit code and
+completion line, audit every attempt, and resume on a recoverable failure (the script picks up its
+last valid checkpoint). A completed run is registered from its own metrics, and — when
+``MLFLOW_TRACKING_URI`` is set — logged to MLflow as a first-class artifact
+(:mod:`examlops.finetuning.artifacts`); a full fine-tune is also registered as a model version.
+What it does **not** do: fine-tune a real multi-gigabyte base checkpoint, or shard a full
+fine-tune with FSDP/DeepSpeed — see the ADR's Status.
 """
 
 from __future__ import annotations
@@ -104,6 +108,9 @@ class FinetuneRun:
     metrics: dict[str, Any] | None = None
     adapter_id: str | None = None
     log: str = ""
+    hpc_job_ids: list[str] = field(default_factory=list)
+    scheduler: str | None = None
+    mlflow: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -133,6 +140,57 @@ def classify(returncode: int, metrics: dict[str, Any] | None, run_dir: Path) -> 
     return "recoverable"
 
 
+def _record_provenance(
+    result: FinetuneRun,
+    base: str,
+    method: str,
+    dataset_rev: str,
+    metrics: dict[str, Any],
+    mlflow: bool | None,
+    actor: str | None,
+) -> None:
+    """Stamp the scheduler job and the MLflow record on the adapter row (clauses 1-2)."""
+    from examlops.data.data_assets import set_adapter_provenance
+
+    aid = result.adapter_id
+    if aid is None:
+        return
+    if result.hpc_job_ids:
+        set_adapter_provenance(aid, hpc_job_id=result.hpc_job_ids[-1])
+    if mlflow is False:
+        result.mlflow = {"status": "skipped", "reason": "disabled (--no-mlflow)"}
+        return
+    from examlops.finetuning import artifacts
+
+    bundle = metrics.get("adapter_bundle") or artifacts.bundle_dir(result.run_dir)
+    record = artifacts.log_to_mlflow(
+        aid,
+        base=base,
+        method=method,
+        dataset_revision=dataset_rev,
+        metrics=metrics,
+        bundle=bundle,
+        train_run_id=result.run_id,
+    )
+    if mlflow is True and record.status == "skipped":
+        record.status = "failed"  # asked for explicitly: not having it is a failure, not a skip
+    result.mlflow = record.to_dict()
+    if record.status == "logged":
+        set_adapter_provenance(
+            aid,
+            mlflow_run_id=record.run_id,
+            mlflow_artifact_uri=record.artifact_uri,
+            mlflow_model_version=record.model_version,
+        )
+    audit_best_effort(
+        AUDIT_SOURCE,
+        actor,
+        "adapter_mlflow_" + record.status,
+        aid,
+        {k: v for k, v in record.to_dict().items() if v is not None},
+    )
+
+
 def run_finetune(
     base: str,
     *,
@@ -156,6 +214,10 @@ def run_finetune(
     runner: Runner | None = None,
     register: bool = True,
     require_torch: bool = True,
+    scheduler: bool = False,
+    resources: dict[str, Any] | None = None,
+    mlflow: bool | None = None,
+    scheduler_adapter: Any = None,
 ) -> FinetuneRun:
     """Fine-tune, then register the adapter **with the score the run measured**.
 
@@ -164,6 +226,8 @@ def run_finetune(
     """
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
+    if method not in ("lora", "qlora", "full"):
+        raise ValueError(f"method must be lora, qlora or full, got {method!r}")
     if runner is None and require_torch and not torch_available():
         raise TorchNotInstalled(
             "torch is not installed in this environment; fine-tuning needs it "
@@ -173,6 +237,22 @@ def run_finetune(
     directory = Path(run_dir) if run_dir is not None else default_run_dir(rid)
     directory.mkdir(parents=True, exist_ok=True)
     (directory / cf.FATAL_MARKER).unlink(missing_ok=True)
+    result = FinetuneRun(run_id=rid, run_dir=directory, status="failed")
+    if runner is None and scheduler:
+        from examlops import scheduler_jobs
+        from examlops.finetuning.scheduler import scheduler_runner
+
+        def _submitted(job_id: str, name: str) -> None:
+            result.hpc_job_ids.append(job_id)
+
+        runner = scheduler_runner(
+            resources,
+            run_id=rid,
+            actor=actor,
+            adapter=scheduler_adapter,
+            on_submit=_submitted,
+        )
+        result.scheduler = scheduler_jobs.scheduler_name()
     run = runner or _subprocess_runner
     cmd = build_command(
         directory,
@@ -187,13 +267,19 @@ def run_finetune(
         seed=seed,
     )
     pkg_root = str(Path(examlops.__file__).resolve().parent.parent)
-    result = FinetuneRun(run_id=rid, run_dir=directory, status="failed")
     audit_best_effort(
         AUDIT_SOURCE,
         actor,
         "finetune_started",
         rid,
-        {"base": base, "method": method, "rank": rank, "steps": steps, "dataset": dataset_rev},
+        {
+            "base": base,
+            "method": method,
+            "rank": rank,
+            "steps": steps,
+            "dataset": dataset_rev,
+            "executor": result.scheduler or "local",
+        },
     )
     for n in range(1, max_attempts + 1):
         env = {**os.environ}
@@ -240,10 +326,11 @@ def run_finetune(
             eval_floor=eval_floor,
             train_run_id=rid,
             adapter_sha256=str(metrics["adapter_sha256"]),
-            adapter_uri=str(directory),
+            adapter_uri=str(metrics.get("adapter_bundle") or directory),
             actor=actor,
         )
         result.adapter_id = adapter.adapter_id
+        _record_provenance(result, base, method, dataset_rev, metrics, mlflow, actor)
     audit_best_effort(
         AUDIT_SOURCE,
         actor,

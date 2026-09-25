@@ -1052,6 +1052,36 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_agent_alias_history
                 ON agent_alias_history(agent, alias, id);
+            -- ADR 0146 d4: the share of NEW sessions the agent runtime starts on the Canary
+            -- version (existing sessions stay pinned). One row per agent; compiled into the
+            -- agent snapshot, never read by the runtime directly.
+            CREATE TABLE IF NOT EXISTS agent_rollouts (
+                agent           TEXT PRIMARY KEY,
+                canary_percent  REAL NOT NULL DEFAULT 0,
+                actor           TEXT,
+                updated_at      REAL NOT NULL
+            );
+            -- ADR 0146 d2 / verification 6: a model promotion that changes what a `follow`
+            -- binding resolves to enqueues re-evaluation of every dependent agent version.
+            -- Idempotent per (version, servable, alias, resolved version).
+            CREATE TABLE IF NOT EXISTS agent_reeval_queue (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent             TEXT NOT NULL,
+                version_id        TEXT NOT NULL,
+                servable          TEXT NOT NULL,
+                alias             TEXT NOT NULL,
+                model_version     TEXT,
+                previous_version  TEXT,
+                blocking          INTEGER NOT NULL DEFAULT 0,
+                status            TEXT NOT NULL DEFAULT 'pending',
+                outcome_reason    TEXT,
+                actor             TEXT,
+                enqueued_at       REAL NOT NULL,
+                resolved_at       REAL,
+                UNIQUE (version_id, servable, alias, model_version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_reeval_status
+                ON agent_reeval_queue(status, agent, id);
             -- ADR 0159 — a GenAI application is one composed, versioned manifest over a gateway
             -- route, an optional RAG binding, a prompt reference and a guardrail policy
             -- (`examlops.genai_apps`). Same three-table shape as `agent_versions` above and for
@@ -1206,6 +1236,22 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 version     TEXT NOT NULL,
                 bom_json    TEXT NOT NULL,
                 created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (model, version)
+            );
+            -- ADR 0013 clause 3 — SLSA v1 build provenance per model version: an in-toto
+            -- Statement in a DSSE envelope (Ed25519) or a Sigstore bundle. `model` is stored
+            -- lower-case (serving asks for `jpcp`, operators type `JPCP`).
+            CREATE TABLE IF NOT EXISTS model_provenance (
+                model            TEXT NOT NULL,
+                version          TEXT NOT NULL,
+                subject_digest   TEXT NOT NULL,
+                statement_sha256 TEXT NOT NULL,
+                algo             TEXT NOT NULL,
+                key_id           TEXT,
+                envelope_json    TEXT NOT NULL,
+                builder_id       TEXT,
+                recorded_by      TEXT,
+                recorded_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (model, version)
             );
             -- Next-Gen 40 · D6 — relationship-based authz (ADR 0014). Default-deny;
@@ -1630,6 +1676,20 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 latency_ms  REAL,
                 ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- ADR 0021 decision 4 → C6: one row per *ended turn*. agent_sessions is keyed by the
+            -- conversation thread and its status is overwritten every turn, so a per-session SLI
+            -- read from it depended on how often it was ingested; this log keeps every outcome.
+            CREATE TABLE IF NOT EXISTS agent_turn_outcomes (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
+                agent       TEXT,
+                status      TEXT NOT NULL,      -- ok | anomaly | error (as agent_sessions)
+                tool_calls  INTEGER NOT NULL DEFAULT 0,
+                ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS ix_agent_turn_outcomes_agent
+                ON agent_turn_outcomes(agent, tenant, id);
             -- Next-Gen 40 · C5 — unified advanced drift events (ADR 0022).
             -- drift_kind ∈ feature | prediction | input_embedding | concept | data_quality.
             CREATE TABLE IF NOT EXISTS drift_events (
@@ -1653,6 +1713,17 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 method     TEXT NOT NULL DEFAULT 'cbpe-like',
                 ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            -- ADR 0022 decision 3 × A5: per-minute counts of inference requests the ingress
+            -- refused against the contract, folded into the C5 data-quality profile.
+            CREATE TABLE IF NOT EXISTS inference_rejections (
+                model   TEXT NOT NULL,                 -- lower-cased; '<invalid>' / '<unknown>'
+                bucket  TEXT NOT NULL,                 -- UTC minute 'YYYY-MM-DD HH:MM'
+                reason  TEXT NOT NULL,                 -- missing_field | embedding_dim | invalid
+                count   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (model, bucket, reason)
+            );
+            CREATE INDEX IF NOT EXISTS idx_inference_rejections_bucket
+                ON inference_rejections(bucket);
             -- Next-Gen 40 · C6 — model-quality SLO specs (OpenSLO-style) (ADR 0023).
             CREATE TABLE IF NOT EXISTS slo_specs (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1757,6 +1828,31 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 signature  TEXT NOT NULL,      -- detached signature over head_hash (D7 key)
                 key_id     TEXT,
                 ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            -- ADR 0028 decision 2/3 — transparency-log receipts (Rekor / Sigstore) for audit
+            -- checkpoints. One receipt per (backend, head_hash): a re-run never logs twice.
+            CREATE TABLE IF NOT EXISTS audit_transparency_entries (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                head_id          INTEGER NOT NULL,
+                head_hash        TEXT NOT NULL,
+                backend          TEXT NOT NULL,      -- rekor | sigstore
+                log_url          TEXT,
+                entry_uuid       TEXT,
+                log_index        INTEGER,
+                integrated_time  INTEGER,
+                statement_sha256 TEXT NOT NULL,      -- digest of the signed checkpoint statement
+                key_id           TEXT,
+                receipt          TEXT NOT NULL,      -- JSON: the log's own entry / bundle
+                UNIQUE (backend, head_hash)
+            );
+            -- ADR 0028 — scheduled audit maintenance (checkpoint+anchor, transparency, retention).
+            CREATE TABLE IF NOT EXISTS audit_maintenance_runs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                holder      TEXT,
+                status      TEXT NOT NULL,           -- ok | degraded | failed | skipped | dry-run
+                result      TEXT NOT NULL            -- JSON: per-step outcome
             );
             -- ADR 0108 / AIDC W3 — examlops.identity: agent principals, scoped grants,
             -- JIT single-target leases. AUTONOMOUS vs DELEGATED is a different credential,
@@ -2188,6 +2284,29 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (name, label)
             );
+            -- ADR 0157 Phase 4 — append-only ledger of every time a consumer (workbench /
+            -- training / serving) resolved a profile: which exact version, against which target,
+            -- and the honest status it got. It is what makes "which version of this profile did
+            -- that run use" answerable and a degraded/unresolvable resolution visible
+            -- (`exa hardware profile history|in-use`, `exa status`).
+            CREATE TABLE IF NOT EXISTS hardware_profile_resolutions (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                name            TEXT NOT NULL,
+                version         INTEGER NOT NULL,
+                consumer        TEXT NOT NULL,   -- workbench | training | serving
+                consumer_ref    TEXT NOT NULL,   -- e.g. "demo/nb1", "JPCP", run id
+                project         TEXT,
+                target_cluster  TEXT,
+                status          TEXT NOT NULL,   -- unchecked | verified | degraded | unresolvable
+                reason          TEXT NOT NULL DEFAULT '',
+                unconfirmed     TEXT NOT NULL DEFAULT '',  -- comma-joined field names
+                actor           TEXT
+            );
+            CREATE INDEX IF NOT EXISTS ix_hw_profile_resolutions_ref
+                ON hardware_profile_resolutions(consumer, consumer_ref, id);
+            CREATE INDEX IF NOT EXISTS ix_hw_profile_resolutions_name
+                ON hardware_profile_resolutions(name, id);
 
             -- ADR 0158 (Model Catalog, Phases 1-2) — curated, provenance-tracked model
             -- DEFINITIONS an operator can start from. Not the MLflow registry: no alias, no
@@ -2232,6 +2351,53 @@ def _bootstrap_schema(path: str, cacheable: bool) -> None:
                 ts              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_catalog_pulls_project ON catalog_pulls(project, ts);
+            -- ADR 0007 d3: the per-series "latest score" read (Prometheus export, every cycle).
+            CREATE INDEX IF NOT EXISTS idx_eval_results_series
+                ON eval_suite_results(suite, model, metric, ts);
+            -- ADR 0007 d2: the online-eval traffic pull reads one model's recent predictions every
+            -- cycle; without this it scanned the whole per-inference log each time.
+            CREATE INDEX IF NOT EXISTS idx_predictions_model_ts ON predictions(model, ts);
+
+            -- ADR 0007 decision 3 — the scheduled online-eval flow's per-model schedule. A config
+            -- row (one per model and tenant), not an event log: results land in
+            -- eval_suite_results; last_* is the latest cycle's outcome, for `exa eval online status`.
+            CREATE TABLE IF NOT EXISTS eval_online_config (
+                model        TEXT NOT NULL,
+                tenant       TEXT NOT NULL DEFAULT 'default',
+                suite        TEXT NOT NULL,
+                source       TEXT NOT NULL DEFAULT 'predictions',  -- predictions | tempo
+                evaluators   TEXT NOT NULL DEFAULT '[]',           -- JSON list of evaluator specs
+                alias        TEXT NOT NULL DEFAULT 'Production',
+                sample_size  INTEGER NOT NULL DEFAULT 50,
+                window_s     INTEGER NOT NULL DEFAULT 3600,
+                judge_model  TEXT,                                 -- gateway model for judge specs
+                enabled      INTEGER NOT NULL DEFAULT 1,
+                last_run_id  TEXT,
+                last_status  TEXT,
+                last_note    TEXT,
+                last_run_at  DATETIME,
+                updated_by   TEXT,
+                updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (model, tenant)
+            );
+
+            -- ADR 0016 decision 4: speculative-decoding FinOps. One row per flushed in-memory
+            -- window (never per request); token counts, not ratios, so aggregation is exact.
+            CREATE TABLE IF NOT EXISTS specdecode_windows (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                model           TEXT NOT NULL,
+                tenant          TEXT NOT NULL DEFAULT 'default',
+                engine          TEXT NOT NULL,
+                window_start    TEXT,
+                window_end      TEXT,
+                calls           INTEGER NOT NULL DEFAULT 0,
+                proposed_tokens INTEGER NOT NULL DEFAULT 0,
+                accepted_tokens INTEGER NOT NULL DEFAULT 0,
+                lookahead       INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS ix_specdecode_windows_model_ts
+                ON specdecode_windows (model, ts);
         """)
         if not path.startswith("pg:"):
             # The column migrations check PRAGMA table_info and then ALTER TABLE: two statements.
@@ -2291,6 +2457,11 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "train_run_id": "TEXT",
         "adapter_sha256": "TEXT",
         "adapter_uri": "TEXT",
+        # ADR 0044 clauses 1-2: where the adapter was trained and where MLflow holds it.
+        "hpc_job_id": "TEXT",
+        "mlflow_run_id": "TEXT",
+        "mlflow_artifact_uri": "TEXT",
+        "mlflow_model_version": "TEXT",
     },
     # A6 reindex orchestration (ADR 0043 clause 4): where the job ran and how long it took.
     # `cost_usd` is deliberately absent — a monetary figure needs device-hours this path does not
@@ -2344,6 +2515,10 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     # view has no embedding, and materialization behaves exactly as before.
     "feature_views": {
         "embedding_feature": "TEXT",
+        # ADR 0017 clause 2: the pack definition's typed feature specs + fingerprint (JSON), and
+        # clause 4: how often the scheduler re-materializes the view (0 = manual only).
+        "spec_json": "TEXT",
+        "materialize_interval_seconds": "INTEGER NOT NULL DEFAULT 0",
     },
     # D4 immutable audit trail (ADR 0028): hash-chain columns on the existing audit log.
     "audit_events": {
@@ -2416,6 +2591,11 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         # only the GPU half was ever stored, so a CPU-only site kept no record of the work it did.
         # NULL = recorded before this column existed, and is not the same as 0.
         "cpu_hours": "REAL",
+        # ADR 0030 decision 5: the GPU fraction the job's GPU-hours were billed at and the sharing
+        # mechanism it ran under (from its gpu_allocations row). NULL = no allocation was linked
+        # to the job, so gpu_hours is the scheduler's own device-hours, unscaled.
+        "gpu_fraction": "REAL",
+        "gpu_mechanism": "TEXT",
     },
     # ADR 0111 no uncalibrated judge may gate: evaluator provenance (G7.3) + the uncertainty
     # interval every score must carry (G7.4). NULL = recorded before the ADR landed.
@@ -2423,6 +2603,11 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "calibration_id": "TEXT",
         "score_lo": "REAL",
         "score_hi": "REAL",
+        # ADR 0007 d3: online eval is scheduled per (model, tenant); without this column two
+        # tenants' windows collided in the dedupe and their scores shared one Prometheus series.
+        "tenant": "TEXT NOT NULL DEFAULT 'default'",
+        # ADR 0146 d1: evidence keyed by the agent version it measures (NULL = not an agent).
+        "agent_version_id": "TEXT",
     },
     # D7/2.3 envelope encryption: which KEK (key_id) each secret is wrapped under, so keys can be
     # rotated online and old ciphertext rewrapped. NULL = the legacy single-key era.
@@ -2492,6 +2677,13 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "workbenches": {
         "hardware_profile": "TEXT",
         "hardware_profile_version": "INTEGER",
+    },
+    # ADR 0030 decision 3/5: link a GPU allocation to the scheduler job it was submitted as, so
+    # accounting bills that job at the allocated fraction. NULL job_id = a planning-only record.
+    "gpu_allocations": {
+        "job_id": "TEXT",
+        "scheduler": "TEXT",
+        "requested_fraction": "REAL",
     },
 }
 
@@ -3160,16 +3352,16 @@ _PIPELINE_KINDS = ("prefect", "rayserve")
 
 # ── Per-domain body relocation (item 4.5): helpers below LIVE in examlops.data.*; re-exported
 # for back-compat (at END so every primitive/constant + install_write_retry is defined first).
-from examlops.data.agent import (agent_metrics_rollup, get_agent_session_trace, list_agent_sessions, record_agent_session, record_agent_tool_call, tool_success_rate)  # noqa: E402, E501, F401, I001
+from examlops.data.agent import (agent_metrics_rollup, agent_sli, get_agent_session_trace, list_agent_sessions, record_agent_session, record_agent_tool_call, tool_success_rate)  # noqa: E402, E501, F401, I001
 from examlops.data.audit import (audit_chain_head, autonomous_actions, correlation_chain, export_audit_events, list_audit_checkpoints, list_training_checkpoints, sign_audit_checkpoint, verify_audit_chain, write_audit_event, write_training_checkpoint, audit_stream_enabled, verify_audit_stream)  # noqa: E402, E501, F401, I001
 from examlops.data.autopilot import (claim_autopilot_lease, create_autopilot_run, get_autopilot_config, list_autopilot_runs, release_autopilot_lease, set_autopilot_config, update_autopilot_run)  # noqa: E402, E501, F401, I001
 from examlops.data.catalog import (count_pulls, get_entry_row, insert_entry, latest_entry_row, list_entry_names, list_entry_rows, list_pull_rows, record_pull)  # noqa: E402, E501, F401, I001
 from examlops.data.data_assets import (latest_vector_metrics, bump_asset_version, create_distributed_run, create_reindex_job, get_adapter, get_asset, get_collection, get_data_quality_checks, get_dataset_revision, get_dataset_revisions, get_distributed_run, get_encoder, get_feature_view, get_offline_features_asof, get_online_feature, get_repro_bundle, get_synthetic_dataset, is_synthetic_only, last_materialization, link_dataset_revision_run, list_adapters, list_assets, list_distributed_runs, list_encoders, list_feature_views, list_reindex_jobs, list_repro_bundles, list_synthetic_datasets, materialize_online, purge_telemetry, record_data_quality_check, record_dataset_revision, record_synthetic_dataset, register_adapter, register_asset, register_encoder_row, set_adapter_promoted, store_repro_bundle, synthetic_proportion, update_distributed_run, update_reindex_job, upsert_collection, upsert_feature_view, write_feature_record)  # noqa: E402, E501, F401, I001
-from examlops.data.drift import (claim_drift_trigger, get_corruption_baseline, get_drift_auto_retrain, get_drift_baseline, get_input_baseline, latest_drift_event, list_drift_auto_retrain, list_drift_events, record_drift_event, record_drift_trigger, set_corruption_baseline, set_drift_auto_retrain, set_drift_baseline, set_input_baseline, write_drift_snapshot, write_input_snapshot, drift_models, recent_drift_predictions, record_drift_statuses, prediction_models, recent_prediction_features)  # noqa: E402, E501, F401, I001
-from examlops.data.evaluation import (get_calibration_by_id, get_eval_gate, get_eval_results, get_gate_reports, get_judge_calibration, list_judge_calibrations, list_perf_estimates, record_eval_result, record_gate_report, record_judge_calibration, record_perf_estimate, set_eval_gate)  # noqa: E402, E501, F401, I001
+from examlops.data.drift import (claim_drift_trigger, get_corruption_baseline, get_drift_auto_retrain, get_drift_baseline, get_input_baseline, latest_drift_event, list_drift_auto_retrain, list_drift_events, record_drift_event, record_drift_trigger, set_corruption_baseline, set_drift_auto_retrain, set_drift_baseline, set_input_baseline, write_drift_snapshot, write_input_snapshot, drift_models, recent_drift_predictions, record_drift_statuses, prediction_models, recent_prediction_features, classify_rejection, count_inference_rejections, record_inference_rejection, rejection_models)  # noqa: E402, E501, F401, I001
+from examlops.data.evaluation import (get_calibration_by_id, get_eval_gate, get_eval_results, get_gate_reports, get_judge_calibration, get_version_scores, list_judge_calibrations, list_perf_estimates, record_eval_result, record_gate_report, record_judge_calibration, record_perf_estimate, set_eval_gate)  # noqa: E402, E501, F401, I001
 from examlops.data.finops import (add_key_spend, aggregate_model_costs, get_carbon_records, get_fairness_gates, get_live_metrics, get_model_costs, join_predictions_with_truth, record_model_cost, set_fairness_gate, total_gateway_cost, write_carbon_record, write_ground_truth, write_live_metric, write_prediction)  # noqa: E402, E501, F401, I001
 from examlops.data.gateway import (cache_stats, create_virtual_key, get_gateway_config, get_virtual_key, list_virtual_keys, record_gateway_call, set_gateway_config)  # noqa: E402, E501, F401, I001
-from examlops.data.governance import (ANNEX_IV, DECLARATION, get_compliance_system, get_fairness_config, get_fairness_samples, get_policy_bundle, get_relations_for, get_slo_spec, grant_relation, list_compliance_systems, list_objects_for, list_policy_bundles, list_relations, list_slo_specs, list_technical_files, record_fairness_sample, record_slo_sample, revoke_relation, revoke_virtual_key, save_technical_file, set_compliance_system, set_fairness_config, slo_sli_ratio, store_policy_bundle, upsert_slo_spec)  # noqa: E402, E501, F401, I001
+from examlops.data.governance import (ANNEX_IV, DECLARATION, get_compliance_system, get_fairness_config, get_fairness_samples, get_policy_bundle, get_relations_for, get_slo_spec, grant_relation, list_compliance_systems, list_objects_for, list_policy_bundles, list_relations, list_slo_specs, list_technical_files, record_fairness_sample, record_slo_sample, revoke_relation, revoke_virtual_key, save_technical_file, set_compliance_system, set_fairness_config, slo_sli_ratio, slo_sample_totals, store_policy_bundle, upsert_slo_spec)  # noqa: E402, E501, F401, I001
 from examlops.data.hardware_profiles import (create_profile_version, delete_profile, get_profile_version, list_profile_names, list_profile_versions, resolve_label, set_profile_label)  # noqa: E402, E501, F401, I001
 from examlops.data.hpc import (aggregate_node_capacity, get_cluster, get_clusters, get_hpc_jobs, get_node_snapshot, list_placement_decisions, record_hpc_job, record_node_snapshot, record_placement_decision, set_cluster_state, update_hpc_job, upsert_cluster)  # noqa: E402, E501, F401, I001
 from examlops.data.projects import (add_project_member, archive_project, assign_model_to_project, assign_resource_to_project, bind_project_connection, create_project, delete_project, ensure_project_storage, get_project, get_project_budget, get_project_consumption, get_project_for_model, get_project_full, get_project_pipelines, get_project_storage, list_project_budgets, list_project_members, list_project_models, list_project_resources, list_projects, project_experiment, projects_bucket, refresh_project_usage, remove_project_member, remove_project_resource, set_project_budget, set_project_usage, update_project_quota, upsert_project_pipeline)  # noqa: E402, E501, F401, I001

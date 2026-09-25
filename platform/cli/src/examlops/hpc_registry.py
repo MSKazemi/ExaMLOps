@@ -216,4 +216,17 @@ def resolve_env(name: str) -> dict[str, str]:
             env["EXAMLOPS_HPC_SSH_KEY"] = str(c["ssh_key"])
         if c.get("ssh_port"):
             env["EXAMLOPS_HPC_SSH_PORT"] = str(c["ssh_port"])
+    # ADR 0030 decision 3: the cluster's declared GPU-sharing mechanisms reach the run, so a
+    # fractional ask maps onto MIG/shard GRES only where this cluster says it has them.
+    caps = c.get("capabilities")
+    if isinstance(caps, str):
+        try:
+            caps = json.loads(caps) if caps else None
+        except (TypeError, ValueError):
+            caps = None
+    from examlops.gpu_sharing.scheduler_map import ENV_SHARING_CAPS, sharing_env_for_capabilities
+
+    # Always set (``{}`` = none declared) so a value left in the operator's shell from another
+    # cluster can never make this one look MIG/shard-capable.
+    env.update(sharing_env_for_capabilities(caps) or {ENV_SHARING_CAPS: "{}"})
     return env

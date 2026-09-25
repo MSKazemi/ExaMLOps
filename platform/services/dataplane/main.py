@@ -5,11 +5,15 @@ import os
 import uvicorn
 
 from examlops.dataplane.service.app import configure_logging, create_app, drain_seconds
+from examlops.secrets.inject import inject_env
 
 if __name__ == "__main__":
     # examlops at INFO (the startup auth-mode line, pull failures); every other library — the
     # HTTP clients that log full URLs above all — stays at WARNING.
     configure_logging()
+    # ADR 0011 clause 2: resolve `secret://` references before any credential is read;
+    # an unresolvable one refuses to start. A no-op when there is none.
+    inject_env("dataplane")
     uvicorn.run(
         create_app(),
         host="0.0.0.0",  # noqa: S104

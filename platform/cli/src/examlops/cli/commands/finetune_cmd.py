@@ -24,11 +24,15 @@ _EXAMPLES = (
     "Examples:\n\n"
     "  # Really fine-tune: trains LoRA factors and records the score it measured\n"
     "  exa finetune demo-base --train --dataset <rev> --rank 4 --steps 80\n\n"
+    "  # Train as a job on the configured scheduler (mock / Slurm / Flux) with one GPU\n"
+    "  exa finetune demo-base --train --dataset <rev> --scheduler --gpus 1\n\n"
     "  # Register an adapter trained elsewhere; --asserted-eval is stored as UNVERIFIED\n"
     "  exa finetune llama3.1-8b --method lora --dataset <rev> --asserted-eval 0.82\n\n"
     "  exa serve adapter list --base llama3.1-8b\n\n"
     "  exa serve adapter promote llama3.1-8b-lora-<rev>\n\n"
-    "  exa serve adapter route llama3.1-8b llama3.1-8b-lora-<rev> --prompt 'hi'"
+    "  exa serve adapter route llama3.1-8b llama3.1-8b-lora-<rev> --prompt 'hi'\n\n"
+    "  # Real inference through a trained, promoted adapter (CPU reference engine)\n"
+    "  exa serve adapter route demo-base <adapter> --engine torch --prompt 'a b c'"
 )
 
 
@@ -65,6 +69,26 @@ def finetune(
         "torch-lora", "--backend", help="--train: fine-tuning backend (torch-lora | peft)"
     ),
     run_id: str = typer.Option(None, "--run-id", help="--train: explicit training run id"),
+    scheduler: bool = typer.Option(
+        False,
+        "--scheduler",
+        help="--train: run as a job on the configured scheduler (EXAMLOPS_HPC_SCHEDULER)",
+    ),
+    gpus: int = typer.Option(None, "--gpus", min=0, help="--scheduler: GPUs for the job"),
+    partition: str = typer.Option(None, "--partition", help="--scheduler: partition / queue"),
+    time_limit: str = typer.Option(None, "--time-limit", help="--scheduler: wall time (HH:MM:SS)"),
+    account: str = typer.Option(None, "--account", help="--scheduler: charge account"),
+    mlflow: bool = typer.Option(
+        None,
+        "--mlflow/--no-mlflow",
+        help="--train: log the adapter to MLflow (default: when MLFLOW_TRACKING_URI is set)",
+    ),
+    adapter_uri: str = typer.Option(
+        None,
+        "--adapter-uri",
+        help="Without --train: where the serving host reads this adapter (a PEFT adapter "
+        "directory, passed to vLLM as lora_path). Stored, never opened here.",
+    ),
 ) -> None:
     """Fine-tune (``--train``) or register an adapter, signed and lineage-linked (R1/R3/GWT-1).
 
@@ -89,6 +113,18 @@ def finetune(
             run_id=run_id,
             eval_floor=eval_floor,
             asserted_eval=asserted_eval,
+            scheduler=scheduler,
+            resources={
+                k: v
+                for k, v in {
+                    "gpus": gpus,
+                    "partition": partition,
+                    "time": time_limit,
+                    "account": account,
+                }.items()
+                if v is not None
+            },
+            mlflow=mlflow,
         )
         return
     from examlops.finetuning import finetune as _finetune
@@ -104,6 +140,7 @@ def finetune(
         asserted_eval_by=_actor(),
         eval_floor=eval_floor,
         cost_gpu_hours=cost_gpu_hours,
+        adapter_uri=adapter_uri,
         actor=_actor(),
     )
     if _output.json_mode:
@@ -151,16 +188,16 @@ def _run_training(
     run_id: str | None,
     eval_floor: float,
     asserted_eval: float | None,
+    scheduler: bool = False,
+    resources: dict | None = None,
+    mlflow: bool | None = None,
 ) -> None:
     """``--train``: run the shipped reference script, then register what it measured."""
     from examlops.finetuning.runner import TorchNotInstalled, run_finetune
+    from examlops.finetuning.scheduler import SchedulerUnavailable
 
-    if method == "full":
-        _output.error(
-            "Full fine-tuning is not implemented (ADR 0044 clause 4): only LoRA/QLoRA adapters "
-            "are trained here. Re-run with --method lora.",
-            exit_code=2,
-        )
+    if method not in ("lora", "qlora", "full"):
+        _output.error(f"--method must be lora, qlora or full, got {method!r}", exit_code=2)
     if asserted_eval is not None:
         _output.warning("--asserted-eval is ignored with --train: the run measures its own score.")
     try:
@@ -178,10 +215,20 @@ def _run_training(
             backend=backend,
             eval_floor=eval_floor,
             actor=_actor(),
+            scheduler=scheduler,
+            resources=resources,
+            mlflow=mlflow,
         )
-    except TorchNotInstalled as exc:
+    except (TorchNotInstalled, SchedulerUnavailable) as exc:
+        _output.error(str(exc), exit_code=2)
+    except ValueError as exc:
         _output.error(str(exc), exit_code=2)
     m = res.metrics or {}
+    # `--mlflow` asked for the artifact explicitly: a run that trained but was not logged is a
+    # failed request (exit 1) — the adapter stays registered, but a script must not read success.
+    mlflow_missing = (
+        mlflow is True and res.status == "complete" and (res.mlflow or {}).get("status") != "logged"
+    )
     if _output.json_mode:
         _output.print_json(
             {
@@ -200,9 +247,15 @@ def _run_training(
                 "trainable_parameters": m.get("trainable_parameters"),
                 "attempts": [a.outcome for a in res.attempts],
                 "run_dir": str(res.run_dir),
+                "method": method,
+                "backend": m.get("backend"),
+                "adapter_bundle": m.get("adapter_bundle"),
+                "executor": res.scheduler or "local",
+                "hpc_job_ids": res.hpc_job_ids,
+                "mlflow": res.mlflow,
             }
         )
-        if res.status != "complete":
+        if res.status != "complete" or mlflow_missing:
             raise typer.Exit(1)
         return
     if res.status != "complete":
@@ -215,9 +268,23 @@ def _run_training(
         f"{m.get('eval_score'):.4f} on {m.get('eval_n')} held-out samples "
         f"(baseline {m.get('baseline_eval_score'):.4f}, "
         f"loss {m.get('first_loss'):.4f} → {m.get('final_loss'):.4f}, "
-        f"{m.get('trainable_parameters')} adapter parameters, base unchanged)."
+        + (
+            f"{m.get('trainable_parameters')} weights trained — a full fine-tune)."
+            if method == "full"
+            else f"{m.get('trainable_parameters')} adapter parameters, base unchanged)."
+        )
     )
     _output.info(f"  run {res.run_id} in {res.run_dir}; adapter {m.get('adapter_sha256', '')[:12]}")
+    if res.hpc_job_ids:
+        _output.info(f"  trained on {res.scheduler} job(s) {', '.join(res.hpc_job_ids)}")
+    ml = res.mlflow or {}
+    if ml.get("status") == "logged":
+        version = f", model version {ml['model_version']}" if ml.get("model_version") else ""
+        _output.info(f"  MLflow run {ml.get('run_id')} ({ml.get('experiment')}){version}")
+    elif ml:
+        _output.warning(f"  not logged to MLflow: {ml.get('reason')}")
+    if mlflow_missing:
+        _output.error("--mlflow was requested and the adapter was not logged to MLflow")
 
 
 @adapter_app.command("list")
@@ -285,6 +352,12 @@ def adapter_add(
         help="A score you measured elsewhere — stored as UNVERIFIED (operator-asserted)",
     ),
     eval_floor: float = typer.Option(0.0, "--eval-floor", help="C3 quality floor"),
+    adapter_uri: str = typer.Option(
+        None,
+        "--adapter-uri",
+        help="Where the serving host reads this adapter (a PEFT adapter directory, passed to "
+        "vLLM as lora_path). Stored, never opened here.",
+    ),
 ) -> None:
     """Register an adapter trained elsewhere (alias of `exa finetune` without `--train`) (R6)."""
     from examlops.finetuning import finetune as _finetune
@@ -297,6 +370,7 @@ def adapter_add(
         asserted_eval_score=asserted_eval,
         asserted_eval_by=_actor(),
         eval_floor=eval_floor,
+        adapter_uri=adapter_uri,
         actor=_actor(),
     )
     _output.ok(f"Added adapter {a.adapter_id} on base {base} (nothing was trained).")
@@ -336,14 +410,50 @@ def adapter_route(
     adapter_id: str = typer.Argument(..., help="Adapter id to route to"),
     prompt: str = typer.Option("", "--prompt", help="Prompt text"),
     hot_set: int = typer.Option(4, "--hot-set", help="Hot-set size (LRU)"),
+    engine: str = typer.Option(
+        "registry",
+        "--engine",
+        help="registry (routing only) | torch (CPU inference through a trained bundle) | "
+        "vllm (a running vllm serve --enable-lora)",
+    ),
+    base_url: str = typer.Option(
+        None, "--base-url", help="--engine vllm: server root (default EXAMLOPS_VLLM_BASE_URL)"
+    ),
+    allow_unpromoted: bool = typer.Option(
+        False,
+        "--allow-unpromoted",
+        help="Serve an adapter the C3 gate has not promoted (audited)",
+    ),
 ) -> None:
-    """Route a request through a base + adapter — refuses a base mismatch (R4/GWT-4)."""
-    from examlops.finetuning import BaseMismatchError, MultiLoRARouter
+    """Route a request through a base + adapter — refuses a base mismatch (R4/GWT-4).
 
-    router = MultiLoRARouter(base, hot_set_size=hot_set)
+    ``--engine torch`` / ``vllm`` really run the request through the adapter and accept only a
+    promoted adapter whose registry signature (and, for torch, bundle digest) verifies.
+    """
+    from examlops.finetuning import (
+        BaseMismatchError,
+        MultiLoRARouter,
+        SignatureMismatchError,
+        UnpromotedAdapterError,
+    )
+    from examlops.finetuning.serving import AdapterServingError, build_adapter_engine
+
     try:
+        router = MultiLoRARouter(
+            base,
+            hot_set_size=hot_set,
+            engine=build_adapter_engine(engine, base_url=base_url),
+            allow_unpromoted=allow_unpromoted,
+            actor=_actor(),
+        )
         result = router.route(adapter_id, prompt)
-    except (BaseMismatchError, ValueError) as exc:
+    except (
+        AdapterServingError,
+        BaseMismatchError,
+        SignatureMismatchError,
+        UnpromotedAdapterError,
+        ValueError,
+    ) as exc:
         _output.error(str(exc))
         raise typer.Exit(1) from exc
     if _output.json_mode:

@@ -11,6 +11,7 @@ This is *content*, kept separate from the platform (ADR 0094); the platform load
 | `pack.toml` | Manifest: per-model YAML dir, config package, dataset registry, and the `seanergys_modelzoo` framework binding. |
 | `models/*.yaml` | Per-model declarative config for `JPCP`, `MACK`, `MCBound` (single source of truth). |
 | `model_configs/*.py` | Python transform shims (model-bound callables that can't be expressed in YAML). |
+| `features/*.yaml` | Feature-view definitions (ADR 0017): the one train/serve definition of the models' input features, enforced by the training feature gate and applied by serving's `FeatureTransformer`. |
 | `datasets/schemas.json` | Field schemas for the pack's datasets (e.g. `FData`), used to build Croissant dataset cards. |
 
 The model *implementations* and dataset classes live upstream in `modelzoo/`

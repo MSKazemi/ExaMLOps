@@ -57,6 +57,10 @@ def test_exactly_one_kserve_version_is_pinned_and_its_schemas_load():
     assert set(k8s_schema.pinned_kinds()) == {
         ("InferenceService", "serving.kserve.io/v1beta1"),
         ("LLMInferenceService", "serving.kserve.io/v1alpha2"),
+        # the verify-before-load storage container (ADR 0142 d3)
+        ("ClusterStorageContainer", "serving.kserve.io/v1alpha1"),
+        # KubeRay, pinned separately (ADR 0015 d1)
+        ("RayService", "ray.io/v1"),
     }
     for kind, api in k8s_schema.pinned_kinds():
         schema = k8s_schema.load_schema(kind)

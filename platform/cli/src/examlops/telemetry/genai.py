@@ -60,6 +60,22 @@ _LATEST_OPERATION = {
     "retrieval": "retrieval",
 }
 
+# ADR 0021 decision 1 names the span kinds AGENT/TOOL/RETRIEVER/GUARDRAIL — the OpenInference
+# span-kind vocabulary Arize Phoenix groups and renders by (Langfuse reads it too). It rides on
+# every GenAI span as ``openinference.span.kind`` *in addition to* ``gen_ai.operation.name``: the
+# OTel attribute says which operation ran, this one says which box a consumer draws it in. A
+# GUARDRAIL has no ``gen_ai.operation.name`` because the GenAI registry defines none — see
+# :func:`guardrail_span`.
+_OPENINFERENCE_KIND = {
+    "model": "LLM",
+    "chat": "LLM",
+    "embeddings": "EMBEDDING",
+    "agent": "AGENT",
+    "workflow": "CHAIN",
+    "tool": "TOOL",
+    "retrieval": "RETRIEVER",
+}
+
 # Fallback per-1K-token USD rates when a model isn't in the rate table. Self-hosted
 # models resolve to 0.0 (cost is GPU-seconds, tracked separately by FinOps/carbon).
 _DEFAULT_RATE_IN = 0.0005
@@ -287,6 +303,7 @@ def _apply_base_attributes(
     else:
         span.set_attribute("gen_ai.system", system)
     span.set_attribute("gen_ai.request.model", model)
+    span.set_attribute("openinference.span.kind", _OPENINFERENCE_KIND[kind])
     # ExaMLOps extras (R3): join keys for eval/feedback/drift + A2 lineage.
     span.set_attribute("examlops.tenant", tenant)
     if request_hash:
@@ -296,6 +313,67 @@ def _apply_base_attributes(
     if version:
         span.set_attribute("examlops.model.version", str(version))
     span.set_attribute("examlops.semconv.version", semconv_version())
+
+
+def set_agent_context(span: Any, *, session_id: str | None, step: int | None = None) -> None:
+    """Tie a span to its agent session and step (ADR 0021 decision 1).
+
+    ``session_id`` is the same key ``agent_sessions.session_id`` holds, so a trace in Tempo,
+    Langfuse or Phoenix joins the platform's own session row. It is written under three names,
+    each read by a different consumer: ``gen_ai.conversation.id`` (the OTel GenAI registry),
+    ``session.id`` (OpenInference — Phoenix and Langfuse group sessions by it) and
+    ``examlops.agent.session_id``. ``step`` is the 0-based position of the call within its turn.
+
+    A missing session id sets nothing rather than an empty string: an empty value would group
+    every unattributed span into one fictitious session.
+    """
+    if not session_id:
+        return
+    try:
+        span.set_attribute("gen_ai.conversation.id", session_id)
+        span.set_attribute("session.id", session_id)
+        span.set_attribute("examlops.agent.session_id", session_id)
+        if step is not None:
+            span.set_attribute("examlops.agent.step", int(step))
+    except Exception:  # noqa: BLE001 - telemetry must never break the call it measures
+        pass
+
+
+@contextmanager
+def guardrail_span(
+    stage: str,
+    *,
+    tenant: str = "default",
+    mode: str = "enforce",
+    system: str = "guardrails",
+) -> Generator[Any, None, None]:
+    """Open a GUARDRAIL span around one guardrail check (ADR 0021 decision 1, D8).
+
+    ``stage`` is ``input``/``output``/``tool``. The span carries ``openinference.span.kind =
+    GUARDRAIL`` and the check's mode, and the caller adds the verdict (action + finding
+    *categories*). It never carries the checked text: a guardrail sees exactly the content the
+    privacy gate exists to keep off spans.
+
+    Deliberately **no** ``gen_ai.operation.name``: the GenAI registry defines no guardrail
+    operation, and inventing one would put a non-registry value where consumers expect registry
+    values. It is made current, so it nests under the gateway or agent span that called it.
+    No-op (a :class:`_NoOpSpan`) when tracing is disabled.
+    """
+    if not tracing_enabled():
+        yield _NoOpSpan()
+        return
+
+    from opentelemetry import trace
+
+    tracer = trace.get_tracer("examlops.genai", SEMCONV_VERSION)
+    with tracer.start_as_current_span(f"guardrail {stage}") as span:
+        span.set_attribute("openinference.span.kind", "GUARDRAIL")
+        span.set_attribute("examlops.guardrail.stage", stage)
+        span.set_attribute("examlops.guardrail.mode", mode)
+        span.set_attribute("examlops.guardrail.system", system)
+        span.set_attribute("examlops.tenant", tenant)
+        span.set_attribute("examlops.semconv.version", semconv_version())
+        yield span
 
 
 def record_usage(

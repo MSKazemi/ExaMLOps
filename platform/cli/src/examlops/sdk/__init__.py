@@ -13,7 +13,10 @@ import cycle with the CLI that imports ``examlops`` at startup.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # typing only: the runtime imports stay lazy (no CLI import cycle)
+    from examlops.hpc_placement import PlacementResult
 
 # Pipeline-as-code DSL (ADR 0080). ``examlops.pipeline_dsl`` is stdlib-only and imports nothing
 # from the CLI, so importing it here keeps the SDK cheap and cannot create an import cycle.
@@ -221,7 +224,9 @@ def _production_models(cfg, data: dict[str, Any], services: dict[str, ServiceHea
     return out
 
 
-def place(gpus: int = 0, cpus: int = 0, nodes: int = 1, provider: str | None = None):
+def place(
+    gpus: int = 0, cpus: int = 0, nodes: int = 1, provider: str | None = None
+) -> PlacementResult:
     """Recommend which ACTIVE cluster should run a job for the given resource ask.
 
     Uses the pluggable placement provider (ADR 0077) — ``provider`` overrides the configured/default
@@ -244,7 +249,7 @@ def list_providers(domain: str) -> list[Any]:
     return _list(domain)
 
 
-def resolve_provider(domain: str, *, override: str | None = None, group: str | None = None):
+def resolve_provider(domain: str, *, override: str | None = None, group: str | None = None) -> Any:
     """Resolve the active provider for ``domain`` (re-export of the loader's resolution)."""
     from examlops.providers.loader import resolve_provider as _resolve
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import subprocess
 import sys
@@ -22,7 +23,7 @@ from examlops.promotion_providers import resolve_promotion_eval_fn
 # Help panels for `exa pipeline` (quality/distributed/hpo sub-groups attached in main.py).
 _PANELS: list[tuple[str, list[str]]] = [
     ("Run & Deploy", ["run", "deploy", "list", "add-model", "export-registry"]),
-    ("Pipeline as code", ["compile", "decompile", "explain"]),
+    ("Pipeline as code", ["compile", "decompile", "explain", "show"]),
     ("Validate & Promote", ["validate", "validate-model", "promote", "promote-delete"]),
     ("Advanced", ["hpo", "quality", "distributed"]),
 ]
@@ -49,10 +50,12 @@ _EXAMPLES_RUN = (
     "  exa pipeline run --model JPCP --dataset PM100Dataset --backend minio\n\n"
     "  # Use YAML registry overlays for production settings\n"
     "  exa pipeline run --registry pipelines/model_registry.yaml --env prod\n\n"
-    "  # Train from a compiled pipeline-as-code IR (inline scheduler only)\n"
+    "  # Train from a compiled pipeline-as-code IR (JSON graph or registry YAML)\n"
     "  exa pipeline run --ir jpcp.ir.json --dummy\n\n"
     "  # Ask for a named hardware profile instead of restating --gpus (ADR 0157)\n"
-    "  exa pipeline run --model JPCP --cluster auto --hardware-profile gpu-small"
+    "  exa pipeline run --model JPCP --cluster auto --hardware-profile gpu-small\n\n"
+    "  # Distributed, fault-tolerant training from the model YAML's `distributed:` block (ADR 0032)\n"
+    "  exa pipeline run --model JPCP --distributed"
 )
 _EXAMPLES_COMPILE = (
     "Examples:\n\n"
@@ -62,6 +65,8 @@ _EXAMPLES_COMPILE = (
     "  exa pipeline compile flows/jpcp.py:JPCP --out jpcp.ir.json\n\n"
     "  # Also lower it to the per-model registry YAML\n"
     "  exa pipeline compile flows/jpcp.py --out jpcp.ir.json --yaml jpcp.yaml\n\n"
+    "  # Write the registry YAML as the IR itself (a .yaml/.yml --out)\n"
+    "  exa pipeline compile flows/jpcp.py -o jpcp.yaml\n\n"
     "  # Compile a file you do not fully trust (static AST gate, not a jail)\n"
     "  exa pipeline compile flows/jpcp.py --untrusted"
 )
@@ -77,7 +82,9 @@ _EXAMPLES_DECOMPILE = (
 _EXAMPLES_EXPLAIN = (
     "Examples:\n\n"
     "  # Topological plan of a compiled IR (read-only)\n"
-    "  exa pipeline explain jpcp.ir.json"
+    "  exa pipeline explain jpcp.ir.json\n\n"
+    "  # A per-model registry YAML is an IR too\n"
+    "  exa pipeline explain usecases/reference/models/jpcp.yaml"
 )
 _EXAMPLES_DEPLOY = (
     "Examples:\n\n"
@@ -130,7 +137,41 @@ def _run_pytest(args: list[str]) -> None:
     )
 
 
-def _resolve_cluster_env(cluster: str, gpus: int, ask: ResourceAsk | None = None) -> bool:
+def _residency_datasets(
+    model: str | None, dataset: str | None, registry: str | None = None
+) -> tuple[list[str], list[str]]:
+    """``(datasets, errors)``: the datasets a run will read, and why they cannot be named.
+
+    The one given, else every one the model's YAML declares, else — a run with no ``--model``
+    trains every model — every dataset the active pack declares. "No dataset" would *lift* a
+    residency constraint, so a set that cannot be determined (an unreadable or missing model
+    YAML, or a ``--registry`` the pack does not describe) is an error the gate refuses on,
+    never an empty list (ADR 0029 d2: fail closed).
+    """
+    if dataset:
+        return [dataset], []
+    if registry:
+        return [], [
+            f"--registry {registry!r}: its datasets are not read by the residency check "
+            "— pass --dataset to name the data this run reads"
+        ]
+    from examlops.cards.datasheet import DatasheetError, model_datasets, pack_datasets
+
+    try:
+        return (model_datasets(model, strict=True) if model else pack_datasets()), []
+    except DatasheetError as exc:
+        return [], [f"cannot determine the datasets this run reads: {exc}"]
+
+
+def _resolve_cluster_env(
+    cluster: str,
+    gpus: int,
+    ask: ResourceAsk | None = None,
+    *,
+    model: str | None = None,
+    dataset: str | None = None,
+    registry: str | None = None,
+) -> bool:
     """Resolve --cluster (name or 'auto') into EXAMLOPS_HPC_* env for the run subprocess.
 
     ``ask`` is an optional :class:`examlops.hpc_placement.ResourceAsk` — what
@@ -141,20 +182,42 @@ def _resolve_cluster_env(cluster: str, gpus: int, ask: ResourceAsk | None = None
     Returns True on success (env applied), False if the cluster is unknown/not approved or
     placement found no fit — in which case an error is printed and the run is aborted.
     """
+    from examlops.cli._policy_gate import enforce_engine_gate
     from examlops.hpc_registry import (
         ClusterNotActiveError,
         active_clusters_with_inventory,
         resolve_env,
     )
+    from examlops.policy_engine.gates import ENFORCE, consult, gate_mode
+
+    # Resolved lazily: with the gate off (the default) no model YAML is read at all.
+    _scope: list[tuple[list[str], list[str]]] = []
+
+    def _datasets() -> tuple[list[str], list[str]]:
+        if not _scope:
+            _scope.append(_residency_datasets(model, dataset, registry))
+        return _scope[0]
 
     target = cluster
     if cluster == "auto":
         from examlops.hpc_placement import ResourceAsk, choose_cluster
         from examlops.hpc_placement_providers import resolve_placement_score_fn
 
+        candidates = active_clusters_with_inventory()
+        # ADR 0029 d2: never place into a forbidden region — but only when the gate is enforced.
+        # `monitor` promises to observe and never block; pruning candidates would change where
+        # (and whether) a run is placed, so in monitor mode placement is untouched and the gate
+        # below records the would-deny against the cluster actually chosen.
+        if gate_mode("residency") == ENFORCE:
+            from examlops.policy_engine.residency import compliant_clusters
+
+            datasets, errors = _datasets()
+            # Undeterminable data: prune nothing — the gate below refuses whatever is chosen.
+            if not errors:
+                candidates = compliant_clusters(datasets, candidates)
         result = choose_cluster(
             ask if ask is not None else ResourceAsk(gpus=gpus),
-            active_clusters_with_inventory(),
+            candidates,
             resolve_placement_score_fn(),
         )
         if result.cluster is None:
@@ -162,6 +225,17 @@ def _resolve_cluster_env(cluster: str, gpus: int, ask: ResourceAsk | None = None
             return False
         _output.info(f"Auto-placement: {result.reason}")
         target = result.cluster
+
+    def _residency(_opts: dict):
+        from examlops.policy_engine import residency_gate
+        from examlops.policy_engine.residency import residency_reasons
+
+        datasets, errors = _datasets()
+        return residency_gate(
+            str(model or ""), target, [*errors, *residency_reasons(datasets, target)]
+        )
+
+    enforce_engine_gate(consult("residency", _residency), what=f"training on cluster '{target}'")
 
     try:
         env = resolve_env(target)
@@ -173,7 +247,55 @@ def _resolve_cluster_env(cluster: str, gpus: int, ask: ResourceAsk | None = None
     return True
 
 
-def _hardware_profile_ask(name: str, cluster: str | None, gpus: int) -> ResourceAsk:
+def _distributed_ask(model: str, ask: ResourceAsk | None, gpus: int) -> ResourceAsk:
+    """The placement/admission ask for ``--distributed``: at least what the model's plan submits.
+
+    The scheduler job is sized by the YAML ``distributed:`` block (``nodes × gpus_per_node``), not
+    by ``--gpus`` (default 0). Placing and admitting on ``--gpus`` alone let a 4-node × 8-GPU run
+    through the admission quota as a 0-GPU job and onto a cluster that cannot hold it. The larger of
+    the two wins, so an explicit ``--gpus``/profile can still ask for more, never for less.
+    """
+    from examlops.distributed.strategy import resolve_plan
+
+    try:
+        plan = resolve_plan(model)
+    except ValueError as exc:
+        _output.error(str(exc), exit_code=2)
+    base = ask if ask is not None else ResourceAsk(gpus=gpus)
+    # ``replace`` keeps the profile's GPU shape (ADR 0030 gpu_fraction/mig_profile) intact.
+    return dataclasses.replace(
+        base,
+        gpus=max(base.gpus, gpus, plan.nodes * plan.gpus_per_node),
+        nodes=max(base.nodes, plan.nodes),
+    )
+
+
+def _export_gpu_sharing_ask(ask: ResourceAsk) -> None:
+    """Carry a hardware profile's GPU shape into the run subprocess env (ADR 0030 decision 3).
+
+    The resolved profile is authoritative for the GPU shape, so a fractional ask left in the
+    operator's shell (``EXAMLOPS_HPC_GPU_FRACTION`` / ``_MIG_PROFILE``) from an earlier run is
+    cleared first — otherwise a whole-GPU profile would silently run on a slice. A fractional ask
+    also exports its device count: the scheduler mapping sizes the MIG/shard GRES from
+    ``EXAMLOPS_HPC_GPUS`` and would otherwise assume one device (or a stale shell value).
+    """
+    from examlops.gpu_sharing.scheduler_map import ENV_FRACTION, ENV_MIG_PROFILE, ask_env
+
+    for var in (ENV_FRACTION, ENV_MIG_PROFILE):
+        os.environ.pop(var, None)
+    if ask.is_fractional:
+        os.environ.update(ask_env(ask.gpu_fraction, ask.mig_profile))
+        os.environ["EXAMLOPS_HPC_GPUS"] = str(ask.gpus)
+
+
+def _hardware_profile_ask(
+    name: str,
+    cluster: str | None,
+    gpus: int,
+    *,
+    model: str | None = None,
+    project: str | None = None,
+) -> ResourceAsk:
     """Resolve ``--hardware-profile`` into the placement ask for this run (ADR 0157 Phase 3).
 
     The profile must be applicable to ``training`` (or ``any``) — otherwise this refuses with an
@@ -183,6 +305,11 @@ def _hardware_profile_ask(name: str, cluster: str | None, gpus: int) -> Resource
     ``gpu_count``: cpu and nodes still come from the profile. That partial override is reported,
     never silent — a half-applied resource shape an operator cannot see is the failure this
     message exists to prevent.
+
+    Phase 4: the resolution is recorded in the profile ledger against ``model`` (or
+    ``all-models``) — an ``unresolvable`` one too, *before* the refusal — and the exact
+    ``name@vN`` is exported as ``EXAMLOPS_HARDWARE_PROFILE`` so the training run tags it on its
+    MLflow run.
     """
     from examlops.hardware_profiles import (
         STATUS_UNRESOLVABLE,
@@ -195,7 +322,14 @@ def _hardware_profile_ask(name: str, cluster: str | None, gpus: int) -> Resource
     # so the profile resolves 'unchecked' and the ask is what placement then scores.
     target = cluster if cluster and cluster != "auto" else None
     try:
-        profile, resolution = resolve_for(name, "training", target_cluster=target)
+        profile, resolution = resolve_for(
+            name,
+            "training",
+            target_cluster=target,
+            consumer_ref=model or "all-models",
+            project=project,
+            actor=os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER"),
+        )
     except HardwareProfileError as exc:
         _output.error(str(exc))
     ask = to_resource_ask(resolution)
@@ -215,6 +349,7 @@ def _hardware_profile_ask(name: str, cluster: str | None, gpus: int) -> Resource
             f"hardware profile '{profile.name}' cannot be satisfied on cluster '{target}': "
             f"{resolution.reason}"
         )
+    os.environ["EXAMLOPS_HARDWARE_PROFILE"] = f"{profile.name}@v{profile.version}"
     return ask
 
 
@@ -286,18 +421,53 @@ def run(
     input_file: str | None = typer.Option(
         None,
         "--ir",
-        help="Train a pipeline-as-code IR (from `exa pipeline compile`); inline scheduler only",
+        help="Train a pipeline-as-code IR: a JSON graph from `exa pipeline compile`, or a "
+        "per-model registry YAML. Runs on mock/Slurm/Flux (the YAML is staged to the node)",
+    ),
+    distributed: bool = typer.Option(
+        False,
+        "--distributed",
+        help="Distributed, fault-tolerant training (ADR 0032): torchrun per the model YAML's "
+        "`distributed:` block, submitted through the scheduler and resubmitted/resumed on failure",
     ),
 ):
-    """Run training pipeline(s) locally via Prefect."""
+    """Run training pipeline(s) locally via Prefect (or distributed with --distributed)."""
+    if distributed and input_file:
+        _output.error("--distributed and --ir cannot be combined.", exit_code=2)
+    if distributed and not model:
+        _output.error("--distributed needs --model (its YAML supplies the plan).", exit_code=2)
     ir_run = None
+    # The placement section's full ask (gpus, cpus, nodes) — what `--cluster auto` scores. Only
+    # --gpus is a CLI flag, so without this cpus/nodes from the YAML/IR would never reach placement.
+    placed_ask = None
     if input_file:
         from examlops.cli.commands import pipeline_ir
+        from examlops.pipeline_dsl.placement import placement_ask
 
         ir_run = pipeline_ir.prepare_ir_run(input_file, model, dataset)
         model = ir_run.name
         cluster = cluster or ir_run.hints.get("cluster")
         gpus = gpus or int(ir_run.hints.get("gpus", 0))
+        placed_ask = placement_ask(ir_run.placement)
+    elif model and not cluster:
+        # A YAML-authored model's `placement:` section is the same default the IR carries
+        # (ADR 0080 decision 2); an explicit --cluster/--gpus always wins.
+        from examlops.cli.commands import pipeline_ir
+        from examlops.pipeline_dsl.placement import placement_ask
+
+        placed = pipeline_ir.placement_for_model(model)
+        if placed.get("cluster"):
+            cluster = placed["cluster"]
+            gpus = gpus or int(placed.get("gpus", 0))
+            placed_ask = placement_ask(placed)
+            _output.info(f"placement from {model}'s YAML: cluster={cluster} gpus={gpus}")
+    if placed_ask is not None:
+        placed_ask.gpus = gpus  # an explicit --gpus overrides only the GPU count
+        if gpus:
+            # ...and the job must request the count it was placed for: the submission reads the
+            # YAML's `placement.gpus` otherwise (pipeline_generator._hpc_resources). Explicit
+            # EXAMLOPS_HPC_GPUS in the environment still wins.
+            os.environ.setdefault("EXAMLOPS_HPC_GPUS", str(gpus))
     try:
         _run_body(
             model,
@@ -312,6 +482,8 @@ def run(
             project,
             ir_run,
             hardware_profile,
+            distributed,
+            placed_ask,
         )
     finally:
         if ir_run is not None:
@@ -331,18 +503,44 @@ def _run_body(
     project,
     ir_run,
     hardware_profile=None,
+    distributed=False,
+    placed_ask=None,
 ):
+    from examlops.cli._model_authz import guard_dataset, guard_model, guard_project
+
+    # ADR 0014 d4: first, before any budget read, placement or project assignment. `--project`
+    # attaches the model to that project, so it needs `editor` there as well. Training reads the
+    # dataset, so it needs `viewer` on the dataset's project - the same bar as `exa data list`.
+    guard_model(model or None, "editor")
+    if dataset:
+        guard_dataset(dataset, "viewer")
+    if project:
+        guard_project(project, "editor")
     # Budget gate (ADR 0029 decision 3): off unless armed (policy.yaml `gates:` /
     # EXAMLOPS_POLICY_GATES). The project is the one given, else the model's own.
     _enforce_budget_gate(project, model)
-    # ADR 0157 Phase 3: a profile resolves into the very ResourceAsk --gpus already feeds.
-    ask = _hardware_profile_ask(hardware_profile, cluster, gpus) if hardware_profile else None
-    if cluster and not _resolve_cluster_env(cluster, gpus, ask):
+    # ADR 0157 Phase 3: a profile resolves into the very ResourceAsk --gpus already feeds. Without
+    # one, the YAML/IR `placement:` ask (ADR 0080) is used, so its cpus/nodes reach placement too.
+    if hardware_profile:
+        ask = _hardware_profile_ask(hardware_profile, cluster, gpus, model=model, project=project)
+    else:
+        # A run sized without a profile must not inherit a `name@vN` tag from the caller's
+        # environment (a shell that exported it, an earlier in-process run): the MLflow tag is
+        # provenance, and a stale one names a shape this run was never sized by.
+        os.environ.pop("EXAMLOPS_HARDWARE_PROFILE", None)
+        ask = placed_ask
+    if distributed:
+        ask = _distributed_ask(model, ask, gpus)
+    if ask is not None:
+        _export_gpu_sharing_ask(ask)
+    if cluster and not _resolve_cluster_env(
+        cluster, gpus, ask, model=model, dataset=dataset, registry=registry
+    ):
         return  # resolution failed / not approved — message already printed
     if ir_run is not None:
         from examlops.cli.commands import pipeline_ir
 
-        pipeline_ir.refuse_remote_scheduler()
+        pipeline_ir.note_remote_staging()
     # P3 (ADR 0088): scope the run to a Project so its MLflow run + recorded cost are attributed.
     if project:
         os.environ["EXAMLOPS_PROJECT"] = project
@@ -367,6 +565,20 @@ def _run_body(
                 "cannot materialise. Run `exa data snapshot` / `exa data list` first."
             )
         os.environ["EXAMLOPS_DATASET_REVISION"] = dataset_revision
+    if distributed:
+        # ADR 0032 decision 5: the plan (strategy, topology, elasticity, NCCL) comes from the model
+        # YAML; the scheduler is the one --cluster resolved above (else EXAMLOPS_HPC_SCHEDULER).
+        # The admission gate is taken inside run_scheduled, sized on the plan.
+        from examlops.cli.commands.distributed_cmd import run_scheduled
+
+        run_scheduled(
+            model,
+            dataset_revision=dataset_revision,
+            project=project,
+            gpus=(ask.gpus if ask is not None else gpus),
+            require_entrypoint=True,
+        )
+        return
     args: list[str] = []
     if dummy:
         args.append("--dummy")
@@ -397,7 +609,13 @@ def _run_body(
 @app.command("compile", epilog=_EXAMPLES_COMPILE)
 def compile_cmd(
     file: str = typer.Argument(..., help="Pipeline file, optionally FILE.py:NAME to pick one"),
-    out: str | None = typer.Option(None, "--out", "-o", help="Write the IR (JSON) to this file"),
+    out: str | None = typer.Option(
+        None,
+        "--out",
+        "-o",
+        help="Write the IR to this file: a .yaml/.yml path gets the registry YAML, anything "
+        "else the JSON graph",
+    ),
     yaml_path: str | None = typer.Option(
         None, "--yaml", help="Also lower the IR to the per-model registry YAML at this path"
     ),
@@ -433,12 +651,41 @@ def decompile_cmd(
 
 @app.command("explain", epilog=_EXAMPLES_EXPLAIN)
 def explain_ir(
-    file: str = typer.Argument(..., help="IR JSON file written by `exa pipeline compile --out`"),
+    file: str = typer.Argument(
+        ..., help="IR file: JSON from `exa pipeline compile --out`, or a per-model registry YAML"
+    ),
 ):
     """Show the topological plan of a compiled IR (read-only; runs nothing)."""
     from examlops.cli.commands import pipeline_ir
 
     pipeline_ir.explain_pipeline(file)
+
+
+_EXAMPLES_SHOW = (
+    "Examples:\n\n"
+    "  # Print a pack model's pipeline IR (its per-model registry YAML)\n"
+    "  exa pipeline show JPCP\n\n"
+    "  # The same pipeline as the compiled JSON graph, with its content hash\n"
+    "  exa pipeline show JPCP --ir\n\n"
+    "  # Machine-readable\n"
+    "  exa --json pipeline show JPCP --ir"
+)
+
+
+@app.command("show", epilog=_EXAMPLES_SHOW)
+def show_cmd(
+    name: str = typer.Argument(..., help="Model name in the active use-case pack (e.g. JPCP)"),
+    as_ir: bool = typer.Option(
+        False, "--ir", help="Show the compiled JSON graph instead of the registry YAML"
+    ),
+):
+    """Show a pack model's pipeline IR: the registry YAML, or the JSON graph with --ir.
+
+    Read-only; runs nothing and takes a model name, not a path.
+    """
+    from examlops.cli.commands import pipeline_ir
+
+    pipeline_ir.show_model(name, as_ir)
 
 
 @app.command(epilog=_EXAMPLES_DEPLOY)
@@ -700,6 +947,11 @@ def promote(
         _output.error("Provide a model name or --list")
         return
 
+    from examlops.cli._model_authz import guard_model
+
+    # ADR 0014 d4: before MLflow is read. A dry run changes nothing, so viewing is enough.
+    guard_model(model, "viewer" if dry_run else "editor")
+
     # Parse --if-<metric>-<op> VALUE from the extra args captured by context
     metric, operator, threshold = None, None, None
     extra = ctx.args
@@ -854,6 +1106,38 @@ def promote(
             {"version": version, "to": to_alias, "failing_metrics": failing, "forced": True},
         )
         _output.warning(f"Eval gate FAILED but --force set; overriding: {', '.join(failing)}")
+
+    # ADR 0016 decision 3 — a quantized version (`<base>-<method>`) must clear a C3
+    # quality-retention gate against its base version. Mandatory: no configured gate refuses.
+    # Unquantized versions return None and this is a no-op.
+    from examlops.engines.quality import quantization_quality_gate
+
+    quality = quantization_quality_gate(model, str(version), actor=_parity_actor())
+    if quality is not None and not quality.passed:
+        actor = os.getenv("EXAMLOPS_ACTOR") or os.getenv("USER") or "unknown"
+        if not force:
+            write_audit_event(
+                "cli",
+                actor,
+                "promotion_blocked_by_quantization_gate",
+                model,
+                {"version": version, **quality.as_dict()},
+            )
+            _output.error(
+                f"Quantization quality gate FAILED for {model} v{version}: {quality.reason}. "
+                "Use --force to override (audited).",
+            )
+            return
+        write_audit_event(
+            "cli",
+            actor,
+            "quantization_gate_override",
+            model,
+            {"version": version, "to": to_alias, "forced": True, **quality.as_dict()},
+        )
+        _output.warning(
+            f"Quantization quality gate FAILED but --force set; overriding: {quality.reason}"
+        )
 
     # ADR 0117 — portability gate. Conditional on the promotion changing the execution
     # target, not a tax on every promotion: an unchanged target returns None and this is a
@@ -1095,6 +1379,7 @@ def _auto_bundle_on_promote(model: str, version: str, metrics: dict, run_data: d
             dataset_revision=revision,
             dataset_source=source,
             skip_if_exists=True,
+            mlflow_run_id=(run_data.get("run", {}).get("info", {}) or {}).get("run_id"),
         )
     except Exception as exc:  # noqa: BLE001 - a bundle failure never fails a promotion
         _output.warning(f"reproducibility bundle skipped: {exc}")
@@ -1103,14 +1388,16 @@ def _auto_bundle_on_promote(model: str, version: str, metrics: dict, run_data: d
 def _enforce_promotion_engine_gates(model: str, version: str) -> None:
     """Consult the armed ``supply_chain``, ``model_card`` and ``slo`` engine gates for a promotion."""
     from examlops.cli._policy_gate import enforce_engine_gate
-    from examlops.policy_engine import EngineDecision, card_gate, supply_chain_gate
+    from examlops.policy_engine import EngineDecision, card_gate
     from examlops.policy_engine.gates import consult
 
     def _supply(_opts: dict) -> EngineDecision:
-        from examlops.data.registry import get_model_signature
+        # ADR 0013 cl. 5: signature / bom / provenance evidence via `require`; shared with the
+        # autopilot's promotion road so the armed gate is met on both.
+        from examlops.supplychain.release import promotion_decision
 
-        signed = get_model_signature(model, version) is not None
-        return supply_chain_gate(model, version, signed=signed)
+        decision: EngineDecision = promotion_decision(model, version, _opts)
+        return decision
 
     def _card(opts: dict) -> EngineDecision:
         from examlops.cards import card_completeness
@@ -1127,10 +1414,17 @@ def _enforce_promotion_engine_gates(model: str, version: str) -> None:
 
         return promotion_decision(model)
 
+    def _datasheet(opts: dict) -> EngineDecision:  # ADR 0079 d6: documented data before promote
+        from examlops.cards.datasheet import promotion_reasons
+        from examlops.policy_engine import datasheet_gate
+
+        return datasheet_gate(model, promotion_reasons(model, floor=float(opts.get("floor", 1.0))))
+
     what = f"promotion of {model} v{version}"
     enforce_engine_gate(consult("supply_chain", _supply), what=what)
     enforce_engine_gate(consult("model_card", _card), what=what)
     enforce_engine_gate(consult("slo", _slo), what=what)
+    enforce_engine_gate(consult("datasheet", _datasheet), what=what)
 
 
 def _emit_promotion_lineage(

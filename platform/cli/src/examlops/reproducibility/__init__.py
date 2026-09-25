@@ -29,6 +29,8 @@ from typing import Any
 
 from examlops import data as platform_db
 
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
 # Documented default tolerance + the non-determinism caveat (R4/GWT-3).
 DEFAULT_TOLERANCE = {"metric": "rmse", "rel": 0.05}
 NONDETERMINISM_CAVEAT = (
@@ -194,11 +196,38 @@ def _dataplane_source(manifest: dict[str, Any]) -> str | None:
     return None
 
 
-def _git_commit_exists(sha: str) -> bool:
+def _code_repo(inp: dict[str, Any]) -> str | None:
+    """Where to look for a code input's commit: ``None`` = the current checkout.
+
+    The model library is looked up in ``EXAMLOPS_MODELZOO_DIR`` when set (it may live somewhere
+    else on the verifying host), else at the path recorded when the bundle was built.
+    """
+    if not str(inp.get("ref") or "").startswith("modelzoo@"):
+        return inp.get("repo")
+    import os
+
+    return (os.getenv("EXAMLOPS_MODELZOO_DIR") or "").strip() or inp.get("repo")
+
+
+def verify_lakefs_revision(row: dict[str, Any]) -> str | None:
+    """``None`` when a lakeFS-kind revision's commit still exists in lakeFS, else why not."""
+    from examlops.reproducibility import lakefs
+
+    parsed = lakefs.parse_uri(row.get("uri"))
+    if parsed is None:
+        return f"lakeFS revision has no lakefs:// uri ({row.get('uri')!r})"
+    repo, commit = parsed
+    if commit != row.get("revision_id"):
+        return f"lakeFS uri names commit {commit[:16]}, revision is {row.get('revision_id')}"
+    return lakefs.verify_commit(repo, commit)
+
+
+def _git_commit_exists(sha: str, repo: str | None = None) -> bool:
+    prefix = ["git", "-C", repo] if repo else ["git"]
     try:
         return (
             subprocess.run(
-                ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+                [*prefix, "cat-file", "-e", f"{sha}^{{commit}}"],
                 capture_output=True,
                 timeout=5,
             ).returncode
@@ -249,7 +278,7 @@ def build_bundle(
     *,
     dataset_revision: str | None = None,
     dataset_name: str | None = None,
-    feature_views: dict[str, int] | None = None,
+    feature_views: dict[str, Any] | list[str] | None = None,
     hyperparams: dict[str, Any] | None = None,
     seeds: dict[str, int] | None = None,
     resources: dict[str, Any] | None = None,
@@ -262,12 +291,40 @@ def build_bundle(
     dataset_source: dict[str, Any] | None = None,
     trigger: str | None = None,
     run_spec: dict[str, Any] | None = None,
+    bom: bool = True,
 ) -> Bundle:
-    """Capture, hash, and sign a reproducibility manifest for a model version (R1/R2/GWT-1)."""
+    """Capture, hash, and sign a reproducibility manifest for a model version (R1/R2/GWT-1).
+
+    Inputs the caller does not supply are *collected* (:mod:`examlops.reproducibility.capture`):
+    the platform and model-library commits, the host hardware, the container image digest
+    (``EXAMLOPS_IMAGE_DIGEST``) and the feature views named in ``EXAMLOPS_FEATURE_VIEWS``.
+    ``feature_views`` given as a list of names is resolved to definition hashes; an unknown name
+    raises ``KeyError``. ``bom`` links the version's D3 AI-BOM (generated from the recorded
+    package set when the version has none) and records its hash.
+    """
+    from examlops.reproducibility import capture as cap
+
     lock_hash, lock_path = _env_lock_hash()
     commit = _git_commit()
     dirty = _git_dirty()
     packages = capture_packages()
+    code_commits = cap.capture_code_commits()
+    if hardware is None:
+        hardware = cap.capture_hardware()
+    # A hardware record that says "not captured" means this process is not the host that
+    # trained (a promotion, a job a scheduler placed elsewhere). Its own EXAMLOPS_IMAGE_DIGEST
+    # — the promoting CLI's or control plane's image — is then no more the training image than
+    # its CPUs are the training CPUs; recording it would make `--execute` demand the wrong image.
+    if image_digest is None and (hardware or {}).get("captured") is not False:
+        image_digest = cap.capture_image_digest()
+    views: dict[str, Any]
+    if feature_views is None:
+        env_views = cap.feature_view_names_from_env()
+        views = cap.capture_feature_views(env_views) if env_views else {}
+    elif isinstance(feature_views, list):
+        views = cap.capture_feature_views(feature_views)
+    else:
+        views = dict(feature_views)
 
     inputs: list[dict[str, Any]] = []
     if commit:
@@ -282,6 +339,38 @@ def build_bundle(
         )
     if lock_hash:
         inputs.append({"kind": "env", "ref": lock_path, "hash": lock_hash})
+    mz = code_commits.get("modelzoo") or {}
+    if mz.get("commit"):
+        inputs.append(
+            {
+                "kind": "code",
+                "ref": f"modelzoo@{mz['commit']}",
+                "hash": mz["commit"],
+                "repo": mz.get("path"),
+            }
+        )
+    for fv_name, fv in sorted(views.items()):
+        fv_hash = str(fv.get("version") if isinstance(fv, dict) else fv)
+        # Only a definition hash can be re-checked by `verify`. A caller-supplied counter (the
+        # pre-ADR-0038 ``{"view": 3}`` form) stays in the manifest as recorded, but is not made
+        # an input: it could never equal a definition hash, so every verify would report rot.
+        if _SHA256_HEX.match(fv_hash):
+            inputs.append({"kind": "feature_view", "ref": fv_name, "hash": fv_hash})
+    if lineage_run_id:
+        inputs.append({"kind": "lineage", "ref": lineage_run_id, "hash": lineage_run_id})
+    bom_ref: dict[str, Any] | None = None
+    if bom:
+        try:
+            bom_ref = cap.attach_bom(
+                model,
+                str(version),
+                packages=packages,
+                dataset_name=dataset_name,
+                dataset_revision=dataset_revision,
+            )
+            inputs.append({"kind": "bom", "ref": f"{model}@{version}", "hash": bom_ref["sha256"]})
+        except Exception as exc:  # noqa: BLE001 - recorded as a failure, never as a BOM
+            bom_ref = {"sha256": None, "error": f"{type(exc).__name__}: {exc}"[:300]}
 
     manifest: dict[str, Any] = {
         "model": model,
@@ -290,10 +379,12 @@ def build_bundle(
         # True = tracked files differed from the commit when this bundle was built, so the
         # commit does NOT contain the code that ran; None = could not be determined.
         "code_dirty": dirty,
+        # Every repository whose code the run executed (ADR 0038 cl. 1: "all relevant repos").
+        "code_commits": code_commits,
         "dataset_name": dataset_name,
         "dataset_revision": dataset_revision,
         "dataset_source": dataset_source or {},
-        "feature_views": feature_views or {},
+        "feature_views": views,
         "environment": {
             "lock_sha256": lock_hash,
             "lock_path": lock_path,
@@ -306,6 +397,7 @@ def build_bundle(
         "resources": resources or {},
         "hardware": hardware or {},
         "lineage_run_id": lineage_run_id,
+        "bom": bom_ref,
         "metrics": metrics or {},
         "tolerance": tolerance or DEFAULT_TOLERANCE,
         "nondeterminism_caveat": NONDETERMINISM_CAVEAT,
@@ -371,8 +463,9 @@ def verify_bundle(model: str, version: str, *, allow_env_drift: bool = False) ->
         ok = True
         reason = ""
         if kind == "code":
-            ok = _git_commit_exists(inp["hash"])
-            reason = "" if ok else "commit not reachable in git"
+            repo = _code_repo(inp)
+            ok = _git_commit_exists(inp["hash"], repo)
+            reason = "" if ok else f"commit not reachable in git{f' ({repo})' if repo else ''}"
         elif kind == "dataset":
             rev = manifest.get("dataset_revision")
             name = manifest.get("dataset_name")
@@ -384,6 +477,30 @@ def verify_bundle(model: str, version: str, *, allow_env_drift: bool = False) ->
                 found = platform_db.get_dataset_revision(name, rev) if (name and rev) else None
                 ok = found is not None
                 reason = "" if ok else "dataset revision no longer recorded (purged?)"
+                if found is not None and found.get("kind") == "lakefs":
+                    why = verify_lakefs_revision(found)
+                    ok, reason = why is None, why or ""
+        elif kind == "feature_view":
+            from examlops.data.data_assets import get_feature_view
+            from examlops.reproducibility.capture import feature_view_version
+
+            view = get_feature_view(str(inp.get("ref")))
+            if view is None:
+                ok, reason = False, "feature view no longer registered"
+            else:
+                ok = feature_view_version(view) == inp["hash"]
+                reason = "" if ok else "feature view definition changed since the bundle"
+        elif kind == "lineage":
+            from examlops.data.events import lineage_run_seen
+
+            ok = lineage_run_seen(str(inp["hash"]))
+            reason = "" if ok else "A2 lineage run no longer recorded"
+        elif kind == "bom":
+            from examlops.reproducibility.capture import current_bom_sha256
+
+            cur_bom = current_bom_sha256(model, str(version))
+            ok = cur_bom is not None and cur_bom == inp["hash"]
+            reason = "" if ok else ("AI-BOM missing" if cur_bom is None else "AI-BOM changed")
         elif kind == "env":
             cur = _file_sha256(Path(inp["ref"])) if inp.get("ref") else None
             ok = cur is not None and cur == inp["hash"]
@@ -397,6 +514,11 @@ def verify_bundle(model: str, version: str, *, allow_env_drift: bool = False) ->
         warnings.append(
             "code was dirty when the bundle was built: the recorded commit does not contain "
             "the code that ran"
+        )
+    if ((manifest.get("code_commits") or {}).get("modelzoo") or {}).get("dirty"):
+        warnings.append(
+            "modelzoo was dirty when the bundle was built: its recorded commit does not contain "
+            "the library code that ran"
         )
     recorded_pkgs = (manifest.get("environment") or {}).get("packages")
     if recorded_pkgs:
@@ -492,7 +614,11 @@ def _audit(model: str, version: str, action: str, extra: dict[str, Any], actor: 
 
 
 def technical_evidence(model: str, version: str) -> dict[str, Any]:
-    """Shape the bundle as D1 technical-doc / D2 evidence input (R6/GWT-5)."""
+    """Shape the bundle as D1 technical-doc / D2 evidence input (R6/GWT-5).
+
+    Called by the D1 Annex-IV technical file and the D2 coverage report through the
+    ``reproducibility`` evidence collector in :mod:`examlops.compliance`.
+    """
     row = platform_db.get_repro_bundle(model, version)
     if not row:
         return {"model": model, "version": str(version), "present": False}
@@ -504,9 +630,16 @@ def technical_evidence(model: str, version: str) -> dict[str, Any]:
         "present": True,
         "signed": row.get("signature") is not None,
         "manifest_hash": row["manifest_hash"],
+        "bundle_version": row.get("bundle_version"),
         "reproducible": v.reproducible,
+        "problems": list(v.problems),
         "code_commit": m.get("code_commit"),
+        "code_commits": {
+            k: (c or {}).get("commit") or (c or {}).get("distribution_version")
+            for k, c in (m.get("code_commits") or {}).items()
+        },
         "dataset_revision": m.get("dataset_revision"),
+        "bom_sha256": (m.get("bom") or {}).get("sha256"),
         "captured_inputs": [i["kind"] for i in m.get("inputs", [])],
     }
 
@@ -524,4 +657,5 @@ __all__ = [
     "verify_dataplane_snapshot",
     "reproduce",
     "technical_evidence",
+    "verify_lakefs_revision",
 ]

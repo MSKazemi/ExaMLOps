@@ -174,10 +174,43 @@ def build_agent_card(
             "mcp": {"transports": ["stdio", "http"]},
         },
         "securitySchemes": _security_schemes(),
+        # ADR 0078 clause 4: the same SDK contract `exa docs --sdk` renders.
+        "sdk": _sdk_surface(),
     }
     if base_url:
         card["url"] = base_url.rstrip("/")
     return card
+
+
+def _sdk_surface() -> dict[str, Any]:
+    """The Python SDK contract, compact: version plus every public name and its kind.
+
+    Signatures and summaries stay in ``exa docs --sdk`` (named here as ``reference``) so the card
+    does not grow with the SDK. Reflection never fails the card: an error is reported in place.
+    """
+    try:
+        from examlops.sdk.reference import describe
+
+        ref = describe()
+    except Exception as exc:  # noqa: BLE001 - the card must render even if reflection breaks
+        # The card is served to unauthenticated discovery clients: name the failure's type only,
+        # never its message (which can carry local paths); the detail goes to the log.
+        import logging
+
+        logging.getLogger(__name__).warning("SDK reflection failed for the agent card: %s", exc)
+        return {"available": False, "error": type(exc).__name__}
+    return {
+        "available": True,
+        "language": "python",
+        "package": "examlops",
+        "apiVersion": ref["api_version"],
+        "stability": ref["stability"],
+        "namespaces": {
+            ns: [{"name": e["name"], "kind": e["kind"]} for e in entries]
+            for ns, entries in ref["namespaces"].items()
+        },
+        "reference": "exa docs --sdk",
+    }
 
 
 def _security_schemes() -> dict[str, Any]:
@@ -194,14 +227,14 @@ def _security_schemes() -> dict[str, Any]:
     if issuer:
         scheme: dict[str, Any] = {
             "type": "openIdConnect",
-            # Do not claim verification this surface does not perform. The control plane
-            # and dashboard verify IdP tokens (`examlops.iam`, ADR 0120), but the MCP HTTP
-            # transport this card describes has no authentication (loopback-only), so the
-            # card must say what the token is *for*, not that it is checked. Restore the
-            # stronger wording the day `examlops/mcp` actually calls the verifier.
+            # Say exactly where the token is checked. The MCP HTTP transport verifies it
+            # (`examlops.mcp.http_auth`, ADR 0082 layer 3) only when EXAMLOPS_MCP_AUTH=oauth;
+            # otherwise that transport refuses to bind beyond loopback. Never claim more.
             "description": (
-                "IdP-issued OIDC access token, expected by the configured issuer. "
-                "NOTE: token verification is not yet enforced by this deployment."
+                "IdP-issued OIDC access token. The MCP HTTP transport verifies it (issuer, "
+                "signature, audience = this MCP resource, per-tool scopes; RFC 9728 metadata at "
+                "/.well-known/oauth-protected-resource) when EXAMLOPS_MCP_AUTH=oauth; without "
+                "that setting the transport serves loopback clients only."
             ),
             "openIdConnectUrl": issuer.rstrip("/") + "/.well-known/openid-configuration",
         }

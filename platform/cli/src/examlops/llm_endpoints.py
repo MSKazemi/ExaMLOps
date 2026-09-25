@@ -16,6 +16,7 @@ because it starts nothing.
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import shutil
@@ -26,6 +27,8 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from examlops.engines.config import EngineConfig, to_vllm_args
+
+log = logging.getLogger(__name__)
 
 _DEFAULT_IMAGE = os.getenv("EXAMLOPS_VLLM_IMAGE", "docker://vllm/vllm-openai:latest")
 _DEFAULT_PORT = int(os.getenv("EXAMLOPS_VLLM_PORT", "8000"))
@@ -54,6 +57,16 @@ class LauncherError(RuntimeError):
 
 class LauncherUnavailable(LauncherError):
     """The substrate this launcher needs is not present on this host."""
+
+
+def _lora_preflight(spec: EndpointSpec, env: dict[str, str] | None = None) -> None:
+    """ADR 0143 d8 — refuse runtime LoRA updating and unverified adapters before any launch."""
+    from examlops.engines.lora import LoraPreflightError, preflight
+
+    try:
+        preflight(spec.config, env=env)
+    except LoraPreflightError as exc:
+        raise LauncherError(str(exc)) from exc
 
 
 @dataclass
@@ -155,6 +168,7 @@ class ComposeLauncher:
 
     def start(self, spec: EndpointSpec) -> EndpointHandle:
         env = os.environ.copy()
+        _lora_preflight(spec, env)
         env["EXAMLOPS_VLLM_MODEL"] = spec.hf_model_id
         env["EXAMLOPS_VLLM_ARGS"] = " ".join(to_vllm_args(spec.config))
         env["EXAMLOPS_VLLM_PORT"] = str(spec.port)
@@ -248,6 +262,7 @@ class HpcLauncher:
         return _work_dir(spec) / f"{spec.model.lower()}.endpoint"
 
     def start(self, spec: EndpointSpec) -> EndpointHandle:
+        _lora_preflight(spec, dict(os.environ))  # the job inherits the submitting shell's env
         work = _work_dir(spec)
         work.mkdir(parents=True, exist_ok=True)
         script_path = work / f"vllm_serve_{spec.model.lower()}.sh"
@@ -271,13 +286,31 @@ class HpcLauncher:
         try:
             adapter = _scheduler_adapter(self.scheduler)
             _remove_remote(adapter, self._endpoint_file(spec))
+
             # `remote_dir` makes the adapter stage the script through its transport, so the
             # SSH path submits a file that exists on the login node. One directory per
             # endpoint: two endpoints started together must not overwrite each other's run.sh.
-            job_id = adapter.submit_job(
-                script_path=str(script_path),
-                resources=resources,
-                remote_dir=str(work / spec.model.lower()),
+            def _submit() -> str:
+                return str(
+                    adapter.submit_job(
+                        script_path=str(script_path),
+                        resources=resources,
+                        remote_dir=str(work / spec.model.lower()),
+                    )
+                )
+
+            # Admission seam (ADR 0116), behind EXAMLOPS_ADMISSION_DISPATCH_ENABLED (default OFF:
+            # then this is the direct submission). Enabled, a serving allocation is admitted like
+            # any other job and its GPUs (per node x nodes) are held until stop() cancels it.
+            from examlops.admission_seam import dispatch
+
+            job_id = dispatch.submit_admitted(
+                dispatch.request_for_hpc_job(
+                    {"gpus": spec.gpus * spec.nodes, "nodes": spec.nodes},
+                    workload_class="serving",
+                ),
+                scheduler=self.scheduler,
+                submit=_submit,
             )
         except Exception as exc:
             raise LauncherError(f"job submission failed: {exc}") from exc
@@ -346,6 +379,19 @@ class HpcLauncher:
             cancel(str(job_id))
         except Exception as exc:
             raise LauncherError(f"cancelling job {job_id} failed: {exc}") from exc
+        # A healthy server does not end on its own, and nothing records a serving job's terminal
+        # state in hpc_jobs, so the update_hpc_job chokepoint never sees it end: stopping it is its
+        # completion (ADR 0116 decision 3). A server that hits its wall time or crashes is
+        # reclaimed by `exa admission reconcile`, which asks the scheduler. Idempotent, and a
+        # no-op when the job was submitted with admission off.
+        from examlops.admission_seam import completion
+
+        try:
+            completion.release_on_completion(
+                completion.holder_for_job(self.scheduler, str(job_id)), outcome="cancelled"
+            )
+        except Exception as exc:  # noqa: BLE001 - the job is stopped; `exa admission reconcile` reclaims
+            log.warning("could not release the quota held by job %s: %s", job_id, exc)
         endpoint_file = self._endpoint_file(EndpointSpec(model=model, hf_model_id=model))
         endpoint_file.unlink(missing_ok=True)
         _remove_remote(adapter, endpoint_file)
@@ -499,6 +545,7 @@ class KServeLauncher:
         from examlops.serving.substrates.base import RenderError, SubstrateError
         from examlops.serving.substrates.resolve import ResolvedRef, storage_uri
 
+        _lora_preflight(spec, {})  # the pod's env is the manifest's, not this shell's
         model_yaml = {
             "name": spec.model,
             "task_type": "text-generation",

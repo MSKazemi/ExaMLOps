@@ -1,3 +1,5 @@
+import os
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -117,6 +119,25 @@ class Settings(BaseSettings):
         """
         return self.dashboard_agent_api_key or self.agent_api_key
 
+
+def _inject_secret_refs() -> None:
+    """ADR 0011 clause 2: resolve ``secret://`` references in the environment before it is read.
+
+    The dashboard image carries ``examlops`` on ``PYTHONPATH``; a checkout without it can still
+    import these settings, but only while no reference needs resolving — a reference left as the
+    literal ``secret://…`` would otherwise become the credential itself.
+    """
+    try:
+        from examlops.secrets.inject import find_refs, inject_env
+    except ImportError:
+        if any(str(v).startswith(("secret://", "secret+file://")) for v in os.environ.values()):
+            raise
+        return
+    if find_refs(os.environ):
+        inject_env("dashboard")
+
+
+_inject_secret_refs()
 
 # Required fields are supplied from the environment at runtime by
 # pydantic-settings; mypy can't see that, so it flags them as missing.

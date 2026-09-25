@@ -1809,6 +1809,16 @@ def _prepare_ray_environment() -> None:
         del os.environ["OTEL_SDK_DISABLED"]
 
 
+def build_app(_args: dict[str, str] | None = None) -> Any:
+    """Ray Serve application builder: the ``import_path`` a Serve config file names.
+
+    ``main()`` starts Ray itself (the Compose path); on Kubernetes the KubeRay operator starts Ray
+    and deploys a ``RayService``'s ``serveConfigV2``, which needs an importable application
+    rather than a script (ADR 0015 d1, ``examlops.serving.substrates.kuberay``).
+    """
+    return MultiModelServer.bind()  # type: ignore[attr-defined]
+
+
 def main() -> None:
     _prepare_ray_environment()  # before ray.init: Ray's processes inherit this environment
     ray.init(

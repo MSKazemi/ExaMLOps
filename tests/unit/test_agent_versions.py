@@ -305,7 +305,7 @@ def _result(vid, *, judge=None, score=0.9, suite="jobdoc-trajectory", metric="ta
         {metric: score},
         run_id=f"run-{vid[-6:]}-{score}",
         model_version=vid,
-        sample_size=100,
+        sample_size=2000,  # enough to show non-inferiority within 0.03 (ADR 0146 d3)
         judge={"model": judge} if judge else None,
     )
 
@@ -410,7 +410,7 @@ def test_rollback_of_production_is_not_regated():
     _result(v1)
     _result(v2)
     av.set_alias("jobdoc", "Production", v1)
-    av.set_alias("jobdoc", "Production", v2)
+    av.set_alias("jobdoc", "Production", v2, state_strategy="pin")  # no exported schema: inert (d5)
     # Withdraw the evidence: a rollback is a lookup and must still work.
     set_eval_gate("agent-jobdoc", "jobdoc-trajectory", [{"name": "task_success", "min": 2.0}])
     assert av.rollback("jobdoc", "Production")["version_id"] == v1
@@ -433,7 +433,7 @@ def test_unsigned_site_is_not_blocked_and_a_configured_site_requires_a_valid_sig
     row = store.get_version(v2)
     assert row["signature"] and row["sign_algo"] == "hmac-sha256"
     assert av.verify_signature(row) is True
-    assert av.set_alias("jobdoc", "Production", v2)["ok"]
+    assert av.set_alias("jobdoc", "Production", v2, state_strategy="pin")["ok"]
 
     # v1 was registered before signing was configured: refused, and told how to fix it.
     assert any("unsigned" in r for r in _refused(v1))

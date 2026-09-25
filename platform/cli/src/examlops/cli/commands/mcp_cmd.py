@@ -24,7 +24,9 @@ _EXAMPLES = (
     "  [dim]# Serve over HTTP, allowing mutating tools (retrain)[/dim]\n"
     "  exa mcp serve --transport http --port 8765 --allow-writes\n\n"
     "  [dim]# Print the A2A Agent Card for agent-to-agent discovery[/dim]\n"
-    "  exa mcp agent-card --json"
+    "  exa mcp agent-card --json\n\n"
+    "  [dim]# OAuth scopes each tool needs on the authenticated HTTP transport[/dim]\n"
+    "  exa mcp scopes"
 )
 
 app = typer.Typer(
@@ -156,6 +158,35 @@ def agent_card(
     _output.hint("Full machine-readable card: exa --json mcp agent-card")
 
 
+@app.command("scopes", epilog=_EXAMPLES)
+def scopes(
+    show_writes: bool = typer.Option(
+        True, "--all/--reads", help="Include mutating (write) tools (default) or reads only"
+    ),
+) -> None:
+    """Show the OAuth scope each MCP tool needs on the authenticated HTTP transport (ADR 0082)."""
+    from examlops.mcp.http_auth import scope_catalog
+
+    catalog = scope_catalog(include_writes=show_writes)
+    if _output.json_mode:
+        _output.print_json(catalog)
+        return
+    _output.print_table(
+        "MCP OAuth scopes",
+        ["Scope", "Grants"],
+        [[name, grants] for name, grants in catalog["coarse"].items()],
+    )
+    _output.print_table(
+        "Scopes accepted per tool (any one suffices)",
+        ["Tool", "Tier", "Scopes"],
+        [[name, t["tier"], " ".join(t["scopes"])] for name, t in catalog["tools"].items()],
+    )
+    _output.hint(
+        "Enforced when `exa mcp serve --transport http` runs with EXAMLOPS_MCP_AUTH=oauth; "
+        f"per-tool scopes are {catalog['per_tool_prefix']}<tool>."
+    )
+
+
 @app.command("serve", epilog=_EXAMPLES)
 def serve(
     transport: TransportEnum = typer.Option(  # type: ignore[valid-type]
@@ -168,7 +199,7 @@ def serve(
     ),
 ) -> None:
     """Run the MCP server so agents can drive ExaMLOps."""
-    from examlops.mcp.server import FastMCPNotInstalled, UnsafeMCPBind
+    from examlops.mcp.server import FastMCPNotInstalled, McpAuthConfigError, UnsafeMCPBind
     from examlops.mcp.server import serve as _serve
 
     transport_value = transport.value if hasattr(transport, "value") else str(transport)
@@ -181,9 +212,12 @@ def serve(
                 f"(writes {'enabled' if allow_writes else 'disabled'})[/dim]"
             )
         else:
+            import os
+
+            auth = (os.getenv("EXAMLOPS_MCP_AUTH", "") or "none").strip().lower()
             _output.info(
                 f"ExaMLOps MCP server on http://{host}:{port} "
-                f"(writes {'enabled' if allow_writes else 'disabled'})"
+                f"(writes {'enabled' if allow_writes else 'disabled'}, auth {auth})"
             )
         _serve(
             transport=transport_value,
@@ -191,7 +225,7 @@ def serve(
             port=port,
             include_writes=include_writes,
         )
-    except (FastMCPNotInstalled, UnsafeMCPBind) as exc:
+    except (FastMCPNotInstalled, UnsafeMCPBind, McpAuthConfigError) as exc:
         _output.error(str(exc))
     except KeyboardInterrupt:  # pragma: no cover
         _output.info("MCP server stopped.")

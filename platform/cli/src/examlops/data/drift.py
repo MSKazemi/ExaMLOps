@@ -8,8 +8,10 @@ call time → no import cycle). ``install_write_retry(__name__)`` re-applies the
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
+import re
 from typing import Any  # noqa: F401
 
 from examlops.platform_db import (  # noqa: F401
@@ -42,6 +44,10 @@ __all__ = [
     "drift_models",
     "recent_drift_predictions",
     "record_drift_statuses",
+    "classify_rejection",
+    "count_inference_rejections",
+    "record_inference_rejection",
+    "rejection_models",
 ]
 
 
@@ -388,6 +394,107 @@ def recent_prediction_features(model: str, limit: int) -> list[dict[str, Any]]:
         if isinstance(obj, dict):
             out.append(obj)
     return out
+
+
+# -- A5 contract rejections, folded into the C5 data-quality profile (ADR 0022 decision 3) --------
+
+#: A model key the rejection log will store verbatim; anything else is bucketed as ``<invalid>``,
+#: so a caller cannot grow the table without bound by sending random ``model_name`` values.
+_REJECTION_MODEL_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")
+#: Reasons are a closed set (the ingress error text is free-form and must not become a key).
+REJECTION_REASONS = ("missing_field", "embedding_dim", "invalid")
+_DIM_MISMATCH_RE = re.compile(r"\bdim \d+ != \d+")
+#: Rejection buckets older than this are deleted as new ones are written. A valid-looking but
+#: made-up ``model_name`` still gets its own row, so the table needs a TTL of its own: the scheduler
+#: only ever reads the last ``EXAMLOPS_DRIFT_ADVANCED_REJECTION_WINDOW`` (default one hour).
+REJECTION_RETENTION_S = 7 * 24 * 3600
+#: At most this many models are returned by :func:`rejection_models`, most-rejected first — the
+#: model name comes from the untrusted request body, so the sweep it widens must be bounded.
+MAX_REJECTION_MODELS = 100
+_last_rejection_prune: str | None = None
+
+
+def _rejection_key(model: str | None) -> str:
+    name = (model or "").strip()
+    if not name:
+        return "<unknown>"
+    return name.lower() if _REJECTION_MODEL_RE.match(name) else "<invalid>"
+
+
+def _minute_bucket(at: datetime.datetime) -> str:
+    return at.strftime("%Y-%m-%d %H:%M")
+
+
+def classify_rejection(errors: list[str] | tuple[str, ...]) -> str:
+    """Map the contract layer's error strings onto the closed :data:`REJECTION_REASONS` set."""
+    text = " ".join(errors).lower()
+    if "missing required field" in text:
+        return "missing_field"
+    if _DIM_MISMATCH_RE.search(text):  # `validate_request`: "<field> dim <n> != <declared>"
+        return "embedding_dim"
+    return "invalid"
+
+
+def record_inference_rejection(
+    model: str | None, reason: str = "invalid", *, now: datetime.datetime | None = None
+) -> None:
+    """Count one request the inference ingress refused against the A5 contract.
+
+    One row per (model, UTC minute, reason) holds a counter, so a burst of bad requests costs one
+    row per minute, not one per request. The model name is untrusted (it comes from the request
+    body): a name outside ``[A-Za-z0-9_.-]{1,128}`` is recorded as ``<invalid>``.
+    """
+    key = _rejection_key(model)
+    why = reason if reason in REJECTION_REASONS else "invalid"
+    at = now or datetime.datetime.now(datetime.UTC)
+    global _last_rejection_prune
+    bucket = _minute_bucket(at)
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO inference_rejections (model, bucket, reason, count) VALUES (?,?,?,1)
+               ON CONFLICT(model, bucket, reason) DO UPDATE SET count = count + 1""",
+            (key, bucket, why),
+        )
+        if _last_rejection_prune != bucket:  # at most one prune per process per minute
+            cutoff = _minute_bucket(at - datetime.timedelta(seconds=REJECTION_RETENTION_S))
+            conn.execute("DELETE FROM inference_rejections WHERE bucket < ?", (cutoff,))
+            _last_rejection_prune = bucket
+
+
+def count_inference_rejections(
+    model: str, *, since_s: int, now: datetime.datetime | None = None
+) -> int:
+    """Rejected requests for ``model`` (case-insensitive) in the last ``since_s`` seconds."""
+    at = now or datetime.datetime.now(datetime.UTC)
+    cutoff = _minute_bucket(at - datetime.timedelta(seconds=max(since_s, 0)))
+    init_db()
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(count), 0) AS n FROM inference_rejections "
+            "WHERE model=? AND bucket>=?",
+            (_rejection_key(model), cutoff),
+        ).fetchone()
+    return int(row["n"] or 0) if row else 0
+
+
+def rejection_models(*, since_s: int, now: datetime.datetime | None = None) -> list[str]:
+    """Models with contract rejections in the window, most-rejected first, placeholders excluded.
+
+    Bounded to :data:`MAX_REJECTION_MODELS`, and the placeholders are excluded in SQL *before* the
+    limit, so ``<invalid>`` / ``<unknown>`` can never take a slot from a real model.
+    """
+    at = now or datetime.datetime.now(datetime.UTC)
+    cutoff = _minute_bucket(at - datetime.timedelta(seconds=max(since_s, 0)))
+    init_db()
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT model, SUM(count) AS n FROM inference_rejections "
+            "WHERE bucket>=? AND model NOT IN ('<invalid>', '<unknown>') "
+            "GROUP BY model ORDER BY n DESC, model LIMIT ?",
+            (cutoff, MAX_REJECTION_MODELS),
+        ).fetchall()
+    return [r["model"] for r in rows]
 
 
 install_write_retry(__name__)

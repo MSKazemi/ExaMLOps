@@ -10,6 +10,7 @@ Playwright synthetics) layers on top; this is the always-available, dependency-f
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import deque
 from typing import Any
@@ -17,6 +18,8 @@ from typing import Any
 import audit_write
 from dbconn import connect, platform_db_path
 from starlette.middleware.base import BaseHTTPMiddleware
+
+log = logging.getLogger(__name__)
 
 
 class Metrics:
@@ -123,7 +126,8 @@ def status_payload() -> dict[str, Any]:
 def record_ui_action(action: str, target: str, actor: str, details: str = "") -> bool:
     """Audit a UI action to ``platform_db.audit_events`` (F24 R4 / D4). Best-effort.
 
-    Returns ``True`` on write, ``False`` when the audit table isn't present (degrades quietly).
+    Returns ``True`` on write, ``False`` when the audit table isn't present or the write failed
+    (degrades without breaking the request; a failed write is logged at WARNING).
     """
     try:
         conn = connect(_platform_db_path())
@@ -145,5 +149,8 @@ def record_ui_action(action: str, target: str, actor: str, details: str = "") ->
             return True
         finally:
             conn.close()
-    except Exception:  # pragma: no cover - best-effort audit never breaks the request
+    except Exception as exc:  # best-effort audit never breaks the request — but says so
+        # A failed write must not look like "no audit table here": both return False, so the
+        # log line is the only thing that tells an audit outage from an unprovisioned datastore.
+        log.warning("UI action %r on %r was not audited: %s", action, target, exc)
         return False

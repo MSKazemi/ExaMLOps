@@ -23,11 +23,14 @@ from examlops.serving.substrates.resolve import RenderError, ResolvedRef, resolv
 
 __all__ = [
     "KServeK8s",
+    "KubeRayK8s",
     "RayServeCompose",
     "RenderError",
     "ResolvedRef",
     "ServingBackend",
     "registry_to_kserve",
+    "registry_to_kserve_verified",
+    "registry_to_kuberay",
     "select_backend",
     "validate_manifest",
 ]
@@ -67,6 +70,60 @@ def registry_to_kserve(
     return kserve.render(model_yaml, resolved, canary=canary, canary_pct=canary_pct)
 
 
+def registry_to_kserve_verified(
+    model_yaml: dict[str, Any],
+    resolved: ResolvedRef,
+    *,
+    canary: ResolvedRef | None = None,
+    canary_pct: int | None = None,
+    verifier: Any = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """:func:`registry_to_kserve` plus the in-pod verify-before-load wiring (ADR 0142 d3).
+
+    ``verifier`` defaults to :meth:`VerifierSpec.from_env` — the same ``EXAMLOPS_SERVING_VERIFY``
+    the Ray path obeys — so a previewed manifest is the one the ``kserve`` substrate would apply.
+    Returns the manifest and the render's warnings; ``enforce`` refuses (``RenderError``) what it
+    cannot verify.
+    """
+    from examlops.serving.substrates.verifier import VerifierSpec, attach_verifier
+
+    spec = verifier if verifier is not None else VerifierSpec.from_env()
+    manifest = registry_to_kserve(model_yaml, resolved, canary=canary, canary_pct=canary_pct)
+    return attach_verifier(manifest, resolved, spec, canary=canary)
+
+
+def registry_to_kuberay(
+    registry_dir: str,
+    *,
+    image: str,
+    name: str | None = None,
+    project: str = "default",
+    min_workers: int = 1,
+    max_workers: int = 4,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Render the registry's Ray multi-model server as a KubeRay ``RayService`` (ADR 0015 d1).
+
+    Validated against the vendored KubeRay CRD schema; ``env`` defaults to the caller's
+    environment, filtered to :data:`kuberay.PASSTHROUGH_ENV` (never a credential).
+    """
+    from examlops.serving.substrates import kuberay
+
+    manifest = kuberay.render_ray_service(
+        kuberay.models_in(registry_dir),
+        image=image,
+        name=name or kuberay.DEFAULT_NAME,
+        project=project,
+        env=dict(os.environ) if env is None else env,
+        min_workers=min_workers,
+        max_workers=max_workers,
+    )
+    errors = k8s_schema.validate(manifest)
+    if errors:
+        raise RenderError(f"render failed the pinned KubeRay schema: {errors}")
+    return manifest
+
+
 def validate_manifest(manifest: dict[str, Any]) -> list[str]:
     """Structural errors against the pinned KServe CRD schema (empty = valid) — ADR 0142 d4."""
     return k8s_schema.validate(manifest)
@@ -94,8 +151,9 @@ class RayServeCompose:
 class KServeK8s:
     """KServe backend — resolves, renders and validates manifests; applies only as a dry run.
 
-    :meth:`verify_before_load` is the D3 hook for a future loader; no rendered manifest invokes
-    it yet (the verify-before-load init container is USAR I3, spec-usar-1 R-SUB-20).
+    Every manifest carries the in-pod verify-before-load wiring when it is configured
+    (:mod:`examlops.serving.substrates.verifier`, ADR 0142 d3); :meth:`verify_before_load` is the
+    same D3 rule for an in-process loader.
     """
 
     name = "kserve-k8s"
@@ -127,20 +185,29 @@ class KServeK8s:
     def deploy(self, model: str, version: str, alias: str) -> dict[str, Any]:
         model_yaml = self._load_yaml(model)
         ref = self._resolve(model, model_yaml, alias=alias, version=version)
-        manifest = self._checked(
-            registry_to_kserve(model_yaml, ref), f"KServe manifest for {model}"
-        )
-        return {"backend": self.name, "manifest": manifest, "applied": _kubectl_apply(manifest)}
+        wired, warnings = registry_to_kserve_verified(model_yaml, ref)
+        manifest = self._checked(wired, f"KServe manifest for {model}")
+        return {
+            "backend": self.name,
+            "manifest": manifest,
+            "warnings": warnings,
+            "applied": _kubectl_apply(manifest),
+        }
 
     def rollout(self, model: str, alias: str, canary_pct: int) -> dict[str, Any]:
         model_yaml = self._load_yaml(model)
         stable = self._resolve(model, model_yaml, alias="Production")
         canary = self._resolve(model, model_yaml, alias=alias)
-        manifest = self._checked(
-            registry_to_kserve(model_yaml, stable, canary=canary, canary_pct=canary_pct),
-            f"canary manifest for {model}",
+        wired, warnings = registry_to_kserve_verified(
+            model_yaml, stable, canary=canary, canary_pct=canary_pct
         )
-        return {"backend": self.name, "manifest": manifest, "applied": _kubectl_apply(manifest)}
+        manifest = self._checked(wired, f"canary manifest for {model}")
+        return {
+            "backend": self.name,
+            "manifest": manifest,
+            "warnings": warnings,
+            "applied": _kubectl_apply(manifest),
+        }
 
     def status(self, model: str) -> dict[str, Any]:
         return {"backend": self.name, "model": model, "path": "kserve"}
@@ -187,7 +254,49 @@ def _kubectl_apply(manifest: dict[str, Any]) -> str:  # pragma: no cover - needs
         return f"dry-run failed: {exc}"
 
 
-_BACKENDS: dict[str, Any] = {"ray-compose": RayServeCompose, "kserve-k8s": KServeK8s}
+class KubeRayK8s:
+    """KubeRay backend — the Ray multi-model server as a ``RayService`` (ADR 0015 d1).
+
+    Render-and-validate only, like :class:`KServeK8s`'s preview: nothing is applied. Every model in
+    the registry is served by one Ray cluster, so ``deploy``/``rollout`` render the whole service;
+    the alias split itself stays the Ray router's (``exa serve traffic``), exactly as on Compose.
+    """
+
+    name = "kuberay-k8s"
+
+    def __init__(self, registry_dir: str | None = None, image: str | None = None) -> None:
+        from examlops.usecase import models_dir
+
+        self.registry_dir = registry_dir or os.getenv("RAY_MODELS_DIR") or str(models_dir())
+        self.image = image or os.getenv("EXAMLOPS_KUBERAY_IMAGE") or ""
+
+    def _render(self) -> dict[str, Any]:
+        if not self.image:
+            raise RenderError("set EXAMLOPS_KUBERAY_IMAGE to the pinned ray-serving image")
+        return registry_to_kuberay(self.registry_dir, image=self.image)
+
+    def deploy(self, model: str, version: str, alias: str) -> dict[str, Any]:
+        return {"backend": self.name, "model": model, "manifest": self._render(), "applied": "no"}
+
+    def rollout(self, model: str, alias: str, canary_pct: int) -> dict[str, Any]:
+        # The split is a Ray router rule, not a second object: the same as the Compose path.
+        return {
+            "backend": self.name,
+            "model": model,
+            "alias": alias,
+            "canary_pct": canary_pct,
+            "via": "exa serve traffic (Ray router weights)",
+        }
+
+    def status(self, model: str) -> dict[str, Any]:
+        return {"backend": self.name, "model": model, "path": "kuberay"}
+
+
+_BACKENDS: dict[str, Any] = {
+    "ray-compose": RayServeCompose,
+    "kserve-k8s": KServeK8s,
+    "kuberay-k8s": KubeRayK8s,
+}
 
 
 def select_backend(name: str | None = None) -> ServingBackend:

@@ -123,3 +123,17 @@ def dataset_schema(dataset: str) -> list[dict] | None:
         return fields if isinstance(fields, list) else None
     except Exception:
         return None
+
+
+def features_dir() -> Path | None:
+    """The active pack's feature-view definition dir (ADR 0017), or None when no pack resolves.
+
+    ``EXAMLOPS_FEATURES_DIR`` overrides it; otherwise ``<pack>/features``. The directory holding
+    the definitions is content, like ``models/``: the platform reads whatever views the pack
+    declares and names none of them.
+    """
+    override = os.getenv("EXAMLOPS_FEATURES_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    pack = _pack_dir()
+    return None if pack is None else pack / "features"

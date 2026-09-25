@@ -19,6 +19,8 @@ budget=monitor,model_card=enforce,slo=enforce``), then a top-level ``gates:`` ma
       budget: monitor
       model_card: {mode: enforce, floor: 0.9}
       slo: enforce   # refuse a promotion with no SLOSpec or one that is not met
+      datasheet: {mode: enforce, floor: 1.0}   # training data documented (ADR 0079 d6)
+      residency: enforce   # train only where the data may be processed (ADR 0029 d2, D6)
 
 An unrecognized mode fails **closed** to ``enforce``: a typo must not turn a control off.
 """
@@ -34,7 +36,7 @@ from . import EngineDecision, PolicyInput, _audit
 
 log = logging.getLogger("examlops.policy.gates")
 
-GATE_NAMES = ("supply_chain", "budget", "model_card", "slo")
+GATE_NAMES = ("supply_chain", "budget", "model_card", "slo", "datasheet", "residency")
 OFF, MONITOR, ENFORCE = "off", "monitor", "enforce"
 _MODES = {OFF, MONITOR, ENFORCE}
 ENV_VAR = "EXAMLOPS_POLICY_GATES"

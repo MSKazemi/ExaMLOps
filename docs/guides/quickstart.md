@@ -42,7 +42,9 @@ install rather than failing with a traceback:
 
 | Extra | What it adds |
 |---|---|
+| `examlops[agentops]` | Upstream OTLP/HTTP exporter for agent traces to Langfuse / Phoenix ([AgentOps](agentops.md)); without it a built-in exporter does the same job |
 | `examlops[analysis]` | Statistical A/B analysis — `exa serve ab analyze` |
+| `examlops[audit-sigstore]` | Keyless Sigstore signing of audit checkpoints (`EXAMLOPS_AUDIT_TRANSPARENCY=sigstore`, ADR 0028) — the Rekor backend and every other [audit](audit-trail.md) path work without it |
 | `examlops[backup]` | Object-store and off-site backup tiers — `exa backup` |
 | `examlops[coordination]` | Redis-backed cross-host locks, rate limits, deduplication, and event streams |
 | `examlops[dataplane]` | Everything the [dataplane](dataplane.md) service needs — the union of the four extras below |
@@ -50,16 +52,24 @@ install rather than failing with a traceback:
 | `examlops[dataplane-files]` | The `files`, `zenodo` and `rest` dataplane connectors — object storage, HTTP(S), SFTP, Zenodo records |
 | `examlops[dataplane-kafka]` | The `kafka` dataplane connector — bounded batch reads from a topic |
 | `examlops[dataplane-service]` | Run the dataplane HTTP service (`platform/services/dataplane`) — not needed just to pull from the CLI |
+| `examlops[drift-advanced]` | River (ADWIN/DDM) and Evidently concept-drift detectors behind `exa drift concept` / `run-advanced`, each with a pure-Python fallback ([advanced drift](drift-advanced.md)) |
+| `examlops[eval-metrics]` | rapidfuzz + rouge-score, so `string_similarity` and stemmed `rouge_l` match Ragas's numbers ([evaluation](evaluation.md)); pure-Python fallbacks work without it |
 | `examlops[events]` | Publish to and consume from the NATS JetStream event backbone — `exa events tail`, `EventConsumer` |
+| `examlops[features-online]` | Redis serving tier for the [feature store](feature-store.md) online store (`EXAMLOPS_FEATURE_ONLINE_STORE=redis`); without it the durable table serves |
 | `examlops[fairness]` | Fairlearn's `MetricFrame` for fairness slice metrics — `exa fairness` (a pure-Python fallback gives the same numbers without it) |
+| `examlops[finetune]` | `exa finetune --train` (torch) and its Hugging Face PEFT backend (`--backend peft`) — see [fine-tuning](fine-tuning.md); the built-in torch-lora backend needs no peft |
 | `examlops[finops]` | YAML/expression calculation providers — user-authored cost and carbon formulas |
 | `examlops[guardrails-presidio]` | Presidio NER (person/place PII detection) as a supplement to the built-in regex PII detectors — needs a separate one-time spaCy model install |
 | `examlops[mcp]` | Serve the platform to LLM agents — `exa mcp serve` |
 | `examlops[oidc]` | Validate OIDC access tokens (RS256 against a JWKS) |
 | `examlops[postgres]` | Talk to a Postgres datastore instead of SQLite |
 | `examlops[qdrant]` | Qdrant vector store (`EXAMLOPS_VECTOR_BACKEND=qdrant`) — the scale-out alternative to pgvector |
-| `examlops[serving-sglang]` | In-process SGLang engine (GPU host) |
+| `examlops[rag-eval]` | Ragas' non-LLM retrieval metrics behind `exa rag eval` (built-in metrics give the same numbers without it); cannot share an environment with `dataplane`/`dataplane-files` (ragas caps fsspec below the dataplane floor) |
+| `examlops[rag-llamaindex]` | LlamaIndex's sentence-aware chunker for `exa rag ingest --framework llamaindex` ([RAG](rag.md)) |
+| `examlops[rag-service]` | Run the RAG serving endpoint (`uvicorn --factory examlops.rag.service:create_app`) |
+| `examlops[serving-sglang]` | SGLang runtime for the GPU host that runs `sglang.launch_server` (the `exa` client needs none) |
 | `examlops[serving-vllm]` | In-process vLLM engine for offline batch scoring (GPU host) |
+| `examlops[supplychain]` | Sigstore keyless model signing and keyless-signed SLSA provenance (Fulcio + Rekor), `EXAMLOPS_SIGNING_SCHEME=sigstore` — see [supply-chain security](supply-chain-security.md); Ed25519/HMAC signing needs nothing extra |
 | `examlops[synth]` | Synthetic data generation and its release gate — `exa data synth` |
 | `examlops[vector]` | pgvector vector store (`EXAMLOPS_VECTOR_BACKEND=pgvector`), independent of where platform state lives |
 

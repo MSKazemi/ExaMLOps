@@ -35,5 +35,6 @@ async def overview(_=Depends(_viewer)) -> dict[str, Any]:
         {
             "endpoints": lambda: _wrap(llmops.endpoints),
             "evals": lambda: _wrap(llmops.eval_summary),
+            "calculations": llmops.calculation_providers,
         }
     )

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 from typing import Any  # noqa: F401
 
 from examlops.data._rowid import last_insert_id
@@ -224,22 +225,72 @@ def get_feature_view(name: str) -> dict[str, Any] | None:
         row = conn.execute("SELECT * FROM feature_views WHERE name=?", (name,)).fetchone()
     if not row:
         return None
+    return _feature_view_row(row)
+
+
+def _feature_view_row(row: Any) -> dict[str, Any]:
+    """A ``feature_views`` row with its JSON columns parsed (``features``, ``spec``)."""
     d = dict(row)
     d["features"] = json.loads(d.pop("features_json"))
+    raw_spec = d.pop("spec_json", None)
+    try:
+        d["spec"] = json.loads(raw_spec) if raw_spec else None
+    except (TypeError, ValueError):
+        d["spec"] = None
+    d["materialize_interval_seconds"] = int(d.get("materialize_interval_seconds") or 0)
     return d
+
+
+def write_feature_records_once(view: str, rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Append ``[{"entity_id", "event_ts", "values"}]`` to the offline store in ONE transaction,
+    skipping any ``(view, entity_id, event_ts)`` already recorded. Returns ``{written, skipped}``.
+
+    One connection and one commit for the whole batch: a per-row connection + commit cost ~0.6 s
+    a row on a slow disk, i.e. ~10 minutes of orchestrator time for a 1000-row training gate.
+    """
+    init_db()
+    written = 0
+    with get_db() as conn:
+        for row in rows:
+            entity_id, event_ts = str(row["entity_id"]), str(row["event_ts"])
+            if conn.execute(
+                "SELECT 1 FROM feature_records WHERE view=? AND entity_id=? AND event_ts=? LIMIT 1",
+                (view, entity_id, event_ts),
+            ).fetchone():
+                continue
+            conn.execute(
+                """INSERT INTO feature_records (view, entity_id, event_ts, values_json)
+                   VALUES (?,?,?,?)""",
+                (view, entity_id, event_ts, json.dumps(row["values"])),
+            )
+            written += 1
+    return {"written": written, "skipped": len(rows) - written}
+
+
+_ASOF_SQL = """SELECT values_json FROM feature_records
+               WHERE view=? AND entity_id=? AND event_ts<=?
+               ORDER BY event_ts DESC, id DESC LIMIT 1"""
 
 
 def get_offline_features_asof(view: str, entity_id: str, asof_ts: str) -> dict[str, Any] | None:
     """Latest offline feature values for an entity **as of** ``asof_ts`` (R4/R5, no leakage)."""
     init_db()
     with get_db() as conn:
-        row = conn.execute(
-            """SELECT values_json FROM feature_records
-               WHERE view=? AND entity_id=? AND event_ts<=?
-               ORDER BY event_ts DESC, id DESC LIMIT 1""",
-            (view, entity_id, asof_ts),
-        ).fetchone()
+        row = conn.execute(_ASOF_SQL, (view, entity_id, asof_ts)).fetchone()
     return json.loads(row["values_json"]) if row else None
+
+
+def get_offline_features_asof_many(
+    view: str, keys: list[tuple[str, str]]
+) -> list[dict[str, Any] | None]:
+    """:func:`get_offline_features_asof` for many ``(entity_id, asof_ts)`` over one connection."""
+    init_db()
+    out: list[dict[str, Any] | None] = []
+    with get_db() as conn:
+        for entity_id, asof_ts in keys:
+            row = conn.execute(_ASOF_SQL, (view, entity_id, asof_ts)).fetchone()
+            out.append(json.loads(row["values_json"]) if row else None)
+    return out
 
 
 def get_online_feature(view: str, entity_id: str) -> dict[str, Any] | None:
@@ -347,16 +398,50 @@ def list_online_features(view: str) -> list[dict[str, Any]]:
     ]
 
 
+def iter_online_features(view: str, page_size: int = 500) -> Iterator[list[dict[str, Any]]]:
+    """:func:`list_online_features` one page at a time (keyset on ``entity_id``).
+
+    The scheduled materializer mirrors and indexes every online row of a view each cycle; a
+    384-dim vector is ~8 KB of JSON, so reading a large view whole would hold gigabytes in the
+    control plane for one tick. Each page is its own short read.
+    """
+    size = max(1, int(page_size))
+    after: str | None = None
+    while True:
+        init_db()
+        with get_db() as conn:
+            if after is None:
+                rows = conn.execute(
+                    "SELECT entity_id, event_ts, values_json FROM online_features WHERE view=? "
+                    "ORDER BY entity_id LIMIT ?",
+                    (view, size),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT entity_id, event_ts, values_json FROM online_features "
+                    "WHERE view=? AND entity_id>? ORDER BY entity_id LIMIT ?",
+                    (view, after, size),
+                ).fetchall()
+        if not rows:
+            return
+        yield [
+            {
+                "entity_id": r["entity_id"],
+                "event_ts": r["event_ts"],
+                "values": json.loads(r["values_json"] or "{}"),
+            }
+            for r in rows
+        ]
+        if len(rows) < size:
+            return
+        after = rows[-1]["entity_id"]
+
+
 def list_feature_views() -> list[dict[str, Any]]:
     init_db()
     with get_db() as conn:
         rows = conn.execute("SELECT * FROM feature_views ORDER BY name").fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        d["features"] = json.loads(d.pop("features_json"))
-        out.append(d)
-    return out
+    return [_feature_view_row(r) for r in rows]
 
 
 def list_reindex_jobs(collection: str | None = None) -> list[dict[str, Any]]:
@@ -387,10 +472,12 @@ def list_repro_bundles(model: str | None = None) -> list[dict[str, Any]]:
     with get_db() as conn:
         if model:
             rows = conn.execute(
-                _LATEST_BUNDLES + " AND r.model=? ORDER BY created_at DESC", (model,)
+                _LATEST_BUNDLES + " AND r.model=? ORDER BY r.created_at DESC, r.id DESC", (model,)
             ).fetchall()
         else:
-            rows = conn.execute(_LATEST_BUNDLES + " ORDER BY created_at DESC").fetchall()
+            rows = conn.execute(
+                _LATEST_BUNDLES + " ORDER BY r.created_at DESC, r.id DESC"
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -791,6 +878,11 @@ def register_adapter(
     so the rule is enforced here once: passing one without ``eval_source="measured"`` raises. A
     number an operator supplies belongs in ``asserted_eval_score`` — a different column, read by
     nothing that treats it as evidence (ADR 0044).
+
+    Re-registering an existing id **demotes** it and clears its training/MLflow provenance: the
+    id is derived from ``base-method-dataset``, so a second run (or an ``adapter add`` pointing at
+    other weights) lands on the same row, and a promotion earned by the old weights must not be
+    inherited by new ones that the C3 gate never saw.
     """
     if eval_score is not None and eval_source != "measured":
         raise ValueError(
@@ -820,6 +912,8 @@ def register_adapter(
                    signed_by=excluded.signed_by, cost_gpu_hours=excluded.cost_gpu_hours,
                    train_run_id=excluded.train_run_id,
                    adapter_sha256=excluded.adapter_sha256, adapter_uri=excluded.adapter_uri,
+                   promoted=0, hpc_job_id=NULL, mlflow_run_id=NULL,
+                   mlflow_artifact_uri=NULL, mlflow_model_version=NULL,
                    updated_at=CURRENT_TIMESTAMP""",
             (
                 adapter_id,
@@ -875,6 +969,29 @@ def register_encoder_row(
                    (encoder_id, name, version, dim, metric, normalization)
                VALUES (?,?,?,?,?,?)""",
             (encoder_id, name, version, dim, metric, normalization),
+        )
+
+
+_ADAPTER_PROVENANCE_FIELDS = frozenset(
+    {"hpc_job_id", "mlflow_run_id", "mlflow_artifact_uri", "mlflow_model_version"}
+)
+
+
+def set_adapter_provenance(adapter_id: str, **fields: str | None) -> None:
+    """Record where an adapter was trained / is held (ADR 0044). Never touches its eval score."""
+    unknown = set(fields) - _ADAPTER_PROVENANCE_FIELDS
+    if unknown:
+        raise ValueError(f"not adapter provenance fields: {sorted(unknown)}")
+    if not fields:
+        return
+    init_db()
+    names = sorted(fields)
+    assignments = ", ".join(f"{name}=?" for name in names)
+    with get_db() as conn:
+        conn.execute(
+            f"UPDATE lora_adapters SET {assignments}, updated_at=CURRENT_TIMESTAMP "  # noqa: S608
+            "WHERE adapter_id=?",
+            (*(fields[name] for name in names), adapter_id),
         )
 
 
@@ -1047,20 +1164,29 @@ def upsert_feature_view(
     ttl_seconds: int = 0,
     dataset_revision: str | None = None,
     embedding_feature: str | None = None,
+    spec: dict[str, Any] | None = None,
+    materialize_interval_seconds: int = 0,
 ) -> None:
-    """Register/patch a feature view (single definition for train + serve) (R1)."""
+    """Register/patch a feature view (single definition for train + serve) (R1).
+
+    ``spec`` is the pack definition's typed feature specs + fingerprint (ADR 0017 clause 2);
+    ``materialize_interval_seconds`` > 0 puts the view on the materialization schedule (clause 4).
+    """
     init_db()
     with get_db() as conn:
         conn.execute(
             """INSERT INTO feature_views
                    (name, entity, features_json, source, ttl_seconds, dataset_revision,
-                    embedding_feature, updated_at)
-               VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
+                    embedding_feature, spec_json, materialize_interval_seconds, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
                ON CONFLICT(name) DO UPDATE SET
                    entity=excluded.entity, features_json=excluded.features_json,
                    source=excluded.source, ttl_seconds=excluded.ttl_seconds,
                    dataset_revision=excluded.dataset_revision,
-                   embedding_feature=excluded.embedding_feature, updated_at=CURRENT_TIMESTAMP""",
+                   embedding_feature=excluded.embedding_feature,
+                   spec_json=excluded.spec_json,
+                   materialize_interval_seconds=excluded.materialize_interval_seconds,
+                   updated_at=CURRENT_TIMESTAMP""",
             (
                 name,
                 entity,
@@ -1069,6 +1195,8 @@ def upsert_feature_view(
                 ttl_seconds,
                 dataset_revision,
                 embedding_feature,
+                json.dumps(spec, sort_keys=True) if spec is not None else None,
+                int(materialize_interval_seconds),
             ),
         )
 

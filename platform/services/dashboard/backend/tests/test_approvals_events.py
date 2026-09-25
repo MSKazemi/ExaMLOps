@@ -186,3 +186,31 @@ async def test_approve_and_reject_hide_upstream_error_body(client, monkeypatch):
     assert r.status_code == 500
     assert r.json() == {"detail": "Control Plane returned an error"}
     assert "stack trace" not in r.text
+
+
+class _HeaderCapture(_FakeAsyncClient):
+    seen: list[dict] = []
+
+    async def post(self, *a, headers=None, **k):
+        type(self).seen.append(dict(headers or {}))
+        return _FakeResp()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [("/api/approvals/approve/JPCP", None), ("/api/approvals/reject/JPCP", {"reason": "x"})],
+)
+async def test_policy_acknowledgement_travels_to_the_control_plane(client, monkeypatch, path, body):
+    """The control plane decides `approval_approve`/`approval_reject` too (ADR 0079 d2); an admin's
+    acknowledgement of a `require_approval` rule must reach it, or the approved request is 409."""
+    _HeaderCapture.seen = []
+    monkeypatch.setattr("routers.approvals.httpx.AsyncClient", _HeaderCapture)
+    token = await _login(client, ADMIN_PW)
+    h = {"Authorization": f"Bearer {token}"}
+    kw = {"json": body} if body else {}
+    assert (await client.post(path, headers=h, **kw)).status_code == 200
+    assert "X-Policy-Approved" not in _HeaderCapture.seen[-1]  # never invented
+    r = await client.post(path, headers={**h, "X-Policy-Approved": "true"}, **kw)
+    assert r.status_code == 200, r.text
+    assert _HeaderCapture.seen[-1].get("X-Policy-Approved") == "true"

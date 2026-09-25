@@ -165,6 +165,23 @@ def _isolate_platform_db(tmp_path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _drop_pending_specdecode_windows():
+    """Discard spec-decode windows a test left in memory (ADR 0016 decision 4).
+
+    ``examlops.engines.specdecode`` folds draft counts into a process-global accumulator and
+    flushes it later — on a later call or at exit — to whatever ``PLATFORM_DB`` is set *then*. A
+    window observed by one test would otherwise land in the next test's database, and the
+    ``atexit`` flush after the session would open the checkout's own ``platform.db``. Only acts
+    when the module was already imported, so it costs nothing to tests that never touch it.
+    """
+    yield
+    mod = sys.modules.get("examlops.engines.specdecode")
+    if mod is not None:
+        with mod._LOCK:
+            mod._WINDOWS.clear()
+
+
 #: The platform's other SQLite stores whose defaults are relative to the working directory — the
 #: repository root when the suite runs, which on a dev host is where the live stack keeps them.
 _CWD_RELATIVE_STORES = ("AGENT_MEMORY_DB", "AGENT_DB", "AGENT_MEMORY_REVIEW_DB", "MLFLOW_SQLITE_DB")

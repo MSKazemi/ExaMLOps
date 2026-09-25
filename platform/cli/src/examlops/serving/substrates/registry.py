@@ -352,13 +352,73 @@ class HpcSubstrate:
 # ── kserve ────────────────────────────────────────────────────────────────────
 
 
+_DELIVERIES = ("server-side-apply", "gitops")
+
+
 class KServeSubstrate:
-    """The pinned KServe release (ADR 0142 d2/d6): render + validate + a real, plan-gated apply."""
+    """The pinned KServe release (ADR 0142 d2/d3/d6): render + verify + validate + a real,
+    plan-gated apply — by Server-Side Apply, or by writing a GitOps tree
+    (``EXAMLOPS_KSERVE_DELIVERY=gitops`` + ``EXAMLOPS_KSERVE_GITOPS_DIR``, R-SUB-25).
+
+    The in-pod verify-before-load wiring (:mod:`.verifier`) is read from the environment once,
+    here, so ``render`` itself stays a pure function of its inputs.
+    """
 
     name = "kserve"
 
-    def __init__(self, kubectl: Any = None) -> None:
+    def __init__(
+        self,
+        kubectl: Any = None,
+        verifier: Any = None,
+        delivery: str | None = None,
+        gitops_dir: str | None = None,
+    ) -> None:
+        from examlops.serving.substrates.verifier import VerifierSpec
+
         self._injected = kubectl  # tests; default KubectlClient()
+        # A bad EXAMLOPS_SERVING_VERIFY refuses a *render*; it must not stop an operator from
+        # reading status or stopping a servable, so the error is kept and raised by render().
+        self._verifier: Any = verifier
+        self._verifier_error: RenderError | None = None
+        if verifier is None:
+            try:
+                self._verifier = VerifierSpec.from_env()
+            except RenderError as exc:
+                self._verifier_error = exc
+        self._delivery = (delivery or os.getenv("EXAMLOPS_KSERVE_DELIVERY") or "").strip().lower()
+        self._gitops_dir = gitops_dir or os.getenv("EXAMLOPS_KSERVE_GITOPS_DIR") or ""
+
+    def delivery(self) -> str:
+        """``server-side-apply`` (default) or ``gitops``; anything else is refused, not guessed."""
+        chosen = self._delivery or "server-side-apply"
+        if chosen not in _DELIVERIES:
+            raise SubstrateUnavailable(
+                f"EXAMLOPS_KSERVE_DELIVERY={chosen!r} is not one of {', '.join(_DELIVERIES)}"
+            )
+        return chosen
+
+    def _gitops(self) -> Any:
+        from examlops.serving.substrates.gitops import GitOpsError, GitOpsWriter
+        from examlops.serving.substrates.kubectl_client import DEFAULT_NAMESPACE
+
+        if not self._gitops_dir:
+            raise SubstrateUnavailable(
+                "gitops delivery needs a directory: set EXAMLOPS_KSERVE_GITOPS_DIR"
+            )
+        namespace = os.getenv("EXAMLOPS_KSERVE_NAMESPACE") or DEFAULT_NAMESPACE
+        try:
+            return GitOpsWriter(self._gitops_dir, namespace)
+        except GitOpsError as exc:
+            raise SubstrateUnavailable(f"gitops delivery: {exc}") from exc
+
+    def _gitops_call(self, method: str, name: str) -> Any:
+        """``read``/``remove`` on the GitOps tree, its refusals typed as substrate errors."""
+        from examlops.serving.substrates.gitops import GitOpsError
+
+        try:
+            return getattr(self._gitops(), method)(name)
+        except GitOpsError as exc:
+            raise SubstrateUnavailable(f"gitops delivery: {exc}") from exc
 
     def _kubectl(self) -> Any:
         if self._injected is not None:
@@ -382,8 +442,11 @@ class KServeSubstrate:
 
     def render(self, spec: dict[str, Any], resolved: ResolvedRef) -> Rendered:
         from examlops.serving.substrates import k8s_schema, kserve
+        from examlops.serving.substrates.verifier import attach_verifier
 
         require_caps(self.capabilities(), self.name, spec)
+        if self._verifier_error is not None:
+            raise self._verifier_error
         canary_ref: ResolvedRef | None = None
         canary_pct: int | None = None
         split = _split(spec, resolved)
@@ -400,31 +463,43 @@ class KServeSubstrate:
                 canary["artifact_uri"],
                 canary.get("digest", "unsigned"),
                 resolved.project,
+                canary.get("signature"),
             )
             canary_pct = split.canary_percent
+        pairs: list[tuple[dict[str, Any], ResolvedRef, ResolvedRef | None]]
         if canary_ref is not None and kserve.is_generative(spec):
             # LLMInferenceService has no spec.canary field at this pin (unlike ISVC Standard
             # mode) — a generative canary is two co-routed objects (ADR 0142 d5, spec-usar-1
             # §5.6), which kserve.render()'s single-object return cannot express.
             assert canary_pct is not None  # set alongside canary_ref, above
-            objects = kserve.render_llm_inference_service_canary(
+            stable_obj, canary_obj = kserve.render_llm_inference_service_canary(
                 spec, resolved, canary_ref, canary_pct
             )
-            for obj in objects:
-                errors = k8s_schema.validate(obj)
-                if errors:
-                    raise RenderError(f"render failed the pinned KServe schema: {errors}")
-            return make_rendered(self.name, objects)
-        manifest = kserve.render(spec, resolved, canary=canary_ref, canary_pct=canary_pct)
-        errors = k8s_schema.validate(manifest)
-        if errors:
-            raise RenderError(f"render failed the pinned KServe schema: {errors}")
-        return make_rendered(self.name, [manifest])
+            pairs = [(stable_obj, resolved, None), (canary_obj, canary_ref, None)]
+        else:
+            manifest = kserve.render(spec, resolved, canary=canary_ref, canary_pct=canary_pct)
+            pairs = [(manifest, resolved, canary_ref)]
+        objects: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for obj, ref, isvc_canary in pairs:
+            wired, notes = attach_verifier(obj, ref, self._verifier, canary=isvc_canary)
+            for note in notes:
+                if note not in warnings:
+                    warnings.append(note)
+            errors = k8s_schema.validate(wired)
+            if errors:
+                raise RenderError(f"render failed the pinned KServe schema: {errors}")
+            objects.append(wired)
+        return make_rendered(self.name, objects, warnings)
 
     def apply(
         self, rendered: Rendered, *, dry_run: bool = True, plan_hash: str | None = None
     ) -> Any:
+        delivery = self.delivery()
+
         def act() -> list[str]:
+            if delivery == "gitops":
+                return [f"gitops:{p}" for p in self._gitops().write(list(rendered.objects))]
             return self._kubectl().apply(list(rendered.objects))
 
         return audited_apply(self.name, rendered, dry_run=dry_run, plan_hash=plan_hash, act=act)
@@ -432,6 +507,20 @@ class KServeSubstrate:
     def status(self, name: str) -> SubstrateStatus:
         from examlops.serving.substrates.kubectl_client import status_from_object
 
+        if self.delivery() == "gitops":
+            declared = self._gitops_call("read", name)
+            if declared is None:
+                return SubstrateStatus("STOPPED", {}, None, {"delivery": "gitops"})
+            version = (declared.get("metadata", {}).get("labels") or {}).get("examlops.io/version")
+            return SubstrateStatus(
+                "PENDING",
+                {name: int(version)} if version and version.isdigit() else {},
+                None,
+                {
+                    "delivery": "gitops",
+                    "note": "declared in the GitOps tree; the live state is the reconciler's",
+                },
+            )
         obj = self._kubectl().get_any_kind(name)
         if obj is None:
             return SubstrateStatus("UNKNOWN", {}, None, {"note": f"{name} not found in KServe"})
@@ -444,6 +533,9 @@ class KServeSubstrate:
         return SubstrateStatus(state, versions, url, detail)
 
     def stop(self, name: str) -> None:
+        if self.delivery() == "gitops":
+            self._gitops_call("remove", name)
+            return
         self._kubectl().delete_any_kind(name)
 
 

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .ir import STEP_KINDS, IRError, topological_order, validate_ir
+from .placement import placement_from_ir, validate_placement_block
 
 
 class NotLowerableError(IRError):
@@ -49,8 +50,9 @@ _NO_EXECUTOR: dict[str, str] = {
 
 @dataclass
 class Lowered:
-    """``model_yaml`` is the per-model YAML mapping; ``hints`` are run-time asks the YAML has no
-    place for (``cluster``, ``gpus``); ``dropped`` names IR content the YAML cannot carry."""
+    """``model_yaml`` is the per-model YAML mapping (its ``placement:`` section carries the train
+    step's ask and the target cluster); ``hints`` repeats the two values ``run`` feeds to
+    ``--cluster`` placement; ``dropped`` names IR content the YAML cannot carry."""
 
     model_yaml: dict[str, Any]
     hints: dict[str, Any] = field(default_factory=dict)
@@ -130,24 +132,27 @@ def lower_training(doc: dict[str, Any]) -> Lowered:
     if promote is not None:
         out["lifecycle"] = promote["params"]["lifecycle"]
     out.update(doc.get("registry", {}))
+    # ADR 0080 decision 2: the YAML is the IR, so the train step's ask and the target cluster go
+    # *into* it (the `placement:` section) instead of being dropped as out-of-band hints.
+    placement = placement_from_ir(doc, train)
+    problems = validate_placement_block(placement)
+    if problems:
+        raise NotLowerableError(
+            f"step {train['id']!r}: its resources/target cannot be carried by the YAML "
+            f"`placement:` section: {'; '.join(problems)}"
+        )
+    if placement:
+        out["placement"] = placement
 
     hints: dict[str, Any] = {}
-    cluster = (doc.get("target") or {}).get("cluster")
-    if cluster:
-        hints["cluster"] = cluster
-    res = train.get("resources") or {}
-    if res.get("gpus"):
-        hints["gpus"] = res["gpus"]
+    if placement.get("cluster"):
+        hints["cluster"] = placement["cluster"]
+    if placement.get("gpus"):
+        hints["gpus"] = placement["gpus"]
     dropped = [
-        f"resources of step {n['id']!r}: {n['resources']} (used only as run-time placement hints)"
+        f"resources of step {n['id']!r}: {n['resources']} (only the train step's ask is a "
+        "placement request; the flow schedules no other step as its own job)"
         for n in nodes
         if n.get("resources") and n["id"] != train["id"]
     ]
-    if res:
-        dropped.append(
-            f"resources of step {train['id']!r}: {res} (the YAML has no field; "
-            "`run --ir` passes the GPU count to --cluster placement)"
-        )
-    if cluster:
-        dropped.append(f"target.cluster={cluster!r} (the YAML has no field; `run --ir` uses it)")
     return Lowered(model_yaml=out, hints=hints, dropped=dropped)

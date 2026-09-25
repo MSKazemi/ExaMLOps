@@ -23,9 +23,10 @@ degradation must do one of:
 
 It is a **ratchet**: `BASELINE` is what was left when it was written, and the number may only go
 down. That is deliberate — the remaining sites need reading one at a time, and a guard that demanded
-them all at once would have been switched off instead. The four left are low-consequence and each
+them all at once would have been switched off instead. The three left are low-consequence and each
 needs a judgement rather than a sweep: a model-zoo adoption retry, a semantic-cache embedding (a
-cache miss is a correct answer), the dashboard's provider-metadata badge, and its own UI telemetry.
+cache miss is a correct answer), and the dashboard's provider-metadata badge. (The dashboard's UI
+telemetry was the fourth; it now logs the failed write, 2026-09-25.)
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ _VISIBLE = re.compile(
 )
 
 #: How many silent sites remained when this guard was written. It may only go **down**.
-BASELINE = 4
+BASELINE = 3
 
 
 def _is_visible(handler: ast.ExceptHandler) -> bool:

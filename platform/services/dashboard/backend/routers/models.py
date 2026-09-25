@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import logging
 import uuid
 
 import audit_write
@@ -26,6 +27,7 @@ from storage import ImageStorage
 from upstream import dashboard_status
 
 router = APIRouter(prefix="/models")
+log = logging.getLogger(__name__)
 
 
 def _control_plane() -> ControlPlaneClient:
@@ -237,6 +239,18 @@ def _promotion_gate_outcome(model_id: str, version: str) -> tuple[int, str] | No
     if result is not None and not result.passed:
         failing = [m.name for m in result.metrics if m.failed]
         return (403, "promotion blocked by eval gate: " + (", ".join(failing) or result.mode))
+    # ADR 0016 decision 3: a quantized version (`<base>-<method>`) must also clear the mandatory
+    # quality-retention gate against its base. No-op (None) for an unquantized version.
+    try:
+        from examlops.engines.quality import quantization_quality_gate
+
+        quality = quantization_quality_gate(model_id, str(version), actor="dashboard")
+    except Exception as exc:  # noqa: BLE001
+        # Blocks (503), never passes — and the cause is logged, so an operator can see why.
+        log.exception("quantization quality gate could not run for %s v%s", model_id, version)
+        return (503, f"quantization quality gate could not run: {exc}")
+    if quality is not None and not quality.passed:
+        return (403, "promotion blocked by quantization quality gate: " + quality.reason)
     return None
 
 

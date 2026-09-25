@@ -21,7 +21,9 @@ _EXAMPLES = (
     "  [dim]# Write it to a file[/dim]\n"
     "  exa docs --out docs/reference/cli-generated.md\n\n"
     "  [dim]# Machine-readable command tree[/dim]\n"
-    "  exa --json docs"
+    "  exa --json docs\n\n"
+    "  [dim]# The Python SDK reference (examlops public surface)[/dim]\n"
+    "  exa docs --sdk"
 )
 
 _MARKUP = re.compile(r"\[/?[a-z ]+\]")
@@ -110,15 +112,31 @@ def _render_md(node: dict[str, Any], level: int = 1) -> list[str]:
 
 def docs(
     out: str = typer.Option("", "--out", help="Write Markdown to this file instead of stdout"),
+    sdk: bool = typer.Option(
+        False,
+        "--sdk",
+        help="Emit the Python SDK reference (the `examlops` public surface) instead of the CLI's",
+    ),
 ) -> None:
-    """Generate the full command reference from the live CLI tree."""
-    tree = _walk(_root_group(), ["exa"])
+    """Generate the full command reference from the live CLI tree (or the SDK's, with --sdk)."""
+    if sdk:
+        # ADR 0078 clause 4: the SDK contract reflected from the code, the same document the MCP
+        # agent card embeds, so humans and agents read one contract.
+        from examlops.sdk.reference import describe, render_markdown
 
-    if _output.json_mode:
-        _output.print_json(tree)
-        return
+        ref = describe()
+        if _output.json_mode:
+            _output.print_json(ref)
+            return
+        markdown = render_markdown(ref)
+    else:
+        tree = _walk(_root_group(), ["exa"])
 
-    markdown = "\n".join(_render_md(tree)).rstrip() + "\n"
+        if _output.json_mode:
+            _output.print_json(tree)
+            return
+
+        markdown = "\n".join(_render_md(tree)).rstrip() + "\n"
     if out:
         from pathlib import Path
 
@@ -130,7 +148,7 @@ def docs(
         except OSError as e:
             _output.error(f"Could not write command reference to {out}: {e}")
             return
-        _output.ok(f"Wrote command reference to {out}")
+        _output.ok(f"Wrote {'SDK' if sdk else 'command'} reference to {out}")
         return
     # Print raw so it can be piped/redirected without Rich styling.
     print(markdown)

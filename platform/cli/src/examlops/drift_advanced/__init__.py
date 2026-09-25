@@ -7,25 +7,36 @@ three new detectors, all unified under a ``drift_kind`` discriminator in the
 - **concept drift** (``drift_kind=concept``) — as delayed labels arrive, track the
   realized error metric over time and compare a recent window against a baseline
   window; a large shift in the input→target relationship is concept drift.
-- **label-free performance estimation** (``perf_estimates``) — a CBPE-like estimate of
-  accuracy from prediction confidence *before* labels arrive; a large drop **warns**
-  (never force-retrains) until labels confirm.
+- **label-free performance estimation** (``perf_estimates``) — an estimate of accuracy
+  *before* labels arrive; a large drop **warns** (never force-retrains) until realized labels in
+  the recent window confirm it, and a confirmed drop is ``CRITICAL`` — the estimated-performance
+  signal :func:`concept_retrain_signal` hands the cooldown-aware ``exa drift trigger``.
 - **data-quality profiling** (``drift_kind=data_quality``) — schema / null / range /
-  cardinality profile of an inference batch, incorporating A5 bad-payload counters.
+  cardinality profile of an inference batch, folding in the A5 contract rejections the
+  inference ingress records (``inference_rejections``).
 
-Graceful degradation: Evidently / River / NannyML / whylogs are all optional. Absent
-them, pure-Python statistics (mean-shift z-test, confidence-based estimate, null/range
-profile) provide the same signals against ``platform_db``. The concept detector is a small
-seam (:data:`CONCEPT_DETECTORS`, chosen by ``EXAMLOPS_DRIFT_CONCEPT_DETECTOR`` or the
-``detector=`` argument): ``builtin`` is the default and ``river-adwin`` is a lazy adapter that
-falls back to ``builtin`` — recording that it did — when River is not installed. Evidently,
-NannyML and whylogs have **no** adapter (see ADR 0022's status).
+Each of the three is a seam with a pure-Python default and optional adapters for the libraries
+ADR 0022 names (:mod:`examlops.drift_advanced.adapters`, extra ``examlops[drift-advanced]``):
+
+* concept — :data:`CONCEPT_DETECTORS` / ``EXAMLOPS_DRIFT_CONCEPT_DETECTOR``: ``builtin``
+  (mean-shift z-test, default), ``ddm`` (pure-Python DDM), ``river-adwin``, ``river-ddm``,
+  ``evidently``;
+* estimate — :data:`PERF_ESTIMATORS` / ``EXAMLOPS_DRIFT_PERF_ESTIMATOR``: ``builtin``
+  (CBPE-like confidence, default), ``nannyml`` (CBPE for probabilistic classifiers, DLE for
+  regression);
+* quality — :data:`QUALITY_PROFILERS` / ``EXAMLOPS_DRIFT_QUALITY_PROFILER``: ``builtin``
+  (default), ``whylogs``.
+
+An adapter whose library is missing, cannot import, or fails on the data degrades to the builtin
+and records why (``detector_fallback`` / ``estimator_fallback`` / ``profiler_fallback``) — a
+detector that silently became a different one would make the recorded name a lie.
 
 :mod:`examlops.drift_advanced.scheduler` runs the detectors over every model on a schedule.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from collections.abc import Callable, Sequence
@@ -33,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from examlops import data as platform_db
+from examlops.drift_advanced import adapters
 
 # Severity thresholds (relative error increase for concept; null fraction for quality).
 CONCEPT_WARN_Z = 2.0
@@ -63,6 +75,9 @@ class QualityProfile:
     fields: dict[str, dict[str, Any]]  # per-field: nulls, min, max, cardinality
     null_fraction: float
     severity: str
+    bad_payloads: int = 0
+    profiler: str = "builtin"
+    profiler_fallback: str | None = None
 
 
 def _severity_from_z(z: float) -> str:
@@ -125,11 +140,76 @@ def _river_adwin_concept(baseline: list[float], recent: list[float]) -> tuple[st
     return severity, z, extra
 
 
+def _confirmed(sev: str, confirmed: bool, warned: bool) -> str:
+    """Severity for a decision-only detector: only its confirmed drift may reach ``CRITICAL``."""
+    if confirmed:
+        return "CRITICAL"
+    return "WARN" if (warned or sev != "OK") else "OK"
+
+
+def _ddm_with(detector: Any, name: str, baseline: list[float], recent: list[float]):
+    sev, z, extra = _builtin_concept(baseline, recent)
+    drift, warning = adapters.scan_ddm(
+        detector, adapters.failure_bits(baseline, recent), len(baseline)
+    )
+    increased = extra["recent_error"] > extra["baseline_error"]
+    extra[f"{name}_drift"] = drift
+    extra[f"{name}_warning"] = warning
+    return _confirmed(sev, drift and increased, warning), z, extra
+
+
+def _ddm_concept(baseline: list[float], recent: list[float]) -> tuple[str, float, dict]:
+    """DDM (Gama et al. 2004) over the error stream, pure Python — same rule as River's DDM.
+
+    Errors are binarised against the baseline's 75th percentile (scale-free, so regression errors
+    work too). A drift signalled inside the recent window with a higher recent error is
+    ``CRITICAL``; a DDM warning or a z-test breach alone is at most ``WARN``.
+    """
+    return _ddm_with(adapters.PureDDM(), "ddm", baseline, recent)
+
+
+def _river_ddm_concept(baseline: list[float], recent: list[float]) -> tuple[str, float, dict]:
+    """River's ``DDM`` (lazy import; :class:`adapters.AdapterUnavailable` when River is absent)."""
+    return _ddm_with(adapters.river_ddm(), "ddm", baseline, recent)
+
+
+def _evidently_concept(baseline: list[float], recent: list[float]) -> tuple[str, float, dict]:
+    """Evidently ``ValueDrift`` of recent vs baseline realized error (lazy import).
+
+    A distribution shift counts only when the recent error is also *higher* — a model that got
+    better has not suffered concept drift. Evidently's own statistic and method are recorded.
+    """
+    sev, z, extra = _builtin_concept(baseline, recent)
+    verdict = adapters.evidently_value_drift(baseline, recent)
+    increased = extra["recent_error"] > extra["baseline_error"]
+    extra.update(
+        {
+            "evidently_drift": verdict["drift"],
+            "evidently_method": verdict["method"],
+            "evidently_value": verdict["value"],
+            "evidently_threshold": verdict["threshold"],
+        }
+    )
+    return _confirmed(sev, verdict["drift"] and increased, False), z, extra
+
+
 #: Selectable concept detectors. Register another with ``CONCEPT_DETECTORS["name"] = fn``.
 CONCEPT_DETECTORS: dict[str, ConceptDetector] = {
     "builtin": _builtin_concept,
+    "ddm": _ddm_concept,
     "river-adwin": _river_adwin_concept,
+    "river-ddm": _river_ddm_concept,
+    "evidently": _evidently_concept,
 }
+
+#: Errors that mean "this adapter cannot run here" — the detector degrades to the builtin.
+_UNAVAILABLE = (ImportError, adapters.AdapterUnavailable)
+
+
+def _unavailable_reason(name: str, exc: BaseException) -> str:
+    if isinstance(exc, adapters.AdapterUnavailable):
+        return f"{name} unavailable: {exc}"
+    return f"{name} is not installed"
 
 
 def resolve_concept_detector(name: str | None = None) -> tuple[str, ConceptDetector, str | None]:
@@ -163,7 +243,7 @@ def detect_concept_drift(
     relationship. Records ``drift_kind=concept`` (R6); severity is auto-retrain
     consumable (R2). The detector that actually ran is recorded in ``detail``.
     """
-    pairs = platform_db.join_predictions_with_truth(model, alias)
+    pairs = labelled_pairs(model, alias)
     errors = [_abs_error(p["prediction"], p["label"]) for p in pairs]
     n = len(errors)
     if n < 2 * min(window, 10):  # not enough labelled data yet
@@ -179,8 +259,11 @@ def detect_concept_drift(
     used, fn, reason = resolve_concept_detector(detector)
     try:
         severity, z, extra = fn(baseline, recent)
-    except ImportError:
-        used, reason = "builtin", f"{used} is not installed"
+    except _UNAVAILABLE as exc:
+        used, reason = "builtin", _unavailable_reason(used, exc)
+        severity, z, extra = _builtin_concept(baseline, recent)
+    except Exception as exc:  # noqa: BLE001 - a library bug must not stop the sweep, and says so
+        used, reason = "builtin", f"{used} failed: {type(exc).__name__}: {exc}"
         severity, z, extra = _builtin_concept(baseline, recent)
     detail = {**extra, "window": w, "n": n, "detector": used}
     if reason:
@@ -191,6 +274,107 @@ def detect_concept_drift(
     return res
 
 
+#: A label-free estimate is escalated to ``CRITICAL`` only once realized labels confirm it: at least
+#: this many labelled points in the recent window, whose realized score also fell by
+#: ``PERF_WARN_DROP`` against a comparable reference (see :func:`_realized_drop`) — ADR 0022:
+#: "estimate only warns until confirmed".
+PERF_CONFIRM_MIN_LABELS = 10
+#: Upper bound on the labelled history read for a detector — a bounded query on a busy model.
+MAX_LABELLED_PAIRS = 10_000
+
+PerfEstimator = Callable[
+    [list[float], list[dict[str, Any] | None], list[dict[str, Any]], bool],
+    tuple[float, str, dict[str, Any]],
+]
+
+PERF_ESTIMATOR_ENV = "EXAMLOPS_DRIFT_PERF_ESTIMATOR"
+DEFAULT_PERF_ESTIMATOR = "builtin"
+
+
+def _builtin_estimate(
+    values: list[float],
+    _features: list[dict[str, Any] | None],
+    _reference: list[dict[str, Any]],
+    probabilistic: bool,
+) -> tuple[float, str, dict[str, Any]]:
+    """CBPE-like confidence estimate (classification) or a stability proxy (regression)."""
+    if probabilistic:  # expected accuracy under calibration is the model's own confidence
+        return sum(max(v, 1.0 - v) for v in values) / len(values), "cbpe-like", {}
+    mean = sum(values) / len(values)
+    var = sum((v - mean) ** 2 for v in values) / max(len(values) - 1, 1)
+    spread = math.sqrt(var) / (abs(mean) + 1e-9)
+    return 1.0 / (1.0 + spread), "stability-proxy", {}
+
+
+def _nannyml_estimate(
+    values: list[float],
+    features: list[dict[str, Any] | None],
+    reference: list[dict[str, Any]],
+    probabilistic: bool,
+) -> tuple[float, str, dict[str, Any]]:
+    """NannyML CBPE (probabilistic classification) / DLE (regression) — lazy import."""
+    return adapters.nannyml_estimate(reference, values, features, probabilistic=probabilistic)
+
+
+#: Selectable label-free estimators. Register another with ``PERF_ESTIMATORS["name"] = fn``.
+PERF_ESTIMATORS: dict[str, PerfEstimator] = {
+    "builtin": _builtin_estimate,
+    "nannyml": _nannyml_estimate,
+}
+
+
+def resolve_perf_estimator(name: str | None = None) -> tuple[str, PerfEstimator, str | None]:
+    """The estimator to run: ``(name used, fn, fallback_reason)`` — same contract as detectors."""
+    want = (name or os.getenv(PERF_ESTIMATOR_ENV) or DEFAULT_PERF_ESTIMATOR).strip().lower()
+    fn = PERF_ESTIMATORS.get(want)
+    if fn is None:
+        return "builtin", _builtin_estimate, f"unknown estimator {want!r}"
+    return want, fn, None
+
+
+def _realized(pairs: list[dict[str, Any]], probabilistic: bool) -> float | None:
+    if not pairs:
+        return None
+    if probabilistic:
+        hits = sum(1 for p in pairs if round(p["prediction"]) == round(p["label"]))
+        return hits / len(pairs)
+    mae = sum(_abs_error(p["prediction"], p["label"]) for p in pairs) / len(pairs)
+    return 1.0 / (1.0 + mae)
+
+
+def _realized_drop(
+    reference: list[dict[str, Any]],
+    realized: float | None,
+    baseline: float | None,
+    probabilistic: bool,
+) -> tuple[float | None, str | None, float | None]:
+    """How far the realized score fell: ``(drop, basis, realized_baseline)``.
+
+    Confirmation must compare like with like. The estimate ``baseline`` is in the *estimator's*
+    units — for a regressor under the builtin estimator that is the stability proxy
+    ``1/(1+CV)``, which is not the realized ``1/(1+MAE)``: comparing the two confirmed almost every
+    regression warning, because a stability proxy near 1 dwarfs a realized score for any MAE above
+    a few units. So:
+
+    * ``realized_reference`` — at least ``PERF_CONFIRM_MIN_LABELS`` labelled points older than the
+      recent window exist: the drop is the **relative** fall of the realized score against the
+      realized score of that older window (unit-free, so it means the same for accuracy and MAE).
+    * ``baseline`` — no labelled reference, but the predictions are probabilities: the realized
+      score and the baseline are both accuracies, so the absolute drop against it is meaningful.
+    * otherwise ``None`` — nothing comparable to confirm against, so the estimate stays a warning.
+    """
+    if realized is None:
+        return None, None, None
+    if len(reference) >= PERF_CONFIRM_MIN_LABELS:
+        ref = _realized(reference, probabilistic)
+        if ref is not None and ref > 0:
+            return (ref - realized) / ref, "realized_reference", ref
+        return None, None, ref
+    if probabilistic and baseline is not None:
+        return baseline - realized, "baseline", baseline
+    return None, None, None
+
+
 def estimate_performance(
     model: str,
     *,
@@ -199,70 +383,152 @@ def estimate_performance(
     baseline: float | None = None,
     window: int = 200,
     persist: bool = True,
+    estimator: str | None = None,
 ) -> dict[str, Any]:
-    """Label-free performance estimate (CBPE-like) before labels arrive (R3/R4).
+    """Label-free performance estimate before labels arrive, confirmed by them when they do.
 
-    For classification-style predictions in ``[0, 1]`` (probabilities), expected
-    accuracy under calibration is ``mean(max(p, 1-p))`` — the model's own confidence.
-    A large drop vs ``baseline`` **warns** but never forces a retrain. Realized
-    accuracy (if any labels exist) is stored alongside for the estimated-vs-realized
-    panel.
+    The estimator is a seam (``builtin`` CBPE-like confidence / stability proxy by default,
+    ``nannyml`` CBPE/DLE when selected and installed; see :data:`PERF_ESTIMATORS`). Severity:
+
+    * ``WARN`` — the estimate fell by ``PERF_WARN_DROP`` against ``baseline``. A warning only: on
+      its own an estimate never forces a retrain (R4).
+    * ``CRITICAL`` — the same drop **and** the realized score over the recent labelled window
+      (at least ``PERF_CONFIRM_MIN_LABELS`` points) fell by as much. That is the estimated
+      performance signal ADR 0022 decision 4 feeds to the cooldown-aware auto-retrain; the event
+      carries ``confirmed_by_labels`` so a consumer can tell it from an unconfirmed estimate.
+
+    The realized score is measured over the most recent ``window`` labelled points, not over the
+    model's whole history, so it can actually confirm a *recent* drop.
     """
     preds = _read_recent_predictions(model, alias, window)
-    values = [p["prediction"] for p in preds]
+    values = [float(p["prediction"]) for p in preds]
     if not values:
         return {"model": model, "metric": metric, "estimated": None, "realized": None, "n": 0}
 
-    in_unit = all(0.0 <= v <= 1.0 for v in values)
-    if in_unit:  # CBPE for probabilistic classification
-        estimated = sum(max(v, 1.0 - v) for v in values) / len(values)
-    else:  # regression fallback: stability-based proxy (1 / (1 + normalized spread))
-        mean = sum(values) / len(values)
-        var = sum((v - mean) ** 2 for v in values) / max(len(values) - 1, 1)
-        spread = math.sqrt(var) / (abs(mean) + 1e-9)
-        estimated = 1.0 / (1.0 + spread)
+    probabilistic = all(0.0 <= v <= 1.0 for v in values)
+    features = [_features_of(p) for p in preds]
+    pairs = labelled_pairs(model, alias)
+    used, fn, reason = resolve_perf_estimator(estimator)
+    try:
+        estimated, method, extra = fn(values, features, pairs, probabilistic)
+    except _UNAVAILABLE as exc:
+        used, reason = "builtin", _unavailable_reason(used, exc)
+        estimated, method, extra = _builtin_estimate(values, features, pairs, probabilistic)
+    except Exception as exc:  # noqa: BLE001 - a library failure degrades, and says so
+        used, reason = "builtin", f"{used} failed: {type(exc).__name__}: {exc}"
+        estimated, method, extra = _builtin_estimate(values, features, pairs, probabilistic)
 
-    # Realized (if any labels landed) — accuracy for unit preds, else neg-MAE proxy.
-    pairs = platform_db.join_predictions_with_truth(model, alias)
-    realized: float | None = None
-    if pairs:
-        if in_unit:
-            realized = sum(1 for p in pairs if round(p["prediction"]) == round(p["label"])) / len(
-                pairs
-            )
-        else:
-            mae = sum(_abs_error(p["prediction"], p["label"]) for p in pairs) / len(pairs)
-            realized = 1.0 / (1.0 + mae)
+    recent_pairs = pairs[-window:]
+    realized = _realized(recent_pairs, probabilistic)
+    n_realized = len(recent_pairs)
 
     drop = (baseline - estimated) if baseline is not None else 0.0
     warn = drop >= PERF_WARN_DROP
+    realized_drop, confirm_basis, realized_baseline = _realized_drop(
+        pairs[:-window] if len(pairs) > window else [],
+        realized,
+        baseline,
+        probabilistic,
+    )
+    confirmed = bool(
+        warn
+        and realized_drop is not None
+        and n_realized >= PERF_CONFIRM_MIN_LABELS
+        and realized_drop >= PERF_WARN_DROP
+    )
+    severity = "CRITICAL" if confirmed else ("WARN" if warn else "OK")
+    event_detail: dict[str, Any] = {
+        "estimated": estimated,
+        "realized": realized,
+        "realized_n": n_realized,
+        "baseline": baseline,
+        "realized_baseline": realized_baseline,
+        "confirm_basis": confirm_basis,
+        "label_free": True,
+        "confirmed_by_labels": confirmed,
+        "estimator": used,
+        "method": method,
+        "warn_drop": PERF_WARN_DROP,
+        **extra,
+    }
+    if reason:
+        event_detail["estimator_fallback"] = reason
     if persist:
         platform_db.record_perf_estimate(
-            model, metric, estimated=estimated, realized=realized, baseline=baseline
+            model, metric, estimated=estimated, realized=realized, baseline=baseline, method=method
         )
-        if warn:  # R4 — warn only, never force-retrain
+        # An unconfirmed drop warns; a label-confirmed one is auto-retrain consumable. A recovery
+        # is written too when the last estimate event was not OK — otherwise a stale confirmed
+        # CRITICAL stays the newest estimate signal and `exa drift trigger` retrains forever.
+        if warn or estimate_signal_open(model):
             platform_db.record_drift_event(
-                model,
-                "concept",
-                severity="WARN",
-                score=drop,
-                metric=metric,
-                detail={"estimated": estimated, "baseline": baseline, "label_free": True},
+                model, "concept", severity=severity, score=drop, metric=metric, detail=event_detail
             )
-    return {
+    out: dict[str, Any] = {
         "model": model,
         "metric": metric,
         "estimated": estimated,
         "realized": realized,
+        "realized_n": n_realized,
         "baseline": baseline,
         "warn": warn,
+        "confirmed": confirmed,
+        "severity": severity,
         "n": len(values),
-        "method": "cbpe-like" if in_unit else "stability-proxy",
+        "method": method,
+        "estimator": used,
+        "event_detail": event_detail,
     }
+    if reason:
+        out["estimator_fallback"] = reason
+    return out
+
+
+def _features_of(row: dict[str, Any]) -> dict[str, Any] | None:
+    raw = row.get("features_json")
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def labelled_pairs(model: str, alias: str | None = None) -> list[dict[str, Any]]:
+    """Prediction/label pairs in **arrival order** (oldest first), newest ``MAX_LABELLED_PAIRS``.
+
+    The concept test splits this stream into a baseline head and a recent tail, so the order is
+    the whole meaning of "recent" — the shared ``join_predictions_with_truth`` has no ORDER BY.
+    Each pair carries its recorded input ``features`` (``None`` when none were logged).
+    """
+    sql = (
+        "SELECT p.id, p.prediction, p.features_json, g.label "
+        "FROM predictions p JOIN ground_truth g ON p.request_hash = g.request_hash "
+        "WHERE p.model=?"
+    )
+    params: list[Any] = [model]
+    if alias is not None:
+        sql += " AND p.alias=?"
+        params.append(alias)
+    sql += " ORDER BY p.id DESC, g.id DESC LIMIT ?"
+    params.append(MAX_LABELLED_PAIRS)
+    with platform_db.get_db() as conn:
+        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    rows.reverse()
+    return [
+        {
+            "prediction": float(r["prediction"]),
+            "label": float(r["label"]),
+            "features": _features_of(r),
+        }
+        for r in rows
+        if r["prediction"] is not None and r["label"] is not None
+    ]
 
 
 def _read_recent_predictions(model: str, alias: str | None, limit: int) -> list[dict[str, Any]]:
-    sql = "SELECT prediction, request_hash FROM predictions WHERE model=?"
+    sql = "SELECT prediction, request_hash, features_json FROM predictions WHERE model=?"
     params: list[Any] = [model]
     if alias:
         sql += " AND alias=?"
@@ -270,7 +536,9 @@ def _read_recent_predictions(model: str, alias: str | None, limit: int) -> list[
     sql += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
     with platform_db.get_db() as conn:
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+        return [
+            dict(r) for r in conn.execute(sql, params).fetchall() if r["prediction"] is not None
+        ]
 
 
 def _persist(res: DriftResult) -> None:
@@ -284,19 +552,16 @@ def _persist(res: DriftResult) -> None:
     )
 
 
-def profile_inference(
-    model: str,
-    batch: Sequence[dict[str, Any]],
-    *,
-    bad_payloads: int = 0,
-    persist: bool = True,
-) -> QualityProfile:
-    """Profile an inference batch: schema / nulls / ranges / cardinality (R5).
+QualityProfiler = Callable[[Sequence[dict[str, Any]]], tuple[dict[str, dict[str, Any]], int, int]]
 
-    Records ``drift_kind=data_quality`` and folds in A5 ``bad_payloads`` counters.
-    A null-fraction spike escalates severity (WARN/CRITICAL).
-    """
-    n = len(batch)
+QUALITY_PROFILER_ENV = "EXAMLOPS_DRIFT_QUALITY_PROFILER"
+DEFAULT_QUALITY_PROFILER = "builtin"
+
+
+def _builtin_profile(
+    batch: Sequence[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], int, int]:
+    """Per-field nulls / min / max / exact cardinality over the keys each row carries."""
     fields: dict[str, dict[str, Any]] = {}
     total_cells = 0
     null_cells = 0
@@ -325,6 +590,56 @@ def profile_inference(
             "max": f["max"],
             "cardinality": len(f["values"]),
         }
+    return summary, total_cells, null_cells
+
+
+#: Selectable data-quality profilers. Register another with ``QUALITY_PROFILERS["name"] = fn``.
+QUALITY_PROFILERS: dict[str, QualityProfiler] = {
+    "builtin": _builtin_profile,
+    "whylogs": adapters.whylogs_profile,
+}
+
+
+def resolve_quality_profiler(name: str | None = None) -> tuple[str, QualityProfiler, str | None]:
+    """The profiler to run: ``(name used, fn, fallback_reason)`` — same contract as detectors."""
+    want = (name or os.getenv(QUALITY_PROFILER_ENV) or DEFAULT_QUALITY_PROFILER).strip().lower()
+    fn = QUALITY_PROFILERS.get(want)
+    if fn is None:
+        return "builtin", _builtin_profile, f"unknown profiler {want!r}"
+    return want, fn, None
+
+
+def profile_inference(
+    model: str,
+    batch: Sequence[dict[str, Any]],
+    *,
+    bad_payloads: int = 0,
+    persist: bool = True,
+    profiler: str | None = None,
+) -> QualityProfile:
+    """Profile an inference batch: schema / nulls / ranges / cardinality (R5).
+
+    Records ``drift_kind=data_quality`` and folds in A5 ``bad_payloads`` — requests the inference
+    ingress rejected against the contract (see
+    :func:`examlops.data.drift.count_inference_rejections`) count as fully-null inputs, so a model
+    whose traffic is mostly refused is not reported healthy because the few rows that got through
+    were clean. A null-fraction spike escalates severity (WARN/CRITICAL). The profiler is a seam
+    (``builtin`` by default, ``whylogs`` when installed).
+    """
+    n = len(batch)
+    bad_payloads = max(int(bad_payloads), 0)
+    used, fn, reason = resolve_quality_profiler(profiler)
+    if n:
+        try:
+            summary, total_cells, null_cells = fn(batch)
+        except _UNAVAILABLE as exc:
+            used, reason = "builtin", _unavailable_reason(used, exc)
+            summary, total_cells, null_cells = _builtin_profile(batch)
+        except Exception as exc:  # noqa: BLE001 - a library failure degrades, and says so
+            used, reason = "builtin", f"{used} failed: {type(exc).__name__}: {exc}"
+            summary, total_cells, null_cells = _builtin_profile(batch)
+    else:
+        summary, total_cells, null_cells = {}, 0, 0
 
     denom = total_cells + bad_payloads
     null_fraction = (null_cells + bad_payloads) / denom if denom else 0.0
@@ -335,24 +650,120 @@ def profile_inference(
     else:
         severity = "OK"
 
-    prof = QualityProfile(model, n, summary, null_fraction, severity)
+    prof = QualityProfile(
+        model,
+        n,
+        summary,
+        null_fraction,
+        severity,
+        bad_payloads=bad_payloads,
+        profiler=used,
+        profiler_fallback=reason,
+    )
     if persist:
+        detail: dict[str, Any] = {
+            "n": n,
+            "bad_payloads": bad_payloads,
+            "fields": summary,
+            "profiler": used,
+        }
+        if reason:
+            detail["profiler_fallback"] = reason
         platform_db.record_drift_event(
-            model,
-            "data_quality",
-            severity=severity,
-            score=null_fraction,
-            detail={"n": n, "bad_payloads": bad_payloads, "fields": summary},
+            model, "data_quality", severity=severity, score=null_fraction, detail=detail
         )
     return prof
 
 
+def _signal_source(event: dict[str, Any]) -> str:
+    detail = event.get("detail") or {}
+    return "estimated_performance" if detail.get("label_free") else "realized_error"
+
+
+#: How ``record_drift_event`` serialises the label-free marker (``json.dumps`` default separators).
+#: Matching it in SQL finds the newest event of each source with its own ``LIMIT 1`` — reading the
+#: newest N concept events and filtering in Python would let N events of one source push the other
+#: source's newest event out of the page.
+_LABEL_FREE_MARK = '%"label_free": true%'
+
+
+def _newest_concept_event(model: str, *, label_free: bool) -> dict[str, Any] | None:
+    """The newest ``drift_kind=concept`` event of one source (estimate or realized error)."""
+    cond = "detail LIKE ?" if label_free else "(detail IS NULL OR detail NOT LIKE ?)"
+    platform_db.init_db()
+    with platform_db.get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM drift_events WHERE model=? AND drift_kind='concept' AND "
+            + cond
+            + " ORDER BY ts DESC, id DESC LIMIT 1",
+            (model, _LABEL_FREE_MARK),
+        ).fetchone()
+    if row is None:
+        return None
+    ev = dict(row)
+    try:
+        ev["detail"] = json.loads(ev["detail"]) if ev.get("detail") else None
+    except (TypeError, ValueError):
+        ev["detail"] = None
+    # The LIKE is a prefilter; the parsed detail is the authority on which source wrote it.
+    if (_signal_source(ev) == "estimated_performance") != label_free:
+        return None
+    return ev
+
+
+def estimate_signal_open(model: str) -> bool:
+    """Is the newest label-free estimate event for ``model`` a WARN/CRITICAL not yet cleared?
+
+    Estimates only write a drift event when they are not OK, so without an explicit recovery event
+    the last non-OK one would stay the newest estimated-performance signal indefinitely.
+    """
+    ev = _newest_concept_event(model, label_free=True)
+    return ev is not None and ev.get("severity") != "OK"
+
+
+def concept_retrain_signal(model: str) -> dict[str, Any] | None:
+    """The concept-kind event auto-retrain should act on for ``model``, or ``None``.
+
+    Two sources write ``drift_kind=concept``: the realized-error detectors and the label-free
+    estimate. Reading only the newest concept event let an unconfirmed estimate WARN written after
+    a realized CRITICAL hide that CRITICAL. So the newest event **per source** is taken, and the
+    newest ``CRITICAL`` among them wins. An estimate may only drive a retrain when it was
+    confirmed by realized labels (``confirmed_by_labels``) — an unconfirmed estimate never does,
+    whatever severity a row claims (ADR 0022: "estimate only warns until confirmed").
+
+    Returns the event plus ``signal`` = ``realized_error`` | ``estimated_performance``.
+    """
+    candidates = [
+        (ev, source)
+        for ev, source in (
+            (_newest_concept_event(model, label_free=False), "realized_error"),
+            (_newest_concept_event(model, label_free=True), "estimated_performance"),
+        )
+        if ev is not None
+        and ev.get("severity") == "CRITICAL"
+        and (source == "realized_error" or (ev.get("detail") or {}).get("confirmed_by_labels"))
+    ]
+    if candidates:
+        ev, source = max(
+            candidates, key=lambda c: (str(c[0].get("ts") or ""), int(c[0].get("id") or 0))
+        )
+        return {**ev, "signal": source}
+    return None
+
+
 __all__ = [
     "CONCEPT_DETECTORS",
+    "PERF_ESTIMATORS",
+    "QUALITY_PROFILERS",
     "DriftResult",
     "QualityProfile",
+    "concept_retrain_signal",
     "detect_concept_drift",
+    "estimate_signal_open",
     "estimate_performance",
+    "labelled_pairs",
     "profile_inference",
     "resolve_concept_detector",
+    "resolve_perf_estimator",
+    "resolve_quality_profiler",
 ]

@@ -7,7 +7,7 @@ import logging
 import httpx
 from auth import require_role
 from database import get_db
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from realtime import bus
 from settings import settings
@@ -29,6 +29,21 @@ def _as_dict(value: object) -> dict:
 async def _get_control_plane_token(db: AsyncSession) -> str | None:
     """Return the plaintext control_plane_token from the encrypted config store, or None."""
     return await get_decrypted_secret(db, "control_plane_token")
+
+
+_ACK_HEADER = "X-Policy-Approved"
+
+
+def _forward_ack(request: Request, headers: dict[str, str]) -> dict[str, str]:
+    """Carry an admin's acknowledgement of a ``require_approval`` rule to the control plane.
+
+    The dashboard's own policy gate has already decided ``approval_approve``/``approval_reject``
+    for this admin; the control plane now decides the same action (ADR 0079 d2), so without the
+    header an approved request would be answered 409 one hop later.
+    """
+    if _ACK_HEADER in request.headers:
+        headers[_ACK_HEADER] = request.headers[_ACK_HEADER]
+    return headers
 
 
 class RejectBody(BaseModel):
@@ -77,6 +92,7 @@ async def list_approvals(
 )
 async def approve_model(
     model_id: str,
+    request: Request,
     _claims: dict = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -88,7 +104,7 @@ async def approve_model(
     url = f"{settings.control_plane_url}/v1/approvals/{model_id}/approve"
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            resp = await client.post(url, headers=headers)
+            resp = await client.post(url, headers=_forward_ack(request, headers))
         except httpx.HTTPError as exc:
             raise HTTPException(
                 status_code=502, detail=f"Control Plane unavailable: {exc}"
@@ -114,6 +130,7 @@ async def approve_model(
 async def reject_model(
     model_id: str,
     body: RejectBody,
+    request: Request,
     _claims: dict = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -125,7 +142,9 @@ async def reject_model(
     url = f"{settings.control_plane_url}/v1/approvals/{model_id}/reject"
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            resp = await client.post(url, headers=headers, json={"reason": body.reason})
+            resp = await client.post(
+                url, headers=_forward_ack(request, headers), json={"reason": body.reason}
+            )
         except httpx.HTTPError as exc:
             raise HTTPException(
                 status_code=502, detail=f"Control Plane unavailable: {exc}"

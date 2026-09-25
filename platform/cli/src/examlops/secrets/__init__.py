@@ -1,11 +1,21 @@
 """D7 — Secrets management & rotation (ADR 0011, spec D7-secrets-management).
 
-One client over three backends, tried in order:
+One client over four backends, tried in order:
 
-1. **OpenBao/Vault** — when ``EXAMLOPS_VAULT_ADDR`` is set (best-effort HTTP KV).
-2. **Local encrypted store** — Fernet-encrypted values in ``platform_db.secrets_store``
-   (the fallback; works with no running Vault, spec R1).
-3. **Environment variable** — last resort for bootstrap creds.
+1. **OpenBao/Vault** — when ``EXAMLOPS_VAULT_ADDR`` is set (HTTP KV v2).
+2. **SOPS + age** — when ``EXAMLOPS_SOPS_FILE`` is set: an encrypted, committable document
+   decrypted per key by ``sops`` (the ADR's dev/CI fallback tier, :mod:`examlops.secrets.sops`).
+3. **Local encrypted store** — Fernet-encrypted values in ``platform_db.secrets_store``
+   (works with no running Vault and no sops binary, spec R1).
+4. **Environment variable** — last resort for bootstrap creds.
+
+Writes (``set``/``rotate``) go to ONE store, chosen by ``EXAMLOPS_SECRETS_WRITE_BACKEND``
+(``local`` default · ``vault`` · ``sops``) — so a rotation lands in the manager of record rather
+than in a local copy the manager still overrides. A write to a manager that cannot be reached
+fails; it never silently lands somewhere else.
+
+Services resolve ``secret://<path>`` references in their environment at startup through
+:mod:`examlops.secrets.inject` (ADR 0011 clause 2).
 
 A missing/denied secret **fails fast** with a clear, non-leaking error (spec R3).
 Access, writes, and rotations are audited (spec R4/R6). Secrets are scoped by
@@ -31,6 +41,43 @@ class SecretNotFound(RuntimeError):
 
 class SecretAccessDenied(RuntimeError):
     """Raised when a tenant is not permitted to read a secret path (spec R5)."""
+
+
+class SecretBackendError(RuntimeError):
+    """Raised when the configured write backend cannot store a secret (fail closed)."""
+
+
+class InvalidSecretPath(SecretNotFound):
+    """A secret path with an empty, ``.`` or ``..`` segment, or a control character.
+
+    The tenant check reads the path's first segment, but OpenBao/Vault (a Go server) *cleans* a
+    request path — ``acme/../globex/key`` and ``/globex/key`` are redirected to ``globex/key`` — so
+    a path that passes the prefix check as tenant ``acme`` (or as an unprefixed, shared path) could
+    otherwise be served another tenant's secret. Such a path is refused before any backend is asked.
+    """
+
+
+def _check_path(path: str) -> None:
+    segments = path.split("/")
+    if (
+        not path
+        or any(seg in {"", ".", ".."} for seg in segments)
+        or any(ord(ch) < 0x20 or ch in "\\\x7f" for ch in path)
+    ):
+        raise InvalidSecretPath(f"invalid secret path {path!r}")
+
+
+WRITE_BACKENDS = ("local", "vault", "sops")
+
+
+def write_backend() -> str:
+    """The store ``set``/``rotate`` write to (``EXAMLOPS_SECRETS_WRITE_BACKEND``)."""
+    chosen = os.getenv("EXAMLOPS_SECRETS_WRITE_BACKEND", "local").strip().lower() or "local"
+    if chosen not in WRITE_BACKENDS:
+        raise SecretBackendError(
+            f"EXAMLOPS_SECRETS_WRITE_BACKEND={chosen!r} is not one of {', '.join(WRITE_BACKENDS)}"
+        )
+    return chosen
 
 
 # --- envelope encryption keyring (2.3) ---------------------------------------
@@ -131,7 +178,10 @@ def _audit(
     # arrived, so the loss is logged and counted instead of passed over.
     from examlops.data.audit import audit_best_effort
 
-    audit_best_effort(source, actor, action, path, extra or {})
+    # The tenant goes on the row, not only in the details, so a per-tenant reading of the trail
+    # (ADR 0027's rotation evidence, `exa audit --tenant`) sees it.
+    tenant = str((extra or {}).get("tenant") or "default")
+    audit_best_effort(source, actor, action, path, extra or {}, tenant=tenant)
 
 
 def _tenant_allowed(path: str, tenant: str) -> bool:
@@ -160,6 +210,23 @@ def _tenant_allowed(path: str, tenant: str) -> bool:
     return True
 
 
+def _tenant_may_write_shared(path: str, tenant: str) -> bool:
+    """May ``tenant`` write ``path`` in a store every tenant shares (vault / sops)?
+
+    A read of an unprefixed path is allowed to everyone — it is a shared secret. A *write* of one
+    in the vault or SOPS document replaces that shared secret for every tenant, so under
+    multitenancy only ``admin`` may do it; any other tenant writes under its own prefix. (The
+    local store is keyed by tenant, so a write there cannot reach another tenant's value.)
+    """
+    if not _tenant_allowed(path, tenant):
+        return False
+    if tenant == "admin" or "/" in path:
+        return True
+    from examlops.authz import multitenancy_enabled
+
+    return not multitenancy_enabled()
+
+
 def _known_tenant_prefixes() -> set[str]:
     # Any path segment used as a tenant prefix; kept minimal + overridable.
     return {p.strip() for p in os.getenv("EXAMLOPS_SECRET_TENANTS", "").split(",") if p.strip()}
@@ -184,10 +251,8 @@ def _vault_get(path: str) -> tuple[str | None, str | None]:
         import json
         import urllib.request
 
-        token = os.getenv("EXAMLOPS_VAULT_TOKEN", "")
-        url = f"{addr.rstrip('/')}/v1/secret/data/{path}"
-        req = urllib.request.Request(url, headers={"X-Vault-Token": token})
-        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310 - operator-configured
+        req = urllib.request.Request(_vault_data_url(addr, path), headers=_vault_headers())
+        with urllib.request.urlopen(req, timeout=_vault_timeout()) as resp:  # noqa: S310 - operator-configured
             data = json.loads(resp.read().decode())
         return data["data"]["data"]["value"], None
     except Exception as exc:
@@ -196,6 +261,131 @@ def _vault_get(path: str) -> tuple[str | None, str | None]:
         if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
             return None, None  # the vault answered: not here. Not a degradation.
         return None, f"{type(exc).__name__}: {exc}"
+
+
+def _vault_data_url(addr: str, path: str) -> str:
+    """KV v2 data URL for ``path`` — percent-encoded, so ``?``/``#``/``%`` stay inside the path."""
+    from urllib.parse import quote
+
+    return f"{addr.rstrip('/')}/v1/{_vault_mount()}/data/{quote(path, safe='/')}"
+
+
+def _vault_mount() -> str:
+    """KV v2 mount (``EXAMLOPS_VAULT_MOUNT``, default ``secret``)."""
+    return os.getenv("EXAMLOPS_VAULT_MOUNT", "secret").strip().strip("/") or "secret"
+
+
+def _vault_headers() -> dict[str, str]:
+    headers = {"X-Vault-Token": os.getenv("EXAMLOPS_VAULT_TOKEN", "")}
+    namespace = os.getenv("EXAMLOPS_VAULT_NAMESPACE", "").strip()
+    if namespace:
+        headers["X-Vault-Namespace"] = namespace
+    return headers
+
+
+def _vault_timeout() -> float:
+    try:
+        value = float(os.getenv("EXAMLOPS_VAULT_TIMEOUT", "5"))
+    except ValueError:
+        return 5.0
+    return value if value > 0 else 5.0
+
+
+def _vault_put(path: str, value: str) -> int:
+    """Write ``value`` as a new KV v2 version of ``path``; return that version.
+
+    Fails closed with :class:`SecretBackendError` — a rotation that could not reach the manager
+    of record must be seen to fail, not land in a local copy the vault then overrides on read.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    addr = os.getenv("EXAMLOPS_VAULT_ADDR", "").strip()
+    if not addr:
+        raise SecretBackendError(
+            "EXAMLOPS_SECRETS_WRITE_BACKEND=vault but EXAMLOPS_VAULT_ADDR is not set"
+        )
+    url = _vault_data_url(addr, path)
+    body = json.dumps({"data": {"value": value}}).encode()
+    headers = {**_vault_headers(), "Content-Type": "application/json"}
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=_vault_timeout()) as resp:  # noqa: S310
+            data = json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        raise SecretBackendError(f"vault refused the write of '{path}': HTTP {exc.code}") from exc
+    except Exception as exc:  # noqa: BLE001 - any transport failure is a failed write
+        raise SecretBackendError(
+            f"vault unreachable for the write of '{path}': {type(exc).__name__}"
+        ) from exc
+    try:
+        return int((data.get("data") or {}).get("version") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
+def _vault_status() -> dict[str, Any]:
+    """Vault reachability via ``/v1/sys/health`` (unauthenticated; no token sent)."""
+    import json
+    import urllib.request
+
+    addr = os.getenv("EXAMLOPS_VAULT_ADDR", "").strip()
+    out: dict[str, Any] = {
+        "configured": bool(addr),
+        "addr": addr or None,
+        "mount": _vault_mount(),
+        "token": bool(os.getenv("EXAMLOPS_VAULT_TOKEN")),
+        "reachable": None,
+        "initialized": None,
+        "sealed": None,
+        "error": None,
+    }
+    if not addr:
+        return out
+    # 200 active · 429 standby · 472/473 perf standby · 501 uninitialised · 503 sealed — every one
+    # of them is an answer, so ask for 200 across the board and read the body.
+    url = (
+        f"{addr.rstrip('/')}/v1/sys/health?standbyok=true&perfstandbyok=true"
+        "&sealedcode=200&uninitcode=200"
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=_vault_timeout()) as resp:  # noqa: S310
+            data = json.loads(resp.read().decode() or "{}")
+        out.update(
+            reachable=True,
+            initialized=bool(data.get("initialized")),
+            sealed=bool(data.get("sealed")),
+        )
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        out.update(reachable=False, error=f"{type(exc).__name__}: {exc}"[:300])
+    return out
+
+
+def backends_status() -> dict[str, Any]:
+    """Every backend's configuration + health, and the write backend — never a secret value."""
+    from examlops.secrets import sops as _sops
+
+    local: dict[str, Any] = {"keys": sorted(_keyring()), "active_key_id": None, "error": None}
+    try:
+        local["active_key_id"] = _active_key_id()
+    except SecretNotFound as exc:
+        local["error"] = str(exc)
+    writes: str | None
+    write_error: str | None = None
+    try:
+        writes = write_backend()
+    except SecretBackendError as exc:
+        writes, write_error = None, str(exc)
+    return {
+        "order": ["vault", "sops", "local", "env"],
+        "write_backend": writes,
+        "write_backend_error": write_error,
+        "strict": os.getenv("EXAMLOPS_VAULT_STRICT", "").strip().lower() in _TRUTHY,
+        "vault": _vault_status(),
+        "sops": _sops.status(),
+        "local": local,
+    }
 
 
 # --- public API --------------------------------------------------------------
@@ -221,6 +411,11 @@ def resolve_secret(
     which defeats the point of auditing a secrets subsystem. Set ``EXAMLOPS_VAULT_STRICT=1``
     to refuse the downgrade outright and fail the read instead.
     """
+    try:
+        _check_path(path)
+    except InvalidSecretPath:
+        _audit("secret_denied", path, actor, {"tenant": tenant, "reason": "invalid_path"})
+        raise
     if not _tenant_allowed(path, tenant):
         _audit("secret_denied", path, actor, {"tenant": tenant})
         raise SecretAccessDenied(f"tenant '{tenant}' may not read secret '{path}'")
@@ -247,6 +442,30 @@ def resolve_secret(
         if val is not None:
             backend = "vault"
             return {"value": val, "backend": backend, "vault_error": vault_error}
+
+        from examlops.secrets import sops as _sops
+
+        sval, sops_error = _sops.get(path)
+        if sops_error:
+            extra["sops_error"] = sops_error
+            if os.getenv("EXAMLOPS_VAULT_STRICT", "").strip().lower() in _TRUTHY:
+                raise SecretNotFound(
+                    f"SOPS backend failed for secret '{path}' ({sops_error}) and "
+                    "EXAMLOPS_VAULT_STRICT is set — refusing to fall back to another store"
+                )
+            log.warning(
+                "SOPS backend failed for secret %r (%s) - falling back to the local store/env",
+                path,
+                sops_error,
+            )
+        if sval is not None:
+            backend = "sops"
+            return {
+                "value": sval,
+                "backend": backend,
+                "vault_error": vault_error,
+                "sops_error": sops_error,
+            }
 
         from examlops.data.secrets import get_secret_record
 
@@ -277,22 +496,58 @@ def set_secret(
     actor: str | None = None,
     source: str = "exa-secrets",
 ) -> int:
-    """Store an encrypted secret in the local store (audited). Returns its version.
+    """Store a secret in the write backend (audited). Returns its version.
+
+    The store is :func:`write_backend` — ``local`` (Fernet, default), ``vault`` (a new KV v2
+    version) or ``sops`` (re-encrypted in place; unversioned, so ``0`` is returned). A manager
+    that cannot be reached raises :class:`SecretBackendError`; nothing is written elsewhere.
+    Vault and SOPS hold ONE namespace shared by every tenant, so a write there must pass the
+    same path-prefix tenant check a read does — otherwise tenant ``acme`` could overwrite
+    ``globex/…``. (The local store is keyed by tenant, so a write there cannot collide.)
 
     ``source`` attributes the audit event to the calling surface (``"exa-secrets"`` by default; the
     dashboard passes ``"dashboard"``) so this shared write serves every face of the platform.
     """
-    from examlops.data.secrets import put_secret_ciphertext
+    backend = write_backend()
+    extra: dict[str, Any] = {"tenant": tenant, "backend": backend}
+    try:
+        _check_path(path)
+    except InvalidSecretPath:
+        _audit(
+            "secret_denied",
+            path,
+            actor,
+            {**extra, "op": "write", "reason": "invalid_path"},
+            source=source,
+        )
+        raise
+    if backend != "local" and not _tenant_may_write_shared(path, tenant):
+        _audit("secret_denied", path, actor, {**extra, "op": "write"}, source=source)
+        raise SecretAccessDenied(f"tenant '{tenant}' may not write secret '{path}'")
+    version: int
+    if backend == "vault":
+        try:
+            version = _vault_put(path, value)
+        except SecretBackendError as exc:
+            _audit("secret_set_failed", path, actor, {**extra, "error": str(exc)}, source=source)
+            raise
+    elif backend == "sops":
+        from examlops.secrets import sops as _sops
 
-    ct, key_id = _encrypt(value)
-    version = put_secret_ciphertext(path, tenant, ct, updated_by=actor, key_id=key_id)
-    _audit(
-        "secret_set",
-        path,
-        actor,
-        {"tenant": tenant, "version": version, "key_id": key_id},
-        source=source,
-    )
+        try:
+            _sops.put(path, value)
+        except _sops.SopsError as exc:
+            _audit("secret_set_failed", path, actor, {**extra, "error": str(exc)}, source=source)
+            raise SecretBackendError(str(exc)) from exc
+        version = 0
+    else:
+        from examlops.data.secrets import put_secret_ciphertext
+
+        ct, key_id = _encrypt(value)
+        version = put_secret_ciphertext(path, tenant, ct, updated_by=actor, key_id=key_id)
+        extra["key_id"] = key_id
+    extra["version"] = version
+    _audit("secret_set", path, actor, extra, source=source)
     return version
 
 
@@ -306,7 +561,12 @@ def rotate_secret(
     """Rotate a secret to ``new_value`` (or a fresh random token). Audited (spec R4)."""
     value = new_value or _pysecrets.token_urlsafe(32)
     version = set_secret(path, value, tenant=tenant, actor=actor)
-    _audit("secret_rotate", path, actor, {"tenant": tenant, "version": version})
+    _audit(
+        "secret_rotate",
+        path,
+        actor,
+        {"tenant": tenant, "version": version, "backend": write_backend()},
+    )
     return version
 
 
@@ -339,8 +599,10 @@ def rewrap_secrets(*, actor: str | None = None, dry_run: bool = False) -> dict[s
             plaintext = _decrypt(rec["ciphertext"], rec.get("key_id"))
             if not dry_run:
                 ct, _ = _encrypt(plaintext)
+                # rewrap=True: a KEK change is not a credential rotation, so the value's age
+                # (updated_at) must survive it (ADR 0027 secrets_rotation evidence).
                 put_secret_ciphertext(
-                    rec["path"], rec["tenant"], ct, updated_by=actor, key_id=active
+                    rec["path"], rec["tenant"], ct, updated_by=actor, key_id=active, rewrap=True
                 )
             rewrapped += 1
         except Exception as exc:  # noqa: BLE001 - report per-secret, don't abort the whole job

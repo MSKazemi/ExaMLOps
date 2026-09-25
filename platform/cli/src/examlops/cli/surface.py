@@ -49,9 +49,12 @@ R, A, D, X = READ, ADMIN, DESTRUCTIVE, CLI_ONLY
 # Skipper memory) stay admin here too, so the console can never widen what a viewer sees.
 TIERS: dict[str, str] = {
     "admission reservations": R,
+    "admission reconcile": A,  # expires lapsed and releases ended-job reservations
     "admission simulate": R,  # reads a request file, so a path escalates it to admin
     "admission stats": R,
     "admission submit": A,
+    "admission topology": R,
+    "admission translate": R,  # reads a request file, so a path escalates it to admin
     "agent memory delete": D,
     "agent memory export": A,
     "agent memory list": A,
@@ -59,13 +62,21 @@ TIERS: dict[str, str] = {
     "agent memory review list": A,
     "agent memory review reject": A,
     "agent memory stats": R,
+    "agent alias canary": A,
     "agent alias rollback": A,
     "agent alias set": A,
     "agent alias show": R,
+    "agent runtime sandboxes": R,
+    "agent runtime serve": X,
+    "agent runtime snapshot": A,
     "agent status": R,
     "agent version card": R,
+    "agent version compat": R,
     "agent version diff": R,
+    "agent version evidence": R,
     "agent version list": R,
+    "agent version reeval": R,
+    "agent version reeval-resolve": A,
     "agent version register": A,
     "agent version show": R,
     "broker grant list": R,
@@ -97,12 +108,15 @@ TIERS: dict[str, str] = {
     "audit checkpoint": A,
     "audit checkpoints": A,
     "audit export": A,
+    "audit maintain": D,
+    "audit maintenance-runs": A,
     "audit prune": D,
     "audit review": A,
     "audit reviews": A,
     "audit verify": A,
     "audit verify-anchors": A,
     "audit verify-worm": A,
+    "audit verify-transparency": A,
     # ADR 0120 identity federation. `whoami`/`status`/`providers` show identity, never a credential.
     # `verify`/`decide` read a token file and may reach the IdP/PDP → admin. `validate` reads the
     # trust file (issuers, client ids, PDP URLs) → admin. `login`/`token` → cli_only (reasons below).
@@ -204,13 +218,17 @@ TIERS: dict[str, str] = {
     "drift auto-retrain enable": A,
     "drift auto-retrain status": R,
     "drift baseline": A,
-    "drift concept": R,
+    # `drift concept` / `drift estimate` persist `drift_kind=concept` events, and a CRITICAL one is
+    # what `exa drift trigger` and the autopilot retrain on (ADR 0022 decision 4) — while an OK
+    # estimate clears a standing signal. `--baseline` / `--window` / `--detector` are the caller's,
+    # so running them is the power to start or suppress an autonomous retrain: admin, not read.
+    "drift concept": A,
     "drift consume-telemetry": X,
     "drift corruption baseline": A,
     "drift corruption classify": R,
     "drift corruption selftest": R,
     "drift corruption status": R,
-    "drift estimate": R,
+    "drift estimate": A,
     "drift events": R,
     "drift forecast": R,
     "drift input baseline": A,
@@ -239,8 +257,13 @@ TIERS: dict[str, str] = {
     "eval gate run": A,
     "eval gate set": A,
     "eval gate show": R,
+    "eval evaluators": R,
     "eval grounding": A,
     "eval history": R,
+    "eval online disable": A,
+    "eval online enable": A,
+    "eval online run": A,
+    "eval online status": R,
     "eval operator-qa": A,
     "eval run": A,
     "eval safety": A,
@@ -264,8 +287,11 @@ TIERS: dict[str, str] = {
     "feature ingest": A,
     "feature list": R,
     "feature materialize": A,
+    "feature materialize-due": A,
     "feature similar": R,
     "feature skew": R,
+    "feature status": R,
+    "feature sync": A,
     "features list": R,
     "features pull": A,
     "features push": A,
@@ -287,6 +313,10 @@ TIERS: dict[str, str] = {
     "finops carbon signal": R,
     "finops cost providers": R,
     "finops economics": R,
+    "finops specdecode": R,
+    "finops task-cost apportion": A,  # ADR 0148 d4 (audited)
+    "finops task-cost record": A,
+    "finops task-cost show": R,
     "fleet heatmap": R,
     "fleet simulate": R,
     "gateway cache stats": R,
@@ -302,6 +332,8 @@ TIERS: dict[str, str] = {
     "gateway reasoning budgets": R,
     "gateway reasoning set-budget": A,
     "gateway reasoning stats": R,
+    "gateway schema list": R,
+    "gateway schema show": R,
     "gateway schema test": A,
     "genai check": R,
     "genai cost": R,
@@ -315,9 +347,13 @@ TIERS: dict[str, str] = {
     "genai-app show": R,
     "governance catalogue": R,
     "governance crosswalk": R,
+    "governance features": R,
     "governance report": A,
     "governance validate": R,
     "guardrails check-tool": R,
+    "guardrails checks": R,
+    "guardrails policy show": R,
+    "guardrails policy validate": R,
     "guardrails stats": R,
     "guardrails test": R,
     "hardware add-pool": A,
@@ -327,6 +363,8 @@ TIERS: dict[str, str] = {
     "hardware pools": R,
     "hardware portable": R,
     "hardware profile delete": D,
+    "hardware profile history": R,
+    "hardware profile in-use": R,
     "hardware profile list": R,
     "hardware profile resolve": R,
     "hardware profile set": A,
@@ -354,8 +392,10 @@ TIERS: dict[str, str] = {
     "mcp capabilities": R,
     "mcp prompts": R,
     "mcp resources": R,
+    "mcp scopes": R,
     "mcp serve": X,
     "mcp tools": R,
+    "models attest": A,
     "models bom": R,
     "models card generate": A,
     "models card history": R,
@@ -368,7 +408,10 @@ TIERS: dict[str, str] = {
     "models lineage": R,
     "models list": R,
     "models parity": R,
+    "models provenance": R,
     "models quantize": A,
+    "models release-check": R,
+    "models quantize-gate": A,  # records a gate_reports row + audit event
     "models rollback history": R,
     "models rollback run": D,
     "models sign": A,
@@ -402,9 +445,19 @@ TIERS: dict[str, str] = {
     "pipeline distributed launch": A,
     "pipeline distributed list": R,
     "pipeline distributed resume": A,
-    "pipeline distributed run": A,  # launches torchrun worker processes; run dir is not user-chosen
+    # Launches torchrun worker processes; the run dir is not user-chosen, --checkpoint-store is an
+    # s3:// URL or a directory contained in the workspace (_EXTRA_FS + _URL_SCHEMES).
+    "pipeline distributed run": A,
     "pipeline explain": R,
     "pipeline distributed status": R,
+    # ADR 0109 suspend seam: snapshot/resume/discard mutate a pin and an audited record.
+    "pipeline distributed suspend backends": R,
+    "pipeline distributed suspend capability": R,
+    "pipeline distributed suspend discard": A,
+    "pipeline distributed suspend list": R,
+    "pipeline distributed suspend resume": A,
+    "pipeline distributed suspend show": R,
+    "pipeline distributed suspend snapshot": A,
     "pipeline export-registry": A,
     "pipeline hpo record": A,
     "pipeline hpo start": A,
@@ -415,6 +468,7 @@ TIERS: dict[str, str] = {
     "pipeline quality check": R,
     "pipeline quality history": R,
     "pipeline run": A,
+    "pipeline show": R,  # ADR 0080: a pack model's IR by name — no path argument
     "pipeline validate": R,
     "pipeline validate-model": A,
     "offline cancel": A,
@@ -478,6 +532,7 @@ TIERS: dict[str, str] = {
     "providers rm": D,
     "providers show": R,
     "providers validate": A,
+    "rag eval": A,  # persists C2 results (--record by default)
     "rag ingest": A,
     "rag list": R,
     "rag query": R,
@@ -494,8 +549,13 @@ TIERS: dict[str, str] = {
     "dataplane-bus list": R,
     "dataplane-bus regen-uuid": A,
     "dataplane-bus status": R,
+    "secrets backends": A,
     "secrets get": A,
+    "secrets lease issue": A,
+    "secrets lease renew": A,
+    "secrets lease revoke": D,
     "secrets list": A,
+    "secrets refs": A,
     "secrets rewrap": D,
     "secrets rotate": D,
     "secrets scan": A,
@@ -509,6 +569,7 @@ TIERS: dict[str, str] = {
     "serve adapter list": R,
     "serve adapter promote": D,
     "serve adapter route": A,
+    "serve autoscale activate": A,  # wakes a scaled-to-zero model (writes replicas + audit)
     "serve autoscale manifest": R,  # renders YAML to stdout/--out; applies nothing
     "serve autoscale prefetch": R,
     "serve autoscale record": A,
@@ -531,6 +592,7 @@ TIERS: dict[str, str] = {
     "serve explain explain": R,
     "serve explain history": R,
     "serve infer-check": R,
+    "serve kuberay-manifest": R,  # renders a RayService to stdout/--out; applies nothing
     "serve loadtest": A,  # sends sustained traffic at the model server: an operator's decision
     "serve llm args": R,
     "serve llm bench": A,
@@ -554,7 +616,10 @@ TIERS: dict[str, str] = {
     "serve snapshot show": R,
     "serve traffic": D,
     "serve traffic-list": R,
+    "serve verifier-manifest": R,  # renders the ClusterStorageContainer; applies nothing
     "slo apply": A,
+    "slo benchmark record": A,  # ADR 0143 d5; reads --file
+    "slo benchmark results": R,
     "slo burn": R,
     "slo export-metrics": R,
     "slo generate": R,
@@ -616,6 +681,9 @@ CLI_ONLY_REASONS: dict[str, str] = {
     "drift/input-embedding snapshots published by a bridge running with "
     "EXAMLOPS_TELEMETRY_VIA_EVENTBUS=1. Run it as a service on a host with "
     "`exa drift consume-telemetry`; without that bridge mode there is nothing to consume.",
+    "agent runtime serve": "Starts the long-running agent runtime (threads/runs HTTP surface "
+    "and its maintenance loop); it is not a request/response command. Run it on a host with "
+    "`exa agent runtime serve --snapshot <file>`; `agent runtime snapshot` compiles its input.",
     "mcp serve": "Starts a long-running MCP server process; it is not a request/response "
     "command. Run it on a host with `exa mcp serve`; `mcp tools|resources|prompts` list "
     "what it would expose.",
@@ -649,9 +717,12 @@ BLOCKED_PARAMS: dict[str, frozenset[str]] = {
     "serve traffic-list": frozenset({"watch", "interval"}),
     "stack logs": frozenset({"follow"}),
     "secrets get": frozenset({"reveal"}),
+    "secrets lease issue": frozenset({"reveal"}),
     "backup schedule": frozenset({"once", "interval"}),
     "serve autoscale run": frozenset({"once", "interval"}),
     "drift run-advanced": frozenset({"once", "interval"}),
+    "eval online run": frozenset({"once", "interval"}),
+    "audit maintain": frozenset({"once", "interval"}),
 }
 
 # Arguments always appended so a run terminates: `stack logs` follows by default and `backup
@@ -661,6 +732,8 @@ FORCED_ARGS: dict[str, tuple[str, ...]] = {
     "backup schedule": ("--once",),
     "serve autoscale run": ("--once",),
     "drift run-advanced": ("--once",),
+    "eval online run": ("--once",),
+    "audit maintain": ("--once",),
 }
 
 # ── Idempotency (ADR 0147 d1) ─────────────────────────────────────────────────────────────
@@ -747,20 +820,26 @@ _NOT_FS: frozenset[tuple[str, str]] = frozenset(
         ("secrets get", "path"),
         ("secrets set", "path"),
         ("secrets rotate", "path"),
+        ("secrets lease issue", "engine_path"),
         ("serve llm start", "hf_model"),
         ("serve llm start", "local_media_path"),
         ("explain", "command"),
         ("feature apply", "source"),
+        # ADR 0044: a PEFT adapter directory on the *serving* host; stored, never opened here.
+        ("finetune", "adapter_uri"),
+        ("serve adapter add", "adapter_uri"),
     }
 )
 # Filesystem parameters whose name alone does not say so.
 _EXTRA_FS: frozenset[tuple[str, str]] = frozenset(
     {
+        ("agent runtime serve", "snapshot"),
         ("slo pair-check", "samples"),
         ("slo spec check", "samples"),
         ("offline run", "input_"),
         ("offline run", "spec"),
         ("secrets scan", "target"),
+        ("secrets refs", "env_file"),
         ("hpc connect", "key"),
         ("hpc detect", "key"),
         ("hpc gpus", "key"),
@@ -768,6 +847,7 @@ _EXTRA_FS: frozenset[tuple[str, str]] = frozenset(
         ("serve llm chat", "image"),
         ("admission simulate", "request"),
         ("admission simulate", "cluster_state"),
+        ("admission translate", "request"),
         ("agent memory export", "out"),
         ("audit prune", "archive"),
         ("auth decide", "token_file"),
@@ -776,11 +856,19 @@ _EXTRA_FS: frozenset[tuple[str, str]] = frozenset(
         ("finops carbon policy evaluate", "trace"),
         ("serve loadtest", "body"),
         ("workbench export-pipeline", "notebook"),
+        ("pipeline distributed run", "checkpoint_store"),
+        ("reproduce run", "restore_dataset"),
+        ("pipeline distributed suspend snapshot", "run_dir"),
     }
 )
-# A path-or-URL parameter: an http(s) value passes through (and is a network target), anything
-# else is contained like a path.
-_PATH_OR_URL: frozenset[tuple[str, str]] = frozenset({("serve llm chat", "image")})
+# A path-or-URL parameter: a value in one of its URL schemes passes through (and is a network
+# target), anything else is contained like a path. The schemes are per parameter — an `s3://`
+# checkpoint store is a URL, an `s3://` chat image is not something that command can read.
+_URL_SCHEMES: dict[tuple[str, str], tuple[str, ...]] = {
+    ("serve llm chat", "image"): ("http", "https"),
+    ("pipeline distributed run", "checkpoint_store"): ("s3",),
+}
+_PATH_OR_URL: frozenset[tuple[str, str]] = frozenset(_URL_SCHEMES)
 
 # Parameters that make the dashboard's process reach another machine.
 _NETWORK_NAMES = frozenset({"agent_url", "base_url", "host", "user"})
@@ -1157,7 +1245,9 @@ def build_argv(command: dict[str, Any], values: dict[str, Any], *, workspace: Pa
             text = _coerce(spec, item)
             as_typed = text
             if spec.get("path"):
-                if not (spec.get("path_or_url") and re.match(r"^https?://", text)):
+                schemes = _URL_SCHEMES.get((path, name), ())
+                scheme = text.split("://", 1)[0].lower() if "://" in text else ""
+                if not (spec.get("path_or_url") and scheme in schemes):
                     as_typed = contain_path(text, workspace)
                     contained.append(as_typed)
                     # Absolute, so the command may run from any directory (the repo root, as an

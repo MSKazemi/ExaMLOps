@@ -9,13 +9,19 @@ gated by the ``projectsConsole`` feature flag on the frontend.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
+from typing import Any
 
 import audit_write
 from auth import require_role
+from bff import aggregate
 from capabilities import PROJECT_MANAGE, can, deny_reason, require_capability
 from dbconn import connect, platform_db_path
 from fastapi import APIRouter, Body, Depends, HTTPException, status
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
 _viewer = require_role("viewer")
@@ -59,6 +65,36 @@ def _project_guard(principal: dict, relation: str, name: str) -> None:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             f"'{_authz_subject(principal)}' lacks '{relation}' on project '{name}'",
+        )
+
+
+def _resource_guard(principal: dict, relation: str, kind: str, ref: str) -> None:
+    """403 unless the session holds ``relation`` wherever ``kind``/``ref`` lives now (ADR 0014 d4).
+
+    Project membership is the authorization key for models and datasets, so attaching one to a
+    project changes who controls it; editing the target project alone must not be enough. 503 when
+    the membership store cannot be read (fail closed). No-op with tenancy off.
+    """
+    try:
+        from examlops.authz import guard as _g  # type: ignore
+    except ImportError:  # pragma: no cover - examlops absent: tenancy cannot be on
+        return
+    if kind not in _g.RESOURCE_KINDS:
+        return
+    subject = _authz_subject(principal)
+    try:
+        ok = _g.resource_allowed(
+            subject, relation, kind, ref, asserted_projects=principal.get("projects") or None
+        )
+    except _g.ModelScopeUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Project membership is unavailable; refusing rather than guessing",
+        ) from exc
+    if not ok:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"'{subject}' lacks '{relation}' on {kind} '{ref}' where it lives now",
         )
 
 
@@ -248,26 +284,66 @@ async def zoo_models_view(_=Depends(_viewer)) -> dict:
 
 @router.get("/{name}")
 async def project_anatomy(name: str, principal: dict = Depends(_viewer)) -> dict:
-    """Full anatomy: quota, resources by kind, members, budget, consumption (viewer)."""
+    """Full anatomy: quota, resources by kind, members, budget, consumption (viewer).
+
+    ADR 0093 decision 3: assembled through ``bff.aggregate`` — every section is its own source
+    with its own timeout, so one slow or broken section (a Prefect that does not answer, a
+    missing ``connections`` table) degrades to its empty shape and is named under ``_partial``
+    instead of failing the page. Only the project row itself is required: no row ⇒ 404.
+    """
     _project_guard(principal, "viewer", name)
     conn = _connect()
-    _ensure_tables(conn)
-    p = conn.execute("SELECT * FROM projects WHERE name=?", (name,)).fetchone()
-    if not p:
+    try:
+        _ensure_tables(conn)
+        p = conn.execute("SELECT * FROM projects WHERE name=?", (name,)).fetchone()
+    finally:
         conn.close()
+    if not p:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Project '{name}' not found")
-    res_rows = conn.execute(
-        "SELECT kind, ref FROM project_resources WHERE project=? ORDER BY kind, ref", (name,)
-    ).fetchall()
-    resources: dict[str, list[str]] = {}
-    for rr in res_rows:
-        resources.setdefault(rr["kind"], []).append(rr["ref"])
-    models = _project_models(conn, name)
-    if models:
-        resources["model"] = models
-    budget_row = conn.execute("SELECT * FROM project_budgets WHERE project=?", (name,)).fetchone()
-    budget = _budget_view(budget_row)
-    anatomy = {
+
+    def _resources(c: sqlite3.Connection) -> dict[str, list[str]]:
+        resources: dict[str, list[str]] = {}
+        for rr in c.execute(
+            "SELECT kind, ref FROM project_resources WHERE project=? ORDER BY kind, ref", (name,)
+        ).fetchall():
+            resources.setdefault(rr["kind"], []).append(rr["ref"])
+        models = _project_models(c, name)
+        if models:
+            resources["model"] = models
+        return resources
+
+    def _budget(c: sqlite3.Connection) -> dict | None:
+        return _budget_view(
+            c.execute("SELECT * FROM project_budgets WHERE project=?", (name,)).fetchone()
+        )
+
+    parts = await aggregate(
+        {
+            "resources": _on_conn(_resources),
+            "members": _on_conn(lambda c: _members(c, name)),
+            "budget": _on_conn(_budget),
+            "consumption": _on_conn(lambda c: _consumption(c, name)),
+            # Project Anatomy P8 (ADR 0093): storage · connections · pipelines, secret-safe
+            # (connections expose hasSecret only). Pipelines are hydrated live (ADR 0092).
+            "storage": _on_conn(lambda c: _storage(c, name)),
+            "connections": _on_conn(lambda c: _connections(c, name)),
+            "pipelines": lambda: _pipelines_live(name),
+        },
+        timeout=_ANATOMY_TIMEOUT,
+    )
+    partial: list[str] = list(parts.get("_partial", []))
+    if "pipelines" in partial:
+        # The live overlay timed out or broke: the registry view needs no network, so the panel
+        # still renders its last observed state instead of disappearing.
+        try:
+            parts["pipelines"] = _registry_pipelines_view(name)
+        except Exception as exc:  # noqa: BLE001 - a partial view beats a 500
+            log.warning("project %s: registry pipelines view unavailable: %s", name, exc)
+            parts["pipelines"] = {"prefect": None, "rayserve": None}
+    if partial:
+        log.warning("project anatomy for %s is partial: %s", name, ", ".join(partial))
+
+    anatomy: dict[str, Any] = {
         "name": p["name"],
         "description": p["description"],
         "status": p["status"],
@@ -279,20 +355,104 @@ async def project_anatomy(name: str, principal: dict = Depends(_viewer)) -> dict
             "storageGb": p["storage_gb"],
             "gpuLimit": p["gpu_limit"],
         },
-        "resources": resources,
-        "members": _members(conn, name),
-        "budget": budget,
-        "consumption": _consumption(conn, name),
+        "resources": parts.get("resources", {}),
+        "members": parts.get("members", []),
+        "budget": parts.get("budget"),
+        # An unavailable consumption renders as zero ONLY alongside `_partial: ["consumption"]`,
+        # which the page turns into a visible "some sections could not be loaded" notice.
+        "consumption": parts.get("consumption", {"gpu_hours": 0.0, "cost_usd": 0.0}),
         "createdAt": p["created_at"],
         "createdBy": p["created_by"],
-        # Project Anatomy P8 (ADR 0093): storage · connections · pipelines. Each is fail-open
-        # (a missing table/row yields None/[]) and secret-safe (connections expose hasSecret only).
-        "storage": _storage(conn, name),
-        "connections": _connections(conn, name),
-        "pipelines": _pipelines(conn, name, models),
+        "storage": parts.get("storage"),
+        "connections": parts.get("connections", []),
+        "pipelines": parts.get("pipelines", {"prefect": None, "rayserve": None}),
     }
-    conn.close()
+    if partial:
+        anatomy["_partial"] = sorted(partial)
     return anatomy
+
+
+#: Per-section budget for the anatomy fan-out. The live pipeline read is the slow one: it is
+#: bounded by its own per-request timeout (EXAMLOPS_PROJECT_PIPELINES_TIMEOUT); this caps the sum.
+_ANATOMY_TIMEOUT = 8.0
+
+
+def _on_conn(fn):
+    """A zero-arg ``bff`` source that runs ``fn`` on its own connection (sources run in threads)."""
+
+    def run():
+        c = _connect()
+        try:
+            return fn(c)
+        finally:
+            c.close()
+
+    return run
+
+
+def _live_pipeline_sources():
+    """The Prefect / Ray Serve URLs this deployment explicitly names (Compose sets both).
+
+    Never the settings' ``localhost`` defaults: a dashboard nobody pointed at Prefect must not
+    report whatever happens to listen on its host. ``EXAMLOPS_PROJECT_PIPELINES_LIVE=0`` disables.
+    """
+    from examlops import project_pipelines as _pp  # type: ignore
+
+    return _pp.sources(
+        prefect_url=os.getenv("PREFECT_URL") or os.getenv("PREFECT_API_URL") or None,
+        serve_url=os.getenv("RAY_SERVE_URL") or None,
+        serving_token=os.getenv("EXAMLOPS_SERVING_TOKEN", ""),
+    )
+
+
+def _pipelines_live(name: str) -> dict:
+    """Both pipeline surfaces through the SAME code path as ``exa project pipelines`` (ADR 0092).
+
+    Falls back to the router's own registry read only when the ``examlops`` package is absent.
+    """
+    try:
+        from examlops.data.projects import get_project_pipelines  # type: ignore
+    except ImportError:  # pragma: no cover - only when examlops is not installed
+        return _registry_pipelines_view(name)
+    return _pipelines_view(get_project_pipelines(name, live=_live_pipeline_sources()))
+
+
+def _registry_pipelines_view(name: str) -> dict:
+    """The network-free registry view (the floor the live overlay falls back to)."""
+    return _on_conn(lambda c: _pipelines(c, name, _project_models(c, name)))()
+
+
+def _pipelines_view(raw: dict) -> dict:
+    """Shape the library's snake_case surfaces for the UI (camelCase, nothing secret)."""
+    pf, ry = raw.get("prefect"), raw.get("rayserve")
+    prefect = None
+    if pf:
+        prefect = {
+            "deployments": list(pf.get("deployments") or []),
+            "schedule": pf.get("schedule"),
+            "lastRunAt": pf.get("last_run_at"),
+            "lastRunState": pf.get("last_run_state"),
+            "lastRunDeployment": pf.get("last_run_deployment"),
+            "workPool": pf.get("work_pool"),
+            "storagePrefix": pf.get("storage_prefix"),
+            "status": pf.get("status") or "unknown",
+            "source": pf.get("source") or "registry",
+            "liveError": pf.get("live_error"),
+        }
+    rayserve = None
+    if ry:
+        rayserve = {
+            "models": list(ry.get("models") or []),
+            "traffic": ry.get("traffic") or {},
+            "served": list(ry.get("served") or []),
+            "unserved": list(ry.get("unserved") or []),
+            "aliases": ry.get("aliases") or {},
+            "health": ry.get("health") or {},
+            "status": ry.get("status") or "unknown",
+            "source": ry.get("source") or "registry",
+            "liveError": ry.get("live_error"),
+        }
+    return {"prefect": prefect, "rayserve": rayserve}
 
 
 def _budget_view(row: sqlite3.Row | None) -> dict | None:
@@ -584,6 +744,7 @@ async def assign_resource_view(
     ref = (payload.get("ref") or "").strip()
     if kind not in _RESOURCE_KINDS or not ref:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "valid kind and ref required")
+    _resource_guard(principal, "editor", kind, ref)
     # Shared code path (Phase 42): the helper validates kind, mirrors model-kind rows into
     # project_models, and is what `exa project assign` runs — the two surfaces cannot diverge.
     _pdb = _examlops_projects()

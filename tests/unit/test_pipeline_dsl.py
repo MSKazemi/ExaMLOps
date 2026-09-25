@@ -353,7 +353,7 @@ def test_only_the_validation_split_is_lowerable():
         lower_training(flow.compile())
 
 
-def test_resources_and_cluster_become_run_hints_and_are_reported_as_not_in_the_yaml():
+def test_resources_and_cluster_are_carried_by_the_yaml_placement_section():
     from examlops.pipeline_dsl import Resources
 
     @pipeline(name="P", cluster="auto")
@@ -369,8 +369,10 @@ def test_resources_and_cluster_become_run_hints_and_are_reported_as_not_in_the_y
 
     low = lower_training(flow.compile())
     assert low.hints == {"cluster": "auto", "gpus": 2}
-    assert any("target.cluster" in d for d in low.dropped) and any("gpus" in d for d in low.dropped)
-    assert "resources" not in low.model_yaml  # the YAML schema has no such field
+    # ADR 0080 decision 2: the YAML is the IR, so nothing about the train step is dropped any more
+    assert low.model_yaml["placement"] == {"cluster": "auto", "gpus": 2, "cpus": 8, "nodes": 1}
+    assert low.dropped == []
+    assert "resources" not in low.model_yaml  # ADR 0157's hardware-profile section is untouched
 
 
 # ── file loading and trust tiers ─────────────────────────────────────────────────────────────

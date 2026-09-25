@@ -213,7 +213,9 @@ async def create_workbench_view(
 ) -> dict:
     """Create a project-bound workbench (notebook) — admin / project.manage; audited.
 
-    Body: ``{project, name, image?, cpu?, memoryGb?}``. Reuses ``examlops.workbenches.create_workbench``
+    Body: ``{project, name, image?, cpu?, memoryGb?, hardwareProfile?}``. ``hardwareProfile``
+    (ADR 0157 Phase 2) names a profile applicable to ``workbench``/``any`` whose cpu/memory become
+    the defaults — explicit ``cpu``/``memoryGb`` still win, exactly as on the CLI. Reuses ``examlops.workbenches.create_workbench``
     (the same code path as ``exa workbench create``) so the dashboard can never drift from the CLI.
     Registers a per-workbench storage volume and a ``kind='storage'`` project resource. Status STOPPED.
     """
@@ -221,6 +223,10 @@ async def create_workbench_view(
     project = (payload.get("project") or "").strip()
     name = (payload.get("name") or "").strip()
     image = (payload.get("image") or "").strip() or None
+    hardware_profile = payload.get("hardwareProfile")
+    if hardware_profile is not None and not isinstance(hardware_profile, str):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "hardwareProfile must be a string")
+    hardware_profile = (hardware_profile or "").strip() or None
     if not project:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "project is required")
     if not name:
@@ -234,6 +240,7 @@ async def create_workbench_view(
             image=image,
             cpu=payload.get("cpu"),
             memory_gb=payload.get("memoryGb"),
+            hardware_profile=hardware_profile,
             created_by=actor,
         )
     except wb.WorkbenchError as exc:
@@ -245,7 +252,11 @@ async def create_workbench_view(
         ) from exc
     conn = _connect()
     _ensure_table(conn)
-    _audit(conn, actor, "workbench_created", name, {"project": project, "image": image})
+    details: dict = {"project": project, "image": image}
+    if created.get("hardware_profile"):
+        details["hardware_profile"] = created["hardware_profile"]
+        details["hardware_profile_version"] = created.get("hardware_profile_version")
+    _audit(conn, actor, "workbench_created", name, details)
     conn.commit()
     conn.close()
     return {
@@ -254,6 +265,8 @@ async def create_workbench_view(
         "image": created["image"],
         "cpu": created["cpu"],
         "memoryGb": created["memory_gb"],
+        "hardwareProfile": created.get("hardware_profile"),
+        "hardwareProfileVersion": created.get("hardware_profile_version"),
         "volume": created["storage_volume"],
         "status": created["status"],
         "createdAt": created.get("created_at"),

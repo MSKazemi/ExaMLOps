@@ -123,7 +123,11 @@ def record_model_cost(
     cost_usd: float | None,
     project: str | None = None,
     cpu_hours: float | None = None,
+    gpu_fraction: float | None = None,
+    gpu_mechanism: str | None = None,
 ) -> None:
+    """Insert one cost row. ``gpu_fraction``/``gpu_mechanism`` (ADR 0030 decision 5) record the
+    share ``gpu_hours`` was billed at; ``None`` = no GPU allocation was linked to the job."""
 
     # Attribute the cost to the model's project (ADR 0086) when not passed explicitly.
     if project is None:
@@ -133,8 +137,8 @@ def record_model_cost(
         conn.execute(
             """INSERT INTO model_costs
                (model_name, version, run_id, job_id, gpu_hours, cost_usd, recorded_at, project,
-                cpu_hours)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                cpu_hours, gpu_fraction, gpu_mechanism)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 model_name,
                 version,
@@ -145,6 +149,8 @@ def record_model_cost(
                 recorded_at,
                 project,
                 cpu_hours,
+                gpu_fraction,
+                gpu_mechanism,
             ),
         )
 

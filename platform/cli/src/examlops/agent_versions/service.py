@@ -278,6 +278,108 @@ def _slo_refusals(agent: str, evidence: dict[str, Any]) -> list[str]:
     return [] if decision.allow else list(decision.reasons)
 
 
+def _noninferiority_refusals(
+    row: dict[str, Any], incumbent: dict[str, Any], evidence: dict[str, Any]
+) -> list[str]:
+    """ADR 0146 d3: the candidate must be non-inferior to the running Production version.
+
+    Applied when the manifest declares ``eval.non_inferiority_margin``. Every gate metric that is
+    a proportion over a known sample (it carries a Wilson interval) is tested with a one-sided
+    Newcombe bound; a metric that is not a proportion has no per-sample data to test and is
+    listed as ``untested`` - its regression is the gate's ``max_drop`` job, and saying so is
+    better than inventing an interval. The measured difference is recorded either way.
+    """
+    from examlops.analysis.ab_stats import non_inferiority_proportions
+    from examlops.data.evaluation import get_eval_gate, get_eval_results_for_agent_version
+
+    margin = (row["manifest"].get("eval") or {}).get("non_inferiority_margin")
+    if margin is None:
+        evidence["non_inferiority"] = {"applied": False, "reason": "no margin declared"}
+        return []
+    key = model_key(row["agent"])
+    gate = get_eval_gate(key)
+    if gate is None:  # already refused by evaluation_evidence; nothing to test against
+        return []
+
+    def latest(vid: str) -> dict[str, dict[str, Any]]:
+        # Filtered to this version in SQL and bounded, newest first with the row id breaking a
+        # same-second tie - a re-run recorded in the same second as the run it replaces must
+        # win, and the agent's whole evaluation history is never loaded to find two versions.
+        out: dict[str, dict[str, Any]] = {}
+        for r in get_eval_results_for_agent_version(
+            row["agent"], vid, suite=gate["suite"], limit=1000
+        ):
+            out.setdefault(r["metric"], r)
+        return out
+
+    cand, base = latest(row["version_id"]), latest(incumbent["version_id"])
+    default_up = gate.get("higher_is_better")
+    results: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    for m in gate["metrics"]:
+        name = m["name"]
+        up = bool(m.get("higher_is_better", True if default_up is None else default_up))
+        c, b = cand.get(name), base.get(name)
+        if c is None or b is None:
+            who = "candidate" if c is None else "running Production version"
+            reasons.append(f"non-inferiority on {name!r}: the {who} has no score")
+            continue
+        proportion = all(
+            r.get("score_lo") is not None and int(r.get("sample_size") or 0) > 0 for r in (c, b)
+        )
+        if not proportion:
+            results.append(
+                {
+                    "metric": name,
+                    "tested": False,
+                    "reason": "not a proportion over a known sample",
+                    "difference": float(c["score"]) - float(b["score"]),
+                }
+            )
+            continue
+        nc, nb = int(c["sample_size"]), int(b["sample_size"])
+        res = non_inferiority_proportions(
+            round(float(c["score"]) * nc),
+            nc,
+            round(float(b["score"]) * nb),
+            nb,
+            margin=float(margin),
+            higher_is_better=up,
+        )
+        results.append({"metric": name, "tested": True, **res})
+        if not res["non_inferior"]:
+            bound = res["lower"] if up else res["upper"]
+            reasons.append(
+                f"not non-inferior on {name!r}: difference {res['difference']:+.4f}, one-sided "
+                f"bound {bound:+.4f} vs margin {margin} (running {incumbent['version_id']})"
+            )
+    evidence["non_inferiority"] = {
+        "applied": True,
+        "margin": float(margin),
+        "incumbent": incumbent["version_id"],
+        "metrics": results,
+    }
+    return reasons
+
+
+def _state_refusals(
+    row: dict[str, Any],
+    incumbent: dict[str, Any],
+    strategy: str | None,
+    evidence: dict[str, Any],
+) -> list[str]:
+    """ADR 0146 d5: diff the checkpoint schemas; incompatible or inert needs pin/drain."""
+    from examlops.agent_versions.compat import gate_state, state_compat
+
+    result = state_compat(incumbent["manifest"].get("state"), row["manifest"].get("state"))
+    evidence["state_compat"] = {
+        **result,
+        "from": incumbent["version_id"],
+        "strategy": strategy,
+    }
+    return gate_state(result, strategy)
+
+
 # -- alias moves -------------------------------------------------------------------------------
 
 
@@ -288,13 +390,22 @@ def set_alias(
     *,
     actor: str | None = None,
     reason: str | None = None,
+    state_strategy: str | None = None,
 ) -> dict[str, Any]:
     """Point ``agent@alias`` at a registered version. Production is gated on evidence.
+
+    Replacing a running Production version additionally requires non-inferiority within the
+    declared margin and a passing state-compatibility gate (``state_strategy`` = ``pin`` or
+    ``drain`` for an incompatible or unknown checkpoint schema).
 
     Raises ``LookupError`` (unknown version / wrong agent), ``ValueError`` (bad alias) or
     :class:`GateRefusal`. A refusal is audited as ``agent_promotion_blocked``.
     """
+    from examlops.agent_versions.compat import STATE_STRATEGIES
+
     alias = canonical_alias(alias)
+    if state_strategy is not None and state_strategy not in STATE_STRATEGIES:
+        raise ValueError(f"state strategy must be one of {', '.join(STATE_STRATEGIES)}")
     row = store.get_version(ref) if ref.startswith("av-") else get(ref)
     if row is None:
         raise LookupError(f"unknown agent version {ref!r}")
@@ -306,6 +417,11 @@ def set_alias(
         reasons, evidence = evidence_refusals(row)
         reasons += _signature_refusals(row)
         reasons += _slo_refusals(agent, evidence)
+        current = store.get_alias(agent, "Production")
+        incumbent = store.get_version(current["version_id"]) if current else None
+        if incumbent is not None and incumbent["version_id"] != row["version_id"]:
+            reasons += _noninferiority_refusals(row, incumbent, evidence)
+            reasons += _state_refusals(row, incumbent, state_strategy, evidence)
         if reasons:
             audit_best_effort(
                 _SOURCE,
@@ -341,14 +457,28 @@ def set_alias(
     }
 
 
+#: What an agent runtime does with in-flight sessions on a rolled-back version (ADR 0146 d4).
+IN_FLIGHT_POLICIES = ("continue", "interrupt", "quarantine")
+
+
 def rollback(
-    agent: str, alias: str, *, actor: str | None = None, reason: str | None = None
+    agent: str,
+    alias: str,
+    *,
+    actor: str | None = None,
+    reason: str | None = None,
+    in_flight: str = "continue",
 ) -> dict[str, Any]:
     """Move ``agent@alias`` back to where the latest move found it (ADR 0146 decision 4).
 
-    Not re-gated: the target already passed this gate when it was promoted. Raises ``LookupError``
-    when there is nothing to roll back to.
+    Not re-gated: the target already passed this gate when it was promoted. ``in_flight`` is
+    what the agent runtime does with sessions already running on the version being rolled back
+    (``continue`` | ``interrupt`` | ``quarantine``); it is recorded on the move and reaches the
+    runtime through the agent snapshot. Raises ``LookupError`` when there is nothing to roll
+    back to and ``ValueError`` for an unknown policy.
     """
+    if in_flight not in IN_FLIGHT_POLICIES:
+        raise ValueError(f"in-flight policy must be one of {', '.join(IN_FLIGHT_POLICIES)}")
     alias = canonical_alias(alias)
     hist = store.alias_history(agent, alias, limit=1)
     if not hist or not hist[0]["prev_version"]:
@@ -357,15 +487,59 @@ def rollback(
     if store.get_version(target) is None:
         raise LookupError(f"rollback target {target} is no longer registered")
     who = _actor(actor)
-    prev = store.move_alias(agent, alias, target, action="rollback", actor=who, reason=reason)
+    prev = store.move_alias(
+        agent,
+        alias,
+        target,
+        action="rollback",
+        actor=who,
+        reason=reason,
+        evidence={"in_flight": in_flight},
+    )
     audit_best_effort(
         _SOURCE,
         who,
         "agent_alias_rolled_back",
         f"{agent}@{alias}",
-        {"version_id": target, "from": prev, "reason": reason},
+        {"version_id": target, "from": prev, "reason": reason, "in_flight": in_flight},
     )
-    return {"ok": True, "agent": agent, "alias": alias, "version_id": target, "previous": prev}
+    return {
+        "ok": True,
+        "agent": agent,
+        "alias": alias,
+        "version_id": target,
+        "previous": prev,
+        "in_flight": in_flight,
+    }
 
 
-__all__ += ["AgentManifestError", "model_key"]
+def set_canary(
+    agent: str, percent: float, *, actor: str | None = None, reason: str | None = None
+) -> dict[str, Any]:
+    """Start ``percent`` % of the agent's NEW sessions on its Canary version (ADR 0146 d4).
+
+    Existing sessions never change version - the runtime pins each session to the version it
+    started on. A share above 0 requires a Canary alias to exist. Raises ``ValueError`` for a
+    share outside ``[0, 100]`` and ``LookupError`` when there is no Canary version to send to.
+    """
+    import math
+
+    if not isinstance(percent, (int, float)) or not math.isfinite(percent):
+        raise ValueError("canary percent must be a finite number")
+    if not 0 <= float(percent) <= 100:
+        raise ValueError("canary percent must lie in [0, 100]")
+    if percent > 0 and store.get_alias(agent, "Canary") is None:
+        raise LookupError(f"{agent} has no Canary version (exa agent alias set {agent} Canary ...)")
+    who = _actor(actor)
+    prev = store.set_rollout(agent, float(percent), actor=who)
+    audit_best_effort(
+        _SOURCE,
+        who,
+        "agent_canary_set",
+        f"{agent}@Canary",
+        {"canary_percent": float(percent), "previous": prev, "reason": reason},
+    )
+    return {"ok": True, "agent": agent, "canary_percent": float(percent), "previous": prev}
+
+
+__all__ += ["IN_FLIGHT_POLICIES", "AgentManifestError", "model_key", "set_canary"]

@@ -217,6 +217,23 @@ def train(args: argparse.Namespace) -> int:
 
     measured = evaluate(torch, model, seed, args.batch, DEFAULT_EVAL_BATCHES)
     state = backend.adapter_state(model)
+    digest = lora.adapter_sha256(state)
+    from examlops.finetuning import artifacts
+
+    bundle = artifacts.write_bundle(
+        run_dir,
+        state,
+        {
+            "backend": backend.name,
+            "method": args.method,
+            "rank": args.rank,
+            "alpha": args.alpha,
+            "seed": seed,
+            "stack": config(args, seed)["stack"],
+            "base_weights_sha256": base_sha,
+            "adapter_sha256": digest,
+        },
+    )
     metrics = {
         "status": "complete",
         "backend": backend.name,
@@ -239,7 +256,9 @@ def train(args: argparse.Namespace) -> int:
         - sum(p.numel() for p in trainable),
         "base_weights_sha256": base_sha,
         "base_weights_unchanged": base_sha == _base_sha256(model),
-        "adapter_sha256": lora.adapter_sha256(state),
+        "adapter_sha256": digest,
+        "adapter_bundle": str(bundle),
+        "trained_weights": "full" if args.method == "full" else "adapter",
         "data": "synthetic",
         **measured,
     }
@@ -279,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--rank", type=int, default=4)
     ap.add_argument("--alpha", type=float, default=16.0)
     ap.add_argument("--lr", type=float, default=DEFAULT_LR)
-    ap.add_argument("--method", default="lora", choices=("lora", "qlora"))
+    ap.add_argument("--method", default="lora", choices=("lora", "qlora", "full"))
     ap.add_argument("--backend", default=lora.DEFAULT_BACKEND)
     ap.add_argument("--seed", type=int, default=None)
     return ap

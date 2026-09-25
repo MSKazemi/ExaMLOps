@@ -71,6 +71,7 @@ import uvicorn
 # tests use — keeps resolving to the same objects.
 from cplane import policy_gate as _policy_gate
 from cplane import problems as _problems
+from cplane import project_gate as _project_gate
 from cplane.gateway import (  # noqa: F401
     PREFECT_BACKOFF_BASE,
     PREFECT_CALL_BUDGET,
@@ -123,7 +124,23 @@ from examlops.data.events import outbox_stats as _shared_outbox_stats
 from examlops.events import get_publisher as _selected_publisher
 from examlops.events import relay_once as _shared_relay_once
 from examlops.platform_db import begin_immediate
+from examlops.secrets.inject import inject_env as _inject_secret_refs
 from examlops.storage import PostgresBackend, SqliteBackend
+
+CONTROL_PLANE_STATE_BACKEND = os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower()
+CONTROL_PLANE_DB = os.getenv("CONTROL_PLANE_DB") or os.getenv("PLATFORM_DB") or "/data/approvals.db"
+# Shared DB-backed coordination and the stock outbox relay resolve SQLite through PLATFORM_DB.
+# This service owns one transactional state boundary, so make its explicit database authoritative
+# inside this process. Postgres ignores file paths and already converges on DSN + schema.
+if CONTROL_PLANE_STATE_BACKEND == "sqlite":
+    os.environ["PLATFORM_DB"] = CONTROL_PLANE_DB
+# Pinned BEFORE secret injection below: the local secrets store and the injection audit both
+# live in PLATFORM_DB, so resolving first would read (and audit into) a different database.
+
+# ADR 0011 clause 2 — resolve `secret://` / `secret+file://` references in the environment before
+# any credential below is read (CONTROL_PLANE_TOKEN, CONTROL_PLANE_CREDENTIALS_JSON, …). A no-op
+# when the environment holds no reference; an unresolvable one refuses to start (fail closed).
+_inject_secret_refs("control-plane")
 
 T = TypeVar("T")
 
@@ -476,13 +493,6 @@ PREFECT_API_URL = os.getenv("PREFECT_API_URL", "http://localhost:14200/api").rst
 # (pipelines/deploy.py DISPATCH_DEPLOYMENT_NAME); tests/unit/test_dispatch_contract.py keeps this
 # default, the compose default and that constant identical.
 PREFECT_DEPLOYMENT_NAME = os.getenv("PREFECT_DEPLOYMENT_NAME", "training_flow/examlops-dispatch")
-CONTROL_PLANE_STATE_BACKEND = os.getenv("EXAMLOPS_DB_BACKEND", "sqlite").strip().lower()
-CONTROL_PLANE_DB = os.getenv("CONTROL_PLANE_DB") or os.getenv("PLATFORM_DB") or "/data/approvals.db"
-# Shared DB-backed coordination and the stock outbox relay resolve SQLite through PLATFORM_DB.
-# This service owns one transactional state boundary, so make its explicit database authoritative
-# inside this process. Postgres ignores file paths and already converges on DSN + schema.
-if CONTROL_PLANE_STATE_BACKEND == "sqlite":
-    os.environ["PLATFORM_DB"] = CONTROL_PLANE_DB
 MODELZOO_WEBHOOK_SECRET = os.getenv("MODELZOO_WEBHOOK_SECRET", "")
 MODELZOO_AUTO_RETRAIN = os.getenv("MODELZOO_AUTO_RETRAIN", "false").lower() == "true"
 MODELZOO_POLL_SECONDS = int(os.getenv("MODELZOO_POLL_SECONDS", "300"))
@@ -519,6 +529,11 @@ SNAPSHOT_TICK_SECONDS = max(0.2, float(os.getenv("CONTROL_PLANE_SNAPSHOT_TICK_SE
 # How often every model's prediction-drift status is scored and a change announced as
 # drift.status_changed (plan P2.4b). 0 disables it.
 DRIFT_EVAL_SECONDS = max(0.0, float(os.getenv("CONTROL_PLANE_DRIFT_EVAL_SECONDS", "60")))
+# ADR 0017 clause 4: how often the control plane checks for feature views whose materialization
+# interval has elapsed (0 disables). Only views declaring an interval are ever materialized.
+FEATURE_MATERIALIZE_SECONDS = max(
+    0.0, float(os.getenv("CONTROL_PLANE_FEATURE_MATERIALIZE_SECONDS", "300"))
+)
 # How often the relay loop reads consumer lag and dead-letter depth from JetStream (P2.7).
 EVENT_BACKBONE_STATS_SECONDS = max(
     5.0, float(os.getenv("CONTROL_PLANE_EVENT_BACKBONE_STATS_SECONDS", "30"))
@@ -938,6 +953,8 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     _start_command_workers()
     _start_snapshot_projector()
     _start_drift_evaluator()
+    _start_audit_maintenance()
+    _start_feature_materializer()
     yield
     _stop_event.set()
     for thread in list(_background_threads):
@@ -1585,6 +1602,73 @@ def _start_drift_evaluator() -> None:
             _evaluate_drift_once()
 
     thread = threading.Thread(target=_loop, daemon=True, name="drift-evaluator")
+    _background_threads.append(thread)
+    thread.start()
+
+
+def _audit_maintenance_once() -> dict[str, Any]:
+    """One scheduled audit-maintenance cycle (ADR 0028). Never raises: counted instead."""
+    from examlops import audit_maintenance  # noqa: PLC0415
+
+    try:
+        result = audit_maintenance.run_cycle()
+    except Exception as exc:  # noqa: BLE001 - one bad cycle must not end the loop
+        logger.warning("Audit maintenance cycle failed: %s", exc)
+        result = {"status": "error", "reason": str(exc)}
+    _metrics.record_audit_maintenance(result, time.time())
+    return result
+
+
+def _start_audit_maintenance() -> None:
+    from examlops import audit_maintenance  # noqa: PLC0415
+
+    every = audit_maintenance.interval_seconds()
+    if every <= 0:
+        logger.info("Audit maintenance disabled (EXAMLOPS_AUDIT_MAINTENANCE_SECONDS=0)")
+        return
+
+    def _loop() -> None:
+        # Every replica may run it: a cycle holds the cluster-wide `audit-maintenance` lease, so
+        # one replica does the work and the others record `skipped`.
+        while not _stop_event.wait(timeout=every):
+            _audit_maintenance_once()
+
+    thread = threading.Thread(target=_loop, daemon=True, name="audit-maintenance")
+    _background_threads.append(thread)
+    thread.start()
+
+
+def _materialize_features_once() -> dict[str, Any] | None:
+    """One scheduled feature-materialization cycle (ADR 0017 clause 4). Never raises."""
+    try:
+        from examlops.feature_store.scheduler import run_materialization_cycle
+
+        result = run_materialization_cycle(actor="control-plane")
+    except Exception as exc:  # noqa: BLE001 - one bad cycle must not end the loop
+        _metrics.record_feature_materialization_cycle({"failed": [{"error": str(exc)}]})
+        logger.warning("Feature materialization cycle failed: %s", exc)
+        return None
+    _metrics.record_feature_materialization_cycle(result)
+    for m in result["materialized"]:
+        logger.info("Materialized feature view %s (%s rows)", m["view"], m["rows"])
+    for f in result["failed"]:
+        logger.warning("Feature view %s failed to materialize: %s", f["view"], f["error"])
+    for f in result.get("mirror_failed") or []:
+        logger.warning("Feature view %s serving-tier mirror failed: %s", f["view"], f["error"])
+    return result
+
+
+def _start_feature_materializer() -> None:
+    if FEATURE_MATERIALIZE_SECONDS <= 0:
+        logger.info("Feature materializer disabled (CONTROL_PLANE_FEATURE_MATERIALIZE_SECONDS=0)")
+        return
+
+    def _loop() -> None:
+        # Every replica may tick: a per-view coordinator lock makes one of them do the work.
+        while not _stop_event.wait(timeout=FEATURE_MATERIALIZE_SECONDS):
+            _materialize_features_once()
+
+    thread = threading.Thread(target=_loop, daemon=True, name="feature-materializer")
     _background_threads.append(thread)
     thread.start()
 
@@ -2446,6 +2530,7 @@ def trigger_retrain(
     http_request: Request = None,  # type: ignore[assignment]  # injected by FastAPI
 ) -> RetrainResponse:
     """Improvements 5 (dedup), 13 (metrics), 17 (idempotency), 12 (circuit breaker)."""
+    _project_gate.enforce_model(context, req.model_name)  # ADR 0014 d4: before any lookup
     _policy_gate.enforce_retrain(req, context, http_request)  # ADR 0079: after the scope check
     registry = _get_registry()
     if req.model_name not in registry:
@@ -2728,6 +2813,8 @@ def notify_changes(
     notification: ChangeNotification,
     context: RequestContext = Depends(_require_action("changes")),
 ) -> dict[str, Any]:
+    # ADR 0014 d4: a CI credential opens approvals only for models of projects it may edit.
+    _project_gate.enforce_models(context, notification.model_ids)
     created: list[str] = []
     created_model_ids: list[str] = []
     now = datetime.utcnow().isoformat()
@@ -2872,7 +2959,11 @@ def list_approvals(
 def approve_model(
     model_id: str,
     context: RequestContext = Depends(_require_action("approve")),
+    http_request: Request = None,  # type: ignore[assignment]  # injected by FastAPI
 ) -> dict[str, Any]:
+    _project_gate.enforce_model(context, model_id)  # ADR 0014 d4: before any lookup
+    # ADR 0079: after the scope check — same action/keys as `exa approvals approve` + dashboard.
+    _policy_gate.enforce_approval("approval_approve", model_id, None, context, http_request)
     # Improvement 16: reject expired entries before approving
     _expire_old_approvals()
 
@@ -2991,7 +3082,12 @@ def reject_model(
     model_id: str,
     body: RejectRequest = RejectRequest(),
     context: RequestContext = Depends(_require_action("approve")),
+    http_request: Request = None,  # type: ignore[assignment]  # injected by FastAPI
 ) -> dict[str, Any]:
+    _project_gate.enforce_model(context, model_id)  # ADR 0014 d4: before any lookup
+    _policy_gate.enforce_approval(  # ADR 0079: same action/keys as `exa approvals reject`
+        "approval_reject", model_id, getattr(body, "reason", None), context, http_request
+    )
     pending_count = 0
     conn = _get_db()
     try:
@@ -3051,6 +3147,42 @@ def reject_model(
     return {"model_id": model_id, "status": "rejected"}
 
 
+def _enforce_row_model(context: RequestContext, kind: str, row_id: str) -> None:
+    """ADR 0014 d4 for routes addressed by an approval or command id: authorize its model.
+
+    Only read with multi-tenancy on (flag off = no extra query). An id that does not exist in the
+    caller's tenant names no model, so the handler answers 404 as it always did.
+    """
+    from examlops import authz  # noqa: PLC0415
+
+    if not authz.multitenancy_enabled():
+        return
+    conn = _get_db()
+    try:
+        if kind == "approval":
+            row = conn.execute(
+                "SELECT model_id FROM pending_approvals WHERE id=? AND tenant=?",
+                (row_id, context.tenant),
+            ).fetchone()
+            model = row[0] if row else None
+        else:
+            row = conn.execute(
+                "SELECT payload FROM control_plane_commands WHERE command_key=? AND tenant=?",
+                (row_id, context.tenant),
+            ).fetchone()
+            try:
+                model = json.loads(row[0])["parameters"].get("model_name") if row else None
+            except (TypeError, ValueError, KeyError, AttributeError):
+                model = None
+    finally:
+        conn.close()
+    if row is None:
+        return
+    if not model:  # a row whose model cannot be read is refused, never waved through
+        raise HTTPException(403, f"Cannot determine the model this {kind} acts on; refusing")
+    _project_gate.enforce_model(context, str(model))
+
+
 @app.delete(
     "/approvals/{approval_id}",
     dependencies=[Depends(_check_rate_limit)],
@@ -3067,6 +3199,7 @@ def retract_approval(
     the outbox in the same transaction. Only a ``pending`` approval in the caller's tenant can be
     retracted; one being dispatched (``approving``) or already resolved answers 409.
     """
+    _enforce_row_model(context, "approval", approval_id)  # ADR 0014 d4
     now = datetime.utcnow().isoformat()
     conn = _get_db()
     try:
@@ -3654,6 +3787,7 @@ def submit_retrain_v1(
     http_request: Request = None,  # type: ignore[assignment]  # injected by FastAPI
 ) -> CommandView:
     """Accept a retrain as an asynchronous command: 202 + ``Location`` of its status."""
+    _project_gate.enforce_model(context, req.model_name)  # ADR 0014 d4: before any lookup
     _policy_gate.enforce_retrain(req, context, http_request)  # ADR 0079: after the scope check
     registry = _get_registry()
     if req.model_name not in registry:
@@ -3766,6 +3900,7 @@ def cancel_command_v1(
     context: RequestContext = Depends(_require_action("retrain")),
 ) -> CommandView:
     """Cancel an asynchronous command that has not been dispatched yet."""
+    _enforce_row_model(context, "command", command_id)  # ADR 0014 d4
     now = datetime.utcnow().isoformat()
     conn = _get_db()
     try:
@@ -3852,6 +3987,15 @@ def metrics_endpoint() -> Response:
     except Exception as exc:
         logger.error("metrics_endpoint dropped-audit read failed: %s", exc)
         _metrics.record_scrape_error()
+    try:
+        from examlops.feature_store.scheduler import freshness_report
+
+        _metrics.set_feature_freshness(freshness_report())
+    except Exception as exc:
+        # Leave the freshness gauges at their last known values; the counter shows the failure
+        # (FeatureFreshnessUnreadable).
+        logger.error("metrics_endpoint feature-freshness read failed: %s", exc)
+        _metrics.record_feature_freshness_read_error()
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -3933,8 +4077,13 @@ def modelzoo_events(limit: int = 50) -> list[dict[str, Any]]:
     ]
 
 
-@app.post("/modelzoo/sync", dependencies=[Depends(_require_action("admin"))])
-def modelzoo_sync() -> dict[str, Any]:
+@app.post("/modelzoo/sync")
+def modelzoo_sync(
+    context: RequestContext = Depends(_require_action("admin")),
+    http_request: Request = None,  # type: ignore[assignment]  # injected by FastAPI
+) -> dict[str, Any]:
+    # ADR 0079: `modelzoo_sync` is the action `exa modelzoo sync` decides as — one rule, two doors.
+    _policy_gate.enforce_admin("modelzoo_sync", {"target": "modelzoo"}, context, http_request)
     result = _run_poll_cycle()
     if result.get("error"):
         # Poll could not reach GitLab — report it instead of "up-to-date".
@@ -3992,7 +4141,9 @@ class ModelzooConfigUpdate(BaseModel):
 
 @app.put("/modelzoo/config")
 def update_modelzoo_config(
-    body: ModelzooConfigUpdate, context: RequestContext = Depends(_require_action("admin"))
+    body: ModelzooConfigUpdate,
+    context: RequestContext = Depends(_require_action("admin")),
+    http_request: Request = None,  # type: ignore[assignment]  # injected by FastAPI
 ) -> dict[str, Any]:
     """Change the ModelZoo settings for every replica, and record who changed what."""
     changes: dict[str, Any] = {}
@@ -4000,6 +4151,13 @@ def update_modelzoo_config(
         changes["auto_retrain"] = body.auto_retrain
     if body.poll_interval_seconds is not None:
         changes["poll_interval_seconds"] = max(0, body.poll_interval_seconds)
+    # ADR 0079: the action `exa modelzoo config-set` decides as.
+    _policy_gate.enforce_admin(
+        "modelzoo_config_set",
+        {"target": "modelzoo", "key": ",".join(sorted(changes)), **changes},
+        context,
+        http_request,
+    )
     if changes:
         now = datetime.utcnow().isoformat()
         conn = _get_db()
@@ -4031,12 +4189,17 @@ def update_modelzoo_config(
 # ─── Improvement 19: Config hot-reload ───────────────────────────────────────
 
 
-@app.post("/admin/reload", dependencies=[Depends(_require_action("admin"))])
-def admin_reload() -> dict[str, Any]:
+@app.post("/admin/reload")
+def admin_reload(
+    context: RequestContext = Depends(_require_action("admin")),
+    http_request: Request = None,  # type: ignore[assignment]  # injected by FastAPI
+) -> dict[str, Any]:
     """Invalidate the registry cache and re-run startup checks without restarting.
 
     Use after adding/removing model YAML files or fixing the DB/token configuration.
     """
+    # ADR 0079: the action `exa production reload` decides as — one rule, two doors.
+    _policy_gate.enforce_admin("production_reload", {"target": "registry"}, context, http_request)
     _invalidate_registry_cache()
     new_registry = _get_registry()
     _run_startup_checks()

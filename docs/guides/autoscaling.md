@@ -81,17 +81,79 @@ EXAMLOPS_AUTOSCALE_ENABLED=1 exa serve autoscale run --apply        # loop every
 | Applier error | Audited (`autoscale_apply_failed`), counted, retried next cycle; no scale event. |
 | Anti-thrash | Stabilization/cooldown read from the recorded scale events, across cycles. |
 
-**Signals.** `rps` and `p95` are read from Prometheus (`PROMETHEUS_URL`) from
-`examlops_predict_requests_total` / `examlops_predict_latency_seconds`. `queue_depth` and `gpu_util`
-have no per-model source in the platform, so a policy that targets them holds until one exists.
+**Signals.** Read from Prometheus (`PROMETHEUS_URL`); the controller and the KEDA generator share
+one definition per metric (`examlops.autoscale.queries`), so a KEDA trigger evaluates exactly the
+query the controller reads.
+
+| Metric | Source | What it measures |
+|---|---|---|
+| `rps` | `sum(rate(examlops_predict_requests_total[1m]))` | requests per second |
+| `p95` | `histogram_quantile(0.95, … examlops_predict_latency_seconds_bucket[5m])` | 95th-percentile latency |
+| `queue_depth` | `sum(rate(examlops_predict_latency_seconds_sum[1m]))` | mean requests **in flight** (queued + executing), by Little's law `L = λ·W` — Knative's `concurrency` |
+| `gpu_util` | only `EXAMLOPS_AUTOSCALE_GPU_UTIL_QUERY` | your GPU exporter's utilisation |
+
+`queue_depth` lags a burst by its 1-minute window — the model server exports no leading per-replica
+queue gauge. Override it with `EXAMLOPS_AUTOSCALE_QUEUE_DEPTH_QUERY` (e.g. the Knative queue-proxy's
+`revision_app_request_concurrency` on KServe). `gpu_util` has no default because the exporter's
+labels are site knowledge; set a template where `{model}` is the regex-escaped model name (backslashes
+doubled, ready to sit inside a double-quoted `=~"…"` matcher, since PromQL strings use Go escapes)
+and `{k8s_name}` its DNS-1123 form:
+
+```bash
+export EXAMLOPS_AUTOSCALE_GPU_UTIL_QUERY='avg(DCGM_FI_DEV_GPU_UTIL{pod=~"{k8s_name}-predictor-.*"})'
+```
+
+A template that names no model (it would scale every model on one fleet-wide number) or is longer
+than 2000 characters is refused; the controller then holds the model as *signal source down*
+(audited) rather than reading a value. Without a template a `gpu_util` policy holds as *signal
+absent*.
+
+**GPU-aware packing (E3).** Set `EXAMLOPS_AUTOSCALE_GPU_CAPACITY` to the GPUs the autoscaler may
+commit (fractions count: a replica with `gpu_fraction: 0.25` uses 0.25). Each cycle sums
+`replicas × gpu_fraction` over every policy; a scale-**up** that would exceed the capacity is refused
+(`autoscale_refused`, audited) while scale-downs always proceed. A model whose replicas are unknown
+counts at its `max_replicas` (capacity that cannot be accounted for is treated as taken), and an
+unparsable or non-positive value is capacity **0** — a typo never lifts the ceiling. Unset =
+unbounded. Dry runs pack exactly as a real cycle would.
 
 **Appliers.** `record` writes the scale event and audit and touches no serving substrate; the change
 is then made by an operator or an external system. Current replicas are the last recorded
 `to_replicas`, so seed a model once with `exa serve autoscale record MODEL 1 1`; an unseeded model
 holds. `desired` writes the decided count to an `autoscale_desired` row (`exa serve autoscale status`
 shows it) and reads it back as the current count; that is **intent for whatever owns replicas** - it
-changes no running replica. `ray` is **not built**: Ray Serve here scales one deployment (every model in it) at deploy
-time via `RAY_AUTOSCALE_MAX_REPLICAS`, and no admin route changes one model's replicas, so it refuses.
+changes no running replica. `k8s` patches the model's predictor Deployment through the Kubernetes
+API `scale` subresource (see below). `ray` is **not built**: Ray Serve here scales one deployment
+(every model in it) at deploy time via `RAY_AUTOSCALE_MAX_REPLICAS`, and no admin route changes one
+model's replicas, so it refuses.
+
+### The `k8s` applier
+
+```bash
+EXAMLOPS_AUTOSCALE_ENABLED=1 exa serve autoscale run --apply --applier k8s
+```
+
+It reads and writes `apps/v1` `deployments/<target>/scale` with a merge patch, where `<target>` is
+`EXAMLOPS_AUTOSCALE_K8S_TARGET` with `{name}` = the DNS-1123 model name (default
+`{name}-predictor`, the Deployment KServe raw-deployment mode creates) in
+`EXAMLOPS_AUTOSCALE_NAMESPACE` (default: the service account's namespace, else `default`).
+
+| Setting | Default | Notes |
+|---|---|---|
+| `EXAMLOPS_K8S_API` | in-cluster `https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT` | plain `http` only to a loopback address (`kubectl proxy`) |
+| `EXAMLOPS_K8S_TOKEN_FILE` | service-account token | a remote API with no token is refused, never called anonymously |
+| `EXAMLOPS_K8S_CA_FILE` | service-account `ca.crt` | the server certificate is verified |
+| `EXAMLOPS_K8S_TIMEOUT` | 10 | seconds per request, clamped to 1–60 |
+
+**One writer of replicas.** Before patching it lists the namespace's HorizontalPodAutoscalers (paged)
+and **refuses** if one targets the Deployment — a KEDA `ScaledObject` materialises as
+`keda-hpa-<name>`. Use either the generated KEDA/Knative objects or this applier for a model, not
+both. If the HPA list cannot be read, the patch is not attempted (fail closed). The service account
+needs `get`/`patch` on `deployments/scale`, `get` on `deployments`, and `list` on
+`horizontalpodautoscalers`. A 403 on the patch is reported as missing RBAC; a misconfigured API
+fails `run --apply` up front (exit 2).
+
+Verified here against a faithful fake API server and the real urllib transport on loopback; no live
+cluster is available to this repository's tests.
 
 ## Defaults in the model YAML
 
@@ -120,16 +182,63 @@ exa serve autoscale manifest JPCP --kind knative   # KServe overlay with Knative
 ```
 
 Generator output only: nothing is applied and no chart installs KEDA or Knative. Only `rps` and
-`p95` policies render (the series exist); `queue_depth`/`gpu_util` are refused rather than emitted
-as a trigger that never fires; the Knative overlay supports `rps` only. Assumed and unverified
+`p95` and `queue_depth` policies always render, `gpu_util` only with
+`EXAMLOPS_AUTOSCALE_GPU_UTIL_QUERY` set — otherwise it is refused rather than emitted as a trigger
+that never fires. The Knative overlay supports `rps` and `queue_depth` (as Knative's `concurrency`). Assumed and unverified
 without a cluster: the `scaleTargetRef` (`<model>-predictor`, override with `--target`) and the
 Prometheus address KEDA queries.
+
+## Cold starts: the activator
+
+A request for a model the autoscaler took to zero must bring a replica back and wait for it. The
+activator (`examlops.autoscale.activator`) does that:
+
+- **Single flight.** The first cold request scales the model to `max(1, warm_pool, min_replicas)`
+  and polls readiness; concurrent requests for the same model wait on it (one scale-up per burst).
+  Requests arriving while the wake is in progress join it even if replicas already read >0.
+- **Bounded.** At most `EXAMLOPS_AUTOSCALE_ACTIVATOR_MAX_WAITERS` (64) requests wait per model; the
+  next is answered `503 overloaded` at once. Each wait is bounded by the request's own deadline; a
+  request whose deadline is already spent is answered at once and triggers no scale-up.
+- **Backs off after a failure.** A wake that fails (API refused, HPA owns the Deployment, GPU
+  capacity) is not retried by every following request: for `EXAMLOPS_AUTOSCALE_ACTIVATOR_TTL`
+  seconds the same error is answered at once, so a storm of cold requests is not a storm of API
+  calls and audit rows. A timeout is not backed off — its scale-up stands.
+- **GPU-aware.** With `EXAMLOPS_AUTOSCALE_GPU_CAPACITY` set, the wake is checked against the same
+  fleet ceiling the controller enforces; a wake that would exceed it is refused
+  (`autoscale_activation_refused`, audited) and answered `503 cold_start`.
+- **Measured and audited.** Scale-up → ready is recorded as the scale event's `cold_start_s`
+  (`autoscale_event`), which `exa serve autoscale status` averages as `mean_cold_start_s` for the
+  cold-start SLO (C6). A timeout (`autoscale_activation_timeout`) or failed scale-up
+  (`autoscale_activation_failed`) is audited too; after a timeout the scale-up stands.
+- **Absent is not zero.** No policy, a policy that never reaches zero, or replicas the applier cannot
+  report → the request is passed through untouched. A warm model is cached for
+  `EXAMLOPS_AUTOSCALE_ACTIVATOR_TTL` (5 s) so the hot path does not ask on every request.
+
+Readiness comes from the applier when it can count ready pods (`k8s`: `status.readyReplicas`),
+otherwise from the model server's OIP route `GET {EXAMLOPS_AUTOSCALE_READY_URL}/v2/models/<m>/ready`
+(default `RAY_SERVE_URL`).
+
+**On the request path.** With `EXAMLOPS_AUTOSCALE_ACTIVATOR=1` (default off) the inference router
+(`serving/inference_pipeline`, `ModelRouter.route`) holds each request in the activator before
+routing it; the applier is `EXAMLOPS_AUTOSCALE_APPLIER` (default `desired`). A cold start that does
+not finish in time answers `503 cold_start` with `Retry-After`; an activator bug is logged and the
+request routed as before. A model the activator remembers warm is answered on the event loop with no
+thread hop; cold waits run on their own bounded pool (`EXAMLOPS_AUTOSCALE_ACTIVATOR_THREADS`,
+default 16), never the loop's default executor, so a burst of cold requests cannot starve warm
+traffic, and the router answers by the request deadline even if a probe or API call hangs. The wake is single-flight per router process — another router replica
+waking the same model concurrently issues the same (idempotent) scale-up.
+
+By hand, or to pre-warm before a known burst:
+
+```bash
+exa serve autoscale activate JPCP --applier k8s --timeout 300
+```
 
 ## Prefetch plan
 
 `exa serve autoscale prefetch` lists which models to keep warm (`warm_pool > 0`) or pre-pull (a
-zero-able model with recent traffic). Read-only planning; the weight cache, registry prefetcher and
-cold-start activator need a runtime and are **not built**.
+zero-able model with recent traffic). Read-only planning; the node weight cache and registry
+prefetcher are **not built** (warm pools are enforced by the decision itself).
 
 ## Recording executed scales
 
@@ -169,7 +278,8 @@ the same `decide_scale` output drives the replica controller; offline it still a
 
 ## Related
 
-- **E3** GPU sharing & fractional allocation — `gpu_fraction` feeds savings accounting.
+- **E3** GPU sharing & fractional allocation — `gpu_fraction` feeds savings accounting and the
+  `EXAMLOPS_AUTOSCALE_GPU_CAPACITY` packing guard.
 - **C6** SLOs & error budgets — cold-start times inform latency SLOs.
 - **D4** tamper-evident audit — every executed scale is a hash-chained audit event.
 - **FinOps / Green-AI** — scale-to-zero savings roll into cost/carbon accounting.

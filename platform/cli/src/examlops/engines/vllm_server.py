@@ -101,6 +101,10 @@ class VLLMServerEngine:
         token = self._token()
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        # ADR 0148 d1: one trace from agent to tensor — carry W3C trace context to the server.
+        from examlops.telemetry.propagation import inject_http_headers
+
+        inject_http_headers(headers)
         return headers
 
     # ── transport ─────────────────────────────────────────────────────────────
@@ -148,6 +152,15 @@ class VLLMServerEngine:
         cap = kw.get("reasoning_budget")
         if cap is not None and self.reasoning_cap_param:
             body[self.reasoning_cap_param] = int(cap)
+        # ADR 0143 d9: an agent tool step is constrained to `required`/named, never `auto`.
+        from examlops.engines.tool_policy import apply_tool_choice_policy
+
+        apply_tool_choice_policy(
+            body,
+            tools=kw.get("tools"),
+            tool_choice=kw.get("tool_choice"),
+            tool_step=bool(kw.get("tool_step")),
+        )
         return body
 
     # ── chat (R-V3: media parts forwarded verbatim) ───────────────────────────
@@ -158,7 +171,12 @@ class VLLMServerEngine:
         payload = self._payload(messages, kw)
         data = self._post_json("/v1/chat/completions", payload)
         self._ready = True
-        return _completion_from_response(data, stats.images, time.monotonic() - started)
+        comp = _completion_from_response(data, stats.images, time.monotonic() - started)
+        if kw.get("tool_step"):  # ADR 0143 d9: parse-failure rate is a tracked metric
+            from examlops.engines.tool_policy import record_tool_calls
+
+            record_tool_calls(comp.tool_calls)
+        return comp
 
     def chat_stream(self, messages: list[dict[str, Any]], **kw: Any) -> Iterator[str]:
         """Yield token-true deltas from the server's SSE stream (R-V2)."""
@@ -282,7 +300,9 @@ def _completion_from_response(data: dict[str, Any], image_count: int, elapsed: f
     text = message.get("content") or choices[0].get("text") or ""
     usage = data.get("usage") or {}
     trace = message.get("reasoning_content") or message.get("reasoning")
+    calls = message.get("tool_calls")
     return Completion(
+        tool_calls=calls if isinstance(calls, list) and calls else None,
         reasoning_tokens=reasoning_tokens_from_usage(usage),
         reasoning_text=trace if isinstance(trace, str) and trace else None,
         text=str(text),

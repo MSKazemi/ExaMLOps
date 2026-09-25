@@ -107,6 +107,24 @@ to the backend (after the request guardrail), and the answer is the one returned
 Not covered: spans emitted outside the gateway (engines, agents) still use the process-wide
 `set_redactor` hook, which defaults to identity.
 
+## One trace across hops (ADR 0148 decision 1)
+
+`examlops.telemetry.propagation` carries W3C `traceparent`/`tracestate` onto outbound calls:
+
+- `inject_http_headers(headers)` for OpenAI-compatible and OIP v2 HTTP calls. `VLLMServerEngine`
+  calls it on every request, and so does the Skipper agent's shared HTTP client
+  (`skipper/tools/_http.py`), which covers its OIP `predict` tool.
+- `inject_mcp_meta(params)` for MCP requests (`params._meta`).
+
+The context comes from the active OpenTelemetry span when tracing is enabled. When tracing is
+off, it comes from an inbound context bound with `bind_inbound(request.headers)`, so a trace
+is not cut at the first untraced hop. A malformed inbound `traceparent` or an oversized
+`tracestate` is dropped, and a caller-supplied valid `traceparent` is never overwritten.
+With no context, nothing is added.
+
+Not yet wired: the LLM gateway service, the tool gateway's MCP client, and collector tail
+sampling.
+
 ## Toggles
 
 | Variable | Default | Effect |

@@ -41,13 +41,15 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
-def scheduler_adapter() -> Any:
-    """The phase-23 adapter for the configured scheduler (mock / slurm / flux)."""
+def scheduler_adapter(scheduler: str | None = None) -> Any:
+    """The phase-23 adapter for ``scheduler``, else the configured one (mock / slurm / flux)."""
     adapter_dir = repo_root() / "platform" / "infra" / "slurm-adapter"
     if str(adapter_dir) not in sys.path:
         sys.path.insert(0, str(adapter_dir))
     from adapter import get_scheduler_adapter  # noqa: PLC0415
 
+    if scheduler:
+        return get_scheduler_adapter(scheduler=scheduler)
     return get_scheduler_adapter()
 
 
@@ -176,10 +178,27 @@ def write_script(kind: str, text: str) -> tuple[Path, str]:
 def submit(adapter: Any, script: Path, job_key: str, resources: dict[str, Any]) -> str:
     """Submit ``script``; the adapter stages it to ``<remote workdir>/<job_key>`` itself."""
     remote_base = os.getenv("EXAMLOPS_HPC_REMOTE_WORKDIR") or str(adapter.working_dir)
-    return str(
-        adapter.submit_job(
-            script_path=str(script), resources=resources, remote_dir=f"{remote_base}/{job_key}"
+
+    def _submit() -> str:
+        return str(
+            adapter.submit_job(
+                script_path=str(script), resources=resources, remote_dir=f"{remote_base}/{job_key}"
+            )
         )
+
+    # Admission seam (ADR 0116): every platform job reaches the scheduler through here, so this is
+    # where it is admitted. Behind EXAMLOPS_ADMISSION_DISPATCH_ENABLED (default OFF, then this is
+    # exactly the direct submission it always was). Enabled, a refusal raises AdmissionRefused
+    # before anything is submitted, and an admitted job's quota is bound to its job id and released
+    # when its terminal state is recorded (examlops.data.hpc.update_hpc_job).
+    from examlops.admission_seam import dispatch
+
+    if not dispatch.is_enabled():
+        return _submit()
+    return dispatch.submit_admitted(
+        dispatch.request_for_hpc_job(resources, scheduler=scheduler_name()),
+        scheduler=scheduler_name(),
+        submit=_submit,
     )
 
 

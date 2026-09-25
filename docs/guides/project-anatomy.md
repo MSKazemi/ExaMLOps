@@ -63,24 +63,57 @@ exists — no heavyweight per-project pipeline objects are created:
 
 | Surface | What it is | Derived from |
 |---|---|---|
-| **Prefect (training)** | The project's training deployments, schedule, last run, status | Deployments tagged `project:<name>` (from `deploy.py`), plus the optional `project_pipelines` registry row |
-| **Ray Serve (serving)** | The project's served models and their traffic split | Models where `resolve_project(model) == <name>`, joined with `traffic_rules` |
+| **Prefect (training)** | The project's training deployments, schedule(s), work pool, last started run, artifact destination, status | Prefect deployments tagged `project:<name>` (the tag `deploy.py` writes), queried live from the Prefect API; the project storage prefix (P6) |
+| **Ray Serve (serving)** | The project's served models, their aliases and health, the models it is *not* serving, and the traffic split | The serve app's `GET /models` hot set filtered to the project, joined with `traffic_rules` |
 
 ```bash
-exa project pipelines climate-team
+exa project pipelines climate-team            # live from the Prefect / Ray Serve you configured
+exa project pipelines climate-team --live     # also try the built-in localhost defaults
+exa project pipelines climate-team --no-live  # registry only, contact nothing
 ```
 
 ```
 Prefect pipeline (training)
-  Deployments   examlops-jpcp
+  Source        live
+  Deployments   examlops-jpcp-nightly
   Schedule      0 2 * * *
-  Last run      2026-07-15 02:00
+  Work pool     hpc
+  Last run      2026-09-24T02:00:00Z · COMPLETED · examlops-jpcp-nightly
+  Artifacts     s3://examlops-projects/climate-team/
   Status        healthy
 
-Ray Serve pipeline (serving)
-  Model   Traffic split
-  JPCP    {'Production': 90, 'Canary': 10}
+Ray Serve pipeline (serving) — healthy · live
+  Model   Aliases              Health   Traffic split
+  JPCP    Canary, Production   ok       {'Production': 90, 'Canary': 10}
 ```
+
+### Live hydration and the registry fallback
+
+Both surfaces are **read live** when a source is known, and fall back to the `project_pipelines`
+registry when it is not reachable:
+
+- **Which sources.** Only URLs someone configured: `PREFECT_API_URL` / `RAY_SERVE_URL` in the
+  environment, or `prefect` / `ray_serve` in the `exa` config file or active context. The built-in
+  `localhost` defaults are probed only with `--live`, so a command never reports whatever happens
+  to run on the operator's machine. The dashboard uses the `PREFECT_URL` / `RAY_SERVE_URL` its
+  Compose service sets. `EXAMLOPS_PROJECT_PIPELINES_LIVE=0` turns live reads off everywhere.
+- **Status.** Prefect: `healthy` when the newest started run completed, `degraded` when it failed or
+  crashed or every deployment is paused, `unknown` when nothing has run yet. Ray Serve: `healthy`
+  when every project model is served and every hot alias reports `ok`, otherwise `degraded` with the
+  unserved models listed.
+- **Fallback.** A source that is down, slow or answers garbage leaves that surface as the registry
+  holds it, marked `Source registry` with the reason — never an error. Each successful live read
+  writes its result through to the registry row, so the fallback is the *last observed* state rather
+  than `unknown`.
+- **Bounds.** Each request times out after `EXAMLOPS_PROJECT_PIPELINES_TIMEOUT` seconds (default 2,
+  clamped to 0.1–30); deployments are paged 200 at a time and capped at 1000 (`truncated: true`).
+  The whole Prefect read has a budget of three timeouts: a server that answers every page slowly
+  falls back to the registry instead of holding the caller for the full page count.
+- **Last run.** Only a run that actually started counts: a scheduled run that was cancelled before
+  it started never hides the real last run.
+- **Ownership.** A served model counts toward a project when the serve app attributes it to that
+  project, or — when the serving runtime could not resolve an owner — when it is a project member. A
+  model the serve app attributes to *another* project never counts.
 
 An empty project (no models assigned yet) shows both surfaces as absent — assign a model first:
 
@@ -122,6 +155,12 @@ bar, a **Pipelines** card with the Prefect and Ray Serve surfaces, alongside the
 Members, Quota, and Budget cards. `GET /api/v1/projects/<name>` returns the extended anatomy
 (`storage`, `connections`, `pipelines`), viewer-gated and secret-safe.
 
+The endpoint assembles each section as its own source through the dashboard's BFF aggregator, with
+a per-section timeout. A section that fails or times out is returned empty and named in a
+`_partial` list, and the page shows *"Some sections could not be loaded: …"* instead of silent
+blanks. If the live pipeline read is the part that fails, the Pipelines card still renders from the
+registry. Each pipeline card carries a **live** or **registry** badge.
+
 ---
 
 ## 4. Isolation model
@@ -153,7 +192,7 @@ boundary.
 | `exa project storage <name>` | Show the MinIO storage location + usage |
 | `exa project storage <name> --bind-connection <conn>` | Point storage at a P2 S3 connection |
 | `exa project storage <name> --refresh` | Re-probe used bytes from MinIO |
-| `exa project pipelines <name>` | The Prefect (training) + Ray Serve (serving) surfaces |
+| `exa project pipelines <name> [--live/--no-live]` | The Prefect (training) + Ray Serve (serving) surfaces, live when a source is configured |
 | `exa pipeline run --project <name>` | Train a project model into its storage prefix |
 
 ## 6. Related

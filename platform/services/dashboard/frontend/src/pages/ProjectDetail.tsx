@@ -11,9 +11,10 @@ import { isAdmin } from '@/lib/auth'
 import {
   useProject, useAssignResource, useAddMember, useRemoveMember, useDeleteProject,
   useBindStorage, useUpdateProject, statusToken, budgetUsage,
-  storageUsagePct, bytesToGb,
+  storageUsagePct, bytesToGb, pipelineToken, partialNotice,
   RESOURCE_KINDS, MEMBER_ROLES,
   type AssignResourceBody, type AddMemberBody, type UpdateProjectBody, type ProjectDetail as ProjectDetailT,
+  type PipelineSource, type ProjectPipelines,
 } from '@/lib/projects'
 import {
   useConnections, useCreateConnection, useDeleteConnection, useTestConnection,
@@ -23,6 +24,9 @@ import {
   useWorkbenches, useSetWorkbenchStatus, useCreateWorkbench, useDeleteWorkbench,
   nextStatus, type CreateWorkbenchBody,
 } from '@/lib/workbenches'
+import {
+  useHardwareProfiles, useHardwareProfilesInUse, profileShape, needsAttention,
+} from '@/lib/hardwareProfiles'
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
   ok:       { bg: 'oklch(0.72 0.18 155 / 12%)', border: 'oklch(0.72 0.18 155 / 30%)', text: 'var(--success-text)' },
@@ -357,13 +361,17 @@ function ConnectionsCard({ project, admin }: { project: string; admin: boolean }
 function CreateWorkbenchModal({ project, onClose }: { project: string; onClose: () => void }) {
   const [name, setName] = useState('')
   const [image, setImage] = useState('')
+  const [profile, setProfile] = useState('')
   const [error, setError] = useState<string | null>(null)
   const create = useCreateWorkbench(project)
+  // Only profiles a workbench create would accept (applicability workbench or any, ADR 0157).
+  const profiles = useHardwareProfiles('workbench')
 
   const handleSubmit = async () => {
     setError(null)
     const body: CreateWorkbenchBody = { name: name.trim() }
     if (image.trim()) body.image = image.trim()
+    if (profile) body.hardwareProfile = profile
     try {
       await create.mutateAsync(body)
       onClose()
@@ -373,7 +381,8 @@ function CreateWorkbenchModal({ project, onClose }: { project: string; onClose: 
   }
 
   const cli = `exa workbench create ${name || '<name>'} --project ${project}` +
-    (image.trim() ? ` --image ${image.trim()}` : '')
+    (image.trim() ? ` --image ${image.trim()}` : '') +
+    (profile ? ` --hardware-profile ${profile}` : '')
   return (
     <Modal title="New Workbench" cli={cli} onClose={onClose} onSubmit={handleSubmit}
       submitting={create.isPending} disabled={!name.trim()} error={error}>
@@ -390,6 +399,23 @@ function CreateWorkbenchModal({ project, onClose }: { project: string; onClose: 
           className="w-full rounded-lg px-3 py-2 text-sm font-mono"
           style={{ background: 'var(--surface-1)', border: '1px solid var(--border-md)' }} />
       </label>
+      <label className="block space-y-1">
+        <span className="text-xs font-medium text-muted-foreground">Hardware profile (optional)</span>
+        <select value={profile} onChange={e => setProfile(e.target.value)}
+          aria-label="Hardware profile"
+          className="w-full rounded-lg px-3 py-2 text-sm font-mono"
+          style={{ background: 'var(--surface-1)', border: '1px solid var(--border-md)' }}>
+          <option value="">None — platform defaults</option>
+          {(profiles.data ?? []).map(p => (
+            <option key={p.name} value={p.name}>{profileShape(p)}</option>
+          ))}
+        </select>
+        {profiles.isError && (
+          <span className="text-[11px]" style={{ color: 'var(--warning-text)' }}>
+            Hardware profiles could not be loaded — create without one, or retry.
+          </span>
+        )}
+      </label>
       <p className="text-[11px] text-muted-foreground">
         Creates a project-bound notebook with its own persistent volume
         (<span className="font-mono">{project}-{name || '<name>'}-data</span>). Start it to inject
@@ -403,7 +429,10 @@ function WorkbenchesCard({ project, admin }: { project: string; admin: boolean }
   const { data, isLoading } = useWorkbenches(project)
   const setStatus = useSetWorkbenchStatus(project)
   const del = useDeleteWorkbench(project)
+  const inUse = useHardwareProfilesInUse(project)
   const [showNew, setShowNew] = useState(false)
+  const profileStatus = (wbName: string) =>
+    inUse.data?.entries.find(e => e.consumer === 'workbench' && e.consumer_ref === `${project}/${wbName}`)
 
   const newBtn = admin ? (
     <button onClick={() => setShowNew(true)}
@@ -439,6 +468,19 @@ function WorkbenchesCard({ project, admin }: { project: string; admin: boolean }
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground font-mono truncate">{wb.image}</p>
+                  {wb.hardwareProfile && (() => {
+                    const st = profileStatus(wb.name)
+                    const warn = st && needsAttention(st.status)
+                    return (
+                      <p className="text-[11px] font-mono truncate flex items-center gap-1"
+                        title={st ? `${st.status}: ${st.reason}` : undefined}
+                        style={{ color: warn ? 'var(--warning-text)' : 'var(--faint-text)' }}>
+                        <Cpu className="w-3 h-3 shrink-0" />
+                        {wb.hardwareProfile} v{wb.hardwareProfileVersion ?? '?'}
+                        {st && <span>· {st.status}</span>}
+                      </p>
+                    )
+                  })()}
                   {wb.volume && (
                     <p className="text-[11px] text-muted-foreground font-mono truncate flex items-center gap-1">
                       <HardDrive className="w-3 h-3 shrink-0" /> {wb.volume}
@@ -526,6 +568,89 @@ function BindStorageModal({ project, onClose }: { project: string; onClose: () =
         </select>
       </div>
     </Modal>
+  )
+}
+
+function SourceBadge({ source, error }: { source?: PipelineSource; error?: string | null }) {
+  const live = source === 'live'
+  const sc = STATUS_COLORS[live ? 'ok' : 'unknown']
+  return (
+    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md uppercase tracking-wide"
+      title={error ? `live read unavailable: ${error}` : live ? 'read from the running service' : 'last observed state (registry)'}
+      style={{ background: sc.bg, border: `1px solid ${sc.border}`, color: sc.text }}>
+      {live ? 'live' : 'registry'}
+    </span>
+  )
+}
+
+/** The project's two pipeline surfaces (ADR 0092), live-hydrated when the BFF could reach them. */
+export function PipelinesCard({ pipelines }: { pipelines: ProjectPipelines | undefined }) {
+  if (!pipelines || (!pipelines.prefect && !pipelines.rayserve)) return null
+  const pf = pipelines.prefect
+  const ry = pipelines.rayserve
+  const token = (s: string) => STATUS_COLORS[pipelineToken(s)] ?? STATUS_COLORS.unknown
+  return (
+    <SectionCard icon={Workflow} title="Pipelines">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {pf && (
+          <div className="rounded-lg p-3 space-y-1" style={{ border: '1px solid var(--border-sm)' }} data-testid="pipeline-prefect">
+            <div className="flex items-center gap-2">
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">Prefect · training</p>
+              <SourceBadge source={pf.source} error={pf.liveError} />
+              <span className="ml-auto text-[11px] font-mono" style={{ color: token(pf.status).text }}>{pf.status}</span>
+            </div>
+            <p className="text-sm">{pf.deployments.length} deployment(s)</p>
+            {pf.deployments.length > 0 && (
+              <p className="text-xs font-mono text-muted-foreground break-all">{pf.deployments.join(', ')}</p>
+            )}
+            <p className="text-xs text-muted-foreground font-mono">
+              {pf.schedule ?? 'no schedule'}{pf.workPool ? ` · pool ${pf.workPool}` : ''}
+            </p>
+            <p className="text-xs text-muted-foreground font-mono">
+              last run: {pf.lastRunAt ? `${pf.lastRunState ?? '?'} · ${String(pf.lastRunAt).slice(0, 19).replace('T', ' ')}` : '—'}
+            </p>
+            {pf.storagePrefix && (
+              <p className="text-xs text-muted-foreground font-mono break-all">artifacts → {pf.storagePrefix}</p>
+            )}
+            {pf.liveError && (
+              <p className="text-xs" style={{ color: 'var(--warning-text)' }}>Prefect unreachable — showing last observed state.</p>
+            )}
+          </div>
+        )}
+        {ry && (
+          <div className="rounded-lg p-3 space-y-1" style={{ border: '1px solid var(--border-sm)' }} data-testid="pipeline-rayserve">
+            <div className="flex items-center gap-2">
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">Ray Serve · serving</p>
+              <SourceBadge source={ry.source} error={ry.liveError} />
+              <span className="ml-auto text-[11px] font-mono" style={{ color: token(ry.status).text }}>{ry.status}</span>
+            </div>
+            {/* Only a live read knows what is served; the registry knows project membership. The
+                BFF always sends `served` (empty on a registry read), so branch on the source. */}
+            <p className="text-sm">
+              {ry.source === 'live'
+                ? `${(ry.served ?? []).length} served model(s)`
+                : `${ry.models.length} member model(s)`}
+            </p>
+            {ry.aliases && Object.keys(ry.aliases).length > 0 && (
+              <ul className="text-xs font-mono text-muted-foreground">
+                {Object.entries(ry.aliases).map(([m, aliases]) => (
+                  <li key={m}>{m}: {aliases.join(' / ')} {ry.health?.[m] && ry.health[m] !== 'ok' ? `(${ry.health[m]})` : ''}</li>
+                ))}
+              </ul>
+            )}
+            {ry.unserved && ry.unserved.length > 0 && (
+              <p className="text-xs" style={{ color: 'var(--warning-text)' }}>not served: {ry.unserved.join(', ')}</p>
+            )}
+            <p className="text-xs text-muted-foreground font-mono">
+              {Object.keys(ry.traffic).length} traffic rule(s)
+            </p>
+            {ry.liveError && (
+              <p className="text-xs" style={{ color: 'var(--warning-text)' }}>Ray Serve unreachable — showing last observed state.</p>
+            )}
+          </div>
+        )}
+      </div>
+    </SectionCard>
   )
 }
 
@@ -738,6 +863,14 @@ export function ProjectDetail() {
         </div>
       </div>
 
+      {/* ADR 0093: a partial BFF view says which sections are missing instead of showing blanks */}
+      {partialNotice(data) && (
+        <p role="status" className="text-xs rounded-lg px-3 py-2"
+          style={{ background: 'oklch(0.78 0.18 55 / 12%)', border: '1px solid oklch(0.78 0.18 55 / 30%)', color: 'var(--warning-text)' }}>
+          {partialNotice(data)}
+        </p>
+      )}
+
       {/* Quota */}
       <SectionCard icon={Cpu} title="Quota" action={editBtn}>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -783,30 +916,7 @@ export function ProjectDetail() {
       <StorageCard project={data.name} storage={data.storage} admin={admin} onBind={() => setModal('storage')} />
 
       {/* Pipelines (P7): the project's Prefect training + Ray Serve serving surfaces */}
-      {data.pipelines && (data.pipelines.prefect || data.pipelines.rayserve) && (
-        <SectionCard icon={Workflow} title="Pipelines">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {data.pipelines.prefect && (
-              <div className="rounded-lg p-3" style={{ border: '1px solid var(--border-sm)' }}>
-                <p className="text-xs uppercase tracking-wider text-muted-foreground mb-1.5">Prefect · training</p>
-                <p className="text-sm">{data.pipelines.prefect.deployments.length} deployment(s)</p>
-                <p className="text-xs text-muted-foreground font-mono">
-                  {data.pipelines.prefect.schedule ?? 'no schedule'} · {data.pipelines.prefect.status}
-                </p>
-              </div>
-            )}
-            {data.pipelines.rayserve && (
-              <div className="rounded-lg p-3" style={{ border: '1px solid var(--border-sm)' }}>
-                <p className="text-xs uppercase tracking-wider text-muted-foreground mb-1.5">Ray Serve · serving</p>
-                <p className="text-sm">{data.pipelines.rayserve.models.length} served model(s)</p>
-                <p className="text-xs text-muted-foreground font-mono">
-                  {Object.keys(data.pipelines.rayserve.traffic).length} traffic rule(s) · {data.pipelines.rayserve.status}
-                </p>
-              </div>
-            )}
-          </div>
-        </SectionCard>
-      )}
+      <PipelinesCard pipelines={data.pipelines} />
 
       {/* Resources grouped by kind */}
       <SectionCard icon={Layers} title="Resources" action={addResourceBtn}>

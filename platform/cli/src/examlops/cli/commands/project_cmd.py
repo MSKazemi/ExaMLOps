@@ -147,6 +147,67 @@ def _gb_to_bytes(gb: float) -> int:
     return int(gb * 1024 * 1024 * 1024)
 
 
+_LIVE_HELP = (
+    "Hydrate the pipeline surfaces from Prefect + Ray Serve (ADR 0092). Default: only from the "
+    "URLs you configured (env/config file); --live also tries the built-in defaults, "
+    "--no-live reads the registry only."
+)
+
+
+def _live_sources(live: bool | None):
+    """Which live sources ``show``/``pipelines`` hydrate from (ADR 0092 decision 1).
+
+    Default (``None``): only a Prefect / Ray Serve URL the operator actually configured (env,
+    context or config file) — a built-in ``localhost`` default is never probed implicitly, so the
+    command measures the platform it was pointed at, not whatever runs on this machine. ``--live``
+    adds the defaults; ``--no-live`` contacts nothing.
+    """
+    from examlops import project_pipelines as _pp
+
+    if live is False:
+        return _pp.LiveSources()
+    from examlops.cli._config import load_config, resolve_with_provenance
+
+    cfg = load_config()
+    provenance = {row["key"]: row["source"] for row in resolve_with_provenance()}
+
+    def _pick(field: str, value: str) -> str | None:
+        return value if live or provenance.get(field, "default") != "default" else None
+
+    return _pp.sources(
+        prefect_url=_pick("prefect_url", cfg.prefect_url),
+        serve_url=_pick("ray_serve_url", cfg.ray_serve_url),
+        serving_token=cfg.serving_token,
+    )
+
+
+def _prefect_rows(pf: dict) -> list[list[str]]:
+    rows = [
+        ["Source", pf.get("source") or "registry"],
+        ["Deployments", ", ".join(pf.get("deployments") or []) or "—"],
+        ["Schedule", pf.get("schedule") or "—"],
+        ["Work pool", pf.get("work_pool") or "—"],
+        [
+            "Last run",
+            " · ".join(
+                x
+                for x in (
+                    pf.get("last_run_at"),
+                    pf.get("last_run_state"),
+                    pf.get("last_run_deployment"),
+                )
+                if x
+            )
+            or "—",
+        ],
+        ["Artifacts", pf.get("storage_prefix") or "—"],
+        ["Status", pf.get("status") or "unknown"],
+    ]
+    if pf.get("live_error"):
+        rows.append(["Live read", f"unavailable ({pf['live_error']})"])
+    return rows
+
+
 @app.command(epilog=_EXAMPLES_CREATE)
 def create(
     name: str = typer.Argument(..., help="Project name (unique identifier, e.g. 'research')"),
@@ -236,11 +297,12 @@ def project_list(
 @app.command()
 def show(
     name: str = typer.Argument(..., help="Project name"),
+    live: bool | None = typer.Option(None, "--live/--no-live", help=_LIVE_HELP),
 ) -> None:
     """Show the full project anatomy: quota, resources by kind, members, budget, consumption."""
     init_db()
     _guard(name, "viewer")
-    full = get_project_full(name)
+    full = get_project_full(name, live=_live_sources(live))
     if not full:
         _output.error(f"Project '{name}' not found")
         raise typer.Exit(1)
@@ -334,18 +396,22 @@ def show(
                     ", ".join(pf.get("deployments") or []) or "—",
                     pf.get("schedule") or "—",
                     pf.get("status") or "unknown",
+                    pf.get("source") or "registry",
                 ]
             )
         if ry:
             rows.append(
                 [
                     "Ray Serve (serving)",
-                    ", ".join(ry.get("models") or []) or "—",
+                    ", ".join(ry.get("served") or ry.get("models") or []) or "—",
                     ("split" if ry.get("traffic") else "—"),
                     ry.get("status") or "unknown",
+                    ry.get("source") or "registry",
                 ]
             )
-        _output.print_table("Pipelines", ["Surface", "Members", "Schedule/Traffic", "Status"], rows)
+        _output.print_table(
+            "Pipelines", ["Surface", "Members", "Schedule/Traffic", "Status", "Source"], rows
+        )
 
 
 @app.command("storage")
@@ -395,14 +461,17 @@ def storage_cmd(
 
 
 @app.command("pipelines")
-def pipelines_cmd(name: str = typer.Argument(..., help="Project name")) -> None:
+def pipelines_cmd(
+    name: str = typer.Argument(..., help="Project name"),
+    live: bool | None = typer.Option(None, "--live/--no-live", help=_LIVE_HELP),
+) -> None:
     """Show the project's two pipeline surfaces: Prefect (training) + Ray Serve (serving) (P7)."""
     init_db()
     _guard(name, "viewer")
     if not get_project(name):
         _output.error(f"Project '{name}' not found")
         raise typer.Exit(1)
-    pipes = get_project_pipelines(name)
+    pipes = get_project_pipelines(name, live=_live_sources(live))
     if _output.json_mode:
         _output.print_json(pipes)
         return
@@ -413,23 +482,28 @@ def pipelines_cmd(name: str = typer.Argument(..., help="Project name")) -> None:
         )
         return
     if pf:
-        _output.print_table(
-            "Prefect pipeline (training)",
-            ["Field", "Value"],
-            [
-                ["Deployments", ", ".join(pf.get("deployments") or []) or "—"],
-                ["Schedule", pf.get("schedule") or "—"],
-                ["Last run", pf.get("last_run_at") or "—"],
-                ["Status", pf.get("status") or "unknown"],
-            ],
-        )
+        _output.print_table("Prefect pipeline (training)", ["Field", "Value"], _prefect_rows(pf))
     if ry:
+        health = ry.get("health") or {}
+        aliases = ry.get("aliases") or {}
+        names = sorted(set(ry.get("models") or []) | set(health))
         _output.print_table(
-            "Ray Serve pipeline (serving)",
-            ["Model", "Traffic split"],
-            [[m, str(ry.get("traffic", {}).get(m, "—"))] for m in (ry.get("models") or [])]
-            or [["—", "—"]],
+            f"Ray Serve pipeline (serving) — {ry.get('status') or 'unknown'}"
+            f" · {ry.get('source') or 'registry'}",
+            ["Model", "Aliases", "Health", "Traffic split"],
+            [
+                [
+                    m,
+                    ", ".join(aliases.get(m) or []) or "—",
+                    health.get(m) or ("not served" if ry.get("source") == "live" else "—"),
+                    str(ry.get("traffic", {}).get(m, "—")),
+                ]
+                for m in names
+            ]
+            or [["—", "—", "—", "—"]],
         )
+        if ry.get("live_error"):
+            _output.warning(f"Ray Serve live read unavailable: {ry['live_error']}")
 
 
 @app.command("set-quota")
@@ -493,6 +567,16 @@ _EX_ASSIGN = (
 def _assign(project: str, kind: str, ref: str) -> None:
     init_db()
     _guard(project, "editor")
+    from examlops.authz.guard import RESOURCE_KINDS
+
+    if kind in RESOURCE_KINDS:
+        # ADR 0014 d4: membership *is* the authorization key for models and datasets, so
+        # assigning one moves who controls it. Editing the target project is not enough - the
+        # caller must also edit the resource where it lives now (an unassigned one: `default`),
+        # or any project owner could claim another project's model, or every unclaimed one.
+        from examlops.cli._model_authz import guard_resource
+
+        guard_resource(kind, ref, "editor")
     ok = assign_resource_to_project(project, kind, ref, added_by=_actor())
     if not ok:
         _output.error(f"Project '{project}' not found")
@@ -969,9 +1053,9 @@ def access(
 def scope_audit() -> None:
     """Report platform.db tables that carry no project/tenant scope (read-only, ADR 0014).
 
-    Every table is classified scoped / model-scoped / exempt (with a reason) / UNSCOPED. Exits 1
-    if a table is UNSCOPED or an exemption has gone stale. ``known_gaps`` lists the user-data
-    tables that are still not partitioned by project.
+    Every table is classified scoped / model- or dataset-scoped / exempt (with a reason) / UNSCOPED.
+    Exits 1 if a table is UNSCOPED or an exemption has gone stale. ``known_gaps`` lists the
+    user-data tables that are still not partitioned by project.
     """
     from examlops.authz.scope_audit import ScopeAuditUnavailable, audit_scope
 

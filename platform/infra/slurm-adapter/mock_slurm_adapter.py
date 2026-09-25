@@ -92,8 +92,9 @@ class MockSlurmAdapter:
         Execute the job synchronously and return the path to the trained model (or log).
 
         ``poll_interval`` (and the deprecated ``sleep_time`` alias) is used only as an
-        optional artificial delay for the no-op path. ``max_wait_s`` is accepted for
-        interface parity with the real adapters and ignored.
+        optional artificial delay for the no-op path. ``max_wait_s`` bounds a script job the way
+        it bounds a real adapter's wait: the script is killed and the job marked FAILED when it
+        runs longer (``None`` = unbounded, the historical behaviour).
 
         Returns: path to trained_model.pkl if training succeeded, else path to stdout log.
         """
@@ -114,7 +115,9 @@ class MockSlurmAdapter:
             if training_data is not None:
                 artifact_path = self._run_training(training_data, model_file, log_lines)
             elif job.get("script_path"):
-                artifact_path = self._run_script(job["script_path"], job_folder, log_lines)
+                artifact_path = self._run_script(
+                    job["script_path"], job_folder, log_lines, timeout=max_wait_s
+                )
             else:
                 # Neither training_data nor script — produce a placeholder
                 if poll_interval:
@@ -188,13 +191,16 @@ class MockSlurmAdapter:
         return str(model_file)
 
     @staticmethod
-    def _run_script(script_path: str, job_folder: Path, log_lines: list) -> str:
-        """Execute a shell script locally and capture its output."""
+    def _run_script(
+        script_path: str, job_folder: Path, log_lines: list, timeout: float | None = None
+    ) -> str:
+        """Execute a shell script locally and capture its output (killed after ``timeout`` s)."""
         result = subprocess.run(
             ["bash", script_path],
             capture_output=True,
             text=True,
             cwd=str(job_folder),
+            timeout=timeout,
         )
         log_lines.extend(result.stdout.splitlines())
         if result.stderr:

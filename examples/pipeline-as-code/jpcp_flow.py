@@ -56,6 +56,7 @@ def jpcp():
         cache_dir=".data_cache/fdata",
         batch_size=1,
         input_features=["embedding"],
+        feature_view="fdata_job_features",  # ADR 0017: the one train/serve definition
         output_features=["avgpcon", "nnuma"],
         splits={
             "train": {

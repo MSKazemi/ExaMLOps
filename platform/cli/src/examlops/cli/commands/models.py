@@ -27,7 +27,21 @@ _PANELS: list[tuple[str, list[str]]] = [
     ("Registry", ["list", "info", "diff", "lineage", "card"]),
     ("Promotion", ["rollback"]),
     ("Cost", ["cost", "cost-list"]),
-    ("Supply chain & Packaging", ["sign", "verify", "bom", "quantize", "parity", "engine"]),
+    (
+        "Supply chain & Packaging",
+        [
+            "sign",
+            "verify",
+            "bom",
+            "attest",
+            "provenance",
+            "release-check",
+            "quantize",
+            "quantize-gate",
+            "parity",
+            "engine",
+        ],
+    ),
 ]
 
 app = typer.Typer(
@@ -44,51 +58,50 @@ _EXAMPLES_INFO = "Examples:\n\n  exa models info jpcp\n\n  exa --json models inf
 @app.command("list", epilog=_EXAMPLES_LIST)
 def list_models():
     """List all registered models with their production alias and latest version."""
-    from examlops.mlflow_paging import PagingError, all_items
+    # A thin render over the SDK (ADR 0078 clause 2): `examlops.models.list()` is the one path.
+    from examlops.sdk import models as sdk_models
+    from examlops.sdk.errors import IncompleteReadError, SDKError
 
-    cfg = load_config()
-    url = f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/search"
     try:
         # "all registered models" in the docstring means all of them: the endpoint pages, and this
         # is the command an operator uses to find out whether a model exists at all.
-        models = all_items(_client.get, url, "registered_models")
-    except _client.ClientError as e:
-        _output.error(f"Failed to list models: {e}", hint="Is MLflow running? Try: exa status")
-        return
-    except PagingError as e:
+        models = sdk_models.list()
+    except IncompleteReadError as e:
         _output.error(f"Failed to list models: {e}", hint="Check the MLflow server's paging.")
-        return
-    rows = []
-    for m in models:
-        aliases = {a["alias"]: a["version"] for a in m.get("aliases", [])}
-        prod_ver = aliases.get("Production", "—")
-        latest = max((v["version"] for v in m.get("latest_versions", [])), default="—")
-        rows.append([m["name"], prod_ver, latest, ", ".join(aliases.keys()) or "—"])
+    except SDKError as e:
+        _output.error(f"Failed to list models: {e}", hint="Is MLflow running? Try: exa status")
+    rows = [
+        [
+            m.name,
+            m.production_version or "—",
+            m.latest_version or "—",
+            ", ".join(m.aliases.keys()) or "—",
+        ]
+        for m in models
+    ]
     _output.print_table("Registered Models", ["Name", "Production", "Latest", "Aliases"], rows)
 
 
 @app.command(epilog=_EXAMPLES_INFO)
 def info(model: str = typer.Argument(..., help="Registered model name (e.g. jpcp)")):
     """Show detail for one model: all versions, aliases, metrics."""
-    cfg = load_config()
-    url = f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/get?name={urllib.parse.quote(model)}"
+    from examlops.sdk import models as sdk_models
+    from examlops.sdk.errors import SDKError
+
     try:
-        data = _client.get(url)
-    except _client.ClientError as e:
+        detail = sdk_models.get(model)
+    except SDKError as e:
         _output.error(
             f"Failed to fetch model {model!r}: {e}", hint="Check model name with: exa models list"
         )
-        return
-    rm = data.get("registered_model", {})
     if _output.json_mode:
-        _output.print_json(rm)
+        _output.print_json(detail.raw)
         return
     _output.print_record(
         {
-            "name": rm.get("name"),
-            "aliases": ", ".join(f"{a['alias']}=v{a['version']}" for a in rm.get("aliases", []))
-            or "none",
-            "versions": ", ".join(v["version"] for v in rm.get("latest_versions", [])) or "none",
+            "name": detail.raw.get("name"),
+            "aliases": ", ".join(f"{a}=v{v}" for a, v in detail.aliases.items()) or "none",
+            "versions": ", ".join(detail.versions) or "none",
         }
     )
 
@@ -103,50 +116,24 @@ def diff(
     v2: str = typer.Argument(..., help="Second version number"),
 ):
     """Compare metrics and params between two model versions."""
-    cfg = load_config()
-
-    def _get_run(version: str) -> tuple[str, dict, dict]:
-        ver_url = (
-            f"{cfg.mlflow_url}/api/2.0/mlflow/model-versions/get"
-            f"?name={urllib.parse.quote(model)}&version={version}"
-        )
-        try:
-            ver_data = _client.get(ver_url)
-        except _client.ClientError as e:
-            _output.error(str(e))
-            raise  # re-raise ClientError so outer try/except catches it
-        run_id = ver_data["model_version"]["run_id"]
-        run_url = f"{cfg.mlflow_url}/api/2.0/mlflow/runs/get?run_id={run_id}"
-        try:
-            run_data = _client.get(run_url)
-        except _client.ClientError as e:
-            _output.error(str(e))
-            raise
-        d = run_data["run"]["data"]
-        metrics = {m["key"]: m["value"] for m in d.get("metrics", [])}
-        params = {p["key"]: p["value"] for p in d.get("params", [])}
-        return run_id, metrics, params
+    from examlops.sdk import models as sdk_models
+    from examlops.sdk.errors import SDKError
 
     try:
-        _, metrics1, params1 = _get_run(v1)
-        _, metrics2, params2 = _get_run(v2)
-    except _client.ClientError:
-        return
-
-    all_metrics = sorted(set(metrics1) | set(metrics2))
-    all_params = sorted(set(params1) | set(params2))
+        result = sdk_models.diff(model, v1, v2)
+    except SDKError as e:
+        _output.error(str(e))
 
     if _output.json_mode:
-        _output.print_json(
-            {
-                "model": model,
-                "v1": v1,
-                "v2": v2,
-                "metrics": {k: {"v1": metrics1.get(k), "v2": metrics2.get(k)} for k in all_metrics},
-                "params": {k: {"v1": params1.get(k), "v2": params2.get(k)} for k in all_params},
-            }
-        )
+        _output.print_json(result.to_dict())
         return
+
+    metrics1 = {k: p.v1 for k, p in result.metrics.items() if p.v1 is not None}
+    metrics2 = {k: p.v2 for k, p in result.metrics.items() if p.v2 is not None}
+    params1 = {k: p.v1 for k, p in result.params.items() if p.v1 is not None}
+    params2 = {k: p.v2 for k, p in result.params.items() if p.v2 is not None}
+    all_metrics = list(result.metrics)
+    all_params = list(result.params)
 
     from rich.table import Table
 
@@ -249,53 +236,22 @@ def lineage(
             console.print("  [dim](no lineage events recorded yet)[/dim]")
         return
 
-    cfg = load_config()
-
-    if version is None:
-        try:
-            rm_data = _client.get(
-                f"{cfg.mlflow_url}/api/2.0/mlflow/registered-models/get"
-                f"?name={urllib.parse.quote(model)}"
-            )
-        except _client.ClientError as e:
-            _output.error(str(e))
-            return
-        aliases = {
-            a["alias"]: a["version"] for a in rm_data.get("registered_model", {}).get("aliases", [])
-        }
-        version = aliases.get("Production") or next(iter(aliases.values()), None)
-        if not version:
-            _output.error(f"No versions found for {model}")
-            return
+    # A thin render over the SDK (ADR 0078 clause 2).
+    from examlops.sdk import models as sdk_models
+    from examlops.sdk.errors import SDKError
 
     try:
-        ver_data = _client.get(
-            f"{cfg.mlflow_url}/api/2.0/mlflow/model-versions/get"
-            f"?name={urllib.parse.quote(model)}&version={version}"
-        )
-    except _client.ClientError as e:
+        chain = sdk_models.lineage(model, version)
+    except SDKError as e:
         _output.error(str(e))
-        return
-
-    mv = ver_data.get("model_version", {})
-    run_id = mv.get("run_id", "unknown")
-    created_ms = mv.get("creation_timestamp", 0)
-
-    try:
-        run_data = _client.get(f"{cfg.mlflow_url}/api/2.0/mlflow/runs/get?run_id={run_id}")
-    except _client.ClientError as e:
-        _output.error(str(e))
-        return
-
-    run = run_data.get("run", {}).get("data", {})
-    tags = {t["key"]: t["value"] for t in run.get("tags", [])}
-    params = {p["key"]: p["value"] for p in run.get("params", [])}
-    metrics = {m["key"]: m["value"] for m in run.get("metrics", [])}
-
-    prefect_run = tags.get("prefect_flow_run_id", "unknown")
-    # A1/ADR 0130 runs tag `dataset_revision` (and `dataplane.source`); older runs `dataset_version`.
-    dataset_version = tags.get("dataset_revision") or tags.get("dataset_version", "unknown")
-    training_rows = tags.get("training_rows", "unknown")
+    version = chain.model_version
+    run_id = chain.run_id
+    created_ms = chain.created_ms
+    prefect_run = chain.prefect_flow_run_id
+    dataset_version = chain.dataset_version
+    training_rows = chain.training_rows
+    params = chain.params
+    metrics = chain.metrics
 
     if _output.json_mode:
         _output.print_json(
@@ -542,7 +498,7 @@ def cost(
 ):
     """Show HPC cost history for a model.  Use --record to ingest new data."""
     from examlops.data import init_db
-    from examlops.data.finops import get_model_costs, record_model_cost
+    from examlops.data.finops import record_model_cost
 
     init_db()
 
@@ -602,22 +558,40 @@ def cost(
             cost_usd = None
             if scheduler == "mock":
                 job_id, gpu_hours = _mock_slurm_data(model, ver_num)
-                cost_usd = estimate_cost_via_provider(gpu_hours)["cost_usd"]
             elif scheduler == "flux" and job_id:
                 flux_cost = _real_flux_cost(job_id)
                 if flux_cost is not None:
                     gpu_hours, cpu_hours = flux_cost
-                    cost_usd = estimate_cost_via_provider(gpu_hours, cpu_hours)["cost_usd"]
             elif job_id:  # slurm (or any sacct-backed scheduler)
                 gpu_hours = _real_sacct(job_id)
-                if gpu_hours is not None:
-                    cost_usd = estimate_cost_via_provider(gpu_hours)["cost_usd"]
+
+            # ADR 0030 decision 5: a job submitted on a MIG slice / GPU shard is billed at the
+            # fraction it was allocated, not the whole device the scheduler counted. Unlinked
+            # jobs are unchanged. The scaled hours are what budgets and carbon read downstream.
+            from examlops.gpu_sharing.accounting import bill_job
+
+            bill = bill_job(job_id, gpu_hours, scheduler=scheduler)
+            gpu_hours = bill.gpu_hours
+            if gpu_hours is not None:
+                cost_usd = (
+                    estimate_cost_via_provider(gpu_hours, cpu_hours)
+                    if cpu_hours is not None
+                    else estimate_cost_via_provider(gpu_hours)
+                )["cost_usd"]
 
             # cpu_hours is stored, not just priced: Flux reports it per job and it is the only
             # record of the energy a run without an accelerator actually spent. Dropping it here
             # is what made `exa finops carbon` structurally zero on a CPU-only site.
             record_model_cost(
-                model, ver_num, run_id, job_id, gpu_hours, cost_usd, cpu_hours=cpu_hours
+                model,
+                ver_num,
+                run_id,
+                job_id,
+                gpu_hours,
+                cost_usd,
+                cpu_hours=cpu_hours,
+                gpu_fraction=bill.fraction,
+                gpu_mechanism=bill.mechanism,
             )
 
             if gpu_hours is not None and cost_usd is not None:
@@ -630,8 +604,15 @@ def cost(
 
         _output.ok(f"Recorded cost data for {recorded_count} version(s) of {model}")
 
-    # Display cost history
-    rows_data = get_model_costs(model)
+    # Display cost history — read through the SDK (ADR 0078 clause 2), the same records
+    # `examlops.models.cost()` returns to a program.
+    from examlops.sdk import models as sdk_models
+    from examlops.sdk.errors import SDKError
+
+    try:
+        rows_data = [c.to_dict() for c in sdk_models.cost(model)]
+    except SDKError as e:
+        _output.error(str(e), hint="Is the platform datastore reachable? Try: exa doctor")
     if not rows_data:
         if not record:
             _output.console.print(
@@ -645,11 +626,20 @@ def cost(
         gpu_str = f"{r['gpu_hours']:.2f}" if r["gpu_hours"] is not None else "—"
         cost_str = f"${r['cost_usd']:.2f}" if r["cost_usd"] is not None else "—"
         rec_date = (r["recorded_at"] or "—")[:10]
-        rows.append([r["version"], run_short, r["job_id"] or "—", gpu_str, cost_str, rec_date])
+        # ADR 0030 decision 5: the share the GPU-hours were billed at, when a job was linked to
+        # a fractional allocation ("—" = the scheduler's device-hours, unscaled).
+        share = (
+            f"{r['gpu_fraction']:.2f} {r.get('gpu_mechanism') or ''}".strip()
+            if r.get("gpu_fraction") is not None
+            else "—"
+        )
+        rows.append(
+            [r["version"], run_short, r["job_id"] or "—", gpu_str, cost_str, share, rec_date]
+        )
 
     _output.print_table(
         f"Model Cost History: {model}",
-        ["Version", "Run ID", "Job ID", "GPU Hours", "Cost (USD)", "Recorded"],
+        ["Version", "Run ID", "Job ID", "GPU Hours", "Cost (USD)", "GPU Share", "Recorded"],
         rows,
     )
 

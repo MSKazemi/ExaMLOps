@@ -125,5 +125,9 @@ def model_ray_actor_options(
     from examlops.hardware_profiles import resolve_for, to_ray_actor_options  # noqa: PLC0415
 
     name = str(block["hardware_profile"]).strip()
-    _profile, resolution = resolve_for(name, "serving", target_cluster=target_cluster)
+    # Recorded against the model (ADR 0157 Phase 4) so the status this deployment was sized
+    # with is visible in `exa hardware profile in-use` / `exa status` after the deploy returns.
+    _profile, resolution = resolve_for(
+        name, "serving", target_cluster=target_cluster, consumer_ref=model
+    )
     return to_ray_actor_options(resolution)
