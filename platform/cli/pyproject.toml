@@ -267,9 +267,9 @@ dataplane = [
 # click<8.4 while this package needs click>=8.5, so `uv lock` cannot resolve the two together.
 # The DeepEval wrapper is written and tested against a faithful fake and activates when deepeval is
 # importable (e.g. a separate evaluator image); add the extra when deepeval lifts the click cap.
-# Likewise no `ragas` pin: ragas 0.4.3 needs `datasets`, whose every release caps fsspec<=2026.6,
-# and the `dataplane` extras need fsspec>=2026.7 — one workspace lock cannot hold both. Ragas's
-# non-LLM text metrics are thin wrappers over rapidfuzz and rouge-score, so this extra installs
+# Ragas is not in this extra: ragas 0.4.3 needs `datasets`, whose every release caps
+# fsspec<=2026.6, while the `dataplane` extras need fsspec>=2026.7. It ships only in `rag-eval`,
+# declared as conflicting with the dataplane extras in [tool.uv] below. Ragas's non-LLM text metrics are thin wrappers over rapidfuzz and rouge-score, so this extra installs
 # those two directly and examlops computes the same numbers Ragas would; an interpreter that has
 # ragas itself (a separate evaluator image) uses Ragas's own classes instead.
 eval-metrics = [

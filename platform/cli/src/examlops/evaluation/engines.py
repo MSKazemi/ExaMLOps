@@ -29,11 +29,12 @@ spec                        evaluator
                             model at temperature 0; recorded as ``deepeval_<metric>``
 ==========================  ===================================================================
 
-**Optional, lazily imported, never silently substituted.** Neither library can be a workspace
-extra today (deepeval 4.2.6 pins ``click<8.4`` against this package's ``click>=8.5``; ragas 0.4.3
-pulls ``datasets``, which caps ``fsspec<=2026.6`` against the dataplane's ``fsspec>=2026.7``), so
-both activate when importable — e.g. in a separate evaluator image — and the ``eval-metrics``
-extra installs the two libraries Ragas's text metrics delegate to (rapidfuzz, rouge-score).
+**Optional, lazily imported, never silently substituted.** DeepEval cannot be a workspace extra
+today (deepeval 4.2.6 pins ``click<8.4`` against this package's ``click>=8.5``). Ragas ships only in
+the ``rag-eval`` extra, which is declared as conflicting with the dataplane extras (ragas 0.4.3 pulls
+``datasets``, which caps ``fsspec<=2026.6`` against the dataplane's ``fsspec>=2026.7``). Both activate
+when importable — e.g. in a separate evaluator image — and the ``eval-metrics`` extra installs the
+two libraries Ragas's text metrics delegate to (rapidfuzz, rouge-score).
 A ``deepeval:`` spec with DeepEval absent raises
 :class:`EvaluatorUnavailable` — a rubric judge is not the same measurement and is not swapped
 in behind the operator's back (``judge:relevancy`` is the explicit alternative). Where a
