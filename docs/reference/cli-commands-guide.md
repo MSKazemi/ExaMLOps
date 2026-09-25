@@ -380,7 +380,7 @@ catalog only ever offers pinned references.
 | `exa catalog list [--kind base_model\|recipe] [--license <spdx>] [--trust-tier T1_signed\|T1_unsigned] [--evaluated-only] [--all-versions]` | Browses curated model definitions with their source, license, trust tier and eval pointer. `--evaluated-only` keeps the ones that point at an eval suite result. | See what you could start a new project from, before any training has happened. | `exa catalog list --kind recipe --evaluated-only` |
 | `exa catalog show <entry>[@<version>]` | Shows one entry in full — content hash, source, license, trust tier, signature, eval summary, resource hint and recipe template. Defaults to the newest `catalog_version`. | Inspect an entry's provenance before pulling it. | `exa catalog show power-regression-recipe@1` |
 | `exa catalog publish <path>` | **Mutation (admin).** Publishes an entry YAML. Refuses an absent/unknown license and an unpinned source with a named reason; `--sign` signs it through `examlops.supplychain`. Republishing identical content is idempotent — a correction publishes the next version, never a rewrite. | Curate the catalog your operators browse. | `exa catalog publish ./entries/power-regression-recipe.yaml --sign` |
-| `exa catalog pull <entry>[@<version>] --project <p>` | **Mutation (admin).** Materializes the entry as a per-model YAML in the project's use-case pack, records `project_resources(kind=model)` membership and one `catalog_entry → model` lineage edge. `--as` renames the model; `--dry-run` previews the rendered YAML and writes nothing at all. Never trains, promotes or serves. | Start a project from a curated definition instead of a blank file. | `exa catalog pull power-regression-recipe --project research --as MyPower --dry-run` |
+| `exa catalog pull <entry>[@<version>] --project <p>` | **Mutation (admin).** Materializes the entry as a per-model YAML in the project's use-case pack, records `project_resources(kind=model)` membership and one `catalog_entry → model` lineage edge. Refuses — even under `--dry-run` — a `T1_signed` entry whose stored signature no longer verifies (recomputed over the same content it was published with; a row edited afterward is never silently trusted). `--as` renames the model. Never trains, promotes or serves. | Start a project from a curated definition instead of a blank file. | `exa catalog pull power-regression-recipe --project research --as MyPower --dry-run` |
 
 ### `exa modelzoo` — ModelZoo repository freshness and events
 
@@ -621,6 +621,19 @@ Budget, account, and inspect reasoning (thinking) vs output tokens separately (B
 | `exa gateway schema list` | Lists the registered output schemas (built-in + `structured.yaml`) and per-route defaults; exits 1 on an invalid file. | See which schema and reasoning budget a route gets by default. | `exa gateway schema list` |
 | `exa gateway schema show NAME` | Prints one registered output schema. | Copy the exact `rag_answer`/`tool_call` contract. | `exa gateway schema show rag_answer` |
 
+#### Status & diagnostics
+
+Read-only views into the deployed `llm-gateway` service — status, routing topology, and the live config, each answering a different "why isn't this working" question.
+
+| Command | What it does | Use case | Example |
+|---|---|---|---|
+| `exa gateway status` | Is the llm-gateway service up, and which routes can it currently serve. | First check when a gateway-backed chat is failing. | `exa gateway status` |
+| `exa gateway models` | Models the deployed gateway can currently serve, live from `GET /v1/models`; filtered by what `--key` may reach and by routes whose deployments aren't all breaker-open. | See exactly what a given virtual key would be routed to right now. | `exa gateway models --key vk_abc` |
+| `exa gateway providers` | Live provider health from the gateway's admin API — why a deployment is down, not just that it is. | Diagnose which upstream provider is unhealthy. | `exa gateway providers` |
+| `exa gateway routes` | The configured route table — every route, its strategy/deployments/fallbacks, and aliases, from `GET /admin/config`. | Inspect the full routing topology behind `models`/`providers`. | `exa gateway routes` |
+| `exa gateway validate [FILE]` | Validates a `gateway.yaml` offline (ADR 0155): every problem, with its path, no network call. Defaults to `EXAMLOPS_GATEWAY_CONFIG` / the site config dir. | Catch a config mistake before reloading it into a live gateway. | `exa gateway validate ./gateway.yaml` |
+| `exa gateway reload` | Reloads the deployed gateway's `gateway.yaml` (`POST /admin/reload`); a rejected config never bricks the gateway — the previous one keeps serving and the command reports exactly why the new one was refused (ADR 0155 d3). | Pick up an edited `gateway.yaml` on a running gateway without a restart. **mutation** | `exa gateway reload` |
+
 ### `exa vector` — vector store (collections, upsert, dense/sparse/hybrid search, reindex, drop)
 
 A tenant-namespaced vector store with fixed-dim collections and a distance metric.
@@ -668,6 +681,7 @@ One typed, content-addressed manifest composing a gateway route, an optional RAG
 | `exa genai-app show` | Show one version's composed references — route, virtual-key reference, KB + retrieval mode, prompt pin, guardrail mode/policy and declared eval suites; accepts `<name>@<alias>`. | See exactly which prompt and knowledge base Production is answering from. | `exa genai-app show hpc-docs-assistant@Production` |
 | `exa genai-app list` | List registered versions, newest first, with the aliases pointing at each. | Find the version id to promote, and see which one Canary is serving. | `exa genai-app list --name hpc-docs-assistant` |
 | `exa genai-app promote` | Point Staging / Canary / Production at a version. Production needs recorded evaluation evidence, a guardrail mode other than `off`, and every declared component to resolve; a refusal names each reason and is audited. | Ship a change to the composition through a gate instead of editing four registries and hoping. | `exa genai-app promote hpc-docs-assistant Production hpc-docs-assistant@Staging --reason 'evals green'` |
+| `exa genai-app invoke` | Resolve `<name>[@alias]` (default Production) or a version id and send one real, billed chat call through it — guardrail scan (input+output) and an optional RAG retrieval both run inside the same call, using the manifest's own declared mode/KB, never a second implementation of either. A resolution failure (unknown app, a dangling component, an unresolvable `route.key_ref`) is refused before any gateway call; a failure inside the gateway call surfaces its own typed error unchanged. | Prove the *deployed* composition actually answers, or see exactly why it doesn't, without hand-assembling the route/prompt/RAG/guardrail call yourself. | `exa genai-app invoke hpc-docs-assistant --message 'how do I submit a job?'` |
 
 ### `exa prompt` — Prompt registry (versioned templates + labels)
 

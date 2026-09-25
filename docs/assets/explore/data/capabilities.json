@@ -1,6 +1,6 @@
 {
  "source": "exa --json docs + _ROOT_PANELS (platform/cli/src/examlops/cli/main.py)",
- "total_commands": 588,
+ "total_commands": 595,
  "total_groups": 75,
  "panels": [
   {
@@ -1562,6 +1562,20 @@
      "guide": "guides/model-gateway.md"
     },
     {
+     "cmd": "exa gateway models",
+     "group": "gateway",
+     "help": "Models the deployed llm-gateway can currently serve — live from `GET /v1/models`. Filtered by the service itself to what key may reach and to routes it can currently serve (a route whose every deployment has an open breaker is left out) — this is what the gateway would actually route a chat to right now, not the full configured catalog.",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway providers",
+     "group": "gateway",
+     "help": "Live provider health from the gateway's admin API — why a deployment is down, not just that it is.",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
      "cmd": "exa gateway quota list",
      "group": "gateway",
      "help": "List the per-tenant quotas (tenants without one use EXAMLOPS_GATEWAY_TENANT_RPM).",
@@ -1618,6 +1632,20 @@
      "guide": "guides/model-gateway.md"
     },
     {
+     "cmd": "exa gateway reload",
+     "group": "gateway",
+     "help": "Reload the deployed llm-gateway's `gateway.yaml` — `POST /admin/reload`. ADR 0155 d3: a rejected config never bricks the gateway — the previous one keeps serving and this reports exactly why the new one was refused, same as the MCP `gateway_service_reload` tool this mirrors (an operator on the CLI should never have strictly less visibility than an agent calling the same admin endpoint).",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway routes",
+     "group": "gateway",
+     "help": "The configured route table — every route, its strategy/deployments/fallbacks, and aliases. Distinct from `models` (what's *currently servable*, filtered by breaker state and a key) and `providers` (per-provider *health*): this is the full configured topology from `GET /admin/config`, the same source `exa gateway validate`'s offline check and a live reload both ultimately build from.",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
      "cmd": "exa gateway schema list",
      "group": "gateway",
      "help": "Registered output schemas + per-route defaults from structured.yaml (ADR 0035 cl. 3).",
@@ -1635,6 +1663,20 @@
      "cmd": "exa gateway schema test",
      "group": "gateway",
      "help": "Validate (and optionally repair) an object against a JSON Schema (R1/R8).",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway status",
+     "group": "gateway",
+     "help": "Is the llm-gateway service up, and which routes can it currently serve?",
+     "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
+     "guide": "guides/model-gateway.md"
+    },
+    {
+     "cmd": "exa gateway validate",
+     "group": "gateway",
+     "help": "Validate a gateway.yaml offline (ADR 0155): every problem, with its path, no network call.",
      "anchor": "exa-gateway-model-gateway-virtual-keys-routing-cost",
      "guide": "guides/model-gateway.md"
     },
@@ -1734,6 +1776,13 @@
      "help": "Estimate the USD cost of a GenAI call from its token usage (spec R7).",
      "anchor": "exa-genai-genai-observability-opentelemetry-semconv-token-cost",
      "guide": "guides/genai-observability.md"
+    },
+    {
+     "cmd": "exa genai-app invoke",
+     "group": "genai-app",
+     "help": "Make one real, billed chat call through the resolved route (guardrail + optional RAG).",
+     "anchor": "exa-genai-app-genai-applications-composed-versioned-manifests",
+     "guide": null
     },
     {
      "cmd": "exa genai-app list",
