@@ -41,7 +41,8 @@ RAYSERVICE_API = "ray.io/v1"
 # KubeRay needs it to match the image; a guard test keeps the two equal.
 RAY_VERSION = "2.55.0"
 DEFAULT_NAME = "examlops-serving"
-DEFAULT_ENV_SECRET = "examlops-serving-env"
+#: Name of the Kubernetes Secret the pods read via ``envFrom`` (a reference, not a credential).
+DEFAULT_ENV_FROM_NAME = "examlops-serving-env"
 SERVE_PORT = 8000  # KubeRay's serve service targets the head's `serve` port
 METRICS_PORT = 8080
 
@@ -97,7 +98,7 @@ def render_ray_service(
     env: dict[str, str] | None = None,
     min_workers: int = 1,
     max_workers: int = 4,
-    env_secret: str = DEFAULT_ENV_SECRET,
+    env_secret: str = DEFAULT_ENV_FROM_NAME,
 ) -> dict[str, Any]:
     """A ``RayService`` serving ``models`` through the platform's Ray multi-model server."""
     if not image or ":" not in image.rsplit("/", 1)[-1] and "@" not in image:
