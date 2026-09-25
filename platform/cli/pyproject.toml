@@ -70,7 +70,7 @@ dependencies = [
 # Agent-native surface: expose `exa` capabilities to LLM agents / MCP clients.
 # Lazily imported by `examlops.mcp.server`; the core CLI works without it.
 mcp = [
-    "fastmcp>=3.4",
+    "fastmcp>=4.0.3",
 ]
 # Agent-observability consumers over OTLP/HTTP (ADR 0021 decision 2 — Langfuse ingests OTLP over
 # HTTP only). Lazily imported by examlops.telemetry.otlp_http; without it a stdlib exporter using
