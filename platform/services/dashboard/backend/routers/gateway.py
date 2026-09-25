@@ -1,18 +1,35 @@
-"""LLM gateway virtual keys (B2, dashboard-rebuild M2).
+"""LLM gateway virtual keys + live status (B2, dashboard-rebuild M2; P6 status/test-chat panel).
 
 Reads (viewer): the `virtual_keys` register — only stored fields (key HASH, scope, budget, spend,
 revoked); the raw key is never stored and never re-fetchable. Writes (admin + `gateway.manage`,
 audited): issue a key (returns the raw key ONCE) and revoke one — reusing the shared
 `examlops.gateway.issue_virtual_key` / `examlops.data.governance.revoke_virtual_key` code paths so the
 dashboard can't drift from the CLI. Pure platform.db — no live gateway/LLM runtime required.
+
+Live status (viewer) and test-chat (admin) additions proxy the *deployed* llm-gateway service
+directly, over HTTP — deliberately through routes that need no admin credential:
+
+- ``GET /gateway/status`` calls the service's own ``GET /ready`` (ADR 0153 d10 latch), which has
+  no auth requirement at all. ``GET /admin/health``/``/admin/config`` (per-provider diagnostics,
+  the full route table) are NOT proxied here — ``routers/health.py``'s own comment on this same
+  service already states the reasoning this follows: those need the gateway's admin bearer, "a
+  bearer this process would otherwise have to hold and never expose, for a page that only needs
+  up/down" (ADR 0151). `exa gateway providers`/`routes` remain the CLI's job for that depth.
+- ``POST /gateway/test-chat`` sends one real chat message through the deployed service's own
+  ``POST /v1/chat/completions`` — the same call `exa gateway chat --stream` makes non-streamed —
+  using an operator-supplied virtual key (never one the dashboard stores), exactly the CLI's own
+  `--key` flag. This keeps the same low blast-radius, revocable, budgeted credential the virtual-
+  key system exists for, rather than adding a new secret for the dashboard to custody.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import time
 
 import audit_write
+import httpx
 from auth import require_role
 from capabilities import GATEWAY_MANAGE, can, deny_reason, require_capability, scope_to_tenant
 from dbconn import connect, platform_db_path
@@ -21,6 +38,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 router = APIRouter(prefix="/gateway", tags=["gateway"])
 _viewer = require_role("viewer")
 _admin = require_role("admin")
+
+_STATUS_TIMEOUT = 8.0  # seconds — matches routers/health.py's own probe budget
+_TEST_CHAT_TIMEOUT = httpx.Timeout(60.0, connect=5.0)  # a cold model load can take a while
 
 
 def _db_path() -> str:
@@ -150,3 +170,113 @@ async def revoke_key(
         return {"keyHash": key_hash, "revoked": True}
     finally:
         conn.close()
+
+
+@router.get("/status")
+async def gateway_status(principal: dict = Depends(_viewer)) -> dict:
+    """Live per-route health of the *deployed* llm-gateway (proxies its own `GET /ready`).
+
+    No admin credential involved — `/ready` needs none (see module docstring). Never raises on an
+    unreachable gateway: a down or misconfigured service is a normal, displayable state, not a
+    dashboard error.
+    """
+    from settings import settings
+
+    url = f"{settings.llm_gateway_url.rstrip('/')}/ready"
+    try:
+        async with httpx.AsyncClient() as c:
+            r = await c.get(url, timeout=_STATUS_TIMEOUT)
+        body = r.json()
+        return {
+            "reachable": True,
+            "ready": bool(body.get("ready")),
+            "healthyNow": bool(body.get("healthyNow", body.get("healthy_now"))),
+            "routes": body.get("routes", {}),
+            "warnings": body.get("warnings", []),
+        }
+    except httpx.HTTPError:
+        return {
+            "reachable": False,
+            "ready": False,
+            "healthyNow": False,
+            "routes": {},
+            "warnings": [],
+        }
+    except (ValueError, TypeError):
+        # A response came back but wasn't the JSON shape expected — surfaced as unreachable
+        # rather than a 500; the CLI's own `exa gateway status` is the tool for diagnosing why.
+        return {
+            "reachable": False,
+            "ready": False,
+            "healthyNow": False,
+            "routes": {},
+            "warnings": [],
+        }
+
+
+@router.post("/test-chat")
+async def test_chat(
+    payload: dict = Body(...),
+    principal: dict = Depends(_admin),
+    _gate: dict = Depends(require_capability(GATEWAY_MANAGE)),
+) -> dict:
+    """Send one real chat message through the deployed gateway (admin; audited).
+
+    Body: ``{message: str, route?: str, key?: str}``. Mirrors `exa gateway chat --key` against the
+    live service's own `POST /v1/chat/completions` (never the in-process `GatewayClient` shortcut
+    the plain CLI `exa gateway chat` uses) — this is meant to prove the *deployed* gateway answers,
+    not the library. `key` is an operator-supplied virtual key, exactly the CLI's `--key` flag; the
+    dashboard never stores or reuses it, and it is never written to the audit row.
+    """
+    from settings import settings
+
+    _require_manage(principal)
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "message must not be empty")
+    route = str(payload.get("route") or "default").strip() or "default"
+    key = payload.get("key")
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    url = f"{settings.llm_gateway_url.rstrip('/')}/v1/chat/completions"
+    body = {"model": route, "messages": [{"role": "user", "content": message}], "stream": False}
+    started = time.monotonic()
+    result: dict
+    try:
+        async with httpx.AsyncClient() as c:
+            r = await c.post(url, json=body, headers=headers, timeout=_TEST_CHAT_TIMEOUT)
+        latency_ms = round((time.monotonic() - started) * 1000, 1)
+        data = r.json()
+        if r.status_code < 400:
+            reply = ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "")
+            result = {"ok": True, "status": r.status_code, "reply": reply, "latencyMs": latency_ms}
+        else:
+            err = (data.get("error") or {}) if isinstance(data, dict) else {}
+            result = {
+                "ok": False,
+                "status": r.status_code,
+                "error": err.get("message") or r.text[:500],
+                "code": err.get("code"),
+                "latencyMs": latency_ms,
+            }
+    except httpx.HTTPError as exc:
+        result = {
+            "ok": False,
+            "status": None,
+            "error": f"gateway unreachable: {exc}",
+            "code": "gateway_unreachable",
+            "latencyMs": round((time.monotonic() - started) * 1000, 1),
+        }
+    conn = connect(_db_path())
+    try:
+        # Route/outcome/latency only — never the message text or the reply, and never the key.
+        _audit(
+            conn,
+            principal.get("sub", "?"),
+            "gateway_test_chat",
+            route,
+            {"ok": result["ok"], "status": result["status"], "latencyMs": result["latencyMs"]},
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return result

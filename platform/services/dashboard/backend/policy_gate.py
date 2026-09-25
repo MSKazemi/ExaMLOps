@@ -208,6 +208,7 @@ ROUTE_POLICY: dict[tuple[str, str], Gate | Exempt] = {
     ),
     ("POST", "/api/gateway/keys"): _G("dashboard_gateway_issue_key"),
     ("POST", "/api/gateway/keys/{key_hash}/revoke"): _G("dashboard_gateway_revoke_key"),
+    ("POST", "/api/gateway/test-chat"): _G("dashboard_gateway_test_chat"),
     ("POST", "/api/prompts/{name}/versions"): _G("dashboard_prompts_create_version"),
     ("POST", "/api/prompts/{name}/label"): _G("dashboard_prompts_set_label"),
     ("POST", "/api/autopilot/enable"): _G("dashboard_autopilot_enable"),
