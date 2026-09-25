@@ -224,6 +224,8 @@ _INTENT: dict[str, Callable[[dict[str, Any]], str]] = {
     ),
     "disable_challenger": lambda a: f"disable the challenger (shadow eval) for {a['model']}",
     "grant_access": lambda a: f"grant {a['subject']} {a['relation']} on {a['obj']}",
+    "gateway_service_reload": lambda a: "reload the deployed llm-gateway's routing config",
+    "genai_app_invoke": lambda a: f"invoke genai application {a['ref']} with a real chat message",
 }
 
 #: What one call can reach and how it is undone — the plan's blast radius. (ADR 0113 contracts
@@ -295,6 +297,18 @@ _BLAST: dict[str, dict[str, Any]] = {
         "reversible": True,
         "rollback": "revoke the relation",
     },
+    "gateway_service_reload": {
+        "scope": "the deployed llm-gateway service's whole routing table",
+        "extent": "every route; an invalid new config is refused and the last-good table keeps serving (ADR 0155 d3)",
+        "reversible": True,
+        "rollback": "fix gateway.yaml and reload again",
+    },
+    "genai_app_invoke": {
+        "scope": "one genai application's resolved gateway route",
+        "extent": "one real, billed model call; no registry row is written",
+        "reversible": False,
+        "rollback": "none — the call has already completed and its cost is already spent",
+    },
 }
 
 
@@ -347,6 +361,16 @@ def _pre_operation(t: Any, a: dict[str, Any]) -> Any:
     return {"found": bool(out.get("ok")), "raw_state": op.get("raw_state")}
 
 
+def _pre_gateway_reload(t: Any, a: dict[str, Any]) -> Any:
+    return t.gateway_service_status().get("data")
+
+
+def _pre_genai_app_invoke(t: Any, a: dict[str, Any]) -> Any:
+    out = t.genai_app_show(a["ref"])
+    app = out.get("application") or {}
+    return {"found": bool(out.get("ok")) and bool(app), "version_id": app.get("version_id")}
+
+
 _PRECONDITIONS: dict[str, Callable[[Any, dict[str, Any]], Any]] = {
     "operation_cancel": _pre_operation,
     "trigger_retrain": _pre_retrain,
@@ -359,6 +383,8 @@ _PRECONDITIONS: dict[str, Callable[[Any, dict[str, Any]], Any]] = {
     "set_promotion_rule": _pre_promotion,
     "disable_challenger": _pre_challenger,
     "grant_access": _pre_grant,
+    "gateway_service_reload": _pre_gateway_reload,
+    "genai_app_invoke": _pre_genai_app_invoke,
 }
 
 

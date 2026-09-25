@@ -335,12 +335,20 @@ TIERS: dict[str, str] = {
     "gateway schema list": R,
     "gateway schema show": R,
     "gateway schema test": A,
+    "gateway status": R,
+    "gateway providers": A,
+    "gateway models": R,
+    "gateway reload": A,
+    "gateway routes": A,
+    "gateway validate": R,
     "genai check": R,
     "genai cost": R,
     # ADR 0159. A manifest names references only — no credential, no provider address — so reading
     # one is a viewer read. `register` writes an immutable registry row; `promote` moves the alias
     # that decides what Production traffic runs, and is gated on evidence: both admin, matching
-    # `agent version register` / `agent alias set`.
+    # `agent version register` / `agent alias set`. `invoke` mutates no registry state but makes a
+    # real, billed model call — the same reason `gateway chat` is admin, not read.
+    "genai-app invoke": A,
     "genai-app list": R,
     "genai-app promote": A,
     "genai-app register": A,
@@ -881,6 +889,7 @@ _SECRET_PARAMS: frozenset[tuple[str, str]] = frozenset(
         ("config set", "value"),
         ("modelzoo config-set", "value"),
         ("gateway chat", "key"),
+        ("gateway models", "key"),
     }
 )
 
