@@ -209,6 +209,7 @@ nav:
       - Dataplane: runbooks/dataplane.md
       - Monitoring stack: runbooks/platform.md
       - LLM serving: runbooks/llm.md
+      - LLM gateway: runbooks/llm-gateway.md
       - Agent runs: runbooks/agentops.md
       - Secrets (OpenBao): runbooks/openbao.md
   - Tutorials:

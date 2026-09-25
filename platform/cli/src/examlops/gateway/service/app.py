@@ -62,10 +62,17 @@ from examlops.gateway.config import (
     generated_config,
     load_config_file,
 )
+from examlops.gateway.health import (
+    DEFAULT_INTERVAL_S,
+    DEFAULT_WARM_INTERVAL_S,
+    ActiveProber,
+    WarmKeeper,
+)
 from examlops.gateway.providers import (
     ChatChunk,
     ChatRequest,
     ChatResult,
+    EmbedResult,
     ProbeResult,
     ProviderError,
     Usage,
@@ -102,6 +109,18 @@ class _ChatBody(BaseModel):
     stream_options: dict[str, Any] | None = None
     examlops: dict[str, Any] | None = None
     extra_body: dict[str, Any] | None = None
+
+
+class _EmbedBody(BaseModel):
+    """The OpenAI embeddings request."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    model: str = Field(min_length=1, max_length=200)
+    # No Field(min_length=...) here: pydantic applies a length constraint per-branch on a Union in
+    # a way that is easy to get wrong silently; emptiness is checked explicitly in
+    # `read_embed_body` instead, where the error message can also say which case it was.
+    input: str | list[str]
 
 
 class _Http(Exception):
@@ -354,6 +373,8 @@ def create_app(
     admin_token: str | None = None,
     max_body_bytes: int = _MAX_BODY,
     probe_ttl_s: float = 5.0,
+    active_probe_interval_s: float | None = None,
+    warm_interval_s: float | None = None,
 ) -> FastAPI:
     auth_mode = (auth or os.getenv("LLM_GATEWAY_AUTH") or "keys").lower()
     if auth_mode not in ("keys", "off"):
@@ -372,6 +393,20 @@ def create_app(
     # response behaviour for repeat-ish prompts, so it stays opt-in per deployment.
     cache_enabled = _truthy(os.getenv("LLM_GATEWAY_SEMANTIC_CACHE", ""))
     semantic_cache = SemanticCache() if cache_enabled else None
+    # Active probing (PLAN.md P1 "active probe loop", gateway/health.py): independent of request
+    # traffic, so a dead upstream is caught during a quiet period too, not only after a real
+    # request pays the cost of finding out. `<= 0` disables it — same "0 = off" convention
+    # `RAY_RELOAD_POLL_SECONDS` already uses elsewhere in this codebase for a background poller.
+    if active_probe_interval_s is None:
+        raw = os.getenv("LLM_GATEWAY_ACTIVE_PROBE_INTERVAL_S", "")
+        active_probe_interval_s = float(raw) if raw else DEFAULT_INTERVAL_S
+    prober = ActiveProber(lambda: state.runtime, interval_s=active_probe_interval_s)
+    # Warm preload (design spec §5 "Cold start"): a 1-token keep-alive to every `warm: true`
+    # deployment, same "0 = off" convention as active probing above.
+    if warm_interval_s is None:
+        raw = os.getenv("LLM_GATEWAY_WARM_INTERVAL_S", "")
+        warm_interval_s = float(raw) if raw else DEFAULT_WARM_INTERVAL_S
+    warmer = WarmKeeper(lambda: state.runtime, interval_s=warm_interval_s)
 
     async def load() -> Runtime:
         if config is not None:
@@ -392,13 +427,21 @@ def create_app(
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         rt = await state.ensure_runtime()  # an invalid config fails the start, loudly
         logger.info(
-            "llm-gateway up: %d routes, source=%s, warnings=%d, cache=%s",
+            "llm-gateway up: %d routes, source=%s, warnings=%d, cache=%s, active_probe=%s, warm=%s",
             len(rt.catalog.routes),
             rt.source,
             len(rt.warnings),
             "on" if semantic_cache is not None else "off",
+            f"every {active_probe_interval_s:g}s" if active_probe_interval_s > 0 else "off",
+            f"every {warm_interval_s:g}s" if warm_interval_s > 0 else "off",
         )
-        yield
+        prober.start()
+        warmer.start()
+        try:
+            yield
+        finally:
+            await prober.stop()
+            await warmer.stop()
 
     app = FastAPI(
         title="ExaMLOps LLM Gateway",
@@ -408,6 +451,8 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.gateway = state
+    app.state.gateway_prober = prober
+    app.state.gateway_warmer = warmer
 
     # ── errors ───────────────────────────────────────────────────────────────
 
@@ -593,6 +638,42 @@ def create_app(
             first = exc.errors()[0]
             where = ".".join(str(p) for p in first["loc"]) or "body"
             raise ProviderError("invalid_request", f"{where}: {first['msg']}") from None
+
+    async def read_embed_body(request: Request) -> _EmbedBody:
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > max_body_bytes:
+            raise _Http(413, "invalid_request", f"request body exceeds {max_body_bytes} bytes")
+        raw = await request.body()
+        if len(raw) > max_body_bytes:
+            raise _Http(413, "invalid_request", f"request body exceeds {max_body_bytes} bytes")
+        try:
+            body = _EmbedBody.model_validate_json(raw)
+        except ValidationError as exc:
+            first = exc.errors()[0]
+            where = ".".join(str(p) for p in first["loc"]) or "body"
+            raise ProviderError("invalid_request", f"{where}: {first['msg']}") from None
+        empty = (
+            body.input == ""
+            or body.input == []
+            or (isinstance(body.input, list) and not any(body.input))
+        )
+        if empty:
+            raise ProviderError("invalid_request", "input: must not be empty")
+        return body
+
+    def embeddings_json(result: EmbedResult, model: str) -> dict[str, Any]:
+        return {
+            "object": "list",
+            "model": model,
+            "data": [
+                {"object": "embedding", "index": i, "embedding": vec}
+                for i, vec in enumerate(result.vectors)
+            ],
+            "usage": {
+                "prompt_tokens": result.usage.prompt_tokens,
+                "total_tokens": result.usage.prompt_tokens,
+            },
+        }
 
     def build_request(
         body: _ChatBody, rt: Runtime, messages: list[dict[str, Any]]
@@ -1060,6 +1141,73 @@ def create_app(
             stream_headers["x-examlops-cache"] = "miss"  # a hit already returned above
         return StreamingResponse(events(), media_type="text/event-stream", headers=stream_headers)
 
+    # ── /v1/embeddings ───────────────────────────────────────────────────────
+
+    @app.post("/v1/embeddings")
+    async def embeddings(request: Request) -> Response:
+        """Routed through :meth:`GatewayCore.embed` (ADR 0152 d1 declared it, nothing called it
+        until now) — the same breaker, retry-budget, bulkhead, locality and capability filtering
+        `/v1/chat/completions` gets, applied to whichever deployment declares ``embeddings``
+        support. Deliberately not yet wired to the D8 guardrail or the B3 semantic cache that
+        `/v1/chat/completions` has: an embedding vector is not text a human reads, and caching an
+        embedding call needs its own namespace design, not a borrowed one — tracked, not silently
+        skipped.
+        """
+        rid = _request_id(request)
+        started = time.perf_counter()
+        route_label, provider, upstream = "unknown", "none", "unknown"
+        rt: Runtime | None = None
+        key_hash: str | None = None
+        try:
+            rt = await state.ensure_runtime()
+            body = await read_embed_body(request)
+            route = rt.catalog.resolve(body.model)
+            route_label = route.name if route else "unknown"
+            auth = await authenticate(request, body.model)
+            key_hash = auth.key_hash
+            await enforce_rate_limits(auth)
+            budget = request.headers.get("x-examlops-budget-ms")
+            budget_ms = float(budget) if budget and budget.replace(".", "", 1).isdigit() else None
+            attempts: list[dict[str, Any]] = []
+
+            result = await rt.core.embed(
+                body.model,
+                body.input if isinstance(body.input, list) else [body.input],
+                allowed_localities=rt.allowed_localities,
+                caller_budget_ms=budget_ms,
+                attempts=attempts,
+            )
+            provider, upstream = result.provider, result.model
+            ms = (time.perf_counter() - started) * 1000.0
+            await asyncio.to_thread(
+                record, rt, route_label, key_hash, provider, result.usage, ms, error=False
+            )
+            await record_token_usage(auth, result.usage.prompt_tokens)
+            record_retries_and_fallbacks(attempts)
+            metrics.requests.labels(route_label, provider, upstream, "200", "ok").inc()
+            metrics.seconds.labels(route_label).observe(ms / 1000.0)
+            metrics.tokens.labels("prompt").inc(result.usage.prompt_tokens)
+        except Exception as exc:  # noqa: BLE001 - every failure leaves as the typed envelope
+            if (
+                rt is not None
+                and route_label != "unknown"
+                and not isinstance(exc, _Http | KeyInvalid | ModelNotAllowed | BudgetExceeded)
+            ):
+                ms = (time.perf_counter() - started) * 1000.0
+                await asyncio.to_thread(
+                    record, rt, route_label, key_hash, "none", None, ms, error=True
+                )
+            return error_response(exc, rid, route_label, provider, upstream)
+        return JSONResponse(
+            embeddings_json(result, body.model),
+            headers={
+                "x-request-id": rid,
+                "x-examlops-route": route_label,
+                "x-examlops-provider": provider,
+                "x-examlops-model": upstream,
+            },
+        )
+
     # ── /v1/models, health, readiness ────────────────────────────────────────
 
     @app.get("/v1/models")
@@ -1162,7 +1310,22 @@ def create_app(
                 }
                 for n, pr in probes.items()
             }
-            return JSONResponse({"providers": providers, "deployments": rt.core.snapshot()})
+            return JSONResponse(
+                {
+                    "providers": providers,
+                    "deployments": rt.core.snapshot(),
+                    "active_probe": {
+                        "running": prober.running,
+                        "interval_s": prober.interval_s,
+                        "last_results": prober.last_results,
+                    },
+                    "warm": {
+                        "running": warmer.running,
+                        "interval_s": warmer.interval_s,
+                        "last_results": warmer.last_results,
+                    },
+                }
+            )
         except Exception as exc:  # noqa: BLE001
             return error_response(exc, rid)
 
@@ -1191,8 +1354,16 @@ def create_app(
         rid = _request_id(request)
         try:
             require_admin(request)
-            await state.ensure_runtime()
             try:
+                # `ensure_runtime()` is called for its side effect (populate `state.runtime` so a
+                # rejected reload below has a real previous table to keep serving, not `None`) —
+                # it must share this `except ConfigError` with the reload's own `loader()` call
+                # right below, not sit outside it: if THIS is the very first request the process
+                # has ever handled (no route has warmed the runtime yet) and the on-disk config is
+                # already bad, its `ConfigError` used to escape uncaught to the generic exception
+                # handler below, answering with an unhandled 500 instead of the documented typed
+                # `config_invalid` 422 contract (ADR 0156 d1) every other config rejection gets.
+                await state.ensure_runtime()
                 new = await state.loader()
             except ConfigError as exc:  # keep serving the last good table; say why
                 state.last_reload_error = exc.errors

@@ -378,7 +378,10 @@ class OllamaProvider:
             raise self._from_exception(exc) from exc
         if resp.status_code >= 400:
             raise self._from_response(resp)
-        data = resp.json()
+        try:
+            data = resp.json()
+        except (ValueError, AttributeError) as exc:
+            raise self._err("upstream_error", f"malformed response from {self.base_url}") from exc
         return EmbedResult(
             vectors=data.get("embeddings", []),
             model=model,

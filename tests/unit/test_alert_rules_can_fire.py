@@ -68,7 +68,18 @@ def test_every_job_an_alert_selects_on_is_actually_scraped():
 # `dataplane_catalog_up` is the same collector's whole-catalog gauge: it queries
 # `list_source_defs()` fresh on every scrape and reads 0 for exactly as long as that call keeps
 # raising, never merely going stale.
-_RECOMPUTED_GAUGES = {"dataplane_source_up", "dataplane_catalog_up"}
+_RECOMPUTED_GAUGES = {
+    "dataplane_source_up",
+    "dataplane_catalog_up",
+    # llm_gateway_provider_up: set fresh from `state.probe_all(...)`'s current probe results
+    # inside the `/metrics` handler itself (gateway/service/app.py's `metrics_endpoint`) — every
+    # scrape recomputes it from live probe state, the same "a Collector recomputes from durable
+    # state on every scrape" shape as the two dataplane gauges above, not a value the process sets
+    # once and leaves. If the llm-gateway process itself dies, `/metrics` becomes unreachable
+    # entirely (LLMGatewayDown, `up{job="llm_gateway"} == 0`, covers that) rather than this gauge
+    # freezing at a stale non-zero value.
+    "llm_gateway_provider_up",
+}
 
 
 def test_no_alert_detects_downtime_with_a_self_reported_liveness_gauge():
@@ -278,10 +289,16 @@ def test_every_metric_an_alert_watches_is_one_the_platform_emits():
     assert len(emitted) > 1000, "the tree scan found almost nothing — its roots are stale"
     emitted |= _THIRD_PARTY
 
-    # Three transformations sit between what the code declares and what Prometheus stores, and all
-    # three are real series rather than sloppiness:
+    # Four transformations sit between what the code declares and what Prometheus stores, and all
+    # four are real series rather than sloppiness:
     #   • Ray Serve namespaces a deployment's metrics with `ray_`;
     #   • a histogram named `x_seconds` yields `x_seconds_bucket`, `_count` and `_sum`;
+    #   • a `prometheus_client.Counter("x", ...)` exposes as `x_total` (and `x_created`) —
+    #     the library's own well-documented auto-suffix, the same class of transformation as the
+    #     histogram one above, just for the other metric type this platform actually uses
+    #     (`gateway/service/app.py`'s `_Metrics.requests` declares `"llm_gateway_requests"`,
+    #     scraped as `llm_gateway_requests_total`; verified against a real `Counter` +
+    #     `generate_latest()` round trip, not assumed from documentation);
     #   • a recording rule in this very file defines a series nothing exports directly.
     recorded = {
         rule["record"]
@@ -294,7 +311,7 @@ def test_every_metric_an_alert_watches_is_one_the_platform_emits():
         candidates = {metric}
         if metric.startswith("ray_"):
             candidates.add(metric[len("ray_") :])
-        for suffix in ("_bucket", "_count", "_sum"):
+        for suffix in ("_bucket", "_count", "_sum", "_total"):
             candidates |= {c[: -len(suffix)] for c in set(candidates) if c.endswith(suffix)}
         return bool(candidates & emitted) or metric in recorded
 

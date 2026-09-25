@@ -310,6 +310,7 @@ Prometheus.
 | `loki` | `loki:3100` | Log-store self-monitoring |
 | `dataplane_bus_bridge` | DNS `dataplane-bus-bridge:8003` | Bus bridge: inference throughput, errors, latency (profile `dataplane-bus`) |
 | `dataplane` | `dataplane:8010` | dataplane pulls, freshness |
+| `llm_gateway` | DNS `llm-gateway:8020` | LLM gateway: requests, TTFT/TPOT, breaker/queue state, provider health (admin-token gated; profile `llm-gateway`/`gateway`) |
 | `vllm` | DNS `vllm:8000` | vLLM serving: TTFT, queue depth, KV-cache usage (GPU profile `vllm`) |
 | `gateway` | DNS `gateway:9902`, path `/stats/prometheus` | Serving gateway (Envoy): answers by class, authorization errors, ceiling refusals (profile `gateway`) |
 | `gateway_authz` | DNS `gateway-authz:8090` | The gateway's authorization decisions, `examlops_gateway_decisions_total{status}` (profile `gateway`) |

@@ -773,6 +773,77 @@ groups:
           summary: "Dataplane cannot read its source catalog"
           description: "list_source_defs() has failed for 10 minutes — every per-source gauge (dataplane_source_up, freshness) is blind until the catalog recovers; see the dataplane service logs."
 
+  # ── LLM gateway (ADR 0151-0156, PLAN.md P4) ───────────────────────────────────
+  - name: examlops-llm-gateway
+    rules:
+      - alert: LLMGatewayDown
+        expr: up{job="llm_gateway"} == 0
+        for: 2m
+        labels: {severity: critical, service: llm-gateway}
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm-gateway/#llmgatewaydown"
+          summary: "LLM gateway service is down"
+          description: "No scrape of llm-gateway for 2 minutes; every LLM consumer (Skipper, the dashboard copilot, exa gateway chat, RAG) is unreachable."
+      - alert: LLMGatewayProviderDown
+        # The active probe loop (gateway/health.py) sets this independently of request traffic —
+        # a dead provider is visible here even during a quiet period with no chat calls at all.
+        expr: llm_gateway_provider_up == 0
+        for: 5m
+        labels: {severity: warning, service: llm-gateway}
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm-gateway/#llmgatewayproviderdown"
+          summary: "LLM gateway provider {{ $labels.provider }} is unreachable"
+          description: "The active probe has failed for 5 minutes; every route backed by {{ $labels.provider }} is degraded or unavailable. Check `exa gateway providers`."
+      - alert: LLMGatewayBreakerOpen
+        # 2 = open (llm_gateway_breaker_state's own documented values). 5m, not the breaker's own
+        # cooldown (5s base, 60s cap): one open/half-open cycle recovering on its own is the
+        # breaker doing its job, not an incident — this is for a breaker that stays open across
+        # several cooldown cycles, meaning the deployment genuinely is not recovering.
+        expr: llm_gateway_breaker_state == 2
+        for: 5m
+        labels: {severity: warning, service: llm-gateway}
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm-gateway/#llmgatewaybreakeropen"
+          summary: "LLM gateway breaker open for {{ $labels.provider }}/{{ $labels.model }}"
+          description: "The circuit breaker for {{ $labels.provider }}/{{ $labels.model }} has stayed open for 5+ minutes across several cooldown cycles — the deployment is not recovering on its own. Check `exa gateway providers` and the upstream's own health."
+      # ── Error-rate pair (ADR 0156 d5: alert-rule PAIRS, not one threshold) ──────
+      - alert: LLMGatewayHighErrorRate
+        # Every response increments this counter with an ADR 0156 typed `code`; a successful one
+        # is always "ok". The numerator names the codes that mean the GATEWAY failed to serve a
+        # request it accepted (an upstream/internal/capacity failure) — never a code that means
+        # the service correctly refused a caller's own mistake (bad auth, disallowed/missing
+        # model, a guardrail hit, an exceeded budget/rate/locality policy, a malformed body). The
+        # denominator names the same "good + this alert's bad" set, not the bare counter: a burst
+        # of client mistakes would otherwise sit only in the denominator and dilute the measured
+        # rate below threshold during a real outage (the same defect `RayServeHighErrorRate` and
+        # `HighRetrainErrorRate` were both fixed for — see test_sli_counts_only_valid_events.py).
+        # `clamp_min(...)` mirrors those same alerts: no traffic in the window must not divide by 0.
+        expr: |
+          sum(rate(llm_gateway_requests_total{code=~"upstream_unavailable|upstream_timeout|upstream_error|internal_error|gateway_unavailable|queue_full"}[10m]))
+          /
+          clamp_min(sum(rate(llm_gateway_requests_total{code=~"ok|upstream_unavailable|upstream_timeout|upstream_error|internal_error|gateway_unavailable|queue_full"}[10m])), 0.001)
+          > 0.1
+        for: 10m
+        labels: {severity: warning, service: llm-gateway}
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm-gateway/#llmgatewayhigherrorrate"
+          summary: "LLM gateway error rate above 10%"
+          description: "{{ $value | humanizePercentage }} of requests failed over the last 10m. Check `exa gateway providers` for which deployment is unhealthy."
+      - alert: LLMGatewayVeryHighErrorRate
+        # Same ratio, the critical threshold: most requests failing, evaluated over a shorter,
+        # more responsive window — this is the "page now" case, not "keep an eye on it."
+        expr: |
+          sum(rate(llm_gateway_requests_total{code=~"upstream_unavailable|upstream_timeout|upstream_error|internal_error|gateway_unavailable|queue_full"}[5m]))
+          /
+          clamp_min(sum(rate(llm_gateway_requests_total{code=~"ok|upstream_unavailable|upstream_timeout|upstream_error|internal_error|gateway_unavailable|queue_full"}[5m])), 0.001)
+          > 0.5
+        for: 5m
+        labels: {severity: critical, service: llm-gateway}
+        annotations:
+          runbook_url: "https://mskazemi.com/ExaMLOps/runbooks/llm-gateway/#llmgatewayveryhigherrorrate"
+          summary: "LLM gateway error rate above 50%"
+          description: "{{ $value | humanizePercentage }} of requests failed over the last 5m — most callers are getting errors right now. Check `exa gateway providers`."
+
   # ── Platform-wide infrastructure ──────────────────────────────────────────────
   - name: examlops-platform
     rules:

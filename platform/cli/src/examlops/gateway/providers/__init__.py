@@ -20,6 +20,7 @@ from examlops.gateway.providers.bridge import (
     provider_backend,
 )
 from examlops.gateway.providers.ollama import OllamaProvider
+from examlops.gateway.providers.openai_compat import OpenAICompatProvider, OpenAICompatQuirks
 
 __all__ = [
     "ERROR_STATUS",
@@ -30,6 +31,8 @@ __all__ = [
     "EmbedResult",
     "ModelInfo",
     "OllamaProvider",
+    "OpenAICompatProvider",
+    "OpenAICompatQuirks",
     "ProbeResult",
     "Provider",
     "ProviderError",

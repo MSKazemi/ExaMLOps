@@ -140,11 +140,12 @@ providers:
     max_queue: 8
     keep_alive: 30m
     options: {num_ctx: 16384}
-  omni:                                      # a router, reachable once ADR 0152's openai_compat
-    type: ollama                             # adapter ships — today only `ollama` is a real type
-    base_url: https://router.example.org
+  omni:                                      # a router — OmniRoute, LiteLLM, OpenRouter, a remote
+    type: openai_compat                      # vLLM/SGLang `/v1`, or another ExaMLOps gateway
+    base_url: https://router.example.org/v1
     locality: external
     external_ok: true                        # required in addition to a caller permitting `external`
+    api_key_env: OMNI_ROUTER_KEY             # names an env var — never a literal key in this file
 models:
   chat:
     strategy: priority                       # priority | weighted | least_inflight |
@@ -162,15 +163,47 @@ fault) — the same validator backs both a config file and `POST /admin/reload` 
 `LLM_GATEWAY_ADMIN_TOKEN`), so a file that validates offline is one the running gateway accepts;
 a bad reload keeps serving the last good config and reports why via `GET /admin/config`.
 
+## Connect a router
+
+`type: openai_compat` (ADR 0152 d3) is the generic adapter for anything that speaks the OpenAI
+Chat Completions wire shape: OmniRoute, LiteLLM, OpenRouter, a remote vLLM/SGLang `/v1`, or another
+ExaMLOps `llm-gateway`. Unlike the native `ollama` adapter it does not translate the request — it
+forwards `messages`/`tools`/`response_format` as-is and classifies whatever the router sends back.
+
+- **Key**: `api_key_env` names an environment variable read at build time — the literal key never
+  belongs in `gateway.yaml` (the same reason `LLM_GATEWAY_ADMIN_TOKEN` is env-only). Unset in this
+  process ⇒ the provider still builds, unauthenticated; the router's own 401 makes that failure
+  explicit rather than the gateway silently sending a blank bearer token.
+- **`locality`**: almost always `external` + `external_ok: true` for a router outside your
+  infrastructure — `validate_base_url` (ADR 0154) refuses a private/internal address declared
+  `external` (that combination usually means the URL is wrong, not that the policy is), and refuses
+  an external address on a provider declared `local`/`site`.
+- **`constrains_schema`**: leave `false` unless you have verified this specific router enforces
+  `response_format.json_schema` strictly — a real OpenAI endpoint and vLLM/SGLang's own `/v1` do; an
+  unknown router is not assumed to, because a false positive here means the gateway skips its own
+  output validation on an upstream that never enforced anything.
+- **`send_stream_options`/`retry_after_is_ms`**: the two documented vendor-quirk knobs. Default is
+  spec-compliant OpenAI behaviour; flip `send_stream_options: false` for a router that 400s on an
+  unrecognised `stream_options` field, or `retry_after_is_ms: true` for one whose 429 body reports a
+  retry hint in milliseconds rather than seconds.
+- A router answering a `model: auto` request may resolve to a different concrete model — the
+  response's own `model` field is passed through as reported, an unverified claim, never re-derived.
+
+**Status:** built and unit-tested (fault-injected fake upstream, ~40 cases spanning passthrough
+fidelity, streaming, every documented error class, and both quirk knobs); **not yet run against a
+real OmniRoute/LiteLLM/OpenRouter instance** — `.claude/plans/llm-gateway/PLAN.md` P5 tracks that
+conformance pass for when an owner-deployed router exists to test against.
+
 ## Endpoints
 
 | Endpoint | Auth | What |
 |---|---|---|
-| `POST /v1/chat/completions` | virtual key (unless `LLM_GATEWAY_AUTH=off`) | The one real endpoint. `stream: true` for SSE. |
+| `POST /v1/chat/completions` | virtual key (unless `LLM_GATEWAY_AUTH=off`) | `stream: true` for SSE. |
+| `POST /v1/embeddings` | virtual key | Same resilience stack (breaker/retry/bulkhead) as chat, routed through `GatewayCore.embed()`. |
 | `GET /v1/models` | virtual key | Models the caller's key may reach, filtered to routes with a non-open breaker. |
 | `GET /health` | none | Always 200 — process liveness only. |
 | `GET /ready` | none | Latches once healthy (ADR 0153 d10): a later outage degrades to typed 503s, never un-readies the pod into a restart loop. |
-| `GET /admin/health` | admin token | Per-provider probe results + per-deployment breaker/inflight/queue snapshot. |
+| `GET /admin/health` | admin token | Per-provider probe results + per-deployment breaker/inflight/queue snapshot + active-probe state. |
 | `GET /admin/config` | admin token | Source (`file`/`generated`), routes, aliases, last reload error — never a secret. |
 | `POST /admin/reload` | admin token | Re-reads the config file; 422 + keeps the old config on a validation failure. |
 | `GET /metrics` | admin token | Prometheus exposition — see below. |
@@ -178,6 +211,60 @@ a bad reload keeps serving the last good config and reports why via `GET /admin/
 `LLM_GATEWAY_ADMIN_TOKEN` unset ⇒ `/admin/*` and `/metrics` are disabled, fail closed (503
 `gateway_unavailable`), not silently open. A placeholder value (`changeme`, `password`, …) or one
 under 16 characters refuses to start the service at all.
+
+## Active health probing
+
+Independent of request traffic, the service periodically calls every configured provider's own
+health probe and feeds the result into the same circuit breakers real requests already share
+(`gateway/health.py`) — so a dead upstream is caught *before* the next real request reaches it,
+not only after one fails and pays the cost of finding out. During a quiet period with no traffic
+at all, passive health (recorded from real request outcomes) never gets a sample to learn from;
+this is what closes that gap.
+
+`LLM_GATEWAY_ACTIVE_PROBE_INTERVAL_S` (default `30`) sets the cadence; `0` or unset-negative
+disables it entirely. `GET /admin/health`'s `active_probe` block reports whether it's running,
+the configured interval, and each provider's most recent result:
+
+```json
+{"active_probe": {"running": true, "interval_s": 30.0, "last_results": {"n1": true}}}
+```
+
+Deliberately breaker-only: a probe result never touches a deployment's `ok`/`errors`/
+`ewma_ttft_ms` counters (those describe *real request* outcomes for the admin/metrics surface) —
+mixing a synthetic probe result into them would make "how many real requests succeeded" a lie.
+
+**Residency-aware deadline gate.** For `ollama` deployments specifically (the one provider type
+that reports true model residency, via `/api/ps`), the active probe's residency reading also feeds
+the request deadline check: an attempt is never started against a *confirmed-cold* model with less
+than `cold_load_budget_s` (10s) remaining, versus the bare `min_useful_s` floor (1s) for everything
+else — a caller-supplied `X-ExaMLOps-Budget-Ms` too short to plausibly survive a real model load
+fails fast with a clean `upstream_timeout`, instead of starting a doomed connection attempt and
+burning the whole (short) budget waiting to find out. A model this program has never probed, or a
+non-`ollama` provider (routers never report residency), is treated permissively — the bare floor,
+not the cold-load one — so an unprobed deployment is never penalized for something nobody has
+measured yet. Live-verified on n1 (2026-09-25): a 500ms budget against a confirmed-cold model
+returned the typed error in ~55ms; the same request with no budget header (the 300s route default)
+completed normally in ~3.4s including the real cold load.
+
+**Warm preload.** A deployment can be flagged `warm: true` in `gateway.yaml`:
+
+```yaml
+models:
+  chat:
+    deployments:
+      - {provider: n1, model: qwen3:8b, warm: true}
+```
+
+Every `LLM_GATEWAY_WARM_INTERVAL_S` seconds (default `300`; `0` disables), the service sends a
+1-token keep-alive chat to every `warm: true` deployment, so an operator's chosen model never goes
+cold from being merely quiet — the residency-aware deadline gate above then correctly treats it as
+warm rather than penalizing every real request with the cold-load budget. A keep-alive failure
+feeds the same breaker an active probe does (a real, if synthetic, health signal), but — like an
+active probe — never touches a deployment's `ok`/`errors` counters. `GET /admin/health`'s `warm`
+block reports the same shape `active_probe` does (`running`/`interval_s`/`last_results`, keyed by
+deployment rather than provider). Live-verified on n1 (2026-09-25): a `warm: true` `llama3.2:3b`
+went from absent in `/api/ps` to resident within one 5s warm cycle, with zero effect on the
+deployment's real-request counters.
 
 ## Typed error contract
 
@@ -227,6 +314,12 @@ C1 GenAI spans (`gen_ai.*`, `examlops.cost.usd`) are emitted separately, into Te
 in-process client path (`GatewayClient`) — the standalone service does not currently emit its own
 spans, only the metrics above.
 
+The `examlops-llm-gateway` Prometheus rule group (`platform/infra/docker-compose/alert_rules.yml`)
+pages on a scrape failure, a provider whose active probe keeps failing, a breaker stuck open, and a
+sustained high/very-high error rate — `docs/runbooks/llm-gateway.md` has the meaning, impact, check
+and fix for each. Scraping this service's `/metrics` needs the same admin token as `/admin/*`; see
+`platform/infra/docker-compose/prometheus-secrets/README.md`.
+
 ## Known gaps (tracked, not silent)
 
 - **Streaming enforce-mode redaction has a bounded lookback window, not perfect atomicity** — a
@@ -234,10 +327,11 @@ spans, only the metrics above.
   `guardrail_blocked` SSE event rather than un-sending the earlier bytes; this is a hard physical
   limit (TCP bytes already on the wire), not a design gap, and matches the smallest window that
   ADR 0026's D8 detectors need (64 raw chars, all well under any pattern's match length).
-- **`/v1/embeddings`** is not implemented — chat only.
-- **OpenAI-compatible upstream providers** (a real router, LiteLLM, OpenRouter, a remote vLLM) are
-  not built — only the native Ollama adapter exists today (ADR 0152). `gateway.yaml`'s `type` field
-  only accepts `ollama`.
+- **`openai_compat` routers are unverified against a live instance** — the adapter is built and
+  unit-tested against a fault-injecting fake upstream (see "Connect a router" above), but PLAN.md
+  P5's conformance run against a real OmniRoute/LiteLLM/OpenRouter deployment has not happened; the
+  vendor-quirk knobs (`send_stream_options`, `retry_after_is_ms`) exist because real upstreams are
+  expected to need them, not because a specific one has been observed to.
 - **`cost_aware` routing** uses a deployment's `price_per_1k` from `gateway.yaml` when one is
   declared, and falls back to locality otherwise (local/site free, external a flat marker cost).
   The price is a static figure the operator declares. Nothing pulls a live price list from an
