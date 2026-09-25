@@ -39,6 +39,7 @@ const KNOWN_ROUTES = new Set([
   '/operate/slos',
   '/operate/admission',
   '/operate/facility',
+  '/operate/hardware-profiles',
   '/operate/finops',
   '/operate/self-obs',
   // govern

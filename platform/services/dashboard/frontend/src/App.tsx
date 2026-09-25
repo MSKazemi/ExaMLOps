@@ -34,6 +34,9 @@ const MlopsConsole = lazy(() => import('@/pages/MlopsConsole').then((m) => ({ de
 const FacilityConsole = lazy(() =>
   import('@/pages/FacilityConsole').then((m) => ({ default: m.FacilityConsole })),
 )
+const HardwareProfiles = lazy(() =>
+  import('@/pages/HardwareProfiles').then((m) => ({ default: m.HardwareProfiles })),
+)
 const Finops = lazy(() => import('@/pages/Finops').then((m) => ({ default: m.Finops })))
 const SelfObs = lazy(() => import('@/pages/SelfObs').then((m) => ({ default: m.SelfObs })))
 const Governance = lazy(() => import('@/pages/Governance').then((m) => ({ default: m.Governance })))
@@ -170,6 +173,7 @@ export default function App() {
                       <Route path="/serve/challenger" element={<Challenger />} />
                       <Route path="/operate/slos" element={<Slo />} />
                       <Route path="/operate/admission" element={<Admission />} />
+                      <Route path="/operate/hardware-profiles" element={<HardwareProfiles />} />
                       <Route path="/operate/finops" element={<Finops />} />
                       <Route path="/operate/self-obs" element={<SelfObs />} />
                       {/* Govern */}
