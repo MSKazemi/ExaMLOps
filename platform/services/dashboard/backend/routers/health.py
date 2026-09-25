@@ -34,6 +34,7 @@ _SERVICES = {
     "loki": (settings.loki_url, "/ready", settings.public_loki_url),
     "jupyterhub": (settings.jupyterhub_url, "/hub/api/", settings.public_jupyterhub_url),
     "dataplane": (settings.dataplane_url, "/health", settings.public_dataplane_url),
+    "llm_gateway": (settings.llm_gateway_url, "/health", settings.public_llm_gateway_url),
 }
 
 

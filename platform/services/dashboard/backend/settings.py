@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     dataplane_url: str = Field(
         default="http://localhost:18010", validation_alias="EXAMLOPS_DATAPLANE_URL"
     )
+    # ADR 0151 — the live llm-gateway service; only its liveness (`/health`) is probed here. Deeper
+    # diagnostics (which routes are servable, provider health) are `exa gateway status|providers`,
+    # deliberately not proxied to the browser: `/admin/health` needs a bearer this process would
+    # otherwise have to hold and never expose, for a page that only needs up/down.
+    llm_gateway_url: str = "http://localhost:18020"
 
     # ── Browser-facing URLs ──
     public_mlflow_url: str = "http://localhost:15000"
@@ -47,6 +52,7 @@ class Settings(BaseSettings):
     public_jupyterhub_url: str = "http://localhost:18888"
     public_loki_url: str = "http://localhost:13100"
     public_dataplane_url: str = "http://localhost:18010"
+    public_llm_gateway_url: str = "http://localhost:18020"
     public_dashboard_url: str = "http://localhost:18099"
     slurm_mode: str = "mock"
 
