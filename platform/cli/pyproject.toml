@@ -101,7 +101,7 @@ oidc = [
 # backup profile (SQLite + config tiers) works without it. The Postgres tier additionally
 # needs the `pg_dump`/`pg_restore` binaries (postgresql-client) on PATH.
 backup = [
-    "boto3>=1.43.88",
+    "boto3>=1.43.97",
 ]
 # Keyless Sigstore signing of audit checkpoints (ADR 0028 decision 3, EXAMLOPS_AUDIT_TRANSPARENCY=
 # sigstore). Lazily imported by examlops.audit_transparency; the Rekor backend (a dedicated ECDSA
